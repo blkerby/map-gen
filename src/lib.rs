@@ -1,17 +1,20 @@
+use anyhow::{Result, bail};
 use bitvec::vec::BitVec;
 use pyo3::prelude::*;
+use rand::RngExt;
 
-type RoomId = u8;
+type RoomIdx = u8;
 type Coord = i8;
-type PartId = u8;
+type PartIdx = u8;
 type DoorKind = u8;
 
 #[derive(FromPyObject, Clone)]
 #[pyo3(from_item_all)]
 struct Room {
+    room_id: i64,
     map: Vec<Vec<u8>>,
     doors: Vec<Vec<Door>>,
-    connections: Vec<(PartId, PartId)>,
+    connections: Vec<(PartIdx, PartIdx)>,
 }
 
 #[derive(FromPyObject, Clone, Debug)]
@@ -57,15 +60,10 @@ impl<'py> FromPyObject<'py> for Direction {
     }
 }
 
-pub struct Environment {
-    actions: Vec<Action>,
-    frontier: Vec<Frontier>,
-    room_used: BitVec, // whether each room has been used
-}
-
 // Action: a placement of a room. The top-left corner is placed at (x, y) on the map.
+#[derive(Copy, Clone)]
 pub struct Action {
-    room: RoomId,
+    room_idx: RoomIdx,
     x: Coord,
     y: Coord,
 }
@@ -97,7 +95,7 @@ struct IntersectionChecker {
 }
 
 impl IntersectionChecker {
-    fn new(rooms: &[Room], map_size: (Coord, Coord)) -> Self {
+    fn new(rooms: &[Room], map_size: (Coord, Coord)) -> Result<Self> {
         let mut min_x_cand = vec![];
         let mut max_x_cand = vec![];
         let mut min_y_cand = vec![];
@@ -133,24 +131,33 @@ impl IntersectionChecker {
             max_y_cand.push(map_size.1 - 1 - max_y);
         }
 
-        Self {
+        for i in 0..rooms.len() {
+            if min_x_cand[i] > max_x_cand[i] || min_y_cand[i] > max_y_cand[i] {
+                bail!(
+                    "Room id {} (index {}) cannot fit within the map boundaries",
+                    rooms[i].room_id,
+                    i
+                );
+            }
+        }
+        Ok(Self {
             rooms: rooms.to_vec(),
             map_size,
             min_x_cand,
             max_x_cand,
             min_y_cand,
             max_y_cand,
-        }
+        })
     }
 
     // Check if placing room1 at (x1, y1) and room2 at (x2, y2) would cause an intersection.
     // This includes overlapping tiles, blocked or mismatched doors, or out-of-bounds placement of room2.
     fn has_intersection(
         &self,
-        room_id1: RoomId,
+        room_id1: RoomIdx,
         x1: Coord,
         y1: Coord,
-        room_id2: RoomId,
+        room_id2: RoomIdx,
         x2: Coord,
         y2: Coord,
     ) -> bool {
@@ -228,21 +235,119 @@ impl IntersectionChecker {
                 return true; // Mismatched door
             }
         }
-        
+
         false // No intersection
+    }
+}
+
+struct CommonData {
+    rooms: Vec<Room>,
+    intersection_checker: IntersectionChecker,
+}
+
+pub struct Environment {
+    rng: rand::rngs::StdRng, // for random choice of initial room placement
+    actions: Vec<Action>,    // history of room placements so far
+    frontier: Vec<Frontier>, // info about each unconnected door on the map
+    room_used: BitVec,       // whether each room has been used
+}
+
+impl Environment {
+    fn new(rooms: &[Room], common: &CommonData) -> Self {
+        let mut env = Self {
+            rng: rand::make_rng(),
+            actions: vec![],
+            frontier: vec![],
+            room_used: BitVec::repeat(false, rooms.len()),
+        };
+        let action = env.get_initial_action(common);
+        env.step(action, common);
+        env
+    }
+
+    fn get_initial_action(&mut self, common: &CommonData) -> Action {
+        // Select a room and position uniformly at random.
+        let room_idx = self.rng.random_range(0..common.rooms.len() as RoomIdx);
+        let x = self.rng.random_range(
+            common.intersection_checker.min_x_cand[room_idx as usize]
+                ..=common.intersection_checker.max_x_cand[room_idx as usize],
+        );
+        let y = self.rng.random_range(
+            common.intersection_checker.min_y_cand[room_idx as usize]
+                ..=common.intersection_checker.max_y_cand[room_idx as usize],
+        );
+        Action { room_idx, x, y }
+    }
+
+    fn step(&mut self, action: Action, common: &CommonData) {
+        self.actions.push(action.clone());
+        self.room_used.set(action.room_idx as usize, true);
+        for frontier in self.frontier.iter_mut() {
+            frontier.candidates.retain(|cand| {
+                !common.intersection_checker.has_intersection(
+                    action.room_idx,
+                    action.x,
+                    action.y,
+                    cand.room_idx,
+                    cand.x,
+                    cand.y,
+                )
+            });
+        }
     }
 }
 
 #[pyclass]
 pub struct Engine {
-    rooms: Vec<Room>,
+    common_data: CommonData, // pre-computed data that can be shared across environments
+    environments: Vec<Environment>, // list of parallel environments for batch processing
 }
 
 #[pymethods]
 impl Engine {
     #[new]
-    fn new(rooms: Vec<Room>) -> Self {
-        Self { rooms }
+    fn new(rooms: Vec<Room>, map_size: (Coord, Coord), batch_size: usize) -> PyResult<Self> {
+        let common_data = CommonData {
+            rooms: rooms.clone(),
+            intersection_checker: IntersectionChecker::new(&rooms, map_size)?,
+        };
+        let mut environments = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            environments.push(Environment::new(&rooms, &common_data));
+        }
+        Ok(Self {
+            common_data,
+            environments,
+        })
+    }
+
+    fn get_candidates(&self, start: usize, end: usize) -> Vec<()> {
+        let mut candidates = vec![];
+        // for (i, frontier) in self.frontier.iter().enumerate() {
+        //     for room_id in start as RoomIdx..end as RoomIdx {
+        //         if !self.room_used[room_id as usize] {
+        //             for x in -10..=10 {
+        //                 for y in -10..=10 {
+        //                     if !IntersectionChecker::new(&self.rooms, (100, 100)).has_intersection(
+        //                         frontier.candidates[0].room,
+        //                         frontier.candidates[0].x,
+        //                         frontier.candidates[0].y,
+        //                         room_id,
+        //                         x,
+        //                         y,
+        //                     ) {
+        //                         candidates[i].push(Action {
+        //                             room_idx: room_id,
+        //                             x,
+        //                             y,
+        //                         });
+        //                     }
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
+        candidates
     }
 }
 

@@ -8,5 +8,7 @@ name = "map_gen"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+anyhow = "1.0.102"
 bitvec = "1.0.1"
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.23", features = ["extension-module", "anyhow"] }
+rand = "0.10.1"
