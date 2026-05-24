@@ -5,12 +5,14 @@ type RoomId = u8;
 type Coord = u8;
 
 #[derive(FromPyObject, Clone)]
+#[pyo3(from_item_all)]
 struct Room {
     map: Vec<Vec<u8>>,
-    // doors: Vec<Door>,
+    doors: Vec<Door>,
 }
 
 #[derive(FromPyObject, Clone, Debug)]
+#[pyo3(from_item_all)]
 struct Door {
     direction: Direction,
     x: usize,
