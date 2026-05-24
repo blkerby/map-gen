@@ -7,13 +7,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 8,
@@ -26,15 +25,14 @@
             [1, 1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 4, "subtype": "normal"},
-            {"direction": "right", "x": 8, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 8, "y": 4, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 4, "kind": 0},
+                {"direction": "right", "x": 8, "y": 1, "kind": 0},
+                {"direction": "right", "x": 8, "y": 4, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 9,
@@ -43,13 +41,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 10,
@@ -62,18 +59,17 @@
             [0, 1, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 1, "y": 2, "subtype": "normal"},
-            {"direction": "left",  "x": 1, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 3, "subtype": "normal"},
-            {"direction": "down",  "x": 1, "y": 4, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 1, "y": 2, "kind": 0},
+                {"direction": "left",  "x": 1, "y": 3, "kind": 0},
+                {"direction": "right", "x": 4, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 2, "kind": 0},
+                {"direction": "right", "x": 1, "y": 3, "kind": 0},
+                {"direction": "down",  "x": 1, "y": 4, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4, 5, 6]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 11,
@@ -90,16 +86,15 @@
             [1, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 8, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 7, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 8, "subtype": "normal"},
-            {"direction": "up",    "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 8, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 7, "kind": 0},
+                {"direction": "right", "x": 1, "y": 8, "kind": 0},
+                {"direction": "up",    "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 12,
@@ -109,13 +104,12 @@
             [1, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 13,
@@ -124,13 +118,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 14,
@@ -139,13 +132,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 15,
@@ -154,12 +146,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 16,
@@ -168,12 +157,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 17,
@@ -182,12 +168,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 18,
@@ -196,13 +179,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 19,
@@ -211,12 +193,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 20,
@@ -227,13 +206,12 @@
             [1, 1, 1, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 21,
@@ -248,16 +226,16 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 6, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 4, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 6, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "left",  "x": 0, "y": 6, "kind": 0},
+                {"direction": "right", "x": 0, "y": 4, "kind": 0},
+                {"direction": "right", "x": 0, "y": 6, "kind": 0}
+            ]
         ],
-        "parts": [
-            [1      ],
-            [0, 2, 3]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -268,13 +246,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 23,
@@ -286,13 +263,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "down",  "x": 0, "y": 3, "subtype": "elevator"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 3, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 24,
@@ -303,14 +279,13 @@
             [0, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 1, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 1, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 26,
@@ -319,13 +294,12 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 4, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 25,
@@ -337,13 +311,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "down", "x": 0, "y": 3, "subtype": "elevator"}
+            [
+                {"direction": "up",   "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 0, "y": 3, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 306,
@@ -355,13 +328,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "down", "x": 0, "y": 3, "subtype": "elevator"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 0, "y": 3, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 27,
@@ -374,13 +346,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "down", "x": 0, "y": 4, "subtype": "elevator"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 0, "y": 4, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 28,
@@ -389,12 +360,9 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 29,
@@ -410,14 +378,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 7, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "left", "x": 0, "y": 7, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -428,13 +392,12 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 4, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 31,
@@ -443,13 +406,12 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 32,
@@ -463,21 +425,22 @@
             [1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 5, "y": 2, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 4, "subtype": "normal"},
-            {"direction": "right", "x": 7, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 7, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 7, "y": 4, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 4, "kind": 0},
+                {"direction": "right", "x": 5, "y": 3, "kind": 0},
+                {"direction": "right", "x": 7, "y": 4, "kind": 0}
+            ],
+            [
+                {"direction": "right", "x": 7, "y": 0, "kind": 0},
+                {"direction": "right", "x": 7, "y": 1, "kind": 0},
+                {"direction": "right", "x": 2, "y": 2, "kind": 0}
+            ],
+            [
+                {"direction": "left",  "x": 5, "y": 2, "kind": 0},
+                {"direction": "right", "x": 5, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [1, 6, 7],
-            [2, 3, 4],
-            [0, 5   ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -488,13 +451,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 34,
@@ -508,13 +470,12 @@
             [1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 4, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 4, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 4, "kind": 0},
+                {"direction": "right", "x": 6, "y": 4, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 35,
@@ -526,13 +487,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down", "x": 0, "y": 3, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 0, "y": 3, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 36,
@@ -542,13 +502,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "up",   "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 1, "kind": 0},
+                {"direction": "up",   "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 37,
@@ -560,13 +519,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "down", "x": 0, "y": 3, "subtype": "elevator"}
+            [
+                {"direction": "up",   "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 0, "y": 3, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 305,
@@ -575,13 +533,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 66,
@@ -599,16 +556,15 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 4, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 6, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 9, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 9, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 4, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 6, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 9, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 9, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 67,
@@ -618,13 +574,12 @@
             [1, 1, 0, 0, 1, 1, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 7, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 7, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 68,
@@ -633,12 +588,9 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 69,
@@ -647,13 +599,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 70,
@@ -663,14 +614,13 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 71,
@@ -679,12 +629,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 74,
@@ -693,13 +640,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 75,
@@ -715,18 +661,18 @@
             [1, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y": 5, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y": 7, "subtype": "normal"  },
-            {"direction": "right", "x": 2, "y": 3, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 4, "subtype": "normal"  },
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 5, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 7, "kind": 0},
+                {"direction": "right", "x": 0, "y": 4, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 1}
+            ],
+            [
+                {"direction": "right", "x": 2, "y": 3, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 4, 5],
-            [3            ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -737,12 +683,9 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 2, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 77,
@@ -752,12 +695,9 @@
             [1, 0]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 320,
@@ -766,12 +706,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 319,
@@ -780,12 +717,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 38,
@@ -796,14 +730,13 @@
             [1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"  },
-            {"direction": "right", "x": 7, "y": 2, "subtype": "normal"  },
-            {"direction": "up",    "x": 5, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 7, "y": 2, "kind": 0},
+                {"direction": "up",    "x": 5, "y": 0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 39,
@@ -813,14 +746,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 40,
@@ -829,12 +761,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 41,
@@ -845,13 +774,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 2, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 2, "y": 0, "kind": 0},
+                {"direction": "left", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 42,
@@ -860,13 +788,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 43,
@@ -875,12 +802,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 44,
@@ -900,21 +824,20 @@
             [0, 0, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y":  4, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y":  5, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y":  6, "subtype": "normal"  },
-            {"direction": "left",  "x": 1, "y":  7, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y": 10, "subtype": "normal"  },
-            {"direction": "left",  "x": 2, "y": 11, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y":  4, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y":  6, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y":  7, "subtype": "normal"  },
-            {"direction": "up",    "x": 0, "y":  0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y":  4, "kind": 0},
+                {"direction": "left",  "x": 0, "y":  5, "kind": 0},
+                {"direction": "left",  "x": 0, "y":  6, "kind": 0},
+                {"direction": "left",  "x": 1, "y":  7, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 10, "kind": 0},
+                {"direction": "left",  "x": 2, "y": 11, "kind": 0},
+                {"direction": "right", "x": 0, "y":  4, "kind": 0},
+                {"direction": "right", "x": 0, "y":  6, "kind": 0},
+                {"direction": "right", "x": 0, "y":  7, "kind": 0},
+                {"direction": "up",    "x": 0, "y":  0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 45,
@@ -924,13 +847,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 2, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 46,
@@ -939,12 +861,9 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 47,
@@ -953,13 +872,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 48,
@@ -968,12 +886,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 49,
@@ -983,13 +898,12 @@
             [1, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 316,
@@ -998,12 +912,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 314,
@@ -1012,12 +923,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 315,
@@ -1026,12 +934,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 50,
@@ -1040,13 +945,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 51,
@@ -1056,16 +960,16 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 4, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 2],
-            [1, 3]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -1076,12 +980,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 54,
@@ -1093,14 +994,13 @@
             [0, 0, 0, 0, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 7, "y": 3, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0},
+                {"direction": "right", "x": 7, "y": 3, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 55,
@@ -1109,13 +1009,12 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 56,
@@ -1124,13 +1023,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",   "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "up",   "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 57,
@@ -1141,14 +1039,10 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 2, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "down",  "x": 0, "y": 2, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -1165,14 +1059,13 @@
             [1, 1, 1, 1, 1, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 6, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 6, "kind": 0},
+                {"direction": "right", "x": 6, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 317,
@@ -1181,12 +1074,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 59,
@@ -1204,22 +1094,23 @@
             [1, 0, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 2, "y": 2, "subtype": "normal"},
-            {"direction": "left",  "x": 2, "y": 3, "subtype": "normal"},
-            {"direction": "left",  "x": 2, "y": 4, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 9, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 4, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 5, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 6, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 1, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 2, "y": 2, "kind": 0},
+                {"direction": "left",  "x": 2, "y": 3, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 9, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 4, "kind": 0},
+                {"direction": "right", "x": 3, "y": 6, "kind": 0}
+            ],
+            [
+                {"direction": "left", "x": 2, "y": 4, "kind": 0}
+            ],
+            [
+                {"direction": "right", "x": 4, "y": 5, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 4, 5, 6, 8],
-            [3                  ],
-            [7                  ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0],
             [2, 0]
         ]
@@ -1231,12 +1122,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 60,
@@ -1246,14 +1134,10 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"}
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 1, "y": 1, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -1265,13 +1149,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 62,
@@ -1280,12 +1163,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 63,
@@ -1302,14 +1182,10 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 8, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "left", "x": 0, "y": 8, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -1320,13 +1196,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 65,
@@ -1335,12 +1210,9 @@
             [1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 6, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 6, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 78,
@@ -1350,14 +1222,13 @@
             [1, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"  },
-            {"direction": "down",  "x": 0, "y": 1, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 1, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 79,
@@ -1367,14 +1238,13 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "up",   "x": 1, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "left", "x": 0, "y": 1, "kind": 0},
+                {"direction": "up",   "x": 1, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 80,
@@ -1383,12 +1253,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 81,
@@ -1398,14 +1265,13 @@
             [0, 1, 0, 0]
         ],
         "doors": [
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 3, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 300,
@@ -1414,12 +1280,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 82,
@@ -1428,13 +1291,12 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 83,
@@ -1444,14 +1306,13 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 301,
@@ -1460,12 +1321,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 84,
@@ -1475,13 +1333,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 85,
@@ -1490,12 +1347,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 169,
@@ -1504,13 +1358,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 200,
@@ -1520,15 +1373,15 @@
             [1, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ],
+            [
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -1541,15 +1394,14 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 2, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 171,
@@ -1558,12 +1410,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 172,
@@ -1579,17 +1428,17 @@
             [1, 1, 0]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 6, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 7, "subtype": "normal"},
-            {"direction": "down",  "x": 1, "y": 7, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 1, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 6, "kind": 0},
+                {"direction": "right", "x": 1, "y": 7, "kind": 0},
+                {"direction": "down",  "x": 1, "y": 7, "kind": 0}
+            ],
+            [
+                {"direction": "right", "x": 2, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 2, 3, 4],
-            [1         ]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 173,
@@ -1600,15 +1449,14 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 2, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",    "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 3, "y": 2, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0},
+                {"direction": "up",    "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 174,
@@ -1620,17 +1468,16 @@
             [0, 1, 1, 1, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 1, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 1, "y": 3, "subtype": "normal"},
-            {"direction": "down",  "x": 4, "y": 3, "subtype": "normal"},
-            {"direction": "up",    "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 1, "y": 2, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 1, "y": 3, "kind": 0},
+                {"direction": "down",  "x": 4, "y": 3, "kind": 0},
+                {"direction": "up",    "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4, 5]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 175,
@@ -1642,14 +1489,13 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 3, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 1, "y": 3, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 176,
@@ -1658,14 +1504,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 3, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -1677,13 +1519,12 @@
             [0, 0, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down", "x": 2, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 2, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 178,
@@ -1695,12 +1536,9 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 3, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 3, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 179,
@@ -1711,13 +1549,12 @@
             [1, 1, 1, 0]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "down", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 1, "kind": 0},
+                {"direction": "down", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 180,
@@ -1727,13 +1564,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 181,
@@ -1744,12 +1580,9 @@
             [1, 0]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 182,
@@ -1758,12 +1591,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 183,
@@ -1774,19 +1604,20 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 1, "subtype": "normal"},
-            {"direction": "down",  "x": 1, "y": 2, "subtype": "sand"  },
-            {"direction": "down",  "x": 3, "y": 2, "subtype": "sand"  },
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 5, "y": 1, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "down", "x": 1, "y": 2, "kind": 2}
+            ],
+            [
+                {"direction": "down", "x": 3, "y": 2, "kind": 2}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 5],
-            [3         ],
-            [4         ]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1],
             [0, 2]
         ]
@@ -1807,13 +1638,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "down", "x": 0, "y": 9, "subtype": "normal"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "down", "x": 0, "y": 9, "kind": 0},
+                {"direction": "up",   "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 184,
@@ -1822,13 +1652,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 3, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 185,
@@ -1837,14 +1666,10 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -1855,17 +1680,18 @@
             [1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 2, "y": 0, "subtype": "sand"  },
-            {"direction": "down",  "x": 3, "y": 0, "subtype": "sand"  }
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 6, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "down", "x": 2, "y": 0, "kind": 2}
+            ],
+            [
+                {"direction": "down", "x": 3, "y": 0, "kind": 2}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ],
-            [3   ]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1],
             [0, 2]
         ]
@@ -1879,15 +1705,14 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 4, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 188,
@@ -1896,12 +1721,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 189,
@@ -1911,14 +1733,13 @@
             [1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 6, "y": 0, "kind": 0},
+                {"direction": "right", "x": 6, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 190,
@@ -1927,13 +1748,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 191,
@@ -1942,12 +1762,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 192,
@@ -1958,13 +1775,12 @@
             [1, 0]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "left", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 193,
@@ -1974,13 +1790,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 194,
@@ -1989,12 +1804,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 195,
@@ -2004,13 +1816,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 196,
@@ -2020,13 +1831,12 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 4, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 197,
@@ -2040,15 +1850,14 @@
             [0, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 2, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 5, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 2, "y": 1, "kind": 0},
+                {"direction": "right", "x": 3, "y": 3, "kind": 0},
+                {"direction": "right", "x": 3, "y": 5, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 198,
@@ -2058,14 +1867,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 199,
@@ -2074,15 +1882,15 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"},
-            {"direction": "up",    "x": 2, "y": 0, "subtype": "sand"  }
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "up", "x": 2, "y": 0, "kind": 2}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2093,13 +1901,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 203,
@@ -2108,12 +1915,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 204,
@@ -2122,18 +1926,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "down", "x": 0, "y": 0, "subtype": "sand"},
-            {"direction": "down", "x": 1, "y": 0, "subtype": "sand"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "sand"},
-            {"direction": "up",   "x": 1, "y": 0, "subtype": "sand"}
+            [{"direction": "down", "x": 0, "y": 0, "kind": 2}],
+            [{"direction": "down", "x": 1, "y": 0, "kind": 2}],
+            [{"direction": "up",   "x": 0, "y": 0, "kind": 2}],
+            [{"direction": "up",   "x": 1, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1],
-            [2],
-            [3]
-        ],
-        "part_connections": [
+        "connections": [
             [2, 0],
             [3, 1]
         ]
@@ -2145,16 +1943,11 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",   "x": 2, "y": 0, "subtype": "sand"  },
-            {"direction": "up",   "x": 3, "y": 0, "subtype": "sand"  }
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "up",   "x": 2, "y": 0, "kind": 2}],
+            [{"direction": "up",   "x": 3, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1],
-            [2]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0],
             [2, 0]
         ]
@@ -2167,14 +1960,10 @@
             [1]
         ],
         "doors": [
-            {"direction": "down", "x": 0, "y": 1, "subtype": "sand"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "sand"}
+            [{"direction": "down", "x": 0, "y": 1, "kind": 2}],
+            [{"direction": "up",   "x": 0, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2186,14 +1975,10 @@
             [1]
         ],
         "doors": [
-            {"direction": "down", "x": 0, "y": 1, "subtype": "sand"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "sand"}
+            [{"direction": "down", "x": 0, "y": 1, "kind": 2}],
+            [{"direction": "up",   "x": 0, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2205,14 +1990,10 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "down", "x": 1, "y": 1, "subtype": "sand"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "sand"}
+            [{"direction": "down", "x": 1, "y": 1, "kind": 2}],
+            [{"direction": "up",   "x": 0, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2224,14 +2005,10 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "down", "x": 0, "y": 1, "subtype": "sand"},
-            {"direction": "up",   "x": 1, "y": 0, "subtype": "sand"}
+            [{"direction": "down", "x": 0, "y": 1, "kind": 2}],
+            [{"direction": "up",   "x": 1, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2242,15 +2019,15 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"},
-            {"direction": "up",    "x": 1, "y": 0, "subtype": "sand"  }
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "up", "x": 1, "y": 0, "kind": 2}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2261,15 +2038,15 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 0, "subtype": "sand"  }
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "down", "x": 0, "y": 0, "kind": 2}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -2280,14 +2057,10 @@
             [1]
         ],
         "doors": [
-            {"direction": "down", "x": 0, "y": 0, "subtype": "sand"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "sand"}
+            [{"direction": "down", "x": 0, "y": 0, "kind": 2}],
+            [{"direction": "up",   "x": 0, "y": 0, "kind": 2}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2298,15 +2071,15 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "sand"  }
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "up", "x": 0, "y": 0, "kind": 2}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2317,13 +2090,12 @@
             [1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 6, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 215,
@@ -2337,14 +2109,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 5, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 4, "subtype": "normal"  },
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 5, "kind": 0},
+                {"direction": "right", "x": 0, "y": 4, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 216,
@@ -2353,12 +2124,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 217,
@@ -2370,13 +2138,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 218,
@@ -2385,13 +2152,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 219,
@@ -2402,12 +2168,9 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 220,
@@ -2419,15 +2182,14 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "left",  "x": 1, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "left",  "x": 1, "y": 3, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 1, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 222,
@@ -2436,13 +2198,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 223,
@@ -2452,12 +2213,9 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 201,
@@ -2467,15 +2225,14 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 132,
@@ -2486,14 +2243,13 @@
             [1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"  },
-            {"direction": "right", "x": 7, "y": 2, "subtype": "normal"  },
-            {"direction": "up",    "x": 4, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 7, "y": 2, "kind": 0},
+                {"direction": "up",    "x": 4, "y": 0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 133,
@@ -2504,15 +2260,14 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 134,
@@ -2521,13 +2276,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 135,
@@ -2541,14 +2295,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 5, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 5, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 136,
@@ -2561,14 +2314,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 1, "kind": 0}],
+            [{"direction": "right", "x": 3, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -2583,15 +2332,14 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "down",  "x": 2, "y": 4, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0},
+                {"direction": "down",  "x": 2, "y": 4, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 312,
@@ -2600,12 +2348,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 138,
@@ -2616,13 +2361,12 @@
             [0, 1, 0, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left", "x": 1, "y": 2, "subtype": "normal"},
-            {"direction": "up",   "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 1, "y": 2, "kind": 0},
+                {"direction": "up",   "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 139,
@@ -2631,13 +2375,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 140,
@@ -2646,13 +2389,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 141,
@@ -2661,13 +2403,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 142,
@@ -2677,13 +2418,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 143,
@@ -2692,12 +2432,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 144,
@@ -2709,14 +2446,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 3, "kind": 0}],
+            [{"direction": "right", "x": 3, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2732,14 +2465,13 @@
             [0, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 1, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 1, "y": 3, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 146,
@@ -2749,15 +2481,15 @@
             [1, 1, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"},
-            {"direction": "down",  "x": 4, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0}
+            ],
+            [
+                {"direction": "down", "x": 4, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1],
-            [2   ]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -2768,14 +2500,10 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",   "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "up",   "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -2788,13 +2516,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 1, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 149,
@@ -2805,14 +2532,10 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 2, "subtype": "normal"}
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 2, "y": 2, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -2824,14 +2547,10 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 1, "y": 1, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -2844,14 +2563,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 152,
@@ -2860,12 +2578,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 153,
@@ -2874,14 +2589,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 3, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -2898,18 +2609,17 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y": 4, "subtype": "normal"  },
-            {"direction": "left",  "x": 0, "y": 5, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 5, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 6, "subtype": "normal"  },
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 4, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 5, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 0, "y": 5, "kind": 0},
+                {"direction": "right", "x": 0, "y": 6, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4, 5, 6]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 87,
@@ -2918,12 +2628,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 88,
@@ -2933,13 +2640,12 @@
             [1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 89,
@@ -2948,12 +2654,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 90,
@@ -2963,13 +2666,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 91,
@@ -2979,13 +2681,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 92,
@@ -2994,13 +2695,12 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 4, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 93,
@@ -3009,13 +2709,12 @@
             [1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 7, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 7, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 94,
@@ -3025,14 +2724,13 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 95,
@@ -3043,14 +2741,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 2, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 96,
@@ -3059,12 +2756,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 302,
@@ -3073,13 +2767,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 97,
@@ -3091,18 +2784,17 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 3, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 3, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4, 5, 6]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 307,
@@ -3111,12 +2803,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 98,
@@ -3125,13 +2814,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 99,
@@ -3140,12 +2828,9 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 1, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 100,
@@ -3155,13 +2840,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 101,
@@ -3171,13 +2855,12 @@
             [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x":  0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 11, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x":  0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 11, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 102,
@@ -3186,12 +2869,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 103,
@@ -3203,17 +2883,17 @@
             [1, 0, 0, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0}
+            ],
+            [
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 2, 3, 4],
-            [1         ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -3225,14 +2905,13 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 105,
@@ -3241,12 +2920,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 106,
@@ -3258,16 +2934,16 @@
             [1, 1, 1, 1, 0, 0, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 3, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 3, "y": 2, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 3, "y": 2, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 6, "y": 2, "kind": 0}
+            ],
+            [
+                {"direction": "left", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [1, 2, 3],
-            [0      ]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -3278,13 +2954,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 108,
@@ -3295,14 +2970,13 @@
             [1, 0]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 109,
@@ -3311,12 +2985,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 110,
@@ -3325,13 +2996,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 111,
@@ -3343,13 +3013,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 308,
@@ -3358,13 +3027,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 112,
@@ -3373,13 +3041,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 113,
@@ -3390,15 +3057,14 @@
             [0, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left",  "x": 1, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 1, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "left",  "x": 1, "y": 2, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 114,
@@ -3407,13 +3073,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 115,
@@ -3424,13 +3089,12 @@
             [0, 1, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 116,
@@ -3441,13 +3105,12 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 2, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 2, "y": 0, "kind": 0},
+                {"direction": "left", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 117,
@@ -3456,13 +3119,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 118,
@@ -3473,13 +3135,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 119,
@@ -3488,14 +3149,13 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"},
-            {"direction": "up",    "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0},
+                {"direction": "up",    "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 120,
@@ -3506,17 +3166,17 @@
             [0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x":  0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 12, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 12, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 12, "y": 2, "subtype": "normal"},
-            {"direction": "down",  "x": 12, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0}
+            ],
+            [
+                {"direction": "left",  "x": 12, "y": 0, "kind": 0},
+                {"direction": "right", "x": 12, "y": 1, "kind": 0},
+                {"direction": "right", "x": 12, "y": 2, "kind": 0},
+                {"direction": "down",  "x": 12, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0         ],
-            [1, 2, 3, 4]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -3528,14 +3188,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 1, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 3, "y": 1, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -3546,14 +3202,10 @@
             [1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",   "x": 3, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "up",   "x": 3, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 0]
         ]
     },
@@ -3565,15 +3217,14 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 1, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 1, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 124,
@@ -3582,12 +3233,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 125,
@@ -3600,15 +3248,14 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 4, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 4, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 126,
@@ -3617,12 +3264,9 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 127,
@@ -3633,13 +3277,12 @@
             [1, 1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "up",   "x": 6, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 1, "kind": 0},
+                {"direction": "up",   "x": 6, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 128,
@@ -3650,13 +3293,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 129,
@@ -3665,13 +3307,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 130,
@@ -3682,13 +3323,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 131,
@@ -3698,14 +3338,10 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 2, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": [
+        "connections": [
             [0, 1]
         ]
     },
@@ -3716,12 +3352,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 311,
@@ -3730,12 +3363,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 309,
@@ -3744,14 +3374,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"  },
-            {"direction": "down",  "x": 0, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 310,
@@ -3760,12 +3389,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 154,
@@ -3774,13 +3400,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 155,
@@ -3796,18 +3421,17 @@
             [0, 0, 0, 0, 1, 0]
         ],
         "doors": [
-            {"direction": "left",  "x": 4, "y": 3, "subtype": "normal"},
-            {"direction": "left",  "x": 4, "y": 6, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 4, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 6, "subtype": "normal"},
-            {"direction": "down",  "x": 4, "y": 7, "subtype": "normal"},
-            {"direction": "up",    "x": 4, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 4, "y": 3, "kind": 0},
+                {"direction": "left",  "x": 4, "y": 6, "kind": 0},
+                {"direction": "right", "x": 4, "y": 3, "kind": 0},
+                {"direction": "right", "x": 4, "y": 4, "kind": 0},
+                {"direction": "right", "x": 5, "y": 6, "kind": 0},
+                {"direction": "down",  "x": 4, "y": 7, "kind": 0},
+                {"direction": "up",    "x": 4, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2, 3, 4, 5, 6]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 160,
@@ -3816,14 +3440,13 @@
             [1, 1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 6, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 4, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 6, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 4, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 156,
@@ -3832,14 +3455,13 @@
             [1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 4, "y": 0, "subtype": "normal"},
-            {"direction": "up",    "x": 2, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 4, "y": 0, "kind": 0},
+                {"direction": "up",    "x": 2, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 157,
@@ -3848,12 +3470,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 158,
@@ -3862,12 +3481,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 159,
@@ -3876,12 +3492,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 161,
@@ -3892,16 +3505,11 @@
             [0, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 2, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left", "x": 1, "y": 2, "subtype": "normal"}
+            [{"direction": "left", "x": 2, "y": 0, "kind": 0}],
+            [{"direction": "left", "x": 0, "y": 1, "kind": 0}],
+            [{"direction": "left", "x": 1, "y": 2, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1],
-            [2]
-        ],
-        "part_connections": [
+        "connections": [
             [1, 2]
         ]
     },
@@ -3912,13 +3520,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 163,
@@ -3927,12 +3534,9 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 164,
@@ -3941,13 +3545,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 165,
@@ -3956,13 +3559,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 166,
@@ -3973,14 +3575,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left",  "x": 0, "y": 2, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "left",  "x": 0, "y": 2, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 167,
@@ -3990,12 +3591,9 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 2, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 2, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 168,
@@ -4004,12 +3602,9 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 304,
@@ -4018,12 +3613,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 224,
@@ -4035,14 +3627,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"  },
-            {"direction": "right", "x": 0, "y": 3, "subtype": "normal"  },
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "elevator"}
+            [
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 0, "y": 3, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 1}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 225,
@@ -4051,12 +3642,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 226,
@@ -4065,13 +3653,12 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 227,
@@ -4081,13 +3668,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 228,
@@ -4096,13 +3682,12 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 229,
@@ -4112,13 +3697,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "down", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "down", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 230,
@@ -4127,13 +3711,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "up",   "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "up",   "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 231,
@@ -4142,13 +3725,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 1, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 232,
@@ -4157,13 +3739,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 233,
@@ -4173,14 +3754,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 0, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 234,
@@ -4189,12 +3769,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 235,
@@ -4203,13 +3780,12 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 0, "kind": 0},
+                {"direction": "right", "x": 3, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 236,
@@ -4220,14 +3796,13 @@
             [1]
         ],
         "doors": [
-            {"direction": "left", "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "left", "x": 0, "y": 2, "subtype": "normal"}
+            [
+                {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                {"direction": "left", "x": 0, "y": 1, "kind": 0},
+                {"direction": "left", "x": 0, "y": 2, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1, 2]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 237,
@@ -4236,12 +3811,9 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 0, "subtype": "normal"}
+            [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 238,
@@ -4250,14 +3822,10 @@
             [1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 0, "subtype": "normal"},
-            {"direction": "right", "x": 3, "y": 0, "subtype": "normal"}
+            [{"direction": "left",  "x": 0, "y": 0, "kind": 0}],
+            [{"direction": "right", "x": 3, "y": 0, "kind": 0}]
         ],
-        "parts": [
-            [0],
-            [1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 239,
@@ -4266,13 +3834,12 @@
             [1, 1]
         ],
         "doors": [
-            {"direction": "right", "x": 1, "y": 0, "subtype": "normal"},
-            {"direction": "down",  "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 1, "y": 0, "kind": 0},
+                {"direction": "down",  "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 240,
@@ -4282,13 +3849,12 @@
             [1]
         ],
         "doors": [
-            {"direction": "right", "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "up",    "x": 0, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "right", "x": 0, "y": 1, "kind": 0},
+                {"direction": "up",    "x": 0, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 241,
@@ -4298,13 +3864,12 @@
             [1, 1, 1, 1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 1, "subtype": "normal"},
-            {"direction": "right", "x": 5, "y": 0, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 1, "kind": 0},
+                {"direction": "right", "x": 5, "y": 0, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     },
     {
         "room_id": 242,
@@ -4318,12 +3883,11 @@
             [1, 1, 1]
         ],
         "doors": [
-            {"direction": "left",  "x": 0, "y": 3, "subtype": "normal"},
-            {"direction": "right", "x": 2, "y": 1, "subtype": "normal"}
+            [
+                {"direction": "left",  "x": 0, "y": 3, "kind": 0},
+                {"direction": "right", "x": 2, "y": 1, "kind": 0}
+            ]
         ],
-        "parts": [
-            [0, 1]
-        ],
-        "part_connections": []
+        "connections": []
     }
 ]
