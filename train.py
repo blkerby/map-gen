@@ -8,12 +8,13 @@ from visualize import MapVisualizer
 rooms = open("room_geometry.json", "r").read()
 # rooms = open("test_geometry.json", "r").read()
 room_data = json.loads(rooms)
-num_environments = 1
-max_candidates = 128
+num_environments = 4
+max_candidates = 32
+num_rounds = 16
 map_size = (72, 72)
 
 start = time.perf_counter()
-engine = map_gen.Engine(rooms, map_size, num_environments, seed=2)
+engine = map_gen.Engine(rooms, map_size, num_environments, seed=2, num_threads=4)
 end = time.perf_counter()
 print(f"Elapsed time: {end - start:.2f} seconds to create the engine")
 
@@ -25,17 +26,18 @@ print(f"Elapsed time: {end - start:.2f} seconds to create the engine")
 # )
 
 start = time.perf_counter()
-num_rounds = 500
 for _ in range(num_rounds):
     # start = time.perf_counter()
     engine.clear()
     engine.initial_step()
     # visualizer.add_engine_actions(engine.get_actions())
-    for _ in range(252):
+    for step in range(252):
         cand_room_idx, cand_x, cand_y = engine.get_candidates(
             max_candidates=max_candidates,
             start=0,
             end=num_environments)
+        
+        # print("step {}: candidates: {}".format(step, np.count_nonzero(cand_room_idx != 253, axis=1)))
         selected_cand_room_idx = np.ascontiguousarray(cand_room_idx[:, 0])
         selected_cand_x = np.ascontiguousarray(cand_x[:, 0])
         selected_cand_y = np.ascontiguousarray(cand_y[:, 0])
@@ -54,5 +56,5 @@ for _ in range(num_rounds):
     # visualizer.show()
 
 end = time.perf_counter()
-print(f"Elapsed time: {(end - start)/num_rounds:.4f} seconds per round")
+print(f"Elapsed time: {(end - start)/(num_rounds*num_environments):.4f} seconds per episode")
     

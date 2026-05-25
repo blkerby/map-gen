@@ -6,6 +6,8 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use rand::prelude::*;
 use rand::{RngExt, SeedableRng};
+use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use serde::Deserialize;
 
 type RoomIdx = u8;
@@ -17,6 +19,14 @@ type DoorKind = u8;
 type DirDoorIdx = u8; // index of a door among all doors with the given direction, across all rooms
 
 const NUM_DIRS: usize = 4; // left, right, up, down
+
+fn environment_chunk_size(num_environments: usize, num_threads: usize) -> usize {
+    if num_environments == 0 {
+        1
+    } else {
+        num_environments.div_ceil(num_threads.max(1))
+    }
+}
 
 #[derive(Clone, Deserialize)]
 struct Room {
@@ -740,20 +750,34 @@ impl Environment {
 pub struct Engine {
     common_data: CommonData, // pre-computed data that can be shared across environments
     environments: Vec<Environment>, // list of parallel environments for batch processing
+    thread_pool: ThreadPool,
 }
 
 #[pymethods]
 impl Engine {
     #[new]
+    #[pyo3(signature = (rooms_json, map_size, num_environments, seed, num_threads=None))]
     fn new(
         rooms_json: &str,
         map_size: (Coord, Coord),
         num_environments: usize,
         seed: u64,
+        num_threads: Option<usize>,
     ) -> PyResult<Self> {
+        if num_threads == Some(0) {
+            return Err(PyValueError::new_err("num_threads must be greater than 0"));
+        }
+
         let rooms: Vec<Room> = serde_json::from_str(rooms_json)
             .map_err(|err| PyValueError::new_err(format!("failed to parse rooms JSON: {err}")))?;
         let common_data = CommonData::new(rooms)?;
+        let mut thread_pool_builder = ThreadPoolBuilder::new();
+        if let Some(num_threads) = num_threads {
+            thread_pool_builder = thread_pool_builder.num_threads(num_threads);
+        }
+        let thread_pool = thread_pool_builder
+            .build()
+            .map_err(|err| PyValueError::new_err(format!("failed to build thread pool: {err}")))?;
         let mut environments = Vec::with_capacity(num_environments);
         for i in 0..num_environments {
             environments.push(Environment::new(&common_data, map_size, seed ^ i as u64));
@@ -761,19 +785,44 @@ impl Engine {
         Ok(Self {
             common_data,
             environments,
+            thread_pool,
         })
     }
 
-    fn clear(&mut self) {
-        for env in &mut self.environments {
-            env.clear(&self.common_data);
-        }
+    fn clear(&mut self, py: Python<'_>) {
+        let common_data = &self.common_data;
+        let environments = &mut self.environments;
+        let thread_pool = &self.thread_pool;
+        let chunk_size =
+            environment_chunk_size(environments.len(), thread_pool.current_num_threads());
+
+        py.allow_threads(|| {
+            thread_pool.install(|| {
+                environments.par_chunks_mut(chunk_size).for_each(|chunk| {
+                    for env in chunk {
+                        env.clear(common_data);
+                    }
+                });
+            });
+        });
     }
 
-    fn initial_step(&mut self) {
-        for env in &mut self.environments {
-            env.initial_step(&self.common_data);
-        }
+    fn initial_step(&mut self, py: Python<'_>) {
+        let common_data = &self.common_data;
+        let environments = &mut self.environments;
+        let thread_pool = &self.thread_pool;
+        let chunk_size =
+            environment_chunk_size(environments.len(), thread_pool.current_num_threads());
+
+        py.allow_threads(|| {
+            thread_pool.install(|| {
+                environments.par_chunks_mut(chunk_size).for_each(|chunk| {
+                    for env in chunk {
+                        env.initial_step(common_data);
+                    }
+                });
+            });
+        });
     }
 
     #[allow(clippy::type_complexity)]
@@ -785,13 +834,38 @@ impl Engine {
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
     )> {
-        let mut room_idx = Vec::with_capacity(self.environments.len());
-        let mut room_x = Vec::with_capacity(self.environments.len());
-        let mut room_y = Vec::with_capacity(self.environments.len());
-        for env in &self.environments {
-            room_idx.push(env.actions.iter().map(|action| action.room_idx).collect());
-            room_x.push(env.actions.iter().map(|action| action.x).collect());
-            room_y.push(env.actions.iter().map(|action| action.y).collect());
+        let environments = &self.environments;
+        let thread_pool = &self.thread_pool;
+        let chunk_size =
+            environment_chunk_size(environments.len(), thread_pool.current_num_threads());
+        let chunks: Vec<Vec<(Vec<RoomIdx>, Vec<Coord>, Vec<Coord>)>> = py.allow_threads(|| {
+            thread_pool.install(|| {
+                environments
+                    .par_chunks(chunk_size)
+                    .map(|chunk| {
+                        chunk
+                            .iter()
+                            .map(|env| {
+                                (
+                                    env.actions.iter().map(|action| action.room_idx).collect(),
+                                    env.actions.iter().map(|action| action.x).collect(),
+                                    env.actions.iter().map(|action| action.y).collect(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+        });
+        let mut room_idx = Vec::with_capacity(environments.len());
+        let mut room_x = Vec::with_capacity(environments.len());
+        let mut room_y = Vec::with_capacity(environments.len());
+        for chunk in chunks {
+            for (idx_row, x_row, y_row) in chunk {
+                room_idx.push(idx_row);
+                room_x.push(x_row);
+                room_y.push(y_row);
+            }
         }
         Ok((
             PyArray2::from_vec2(py, &room_idx)
@@ -805,6 +879,7 @@ impl Engine {
 
     fn step<'py>(
         &mut self,
+        py: Python<'py>,
         room_idx: PyReadonlyArray1<'py, RoomIdx>,
         room_x: PyReadonlyArray1<'py, Coord>,
         room_y: PyReadonlyArray1<'py, Coord>,
@@ -839,15 +914,31 @@ impl Engine {
             )));
         }
 
-        for (((env, &room_idx), &x), &y) in self.environments[start..end]
-            .iter_mut()
-            .zip(room_idx.iter())
+        let actions: Vec<_> = room_idx
+            .iter()
             .zip(room_x.iter())
             .zip(room_y.iter())
-        {
-            let action = Action { room_idx, x, y };
-            env.step(action, &self.common_data);
-        }
+            .map(|((&room_idx, &x), &y)| Action { room_idx, x, y })
+            .collect();
+
+        let common_data = &self.common_data;
+        let environments = &mut self.environments[start..end];
+        let thread_pool = &self.thread_pool;
+        let chunk_size =
+            environment_chunk_size(environments.len(), thread_pool.current_num_threads());
+
+        py.allow_threads(|| {
+            thread_pool.install(|| {
+                environments
+                    .par_chunks_mut(chunk_size)
+                    .zip(actions.par_chunks(chunk_size))
+                    .for_each(|(env_chunk, action_chunk)| {
+                        for (env, &action) in env_chunk.iter_mut().zip(action_chunk.iter()) {
+                            env.step(action, common_data);
+                        }
+                    });
+            });
+        });
         Ok(())
     }
 
@@ -873,27 +964,52 @@ impl Engine {
         }
 
         let num_environments = end - start;
+        let common_data = &self.common_data;
+        let environments = &mut self.environments[start..end];
+        let thread_pool = &self.thread_pool;
+        let chunk_size =
+            environment_chunk_size(environments.len(), thread_pool.current_num_threads());
+        let dummy_candidate = Action {
+            room_idx: common_data.room.len() as RoomIdx, // an invalid room index to indicate no-op
+            x: 0,
+            y: 0,
+        };
+
+        let chunks: Vec<Vec<(Vec<RoomIdx>, Vec<Coord>, Vec<Coord>)>> = py.allow_threads(|| {
+            thread_pool.install(|| {
+                environments
+                    .par_chunks_mut(chunk_size)
+                    .map(|chunk| {
+                        chunk
+                            .iter_mut()
+                            .map(|env| {
+                                let mut candidates =
+                                    env.get_candidates(common_data, max_candidates);
+                                candidates.resize(max_candidates, dummy_candidate);
+                                (
+                                    candidates
+                                        .iter()
+                                        .map(|candidate| candidate.room_idx)
+                                        .collect(),
+                                    candidates.iter().map(|candidate| candidate.x).collect(),
+                                    candidates.iter().map(|candidate| candidate.y).collect(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+        });
+
         let mut room_idx = Vec::with_capacity(num_environments);
         let mut room_x = Vec::with_capacity(num_environments);
         let mut room_y = Vec::with_capacity(num_environments);
-
-        for env in self.environments[start..end].iter_mut() {
-            let mut candidates = env.get_candidates(&self.common_data, max_candidates);
-            let dummy_candidate = Action {
-                room_idx: self.common_data.room.len() as RoomIdx, // an invalid room index to indicate no-op
-                x: 0,
-                y: 0,
-            };
-            candidates.resize(max_candidates, dummy_candidate);
-
-            room_idx.push(
-                candidates
-                    .iter()
-                    .map(|candidate| candidate.room_idx)
-                    .collect(),
-            );
-            room_x.push(candidates.iter().map(|candidate| candidate.x).collect());
-            room_y.push(candidates.iter().map(|candidate| candidate.y).collect());
+        for chunk in chunks {
+            for (idx_row, x_row, y_row) in chunk {
+                room_idx.push(idx_row);
+                room_x.push(x_row);
+                room_y.push(y_row);
+            }
         }
 
         Ok((
