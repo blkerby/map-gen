@@ -49,5 +49,5 @@ for _ in range(100):
     room_idx, x, y = engine.get_actions()
     dummy_cnt = np.count_nonzero(room_idx == 253)
     end = time.perf_counter()
-    print(f"Elapsed time: {end - start:.2f} seconds, placed {dummy_cnt} dummy rooms")
+    print(f"Elapsed time: {end - start:.3f} seconds, placed {dummy_cnt} dummy rooms")
     # visualizer.show()
