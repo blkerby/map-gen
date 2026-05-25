@@ -1,7 +1,8 @@
 /// The `engine` module exposes the map generation environment to Python through the Engine and
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
-use crate::{Action, CommonData, Coord, Environment, Room, RoomIdx};
+use crate::common::{Action, CommonData, Coord, Room, RoomIdx};
+use crate::environment::Environment;
 use crossbeam_channel as channel;
 use numpy::{Element, IntoPyArray, PyArray2, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -197,9 +198,9 @@ fn worker_loop(
                 debug_assert_eq!(room_y.len(), environments.len() * action_count);
 
                 for (env_idx, env) in environments.iter().enumerate() {
-                    debug_assert_eq!(env.actions.len(), action_count);
+                    debug_assert_eq!(env.action_count(), action_count);
                     let row_start = env_idx * action_count;
-                    for (action_idx, action) in env.actions.iter().enumerate() {
+                    for (action_idx, action) in env.actions().iter().enumerate() {
                         let idx = row_start + action_idx;
                         room_idx[idx] = action.room_idx;
                         room_x[idx] = action.x;
@@ -284,6 +285,7 @@ pub struct EnvironmentGroup {
     common_data: Arc<CommonData>,
     workers: Vec<WorkerHandle>, // fixed worker-owned environment shards
     num_environments: usize,
+    action_count: usize,
 }
 
 impl Drop for EnvironmentGroup {
@@ -363,6 +365,7 @@ impl EnvironmentGroup {
             common_data,
             workers,
             num_environments,
+            action_count: 0,
         })
     }
 }
@@ -382,7 +385,10 @@ impl EnvironmentGroup {
             }
 
             wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })
+        })?;
+
+        self.action_count = 0;
+        Ok(())
     }
 
     fn initial_step(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -398,7 +404,10 @@ impl EnvironmentGroup {
             }
 
             wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })
+        })?;
+
+        self.action_count += 1;
+        Ok(())
     }
 
     #[allow(clippy::type_complexity)]
@@ -410,41 +419,8 @@ impl EnvironmentGroup {
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
     )> {
-        let mut action_counts = vec![0; self.num_environments];
-        py.allow_threads(|| {
-            let mut sent_workers = Vec::with_capacity(self.workers.len());
-            let mut first_error = None;
-            for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let start = worker.start;
-                let end = worker.end();
-                if let Err(err) = worker.send(WorkerCommand::GetActionCounts {
-                    counts: OutputShard::from_slice(&mut action_counts[start..end]),
-                }) {
-                    set_first_error(&mut first_error, err);
-                    break;
-                }
-                sent_workers.push(worker_idx);
-            }
-
-            wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })?;
-
-        let action_count = action_counts.first().copied().unwrap_or(0);
-        if !action_counts.iter().all(|&count| count == action_count) {
-            return Err(PyValueError::new_err(
-                "environment action histories are ragged",
-            ));
-        }
-
-        let output_len = self
-            .num_environments
-            .checked_mul(action_count)
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "action output shape ({}, {}) is too large",
-                    self.num_environments, action_count
-                ))
-            })?;
+        let action_count = self.action_count;
+        let output_len = self.num_environments * action_count;
         let mut room_idx = vec![0; output_len];
         let mut room_x = vec![0; output_len];
         let mut room_y = vec![0; output_len];
@@ -535,7 +511,10 @@ impl EnvironmentGroup {
             }
 
             wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })
+        })?;
+
+        self.action_count += 1;
+        Ok(())
     }
 
     #[allow(clippy::type_complexity)]
