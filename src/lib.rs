@@ -1,6 +1,6 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use bitvec::vec::BitVec;
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use numpy::{PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 type RoomIdx = u8;
 type GeometryIdx = u8;
+type ConnectionVariantIdx = u8;
 type Coord = i8;
 type PartIdx = u8;
 type DoorKind = u8;
@@ -19,7 +20,6 @@ const NUM_DIRS: usize = 4; // left, right, up, down
 
 #[derive(Clone, Deserialize)]
 struct Room {
-    room_id: i64,
     map: Vec<Vec<u8>>,
     doors: Vec<Vec<Door>>,
     connections: Vec<(PartIdx, PartIdx)>,
@@ -88,6 +88,7 @@ struct RoomDoorData {
 
 struct RoomData {
     geometry_idx: GeometryIdx,
+    connection_variant_idx: ConnectionVariantIdx,
     doors: Vec<RoomDoorData>,
 }
 
@@ -103,6 +104,11 @@ struct GeometryDoorData {
 struct GeometryKey {
     map: Vec<Vec<u8>>,
     doors: Vec<GeometryDoorData>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ConnectionsKey {
+    connections: Vec<(PartIdx, PartIdx)>,
 }
 
 struct GeometryData {
@@ -132,6 +138,8 @@ struct CommonData {
     room: Vec<RoomData>,
     geometry: Vec<GeometryData>,
     geometry_rooms: Vec<Vec<RoomIdx>>,
+    geometry_connection_variants: Vec<Vec<ConnectionVariantIdx>>,
+    connection_variant_rooms: Vec<Vec<RoomIdx>>,
     // set of pairs of geometry placements that would cause an intersection
     intersection_idx: Vec<u32>, // maps a pair of geometry ids to the index of their intersection bits in the intersection_bitvec
     intersection_bitvec: BitVec,
@@ -157,6 +165,14 @@ impl GeometryKey {
             .collect();
         doors.sort_by_key(|door| (door.direction as u8, door.x, door.y, door.kind));
         Self { map, doors }
+    }
+}
+
+impl ConnectionsKey {
+    fn from_room(room: &Room) -> Self {
+        let mut connections = room.connections.clone();
+        connections.sort_unstable();
+        Self { connections }
     }
 }
 
@@ -201,7 +217,10 @@ impl CommonData {
         let mut room_data = vec![];
         let mut geometry_data = vec![];
         let mut geometry_rooms = vec![];
+        let mut geometry_connection_variants = vec![];
+        let mut connection_variant_rooms = vec![];
         let mut geometry_by_key = HashMap::new();
+        let mut connection_variant_by_key = HashMap::new();
         let mut geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS] =
             std::array::from_fn(|_| vec![]);
         let mut num_room_dir_doors = [0; NUM_DIRS];
@@ -235,13 +254,30 @@ impl CommonData {
                 }
                 geometry_data.push(geometry);
                 geometry_rooms.push(vec![]);
+                geometry_connection_variants.push(vec![]);
                 geometry_by_key.insert(geometry_key, geometry_idx);
                 geometry_idx
             };
 
+            let connections_key = ConnectionsKey::from_room(room);
+            let connection_variant_idx = if let Some(&connection_variant_idx) =
+                connection_variant_by_key.get(&(geometry_idx, connections_key.clone()))
+            {
+                connection_variant_idx
+            } else {
+                let connection_variant_idx = connection_variant_rooms.len() as ConnectionVariantIdx;
+                connection_variant_rooms.push(vec![]);
+                geometry_connection_variants[geometry_idx as usize].push(connection_variant_idx);
+                connection_variant_by_key
+                    .insert((geometry_idx, connections_key), connection_variant_idx);
+                connection_variant_idx
+            };
+
             geometry_rooms[geometry_idx as usize].push(room_idx as RoomIdx);
+            connection_variant_rooms[connection_variant_idx as usize].push(room_idx as RoomIdx);
             room_data.push(RoomData {
                 geometry_idx,
+                connection_variant_idx,
                 doors: door_data,
             });
         }
@@ -250,6 +286,8 @@ impl CommonData {
             room: room_data,
             geometry: geometry_data,
             geometry_rooms,
+            geometry_connection_variants,
+            connection_variant_rooms,
             intersection_idx: vec![],
             intersection_bitvec: BitVec::new(),
             geometry_dir_door,
@@ -456,8 +494,9 @@ pub struct Environment {
     frontier: HashMap<DoorLocation, Frontier>, // info about each unconnected door on the map
     // Grouped by door direction: for each door, the index of the matching door on the other side (or DirDoorIdx::MAX if none):
     door_matches: [Vec<DirDoorIdx>; NUM_DIRS],
-    room_used: BitVec,                 // whether each room has been used
+    room_used: BitVec,                           // whether each room has been used
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
+    connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
 }
 
 impl Environment {
@@ -476,6 +515,11 @@ impl Environment {
                 .iter()
                 .map(|rooms| rooms.len())
                 .collect(),
+            connection_variant_unused_count: common
+                .connection_variant_rooms
+                .iter()
+                .map(|rooms| rooms.len())
+                .collect(),
         }
     }
 
@@ -489,6 +533,13 @@ impl Environment {
         self.geometry_unused_count.clear();
         self.geometry_unused_count
             .extend(common.geometry_rooms.iter().map(|rooms| rooms.len()));
+        self.connection_variant_unused_count.clear();
+        self.connection_variant_unused_count.extend(
+            common
+                .connection_variant_rooms
+                .iter()
+                .map(|rooms| rooms.len()),
+        );
     }
 
     fn initial_step(&mut self, common: &CommonData) {
@@ -510,17 +561,17 @@ impl Environment {
         Action { room_idx, x, y }
     }
 
-    fn choose_unused_room(
+    fn choose_unused_room_in_connection_variant(
         &mut self,
         common: &CommonData,
-        geometry_idx: GeometryIdx,
+        connection_variant_idx: ConnectionVariantIdx,
     ) -> Option<RoomIdx> {
-        let remaining = self.geometry_unused_count[geometry_idx as usize];
+        let remaining = self.connection_variant_unused_count[connection_variant_idx as usize];
         if remaining == 0 {
             return None;
         }
         let mut target = self.rng.random_range(0..remaining);
-        for &room_idx in common.geometry_rooms[geometry_idx as usize].iter() {
+        for &room_idx in common.connection_variant_rooms[connection_variant_idx as usize].iter() {
             if self.room_used[room_idx as usize] {
                 continue;
             }
@@ -532,6 +583,30 @@ impl Environment {
         None
     }
 
+    fn push_candidate_representatives(
+        &mut self,
+        common: &CommonData,
+        candidate: GeometryAction,
+        actions: &mut Vec<Action>,
+    ) {
+        for &connection_variant_idx in
+            common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
+        {
+            if self.connection_variant_unused_count[connection_variant_idx as usize] == 0 {
+                continue;
+            }
+            if let Some(room_idx) =
+                self.choose_unused_room_in_connection_variant(common, connection_variant_idx)
+            {
+                actions.push(Action {
+                    room_idx,
+                    x: candidate.x,
+                    y: candidate.y,
+                });
+            }
+        }
+    }
+
     fn step(&mut self, action: Action, common: &CommonData) {
         self.actions.push(action);
         if action.room_idx >= common.room.len() as RoomIdx {
@@ -540,9 +615,11 @@ impl Environment {
         }
         let room = &common.room[action.room_idx as usize];
         let action_geometry_idx = room.geometry_idx;
+        let connection_variant_idx = room.connection_variant_idx;
         assert!(!self.room_used[action.room_idx as usize]);
         self.room_used.set(action.room_idx as usize, true);
         self.geometry_unused_count[action_geometry_idx as usize] -= 1;
+        self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
 
         // Remove the frontiers that the new room connects to (if any),
         // and update the frontier with the new unconnected doors of the new room.
@@ -788,24 +865,15 @@ impl Engine {
                     let frontier = eligible_frontiers
                         .choose(&mut env.rng)
                         .expect("eligible_frontiers is not empty");
-                    let mut candidates = frontier.candidates.clone();
-                    candidates.shuffle(&mut env.rng);
-                    candidates.truncate(max_candidates);
-                    candidates
+                    frontier.candidates.clone()
                 }
             };
             let mut candidates = Vec::with_capacity(candidate_geometries.len());
             for candidate in candidate_geometries {
-                if let Some(room_idx) =
-                    env.choose_unused_room(&self.common_data, candidate.geometry_idx)
-                {
-                    candidates.push(Action {
-                        room_idx,
-                        x: candidate.x,
-                        y: candidate.y,
-                    });
-                }
+                env.push_candidate_representatives(&self.common_data, candidate, &mut candidates);
             }
+            candidates.shuffle(&mut env.rng);
+            candidates.truncate(max_candidates);
             let dummy_candidate = Action {
                 room_idx: self.common_data.room.len() as RoomIdx, // an invalid room index to indicate no-op
                 x: 0,
