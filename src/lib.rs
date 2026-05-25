@@ -249,9 +249,21 @@ impl Environment {
             door_matches: std::array::from_fn(|i| vec![DoorIdx::MAX; common.dir_door[i].len()]),
             room_used: BitVec::repeat(false, rooms.len()),
         };
-        let action = env.get_initial_action(common);
-        env.step(action, common);
         env
+    }
+
+    fn clear(&mut self) {
+        self.actions.clear();
+        self.frontier.clear();
+        self.door_matches
+            .iter_mut()
+            .for_each(|matches| matches.fill(DoorIdx::MAX));
+        self.room_used.fill(false);
+    }
+
+    fn initial_step(&mut self, common: &CommonData) {
+        let action = self.get_initial_action(common);
+        self.step(action, common);
     }
 
     fn get_initial_action(&mut self, common: &CommonData) -> Action {
@@ -449,6 +461,18 @@ impl Engine {
             common_data,
             environments,
         })
+    }
+
+    fn clear(&mut self) {
+        for env in &mut self.environments {
+            env.clear();
+        }
+    }
+
+    fn initial_step(&mut self) {
+        for env in &mut self.environments {
+            env.initial_step(&self.common_data);
+        }
     }
 
     #[allow(clippy::type_complexity)]
