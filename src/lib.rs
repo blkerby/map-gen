@@ -553,25 +553,24 @@ impl Engine {
         let mut room_y = Vec::with_capacity(num_environments);
 
         for env in self.environments[start..end].iter_mut() {
-            let mut candidates = if env.frontier.is_empty() {
-                // if there are no frontiers, there are no candidates.
+            let smallest_frontier_size = env
+                .frontier
+                .values()
+                .map(|frontier| frontier.candidates.len())
+                .filter(|&x| x > 0)
+                .min()
+                .unwrap_or(1);
+            let eligible_frontiers: Vec<&Frontier> = env
+                .frontier
+                .values()
+                .filter(|frontier| frontier.candidates.len() == smallest_frontier_size)
+                .collect();
+            let mut candidates = if eligible_frontiers.is_empty() {
                 vec![]
             } else {
-                let smallest_frontier_size = env
-                    .frontier
-                    .values()
-                    .map(|frontier| frontier.candidates.len())
-                    .filter(|&x| x > 0)
-                    .min()
-                    .expect("frontier should never be empty since we checked");
-                let eligible_frontiers: Vec<&Frontier> = env
-                    .frontier
-                    .values()
-                    .filter(|frontier| frontier.candidates.len() == smallest_frontier_size)
-                    .collect();
                 let frontier = eligible_frontiers
                     .choose(&mut env.rng)
-                    .expect("eligible_frontiers should never be empty");
+                    .expect("eligible_frontiers is not empty");
                 let mut candidates = frontier.candidates.clone();
                 candidates.shuffle(&mut env.rng);
                 candidates.truncate(max_candidates);

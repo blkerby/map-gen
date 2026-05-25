@@ -15,23 +15,33 @@ plt.ion()
 fig, ax = plt.subplots()
 plt.show(block=False)
 
+action_room_idx, action_x, action_y = engine.get_actions()
+placements = list(
+    zip(
+        action_room_idx[0, :].tolist(),
+        action_x[0, :].tolist(),
+        action_y[0, :].tolist(),
+    )
+)
+
 for _ in range(260):
     cand_room_idx, cand_x, cand_y = engine.get_candidates(max_candidates=8, start=0, end=1)
     selected_cand_room_idx = cand_room_idx[:, 0]
     selected_cand_x = cand_x[:, 0]
     selected_cand_y = cand_y[:, 0]
     engine.step(selected_cand_room_idx, selected_cand_x, selected_cand_y, start=0)
+    placements.append(
+        (
+            int(selected_cand_room_idx[0]),
+            int(selected_cand_x[0]),
+            int(selected_cand_y[0]),
+        )
+    )
 
-    action_room_idx, action_x, action_y = engine.get_actions()
     ax.clear()
-    display_map(room_data, (action_room_idx[0, :], action_x[0, :], action_y[0, :]), ax=ax, show_names=False)
+    display_map(room_data, placements, ax=ax, show_names=False)
     fig.canvas.draw_idle()
-    plt.pause(0.2)
+    plt.pause(0.1)
 
 plt.ioff()
 plt.show()
-
-action_room_idx, action_x, action_y = engine.get_actions()
-for room_idx in action_room_idx[0, :]:
-    if room_idx < len(room_data):
-        print(room_data[room_idx]["name"])
