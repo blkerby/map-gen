@@ -1,10 +1,12 @@
 use crate::{Action, CommonData, Coord, Environment, Room, RoomIdx};
+use crossbeam_channel as channel;
 use numpy::{Element, IntoPyArray, PyArray2, PyArrayMethods, PyReadonlyArray1};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use scoped_pool::Pool;
-use std::cmp::min;
-use std::thread;
+use std::cmp::{max, min};
+use std::marker::PhantomData;
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 
 fn pyarray2_from_flat_vec<'py, T: Element>(
     py: Python<'py>,
@@ -13,6 +15,206 @@ fn pyarray2_from_flat_vec<'py, T: Element>(
     cols: usize,
 ) -> PyResult<Bound<'py, PyArray2<T>>> {
     data.into_pyarray(py).reshape([rows, cols])
+}
+
+#[derive(Clone, Copy)]
+struct OutputShard<T> {
+    ptr: *mut T,
+    len: usize,
+    _marker: PhantomData<T>,
+}
+
+unsafe impl<T: Send> Send for OutputShard<T> {}
+
+impl<T> OutputShard<T> {
+    fn from_slice(slice: &mut [T]) -> Self {
+        Self {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+            _marker: PhantomData,
+        }
+    }
+
+    unsafe fn as_mut_slice<'a>(self) -> &'a mut [T] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+type ActionRows = Vec<(Vec<RoomIdx>, Vec<Coord>, Vec<Coord>)>;
+
+enum WorkerCommand {
+    Clear,
+    InitialStep,
+    Step {
+        local_start: usize,
+        actions: Vec<Action>,
+    },
+    GetCandidates {
+        local_start: usize,
+        local_len: usize,
+        max_candidates: usize,
+        room_idx: OutputShard<RoomIdx>,
+        room_x: OutputShard<Coord>,
+        room_y: OutputShard<Coord>,
+    },
+    GetActions,
+    Shutdown,
+}
+
+enum WorkerResponse {
+    Done,
+    Actions(ActionRows),
+}
+
+struct WorkerHandle {
+    start: usize,
+    len: usize,
+    command_tx: channel::Sender<WorkerCommand>,
+    response_rx: channel::Receiver<WorkerResponse>,
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl WorkerHandle {
+    fn end(&self) -> usize {
+        self.start + self.len
+    }
+
+    fn send(&self, command: WorkerCommand) -> PyResult<()> {
+        self.command_tx
+            .send(command)
+            .map_err(|_| PyRuntimeError::new_err("engine worker thread stopped unexpectedly"))
+    }
+
+    fn recv(&self) -> PyResult<WorkerResponse> {
+        self.response_rx
+            .recv()
+            .map_err(|_| PyRuntimeError::new_err("engine worker thread stopped unexpectedly"))
+    }
+
+    fn recv_done(&self) -> PyResult<()> {
+        match self.recv()? {
+            WorkerResponse::Done => Ok(()),
+            WorkerResponse::Actions(_) => Err(PyRuntimeError::new_err(
+                "engine worker returned an unexpected response",
+            )),
+        }
+    }
+
+    fn shutdown(&mut self) {
+        let _ = self.command_tx.send(WorkerCommand::Shutdown);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+impl Drop for WorkerHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn worker_loop(
+    mut environments: Vec<Environment>,
+    common_data: Arc<CommonData>,
+    command_rx: channel::Receiver<WorkerCommand>,
+    response_tx: channel::Sender<WorkerResponse>,
+) {
+    while let Ok(command) = command_rx.recv() {
+        let response = match command {
+            WorkerCommand::Clear => {
+                for env in &mut environments {
+                    env.clear(&common_data);
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::InitialStep => {
+                for env in &mut environments {
+                    env.initial_step(&common_data);
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::Step {
+                local_start,
+                actions,
+            } => {
+                let local_end = local_start + actions.len();
+                debug_assert!(local_end <= environments.len());
+                for (env, action) in environments[local_start..local_end].iter_mut().zip(actions) {
+                    env.step(action, &common_data);
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::GetCandidates {
+                local_start,
+                local_len,
+                max_candidates,
+                room_idx,
+                room_x,
+                room_y,
+            } => {
+                let local_end = local_start + local_len;
+                debug_assert!(local_end <= environments.len());
+                let room_idx = unsafe { room_idx.as_mut_slice() };
+                let room_x = unsafe { room_x.as_mut_slice() };
+                let room_y = unsafe { room_y.as_mut_slice() };
+                debug_assert_eq!(room_idx.len(), local_len * max_candidates);
+                debug_assert_eq!(room_x.len(), local_len * max_candidates);
+                debug_assert_eq!(room_y.len(), local_len * max_candidates);
+
+                for (env_idx, env) in environments[local_start..local_end].iter_mut().enumerate() {
+                    let candidates = env.get_candidates(&common_data, max_candidates);
+                    let row_start = env_idx * max_candidates;
+                    for (candidate_idx, candidate) in candidates.iter().enumerate() {
+                        let idx = row_start + candidate_idx;
+                        room_idx[idx] = candidate.room_idx;
+                        room_x[idx] = candidate.x;
+                        room_y[idx] = candidate.y;
+                    }
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::GetActions => {
+                let mut rows = Vec::with_capacity(environments.len());
+                for env in &environments {
+                    rows.push((
+                        env.actions.iter().map(|action| action.room_idx).collect(),
+                        env.actions.iter().map(|action| action.x).collect(),
+                        env.actions.iter().map(|action| action.y).collect(),
+                    ));
+                }
+                WorkerResponse::Actions(rows)
+            }
+            WorkerCommand::Shutdown => break,
+        };
+
+        if response_tx.send(response).is_err() {
+            break;
+        }
+    }
+}
+
+fn spawn_worker(
+    worker_idx: usize,
+    start: usize,
+    environments: Vec<Environment>,
+    common_data: Arc<CommonData>,
+) -> PyResult<WorkerHandle> {
+    let len = environments.len();
+    let (command_tx, command_rx) = channel::bounded(1);
+    let (response_tx, response_rx) = channel::bounded(1);
+    let join_handle = thread::Builder::new()
+        .name(format!("map-gen-worker-{worker_idx}"))
+        .spawn(move || worker_loop(environments, common_data, command_rx, response_tx))
+        .map_err(|err| PyRuntimeError::new_err(format!("failed to spawn worker thread: {err}")))?;
+
+    Ok(WorkerHandle {
+        start,
+        len,
+        command_tx,
+        response_rx,
+        join_handle: Some(join_handle),
+    })
 }
 
 fn requested_num_threads(num_threads: Option<usize>) -> PyResult<usize> {
@@ -33,25 +235,42 @@ fn checked_range_end(start: usize, len: usize) -> PyResult<usize> {
     })
 }
 
-fn chunk_size(len: usize, num_chunks: usize) -> usize {
-    if len == 0 {
-        1
+fn set_first_error(first_error: &mut Option<PyErr>, err: PyErr) {
+    if first_error.is_none() {
+        *first_error = Some(err);
+    }
+}
+
+fn wait_for_done_responses(
+    workers: &[WorkerHandle],
+    sent_workers: Vec<usize>,
+    mut first_error: Option<PyErr>,
+) -> PyResult<()> {
+    for worker_idx in sent_workers {
+        if let Err(err) = workers[worker_idx].recv_done() {
+            set_first_error(&mut first_error, err);
+        }
+    }
+
+    if let Some(err) = first_error {
+        Err(err)
     } else {
-        len.div_ceil(num_chunks.max(1))
+        Ok(())
     }
 }
 
 #[pyclass]
 pub struct Engine {
-    common_data: CommonData,
-    environments: Vec<Environment>,
-    pool: Pool,
-    num_threads: usize,
+    common_data: Arc<CommonData>, // pre-computed data that can be shared across environments
+    workers: Vec<WorkerHandle>,   // fixed worker-owned environment shards
+    num_environments: usize,
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.pool.shutdown();
+        for worker in &mut self.workers {
+            worker.shutdown();
+        }
     }
 }
 
@@ -67,57 +286,72 @@ impl Engine {
         num_threads: Option<usize>,
     ) -> PyResult<Self> {
         let requested_threads = requested_num_threads(num_threads)?;
-        let num_threads = min(requested_threads, num_environments.max(1));
+        let worker_count = min(requested_threads, max(num_environments, 1));
         let rooms: Vec<Room> = serde_json::from_str(rooms_json)
             .map_err(|err| PyValueError::new_err(format!("failed to parse rooms JSON: {err}")))?;
-        let common_data = CommonData::new(rooms)?;
-        let mut environments = Vec::with_capacity(num_environments);
-        for env_idx in 0..num_environments {
-            environments.push(Environment::new(
-                &common_data,
-                map_size,
-                seed ^ env_idx as u64,
-            ));
+        let common_data = Arc::new(CommonData::new(rooms)?);
+
+        let base_shard_len = num_environments / worker_count;
+        let remainder = num_environments % worker_count;
+        let mut workers = Vec::with_capacity(worker_count);
+        let mut start = 0;
+        for worker_idx in 0..worker_count {
+            let shard_len = base_shard_len + usize::from(worker_idx < remainder);
+            let end = start + shard_len;
+            let mut environments = Vec::with_capacity(shard_len);
+            for env_idx in start..end {
+                environments.push(Environment::new(
+                    &common_data,
+                    map_size,
+                    seed ^ env_idx as u64,
+                ));
+            }
+            workers.push(spawn_worker(
+                worker_idx,
+                start,
+                environments,
+                Arc::clone(&common_data),
+            )?);
+            start = end;
         }
 
         Ok(Self {
             common_data,
-            environments,
-            pool: Pool::new(num_threads),
-            num_threads,
+            workers,
+            num_environments,
         })
     }
 
-    fn clear(&mut self, py: Python<'_>) {
-        let common_data = &self.common_data;
-        let chunk_size = chunk_size(self.environments.len(), self.num_threads);
+    fn clear(&mut self, py: Python<'_>) -> PyResult<()> {
         py.allow_threads(|| {
-            self.pool.scoped(|scope| {
-                for environments in self.environments.chunks_mut(chunk_size) {
-                    scope.execute(move || {
-                        for env in environments {
-                            env.clear(common_data);
-                        }
-                    });
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::Clear) {
+                    set_first_error(&mut first_error, err);
+                    break;
                 }
-            });
-        });
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
     }
 
-    fn initial_step(&mut self, py: Python<'_>) {
-        let common_data = &self.common_data;
-        let chunk_size = chunk_size(self.environments.len(), self.num_threads);
+    fn initial_step(&mut self, py: Python<'_>) -> PyResult<()> {
         py.allow_threads(|| {
-            self.pool.scoped(|scope| {
-                for environments in self.environments.chunks_mut(chunk_size) {
-                    scope.execute(move || {
-                        for env in environments {
-                            env.initial_step(common_data);
-                        }
-                    });
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::InitialStep) {
+                    set_first_error(&mut first_error, err);
+                    break;
                 }
-            });
-        });
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
     }
 
     #[allow(clippy::type_complexity)]
@@ -129,41 +363,48 @@ impl Engine {
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
     )> {
-        let chunk_size = chunk_size(self.environments.len(), self.num_threads);
-        let mut rows: Vec<Option<(Vec<RoomIdx>, Vec<Coord>, Vec<Coord>)>> =
-            Vec::with_capacity(self.environments.len());
-        rows.resize_with(self.environments.len(), || None);
-
-        py.allow_threads(|| {
-            self.pool.scoped(|scope| {
-                for (environments, rows) in self
-                    .environments
-                    .chunks(chunk_size)
-                    .zip(rows.chunks_mut(chunk_size))
-                {
-                    scope.execute(move || {
-                        for (env, row) in environments.iter().zip(rows.iter_mut()) {
-                            *row = Some((
-                                env.actions.iter().map(|action| action.room_idx).collect(),
-                                env.actions.iter().map(|action| action.x).collect(),
-                                env.actions.iter().map(|action| action.y).collect(),
-                            ));
-                        }
-                    });
+        let rows = py.allow_threads(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::GetActions) {
+                    set_first_error(&mut first_error, err);
+                    break;
                 }
-            });
-        });
+                sent_workers.push(worker_idx);
+            }
+
+            let mut rows = Vec::with_capacity(self.num_environments);
+            for worker_idx in sent_workers {
+                match self.workers[worker_idx].recv() {
+                    Ok(WorkerResponse::Actions(worker_rows)) => rows.extend(worker_rows),
+                    Ok(WorkerResponse::Done) => {
+                        set_first_error(
+                            &mut first_error,
+                            PyRuntimeError::new_err(
+                                "engine worker returned an unexpected response",
+                            ),
+                        );
+                    }
+                    Err(err) => set_first_error(&mut first_error, err),
+                }
+            }
+
+            if let Some(err) = first_error {
+                Err(err)
+            } else {
+                Ok(rows)
+            }
+        })?;
 
         let mut room_idx = Vec::with_capacity(rows.len());
         let mut room_x = Vec::with_capacity(rows.len());
         let mut room_y = Vec::with_capacity(rows.len());
-        for row in rows {
-            let (idx_row, x_row, y_row) = row.expect("scoped worker filled action row");
+        for (idx_row, x_row, y_row) in rows {
             room_idx.push(idx_row);
             room_x.push(x_row);
             room_y.push(y_row);
         }
-
         Ok((
             PyArray2::from_vec2(py, &room_idx)
                 .map_err(|_| PyValueError::new_err("environment action histories are ragged"))?,
@@ -202,12 +443,12 @@ impl Engine {
         }
 
         let end = checked_range_end(start, room_idx.len())?;
-        if end > self.environments.len() {
+        if end > self.num_environments {
             return Err(PyValueError::new_err(format!(
                 "action arrays with length {} starting at {} exceed num_environments {}",
                 room_idx.len(),
                 start,
-                self.environments.len(),
+                self.num_environments,
             )));
         }
 
@@ -217,25 +458,30 @@ impl Engine {
             .zip(room_y.iter())
             .map(|((&room_idx, &x), &y)| Action { room_idx, x, y })
             .collect();
-        let common_data = &self.common_data;
-        let chunk_size = chunk_size(actions.len(), self.num_threads);
 
         py.allow_threads(|| {
-            self.pool.scoped(|scope| {
-                for (environments, actions) in self.environments[start..end]
-                    .chunks_mut(chunk_size)
-                    .zip(actions.chunks(chunk_size))
-                {
-                    scope.execute(move || {
-                        for (env, &action) in environments.iter_mut().zip(actions.iter()) {
-                            env.step(action, common_data);
-                        }
-                    });
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let overlap_start = max(start, worker.start);
+                let overlap_end = min(end, worker.end());
+                if overlap_start >= overlap_end {
+                    continue;
                 }
-            });
-        });
+                let action_start = overlap_start - start;
+                let action_end = overlap_end - start;
+                if let Err(err) = worker.send(WorkerCommand::Step {
+                    local_start: overlap_start - worker.start,
+                    actions: actions[action_start..action_end].to_vec(),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
 
-        Ok(())
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
     }
 
     #[allow(clippy::type_complexity)]
@@ -250,12 +496,10 @@ impl Engine {
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
     )> {
-        if start > end || end > self.environments.len() {
+        if start > end || end > self.num_environments {
             return Err(PyValueError::new_err(format!(
                 "environment range [{}, {}) is invalid for num_environments {}",
-                start,
-                end,
-                self.environments.len()
+                start, end, self.num_environments
             )));
         }
 
@@ -276,33 +520,38 @@ impl Engine {
         let mut room_idx = vec![dummy_candidate.room_idx; output_len];
         let mut room_x = vec![dummy_candidate.x; output_len];
         let mut room_y = vec![dummy_candidate.y; output_len];
-        let common_data = &self.common_data;
-        let chunk_size = chunk_size(num_environments, self.num_threads);
-        let output_chunk_len = chunk_size * max_candidates;
 
         py.allow_threads(|| {
-            self.pool.scoped(|scope| {
-                for (((environments, room_idx), room_x), room_y) in self.environments[start..end]
-                    .chunks_mut(chunk_size)
-                    .zip(room_idx.chunks_mut(output_chunk_len))
-                    .zip(room_x.chunks_mut(output_chunk_len))
-                    .zip(room_y.chunks_mut(output_chunk_len))
-                {
-                    scope.execute(move || {
-                        for (env_idx, env) in environments.iter_mut().enumerate() {
-                            let candidates = env.get_candidates(common_data, max_candidates);
-                            let row_start = env_idx * max_candidates;
-                            for (candidate_idx, candidate) in candidates.iter().enumerate() {
-                                let idx = row_start + candidate_idx;
-                                room_idx[idx] = candidate.room_idx;
-                                room_x[idx] = candidate.x;
-                                room_y[idx] = candidate.y;
-                            }
-                        }
-                    });
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let overlap_start = max(start, worker.start);
+                let overlap_end = min(end, worker.end());
+                if overlap_start >= overlap_end {
+                    continue;
                 }
-            });
-        });
+
+                let output_row_start = overlap_start - start;
+                let local_len = overlap_end - overlap_start;
+                let output_start = output_row_start * max_candidates;
+                let output_end = output_start + local_len * max_candidates;
+
+                if let Err(err) = worker.send(WorkerCommand::GetCandidates {
+                    local_start: overlap_start - worker.start,
+                    local_len,
+                    max_candidates,
+                    room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
+                    room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
+                    room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
 
         Ok((
             pyarray2_from_flat_vec(py, room_idx, num_environments, max_candidates)?,

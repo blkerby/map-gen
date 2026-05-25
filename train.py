@@ -13,7 +13,7 @@ max_candidates = 32
 num_rounds = 1
 map_size = (72, 72)
 
-engine = map_gen.Engine(rooms, map_size, num_environments, seed=2, num_threads=8)
+engine = map_gen.Engine(rooms, map_size, num_environments, seed=2)
 
 # visualizer = MapVisualizer(
 #     room_data,
