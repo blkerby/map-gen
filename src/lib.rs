@@ -702,6 +702,38 @@ impl Environment {
             });
         }
     }
+
+    fn get_candidates(&mut self, common: &CommonData, max_candidates: usize) -> Vec<Action> {
+        let smallest_frontier_size = self
+            .frontier
+            .values()
+            .map(|frontier| frontier.candidates.len())
+            .filter(|&x| x > 0)
+            .min()
+            .unwrap_or(1);
+        let candidate_geometries = {
+            let eligible_frontiers: Vec<&Frontier> = self
+                .frontier
+                .values()
+                .filter(|frontier| frontier.candidates.len() == smallest_frontier_size)
+                .collect();
+            if eligible_frontiers.is_empty() {
+                vec![]
+            } else {
+                let frontier = eligible_frontiers
+                    .choose(&mut self.rng)
+                    .expect("eligible_frontiers is not empty");
+                frontier.candidates.clone()
+            }
+        };
+        let mut candidates = Vec::with_capacity(candidate_geometries.len());
+        for candidate in candidate_geometries {
+            self.push_candidate_representatives(common, candidate, &mut candidates);
+        }
+        candidates.shuffle(&mut self.rng);
+        candidates.truncate(max_candidates);
+        candidates
+    }
 }
 
 #[pyclass]
@@ -846,34 +878,7 @@ impl Engine {
         let mut room_y = Vec::with_capacity(num_environments);
 
         for env in self.environments[start..end].iter_mut() {
-            let smallest_frontier_size = env
-                .frontier
-                .values()
-                .map(|frontier| frontier.candidates.len())
-                .filter(|&x| x > 0)
-                .min()
-                .unwrap_or(1);
-            let candidate_geometries = {
-                let eligible_frontiers: Vec<&Frontier> = env
-                    .frontier
-                    .values()
-                    .filter(|frontier| frontier.candidates.len() == smallest_frontier_size)
-                    .collect();
-                if eligible_frontiers.is_empty() {
-                    vec![]
-                } else {
-                    let frontier = eligible_frontiers
-                        .choose(&mut env.rng)
-                        .expect("eligible_frontiers is not empty");
-                    frontier.candidates.clone()
-                }
-            };
-            let mut candidates = Vec::with_capacity(candidate_geometries.len());
-            for candidate in candidate_geometries {
-                env.push_candidate_representatives(&self.common_data, candidate, &mut candidates);
-            }
-            candidates.shuffle(&mut env.rng);
-            candidates.truncate(max_candidates);
+            let mut candidates = env.get_candidates(&self.common_data, max_candidates);
             let dummy_candidate = Action {
                 room_idx: self.common_data.room.len() as RoomIdx, // an invalid room index to indicate no-op
                 x: 0,
