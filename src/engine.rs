@@ -241,7 +241,7 @@ fn worker_loop(
                 debug_assert_eq!(room_y.len(), environments.len() * action_count);
 
                 for (env_idx, env) in environments.iter().enumerate() {
-                    debug_assert_eq!(env.action_count(), action_count);
+                    debug_assert_eq!(env.actions().len(), action_count);
                     let row_start = env_idx * action_count;
                     for (action_idx, action) in env.actions().iter().enumerate() {
                         let idx = row_start + action_idx;

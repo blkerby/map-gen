@@ -3,18 +3,25 @@ use bitvec::vec::BitVec;
 use hashbrown::HashMap;
 use serde::Deserialize;
 
-pub(crate) type RoomIdx = u8;
-pub(crate) type GeometryIdx = u8;
-pub(crate) type ConnectionVariantIdx = u8;
-pub(crate) type Coord = i8;
-pub(crate) type PartIdx = u8;
+pub type RoomIdx = u8;
+pub type GeometryIdx = u8;
+pub type ConnectionVariantIdx = u8;
+pub type Coord = i8;
+pub type PartIdx = u8;
 type DoorKind = u8;
-pub(crate) type DirDoorIdx = u8; // index of a door among all doors with the given direction, across all rooms
+pub type DirDoorIdx = u8; // index of a door among all doors with the given direction, across all rooms
 
-pub(crate) const NUM_DIRS: usize = 4; // left, right, up, down
+#[repr(i8)]
+pub enum DoorValidOutcome {
+    Unknown = -1,
+    Valid = 0,
+    Invalid = 1,
+}
+
+pub const NUM_DIRS: usize = 4; // left, right, up, down
 
 #[derive(Clone, Deserialize)]
-pub(crate) struct Room {
+pub struct Room {
     map: Vec<Vec<u8>>,
     doors: Vec<Vec<Door>>,
     connections: Vec<(PartIdx, PartIdx)>,
@@ -31,7 +38,7 @@ struct Door {
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 #[repr(u8)]
-pub(crate) enum Direction {
+pub enum Direction {
     Left = 0,
     Right = 1,
     Up = 2,
@@ -39,7 +46,7 @@ pub(crate) enum Direction {
 }
 
 impl Direction {
-    pub(crate) fn opposite(&self) -> Self {
+    pub fn opposite(&self) -> Self {
         match self {
             Direction::Left => Direction::Right,
             Direction::Right => Direction::Left,
@@ -51,14 +58,14 @@ impl Direction {
 
 // Action: a placement of a room. The top-left corner is placed at (x, y) on the map.
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct Action {
-    pub(crate) room_idx: RoomIdx,
-    pub(crate) x: Coord,
-    pub(crate) y: Coord,
+pub struct Action {
+    pub room_idx: RoomIdx,
+    pub x: Coord,
+    pub y: Coord,
 }
 
 // Get the coordinates of the tile behind a door:
-pub(crate) fn get_behind_door_position(direction: Direction, x: Coord, y: Coord) -> (Coord, Coord) {
+pub fn get_behind_door_position(direction: Direction, x: Coord, y: Coord) -> (Coord, Coord) {
     match direction {
         Direction::Left => (x - 1, y),
         Direction::Right => (x + 1, y),
@@ -71,14 +78,14 @@ pub(crate) fn get_behind_door_position(direction: Direction, x: Coord, y: Coord)
 // These are designed to match between the two sides of a door. A right-facing door gives the same
 // DoorLocation as a left-facing door on the other side, and similarly for up/down doors.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct DoorLocation {
+pub struct DoorLocation {
     x: Coord,
     y: Coord,
     vertical: bool,
 }
 
 impl DoorLocation {
-    pub(crate) fn from_parts(
+    pub fn from_parts(
         direction: Direction,
         door_x: Coord,
         door_y: Coord,
@@ -97,22 +104,33 @@ impl DoorLocation {
 
     // Get the DoorLocation for a door given the room placement, where (x0, y0) is the
     // location of the room's top-left corner on the map.
-    pub(crate) fn new(door: &RoomDoorData, x0: Coord, y0: Coord) -> Self {
+    pub fn new(door: &RoomDoorData, x0: Coord, y0: Coord) -> Self {
+        Self::from_parts(door.direction, door.x, door.y, x0, y0)
+    }
+
+    pub fn from_room_dir_door(door: &RoomDirDoorData, x0: Coord, y0: Coord) -> Self {
         Self::from_parts(door.direction, door.x, door.y, x0, y0)
     }
 }
 
-pub(crate) struct RoomDoorData {
-    pub(crate) x: Coord,
-    pub(crate) y: Coord,
-    pub(crate) direction: Direction,
-    pub(crate) dir_door_idx: DirDoorIdx,
+pub struct RoomDoorData {
+    pub x: Coord,
+    pub y: Coord,
+    pub direction: Direction,
+    pub dir_door_idx: DirDoorIdx,
 }
 
-pub(crate) struct RoomData {
-    pub(crate) geometry_idx: GeometryIdx,
-    pub(crate) connection_variant_idx: ConnectionVariantIdx,
-    pub(crate) doors: Vec<RoomDoorData>,
+pub struct RoomDirDoorData {
+    pub room_idx: RoomIdx,
+    pub x: Coord,
+    pub y: Coord,
+    pub direction: Direction,
+}
+
+pub struct RoomData {
+    pub geometry_idx: GeometryIdx,
+    pub connection_variant_idx: ConnectionVariantIdx,
+    pub doors: Vec<RoomDoorData>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -134,34 +152,34 @@ struct ConnectionsKey {
     connections: Vec<(PartIdx, PartIdx)>,
 }
 
-pub(crate) struct GeometryData {
-    pub(crate) map: Vec<Vec<u8>>,
+pub struct GeometryData {
+    pub map: Vec<Vec<u8>>,
     doors: Vec<GeometryDoorData>,
-    pub(crate) min_x: Coord,
-    pub(crate) max_x: Coord,
-    pub(crate) min_y: Coord,
-    pub(crate) max_y: Coord,
+    pub min_x: Coord,
+    pub max_x: Coord,
+    pub min_y: Coord,
+    pub max_y: Coord,
 }
 
-pub(crate) struct GeometryDirDoorData {
-    pub(crate) geometry_idx: GeometryIdx,
-    pub(crate) x: Coord,
-    pub(crate) y: Coord,
+pub struct GeometryDirDoorData {
+    pub geometry_idx: GeometryIdx,
+    pub x: Coord,
+    pub y: Coord,
 }
 
-pub(crate) struct CommonData {
-    pub(crate) room: Vec<RoomData>,
-    pub(crate) geometry: Vec<GeometryData>,
-    pub(crate) geometry_rooms: Vec<Vec<RoomIdx>>,
-    pub(crate) geometry_connection_variants: Vec<Vec<ConnectionVariantIdx>>,
-    pub(crate) connection_variant_rooms: Vec<Vec<RoomIdx>>,
+pub struct CommonData {
+    pub room: Vec<RoomData>,
+    pub geometry: Vec<GeometryData>,
+    pub geometry_rooms: Vec<Vec<RoomIdx>>,
+    pub geometry_connection_variants: Vec<Vec<ConnectionVariantIdx>>,
+    pub connection_variant_rooms: Vec<Vec<RoomIdx>>,
     // set of pairs of geometry placements that would cause an intersection
     intersection_idx: Vec<u32>, // maps a pair of geometry ids to the index of their intersection bits in the intersection_bitvec
     intersection_bitvec: BitVec,
     // for each direction, a list of all doors in that direction across all unique geometries
-    pub(crate) geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS],
+    pub geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS],
     // for each direction, number of room doors in that direction across all rooms
-    pub(crate) num_room_dir_doors: [usize; NUM_DIRS],
+    pub room_dir_door: [Vec<RoomDirDoorData>; NUM_DIRS],
 }
 
 impl GeometryKey {
@@ -228,7 +246,7 @@ impl GeometryData {
 }
 
 impl CommonData {
-    pub(crate) fn new(rooms: Vec<Room>) -> Result<Self> {
+    pub fn new(rooms: Vec<Room>) -> Result<Self> {
         let mut room_data = vec![];
         let mut geometry_data = vec![];
         let mut geometry_rooms = vec![];
@@ -238,14 +256,19 @@ impl CommonData {
         let mut connection_variant_by_key = HashMap::new();
         let mut geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS] =
             std::array::from_fn(|_| vec![]);
-        let mut num_room_dir_doors = [0; NUM_DIRS];
+        let mut room_dir_door: [Vec<RoomDirDoorData>; NUM_DIRS] = std::array::from_fn(|_| vec![]);
 
         for (room_idx, room) in rooms.iter().enumerate() {
             let mut door_data = vec![];
             for door in room.doors.iter().flatten() {
                 let dir_idx = door.direction as usize;
-                let dir_door_idx = num_room_dir_doors[dir_idx] as DirDoorIdx;
-                num_room_dir_doors[dir_idx] += 1;
+                let dir_door_idx = room_dir_door[dir_idx].len() as DirDoorIdx;
+                room_dir_door[dir_idx].push(RoomDirDoorData {
+                    room_idx: room_idx as RoomIdx,
+                    x: door.x,
+                    y: door.y,
+                    direction: door.direction,
+                });
                 door_data.push(RoomDoorData {
                     x: door.x,
                     y: door.y,
@@ -306,7 +329,7 @@ impl CommonData {
             intersection_idx: vec![],
             intersection_bitvec: BitVec::new(),
             geometry_dir_door,
-            num_room_dir_doors,
+            room_dir_door,
         };
         common.build_intersection_set();
         println!(
@@ -349,7 +372,7 @@ impl CommonData {
     }
 
     // Fast method using the pre-computed intersection_set:
-    pub(crate) fn has_geometry_intersection(
+    pub fn has_geometry_intersection(
         &self,
         mut geometry_id1: GeometryIdx,
         mut x1: Coord,

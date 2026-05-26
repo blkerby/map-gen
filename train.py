@@ -5,16 +5,17 @@ import numpy as np
 
 from visualize import MapVisualizer
 
-rooms = open("room_geometry.json", "r").read()
-# rooms = open("test_geometry.json", "r").read()
+rooms = open("room_geometry/crateria.json", "r").read()
+# rooms = open("room_geometry/zebes.json", "r").read()
 room_data = json.loads(rooms)
 num_environments = 4096
 max_candidates = 32
 num_rounds = 1
-map_size = (72, 72)
+map_size = (32, 32)
+# map_size = (72, 72)
 
 engine = map_gen.Engine(rooms)
-env = engine.create_environment_group(map_size, num_environments, seed=2)
+env = engine.create_environment_group(map_size, num_environments, seed=13)
 
 # visualizer = MapVisualizer(
 #     room_data,

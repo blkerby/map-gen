@@ -4,13 +4,13 @@ use rand::SeedableRng;
 use rand::prelude::*;
 
 use crate::common::{
-    Action, CommonData, ConnectionVariantIdx, Coord, DirDoorIdx, DoorLocation, GeometryIdx,
-    NUM_DIRS, RoomIdx, get_behind_door_position,
+    Action, CommonData, ConnectionVariantIdx, Coord, DirDoorIdx, DoorLocation, DoorValidOutcome,
+    GeometryIdx, NUM_DIRS, RoomIdx, get_behind_door_position,
 };
 
 // Frontier: location of an unconnected door on the map.
 #[derive(Debug)]
-pub(crate) struct Frontier {
+pub struct Frontier {
     dir_door_idx: DirDoorIdx,
     candidates: Vec<GeometryAction>, // possible geometry placements to connect to this frontier
 }
@@ -22,7 +22,12 @@ struct GeometryAction {
     y: Coord,
 }
 
-pub(crate) struct Environment {
+pub struct Outcomes {
+    // For each door, whether it is connected to another door.
+    door_valid: Vec<DoorValidOutcome>,
+}
+
+pub struct Environment {
     rng: rand::rngs::StdRng, // for randomly choosing the initial room placement
     map_size: (Coord, Coord),
     actions: Vec<Action>, // history of room placements so far
@@ -30,21 +35,25 @@ pub(crate) struct Environment {
     // Grouped by door direction: for each door, the index of the matching door on the other side (or DirDoorIdx::MAX if none):
     door_matches: [Vec<DirDoorIdx>; NUM_DIRS],
     room_used: BitVec,                           // whether each room has been used
+    room_x: Vec<Coord>, // x position of each room (only valid for used rooms)
+    room_y: Vec<Coord>, // y position of each room (only valid for used rooms)
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
 }
 
 impl Environment {
-    pub(crate) fn new(common: &CommonData, map_size: (Coord, Coord), seed: u64) -> Self {
+    pub fn new(common: &CommonData, map_size: (Coord, Coord), seed: u64) -> Self {
         Self {
             rng: rand::rngs::StdRng::seed_from_u64(seed),
             map_size,
             actions: vec![],
             frontier: HashMap::new(),
             door_matches: std::array::from_fn(|i| {
-                vec![DirDoorIdx::MAX; common.num_room_dir_doors[i]]
+                vec![DirDoorIdx::MAX; common.room_dir_door[i].len()]
             }),
             room_used: BitVec::repeat(false, common.room.len()),
+            room_x: vec![0; common.room.len()],
+            room_y: vec![0; common.room.len()],
             geometry_unused_count: common
                 .geometry_rooms
                 .iter()
@@ -58,7 +67,7 @@ impl Environment {
         }
     }
 
-    pub(crate) fn clear(&mut self, common: &CommonData) {
+    pub fn clear(&mut self, common: &CommonData) {
         self.actions.clear();
         self.frontier.clear();
         self.door_matches
@@ -77,7 +86,7 @@ impl Environment {
         );
     }
 
-    pub(crate) fn initial_step(&mut self, common: &CommonData) {
+    pub fn initial_step(&mut self, common: &CommonData) {
         let action = self.get_initial_action(common);
         self.step(action, common);
     }
@@ -142,7 +151,7 @@ impl Environment {
         }
     }
 
-    pub(crate) fn step(&mut self, action: Action, common: &CommonData) {
+    pub fn step(&mut self, action: Action, common: &CommonData) {
         self.actions.push(action);
         if action.room_idx >= common.room.len() as RoomIdx {
             // Dummy/invalid action: do nothing more.
@@ -153,6 +162,8 @@ impl Environment {
         let connection_variant_idx = room.connection_variant_idx;
         assert!(!self.room_used[action.room_idx as usize]);
         self.room_used.set(action.room_idx as usize, true);
+        self.room_x[action.room_idx as usize] = action.x;
+        self.room_y[action.room_idx as usize] = action.y;
         self.geometry_unused_count[action_geometry_idx as usize] -= 1;
         self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
 
@@ -238,11 +249,7 @@ impl Environment {
         }
     }
 
-    pub(crate) fn get_candidates(
-        &mut self,
-        common: &CommonData,
-        max_candidates: usize,
-    ) -> Vec<Action> {
+    pub fn get_candidates(&mut self, common: &CommonData, max_candidates: usize) -> Vec<Action> {
         let smallest_frontier_size = self
             .frontier
             .values()
@@ -274,11 +281,37 @@ impl Environment {
         candidates
     }
 
-    pub(crate) fn action_count(&self) -> usize {
-        self.actions.len()
+    pub fn actions(&self) -> &[Action] {
+        &self.actions
     }
 
-    pub(crate) fn actions(&self) -> &[Action] {
-        &self.actions
+    pub fn outcomes(&self, common: &CommonData) -> Outcomes {
+        let mut door_valid = vec![];
+        for dir in 0..NUM_DIRS {
+            let matches = &self.door_matches[dir];
+            for (i, &m) in matches.iter().enumerate() {
+                if m != DirDoorIdx::MAX {
+                    door_valid.push(DoorValidOutcome::Valid);
+                } else {
+                    let room_dir_door = &common.room_dir_door[dir][i];
+                    let room_idx = room_dir_door.room_idx;
+                    if self.room_used[room_idx as usize] {
+                        let outcome = match self.frontier.get(&DoorLocation::from_room_dir_door(
+                            room_dir_door,
+                            self.room_x[room_idx as usize],
+                            self.room_y[room_idx as usize],
+                        )) {
+                            None => DoorValidOutcome::Invalid, // No frontier means this door is blocked by the new room.
+                            Some(frontier) if frontier.candidates.is_empty() => {
+                                DoorValidOutcome::Invalid
+                            }
+                            Some(_) => DoorValidOutcome::Unknown,
+                        };
+                        door_valid.push(outcome);
+                    }
+                }
+            }
+        }
+        Outcomes { door_valid }
     }
 }
