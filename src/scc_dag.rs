@@ -1,9 +1,11 @@
+use bitvec::vec::BitVec;
+
 const NO_COMPONENT: usize = usize::MAX;
 
 #[derive(Debug, Default)]
 pub struct SccDag {
     pub component_count: usize,
-    reachability: Vec<bool>,
+    reachability: BitVec,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,13 +23,16 @@ impl SccDag {
     pub fn add_component(&mut self) -> usize {
         let old_count = self.component_count;
         let new_count = old_count + 1;
-        let mut reachability = vec![false; new_count * new_count];
+        let mut reachability = BitVec::repeat(false, new_count * new_count);
         for row in 0..old_count {
             for col in 0..old_count {
-                reachability[row * new_count + col] = self.reachability[row * old_count + col];
+                reachability.set(
+                    row * new_count + col,
+                    self.reachability[row * old_count + col],
+                );
             }
         }
-        reachability[old_count * new_count + old_count] = true;
+        reachability.set(old_count * new_count + old_count, true);
         self.component_count = new_count;
         self.reachability = reachability;
         old_count
@@ -95,8 +100,10 @@ impl SccDag {
             }
         }
 
-        let old_reachability =
-            std::mem::replace(&mut self.reachability, vec![false; new_count * new_count]);
+        let old_reachability = std::mem::replace(
+            &mut self.reachability,
+            BitVec::repeat(false, new_count * new_count),
+        );
         self.component_count = new_count;
 
         for from in 0..old_count {
@@ -154,7 +161,8 @@ impl SccDag {
     }
 
     fn set_reachable(&mut self, from_component: usize, to_component: usize) {
-        self.reachability[from_component * self.component_count + to_component] = true;
+        self.reachability
+            .set(from_component * self.component_count + to_component, true);
     }
 }
 

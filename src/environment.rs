@@ -177,7 +177,7 @@ impl Environment {
         self.room_y[action.room_idx as usize] = action.y;
         self.geometry_unused_count[action_geometry_idx as usize] -= 1;
         self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
-        self.add_room_components_and_edges(action.room_idx, common);
+        self.add_room_components_and_edges(action, common);
 
         // Remove the frontiers that the new room connects to (if any),
         // and update the frontier with the new unconnected doors of the new room.
@@ -272,13 +272,38 @@ impl Environment {
         }
     }
 
-    fn add_room_components_and_edges(&mut self, room_idx: RoomIdx, common: &CommonData) {
-        // TODO: avoid adding new components for the room parts that are going to immediately be collapsed
-        // (which is the most common case).
+    fn add_room_components_and_edges(&mut self, action: Action, common: &CommonData) {
+        let room_idx = action.room_idx;
         let room = &common.room[room_idx as usize];
-        for part_idx in 0..room.door_group_count {
+        let mut attached_room_parts = vec![Vec::new(); room.door_group_count];
+        for door in &room.doors {
+            let door_loc = DoorLocation::new(door, action.x, action.y);
+            if let Some(frontier) = self.frontier.get(&door_loc) {
+                let attached_room_part = common.room_dir_door[door.direction.opposite() as usize]
+                    [frontier.dir_door_idx as usize]
+                    .room_part_idx;
+                attached_room_parts[door.part_idx as usize].push(attached_room_part);
+            }
+        }
+
+        for (part_idx, attached_parts) in attached_room_parts.iter().enumerate() {
             let room_part_idx = (room.door_group_offset + part_idx) as RoomPartIdx;
-            self.room_part_component[room_part_idx as usize] = self.scc_dag.add_component();
+            if attached_parts.is_empty() {
+                self.room_part_component[room_part_idx as usize] = self.scc_dag.add_component();
+                continue;
+            }
+
+            let first_attached_part = attached_parts[0];
+            for &attached_part in &attached_parts[1..] {
+                let from = self.room_part_component[first_attached_part as usize];
+                let to = self.room_part_component[attached_part as usize];
+                self.add_component_edge(from, to);
+                let from = self.room_part_component[attached_part as usize];
+                let to = self.room_part_component[first_attached_part as usize];
+                self.add_component_edge(from, to);
+            }
+            self.room_part_component[room_part_idx as usize] =
+                self.room_part_component[first_attached_part as usize];
         }
         for door in &room.doors {
             debug_assert_eq!(
@@ -468,6 +493,7 @@ mod tests {
         let room0_part1 = env.room_part_component(&common, 0, 1);
         let room1_part0 = env.room_part_component(&common, 1, 0);
         assert_eq!(room0_part0, room1_part0);
+        assert_eq!(env.scc_dag.component_count, 2);
         assert!(env.scc_dag.can_reach(room1_part0, room0_part1));
 
         env.clear(&common);

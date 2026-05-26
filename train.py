@@ -50,15 +50,15 @@ for _ in range(num_rounds):
         # )
         # visualizer.update(pause=0.1)
 
-    door_valid, connection_valid = env.get_outcomes()
-    assert np.all(door_valid >= 0)
-    assert np.all(connection_valid >= 0)
-    total_invalid_door = np.count_nonzero(door_valid, axis=1)
-    total_invalid_connection = np.count_nonzero(connection_valid, axis=1)
-    total_invalid = total_invalid_door + total_invalid_connection
-    print(f"Total invalid outcomes per environment: {sorted(list(total_invalid))}")
-    print(f"Total invalid doors per environment: {sorted(list(total_invalid_door))}")
-    print(f"Total invalid connections per environment: {sorted(list(total_invalid_connection))}")
+    # door_valid, connection_valid = env.get_outcomes()
+    # assert np.all(door_valid >= 0)
+    # assert np.all(connection_valid >= 0)
+    # total_invalid_door = np.count_nonzero(door_valid, axis=1)
+    # total_invalid_connection = np.count_nonzero(connection_valid, axis=1)
+    # total_invalid = total_invalid_door + total_invalid_connection
+    # print(f"Total invalid outcomes per environment: {sorted(list(total_invalid))}")
+    # print(f"Total invalid doors per environment: {sorted(list(total_invalid_door))}")
+    # print(f"Total invalid connections per environment: {sorted(list(total_invalid_connection))}")
 
     # room_idx, x, y = env.get_actions()
     # dummy_cnt = np.count_nonzero(room_idx == len(rooms))
