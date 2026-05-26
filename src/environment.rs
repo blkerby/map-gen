@@ -5,11 +5,10 @@ use rand::prelude::*;
 
 use crate::common::{
     Action, CommonData, ConnectionVariantIdx, Coord, DirDoorIdx, DoorLocation, DoorValidOutcome,
-    GeometryIdx, NUM_DIRS, PartIdx, RoomIdx, get_behind_door_position,
+    GeometryIdx, NUM_DIRS, PartIdx, RoomIdx, RoomPartIdx, get_behind_door_position,
 };
 
 const NO_COMPONENT: usize = usize::MAX;
-const NO_ROOM_PART: usize = usize::MAX;
 
 // Frontier: location of an unconnected door on the map.
 #[derive(Debug)]
@@ -198,7 +197,6 @@ pub struct Environment {
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
     room_part_component: Vec<usize>,             // maps placed room door groups to SCC components
-    door_group_part_by_dir_door: [Vec<usize>; NUM_DIRS],
     scc_dag: SccDag,
 }
 
@@ -225,18 +223,7 @@ impl Environment {
                 .iter()
                 .map(|rooms| rooms.len())
                 .collect(),
-            room_part_component: vec![
-                NO_COMPONENT;
-                common
-                    .room
-                    .iter()
-                    .map(|room| room.door_group_offset + room.door_group_count)
-                    .max()
-                    .unwrap_or(0)
-            ],
-            door_group_part_by_dir_door: std::array::from_fn(|i| {
-                vec![NO_ROOM_PART; common.room_dir_door[i].len()]
-            }),
+            room_part_component: vec![NO_COMPONENT; common.room_part.len()],
             scc_dag: SccDag::default(),
         }
     }
@@ -259,9 +246,6 @@ impl Environment {
                 .map(|rooms| rooms.len()),
         );
         self.room_part_component.fill(NO_COMPONENT);
-        self.door_group_part_by_dir_door
-            .iter_mut()
-            .for_each(|parts| parts.fill(NO_ROOM_PART));
         self.scc_dag.clear();
     }
 
@@ -357,13 +341,17 @@ impl Environment {
                 let i2 = frontier.dir_door_idx;
                 self.door_matches[door.direction as usize][i1 as usize] = i2;
                 self.door_matches[door.direction.opposite() as usize][i2 as usize] = i1;
-                let p1 = self.door_group_part_by_dir_door[door.direction as usize][i1 as usize];
-                let p2 = self.door_group_part_by_dir_door[door.direction.opposite() as usize]
-                    [i2 as usize];
-                debug_assert_ne!(p1, NO_ROOM_PART);
-                debug_assert_ne!(p2, NO_ROOM_PART);
-                self.add_component_edge(self.room_part_component[p1], self.room_part_component[p2]);
-                self.add_component_edge(self.room_part_component[p2], self.room_part_component[p1]);
+                let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
+                let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
+                    .room_part_idx;
+                self.add_component_edge(
+                    self.room_part_component[p1 as usize],
+                    self.room_part_component[p2 as usize],
+                );
+                self.add_component_edge(
+                    self.room_part_component[p2 as usize],
+                    self.room_part_component[p1 as usize],
+                );
             } else {
                 // This door is not connected to any existing frontier, so it becomes a new frontier.
                 // Check all doors with the given orientation, to list which ones could connect here.
@@ -439,13 +427,15 @@ impl Environment {
     fn add_room_components_and_edges(&mut self, room_idx: RoomIdx, common: &CommonData) {
         let room = &common.room[room_idx as usize];
         for part_idx in 0..room.door_group_count {
-            let room_part_idx = room.door_group_offset + part_idx;
-            self.room_part_component[room_part_idx] = self.scc_dag.add_component();
+            let room_part_idx = (room.door_group_offset + part_idx) as RoomPartIdx;
+            self.room_part_component[room_part_idx as usize] = self.scc_dag.add_component();
         }
         for door in &room.doors {
-            let room_part_idx = Self::room_part_idx(common, room_idx, door.part_idx);
-            self.door_group_part_by_dir_door[door.direction as usize][door.dir_door_idx as usize] =
-                room_part_idx;
+            debug_assert_eq!(
+                common.room_dir_door[door.direction as usize][door.dir_door_idx as usize]
+                    .room_part_idx,
+                Self::room_part_idx(common, room_idx, door.part_idx)
+            );
         }
         for &(from_part, to_part) in &room.connections {
             let from = self.room_part_component(common, room_idx, from_part);
@@ -466,8 +456,8 @@ impl Environment {
         }
     }
 
-    fn room_part_idx(common: &CommonData, room_idx: RoomIdx, part_idx: PartIdx) -> usize {
-        common.room[room_idx as usize].door_group_offset + part_idx as usize
+    fn room_part_idx(common: &CommonData, room_idx: RoomIdx, part_idx: PartIdx) -> RoomPartIdx {
+        (common.room[room_idx as usize].door_group_offset + part_idx as usize) as RoomPartIdx
     }
 
     fn room_part_component(
@@ -476,7 +466,8 @@ impl Environment {
         room_idx: RoomIdx,
         part_idx: PartIdx,
     ) -> usize {
-        let component = self.room_part_component[Self::room_part_idx(common, room_idx, part_idx)];
+        let component =
+            self.room_part_component[Self::room_part_idx(common, room_idx, part_idx) as usize];
         debug_assert_ne!(component, NO_COMPONENT);
         component
     }

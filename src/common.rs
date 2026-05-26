@@ -3,12 +3,13 @@ use bitvec::vec::BitVec;
 use hashbrown::HashMap;
 use serde::Deserialize;
 
-pub type RoomIdx = u8;
-pub type GeometryIdx = u8;
-pub type ConnectionVariantIdx = u8;
-pub type Coord = i8;
-pub type PartIdx = u8;
-type DoorKind = u8;
+pub type RoomIdx = u8; // index into provided room geometry JSON array
+pub type GeometryIdx = u8; // flat index of unique room geometries (map + door layout)
+pub type ConnectionVariantIdx = u8; // flat index of unique room types (map + door layout + connections)
+pub type Coord = i8; // x or y position on the map
+pub type PartIdx = u8; // index of part within a room
+pub type RoomPartIdx = u16; // flat index of part across all rooms
+pub type DoorKind = u8; // distinguishes different types of "doors", e.g. regular, elevator, and sand.
 pub type DirDoorIdx = u8; // index of a door among all doors with the given direction, across all rooms
 
 #[derive(Clone, Copy)]
@@ -124,6 +125,7 @@ pub struct RoomDoorData {
 
 pub struct RoomDirDoorData {
     pub room_idx: RoomIdx,
+    pub room_part_idx: RoomPartIdx,
     pub x: Coord,
     pub y: Coord,
     pub direction: Direction,
@@ -185,6 +187,7 @@ pub struct CommonData {
     pub geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS],
     // for each direction, number of room doors in that direction across all rooms
     pub room_dir_door: [Vec<RoomDirDoorData>; NUM_DIRS],
+    pub room_part: Vec<(RoomIdx, PartIdx)>,
 }
 
 impl GeometryKey {
@@ -258,6 +261,7 @@ impl CommonData {
         let mut geometry_connection_variants = vec![];
         let mut connection_variant_rooms = vec![];
         let mut door_group_count = 0;
+        let mut room_part = vec![];
         let mut geometry_by_key = HashMap::new();
         let mut connection_variant_by_key = HashMap::new();
         let mut geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS] =
@@ -272,6 +276,13 @@ impl CommonData {
                     PartIdx::MAX
                 );
             }
+            if door_group_count + room.doors.len() > RoomPartIdx::MAX as usize {
+                bail!(
+                    "rooms have {} total door groups, exceeding the maximum {}",
+                    door_group_count + room.doors.len(),
+                    RoomPartIdx::MAX
+                );
+            }
             for &(from_part, to_part) in &room.connections {
                 if from_part as usize >= room.doors.len() || to_part as usize >= room.doors.len() {
                     bail!(
@@ -283,11 +294,13 @@ impl CommonData {
 
             let mut door_data = vec![];
             for (part_idx, door_group) in room.doors.iter().enumerate() {
+                let room_part_idx = (door_group_count + part_idx) as RoomPartIdx;
                 for door in door_group {
                     let dir_idx = door.direction as usize;
                     let dir_door_idx = room_dir_door[dir_idx].len() as DirDoorIdx;
                     room_dir_door[dir_idx].push(RoomDirDoorData {
                         room_idx: room_idx as RoomIdx,
+                        room_part_idx,
                         x: door.x,
                         y: door.y,
                         direction: door.direction,
@@ -338,6 +351,9 @@ impl CommonData {
 
             geometry_rooms[geometry_idx as usize].push(room_idx as RoomIdx);
             connection_variant_rooms[connection_variant_idx as usize].push(room_idx as RoomIdx);
+            for part_idx in 0..room.doors.len() {
+                room_part.push((room_idx as RoomIdx, part_idx as PartIdx));
+            }
             room_data.push(RoomData {
                 geometry_idx,
                 connection_variant_idx,
@@ -359,6 +375,7 @@ impl CommonData {
             intersection_bitvec: BitVec::new(),
             geometry_dir_door,
             room_dir_door,
+            room_part,
         };
         common.build_intersection_set();
         println!(
