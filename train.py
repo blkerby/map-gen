@@ -16,7 +16,7 @@ map_size = (32, 32)
 # map_size = (72, 72)
 
 engine = map_gen.Engine(rooms_str)
-env = engine.create_environment_group(map_size, num_environments, seed=13)
+env = engine.create_environment_group(map_size, num_environments, seed=6)
 
 visualizer = MapVisualizer(
     rooms,
@@ -42,8 +42,8 @@ for _ in range(num_rounds):
         selected_cand_y = np.ascontiguousarray(cand_y[:, 0])
         env.step(selected_cand_room_idx, selected_cand_x, selected_cand_y)
         
-        # outcomes = env.get_outcomes()
-        # print(outcomes)
+        outcomes = env.get_outcomes()
+        print(outcomes)
         visualizer.add_selected_candidate(
             selected_cand_room_idx,
             selected_cand_x,

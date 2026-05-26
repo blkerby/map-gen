@@ -87,7 +87,6 @@
         ],
         "doors": [
             [
-                {"direction": "left",  "x": 0, "y": 8, "kind": 0},
                 {"direction": "right", "x": 2, "y": 0, "kind": 0},
                 {"direction": "right", "x": 2, "y": 7, "kind": 0},
                 {"direction": "right", "x": 1, "y": 8, "kind": 0},
