@@ -6,8 +6,9 @@ import numpy as np
 from visualize import MapVisualizer
 
 rooms_str = open("room_geometry/crateria.json", "r").read()
-# rooms = open("room_geometry/zebes.json", "r").read()
+# rooms_str = open("room_geometry/zebes.json", "r").read()
 rooms = json.loads(rooms_str)
+# num_environments = 4096
 num_environments = 1
 max_candidates = 32
 num_rounds = 1
@@ -29,7 +30,7 @@ for _ in range(num_rounds):
     # start = time.perf_counter()
     env.clear()
     env.initial_step()
-    # visualizer.add_engine_actions(env.get_actions())
+    visualizer.add_engine_actions(env.get_actions())
     for step in range(len(rooms) - 1):
         cand_room_idx, cand_x, cand_y = env.get_candidates(
             max_candidates=max_candidates
@@ -41,8 +42,8 @@ for _ in range(num_rounds):
         selected_cand_y = np.ascontiguousarray(cand_y[:, 0])
         env.step(selected_cand_room_idx, selected_cand_x, selected_cand_y)
         
-        outcomes = env.get_outcomes()
-        print(outcomes)
+        # outcomes = env.get_outcomes()
+        # print(outcomes)
         visualizer.add_selected_candidate(
             selected_cand_room_idx,
             selected_cand_x,
