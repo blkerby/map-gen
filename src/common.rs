@@ -78,7 +78,7 @@ pub fn get_behind_door_position(direction: Direction, x: Coord, y: Coord) -> (Co
 // DoorLocation: used as the key in the frontier hashmap to identify unconnected doors on the map.
 // These are designed to match between the two sides of a door. A right-facing door gives the same
 // DoorLocation as a left-facing door on the other side, and similarly for up/down doors.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct DoorLocation {
     x: Coord,
     y: Coord,

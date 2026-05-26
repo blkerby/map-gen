@@ -258,19 +258,12 @@ impl Environment {
             .min()
             .unwrap_or(1);
         let candidate_geometries = {
-            let eligible_frontiers: Vec<&Frontier> = self
-                .frontier
-                .values()
-                .filter(|frontier| frontier.candidates.len() == smallest_frontier_size)
-                .collect();
-            if eligible_frontiers.is_empty() {
-                vec![]
-            } else {
-                let frontier = eligible_frontiers
-                    .choose(&mut self.rng)
-                    .expect("eligible_frontiers is not empty");
-                frontier.candidates.clone()
-            }
+            self.frontier
+                .iter()
+                .filter(|(_, frontier)| frontier.candidates.len() == smallest_frontier_size)
+                .min_by_key(|(door_loc, _)| *door_loc)
+                .map(|(_, frontier)| frontier.candidates.clone())
+                .unwrap_or_default()
         };
         let mut candidates = Vec::with_capacity(candidate_geometries.len());
         for candidate in candidate_geometries {
