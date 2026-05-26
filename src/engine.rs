@@ -21,17 +21,39 @@ fn pyarray2_from_flat_vec<'py, T: Element>(
     data.into_pyarray(py).reshape([rows, cols])
 }
 
-// We use OutputShard to share mutable slices of memory between the main thread and worker threads.
-// This allows us to avoid copying data back and forth through channels. The raw pointers are
-// necessary because the worker threads are long-lived while the shared memory is short-lived,
-// making it difficult to convince the Rust borrow checker that the mutable references are valid.
-// We ensure safety by using the raw pointers only within the scope of a single command;
-// in every case, the main thread waits for a "done" response from the worker thread before
-// relinquishing ownership of the shared memory.
+// We use shards to share slices of memory between the main thread and worker threads. This allows us
+// to avoid copying data back and forth through channels. The raw pointers are necessary because the
+// worker threads are long-lived while the shared memory is short-lived, making it difficult to
+// convince the Rust borrow checker that the references are valid. We ensure safety by using the raw
+// pointers only within the scope of a single command; in every case, the main thread waits for a
+// "done" response from the worker thread before relinquishing ownership of the shared memory.
 //
-// An alternative approach would be to use scoped threads to allow safely borrowing the output slices
+// An alternative approach would be to use scoped threads to allow safely borrowing the slices
 // directly, but that would less performant because it would break the affinity of worker threads
 // to their environment shards.
+#[derive(Clone, Copy)]
+struct InputShard<T> {
+    ptr: *const T,
+    len: usize,
+    _marker: PhantomData<T>,
+}
+
+unsafe impl<T: Sync> Send for InputShard<T> {}
+
+impl<T> InputShard<T> {
+    fn from_slice(slice: &[T]) -> Self {
+        Self {
+            ptr: slice.as_ptr(),
+            len: slice.len(),
+            _marker: PhantomData,
+        }
+    }
+
+    unsafe fn into_slice<'a>(self) -> &'a [T] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct OutputShard<T> {
     ptr: *mut T,
@@ -59,7 +81,9 @@ enum WorkerCommand {
     Clear,
     InitialStep,
     Step {
-        actions: Vec<Action>,
+        room_idx: InputShard<RoomIdx>,
+        room_x: InputShard<Coord>,
+        room_y: InputShard<Coord>,
     },
     GetCandidates {
         max_candidates: usize,
@@ -148,10 +172,29 @@ fn worker_loop(
                 }
                 WorkerResponse::Done
             }
-            WorkerCommand::Step { actions } => {
-                debug_assert_eq!(actions.len(), environments.len());
-                for (env, action) in environments.iter_mut().zip(actions) {
-                    env.step(action, &common_data);
+            WorkerCommand::Step {
+                room_idx,
+                room_x,
+                room_y,
+            } => {
+                // SAFETY: The main thread guarantees that for the duration of this command,
+                // the input slices remain valid and that no other thread mutates them.
+                let room_idx = unsafe { room_idx.into_slice() };
+                let room_x = unsafe { room_x.into_slice() };
+                let room_y = unsafe { room_y.into_slice() };
+                debug_assert_eq!(room_idx.len(), environments.len());
+                debug_assert_eq!(room_x.len(), environments.len());
+                debug_assert_eq!(room_y.len(), environments.len());
+
+                for (env_idx, env) in environments.iter_mut().enumerate() {
+                    env.step(
+                        Action {
+                            room_idx: room_idx[env_idx],
+                            x: room_x[env_idx],
+                            y: room_y[env_idx],
+                        },
+                        &common_data,
+                    );
                 }
                 WorkerResponse::Done
             }
@@ -494,13 +537,11 @@ impl EnvironmentGroup {
             for (worker_idx, worker) in self.workers.iter().enumerate() {
                 let action_start = worker.start;
                 let action_end = worker.end();
-                let actions: Vec<_> = room_idx[action_start..action_end]
-                    .iter()
-                    .zip(room_x[action_start..action_end].iter())
-                    .zip(room_y[action_start..action_end].iter())
-                    .map(|((&room_idx, &x), &y)| Action { room_idx, x, y })
-                    .collect();
-                if let Err(err) = worker.send(WorkerCommand::Step { actions }) {
+                if let Err(err) = worker.send(WorkerCommand::Step {
+                    room_idx: InputShard::from_slice(&room_idx[action_start..action_end]),
+                    room_x: InputShard::from_slice(&room_x[action_start..action_end]),
+                    room_y: InputShard::from_slice(&room_y[action_start..action_end]),
+                }) {
                     set_first_error(&mut first_error, err);
                     break;
                 }
