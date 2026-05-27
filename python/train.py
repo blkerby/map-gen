@@ -10,18 +10,15 @@ from model import CausalTransformerModel
 rooms_str = open("room_definitions/zebes.json", "r").read()
 rooms = json.loads(rooms_str)
 num_environments = 4096
-num_rounds = 1
+num_rounds = 1000
 max_candidates = 32
-# num_rounds = 128
-# map_size = (32, 32)
 map_size = (72, 72)
 
 engine = map_gen.Engine(rooms_str)
 env = engine.create_environment_group(map_size, num_environments, seed=6)
 
-
-
-
+num_doors, num_connects = engine.get_output_sizes()
+num_outputs = num_doors + num_connects
 
 embedding_width = 256
 key_width = 64
@@ -32,9 +29,10 @@ hidden_width = 512
 num_layers = 4
 
 main_model = CausalTransformerModel(
+    num_rooms=len(rooms),
     map_x=map_size[0],
     map_y=map_size[1],
-    num_outputs=3,  # room_idx, x, y
+    num_outputs=num_outputs,
     embedding_width=embedding_width,
     key_width=key_width,
     value_width=value_width,
@@ -59,6 +57,9 @@ for _ in range(num_rounds):
     # round_start = time.perf_counter()
     env.clear()
     env.initial_step()
+    
+    
+    
     # visualizer.add_engine_actions(env.get_actions())
     for step in range(len(rooms) - 1):
         cand_room_idx, cand_x, cand_y = env.get_candidates(

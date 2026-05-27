@@ -64,13 +64,11 @@ class FeedforwardLayer(torch.nn.Module):
 
 
 class CausalTransformerModel(torch.nn.Module):
-    def __init__(self, map_x, map_y, num_outputs, embedding_width, key_width, value_width, attn_heads, head_groups, hidden_width, num_layers):
+    def __init__(self, num_rooms, map_x, map_y, num_outputs, embedding_width, key_width, value_width, attn_heads, head_groups, hidden_width, num_layers):
         super().__init__()
+        self.num_rooms = num_rooms
         self.map_x = map_x
         self.map_y = map_y
-        self.room_half_size_x = torch.tensor([len(r.map[0]) // 2 for r in rooms])
-        self.room_half_size_y = torch.tensor([len(r.map) // 2 for r in rooms])
-        self.num_rooms = len(rooms)
         self.num_tokens = self.num_rooms + 1
         self.num_outputs = num_outputs
         self.num_layers = num_layers
@@ -106,12 +104,9 @@ class CausalTransformerModel(torch.nn.Module):
                                     mc_dist_coef.view(-1, 1)], dim=1)
 
         global_emb = self.global_lin(global_data).unsqueeze(1)
-
-        adj_room_x = room_x + self.room_half_size_x.to(device)[room_idx]
-        adj_room_y = room_y + self.room_half_size_y.to(device)[room_idx]
-
-        position_emb_x = self.pos_embedding_x[adj_room_x]
-        position_emb_y = self.pos_embedding_y[adj_room_y]
+        # TODO: try rotary positional embeddings
+        position_emb_x = self.pos_embedding_x[room_x]
+        position_emb_y = self.pos_embedding_y[room_y]
         room_emb = self.room_embedding[room_idx]
         
         X = global_emb + position_emb_x + position_emb_y + room_emb

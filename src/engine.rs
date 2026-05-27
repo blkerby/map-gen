@@ -376,6 +376,16 @@ pub struct EnvironmentGroup {
     action_count: usize,
 }
 
+fn output_sizes(common_data: &CommonData) -> (usize, usize) {
+    let door_outcome_count = common_data
+        .room_dir_door
+        .iter()
+        .map(|doors| doors.len())
+        .sum();
+    let connection_outcome_count = common_data.room_connection.len();
+    (door_outcome_count, connection_outcome_count)
+}
+
 impl Drop for EnvironmentGroup {
     fn drop(&mut self) {
         for worker in &mut self.workers {
@@ -411,6 +421,10 @@ impl Engine {
             seed,
             num_threads,
         )
+    }
+
+    fn get_output_sizes(&self) -> (usize, usize) {
+        output_sizes(&self.common_data)
     }
 }
 
@@ -654,13 +668,7 @@ impl EnvironmentGroup {
         &self,
         py: Python<'py>,
     ) -> PyResult<(Bound<'py, PyArray2<i8>>, Bound<'py, PyArray2<i8>>)> {
-        let door_outcome_count: usize = self
-            .common_data
-            .room_dir_door
-            .iter()
-            .map(|doors| doors.len())
-            .sum();
-        let connection_outcome_count = self.common_data.room_connection.len();
+        let (door_outcome_count, connection_outcome_count) = output_sizes(&self.common_data);
         let door_output_len = self.num_environments * door_outcome_count;
         let connection_output_len = self.num_environments * connection_outcome_count;
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
