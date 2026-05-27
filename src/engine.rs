@@ -481,6 +481,12 @@ impl EnvironmentGroup {
 
 #[pymethods]
 impl EnvironmentGroup {
+    fn get_engine(&self) -> Engine {
+        Engine {
+            common_data: Arc::clone(&self.common_data),
+        }
+    }
+
     fn num_environments(&self) -> usize {
         self.num_environments
     }

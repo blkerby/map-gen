@@ -17,8 +17,8 @@ def get_predictions(raw_preds, output_sizes):
         col += size
 
     return Predictions(
-        door_valid=preds[0],
-        connection_valid=preds[1],
+        door_invalid=preds[0],
+        connection_invalid=preds[1],
     )
 
 
@@ -37,7 +37,7 @@ def rand_choice(p):
 
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
-def compute_expected_reward(preds, ):
+def compute_expected_reward(preds, config: GenerationConfig):
     door_logprobs = torch.logaddexp(preds.door_invalid, torch.zeros_like(preds.door_invalid))
     connection_logprobs = torch.logaddexp(preds.connection_invalid, torch.zeros_like(preds.connection_invalid))
     total_logprobs = torch.sum(door_logprobs, dim=2) + torch.sum(connection_logprobs, dim=2)
@@ -45,30 +45,34 @@ def compute_expected_reward(preds, ):
 
 
 def generate(env: EnvironmentGroup, model, config: GenerationConfig, device):
+    engine = env.get_engine()
     num_envs = env.num_environments()
     kv_cache = model.get_initial_kv_cache(num_envs, device)
     env.clear()
     env.initial_step()
-    output_sizes = env.get_output_sizes()
+    output_sizes = engine.get_output_sizes()
     
     for _ in range(config.episode_length - 1):
-        # Get candidate info from environment, and load them to device (e.g. GPU)
-        cand_room_idx, cand_x, cand_y = env.get_candidate_info()
+        # Get candidate actions from environment, and load them to device (e.g. GPU)
+        cand_room_idx, cand_x, cand_y = env.get_candidates(config.max_candidates)
         cand_room_idx = torch.from_numpy(cand_room_idx).to(device)
         cand_x = torch.from_numpy(cand_x).to(device)
         cand_y = torch.from_numpy(cand_y).to(device)
         
-        # Model inference to get predictions and updated kv cache for next step
-        raw_preds, kv_cache_candidates = model.generate(cand_room_idx, cand_x, cand_y)
+        # Model inference to get predictions and updated key-value cache for next step
+        raw_preds, kv_cache_candidates = model.generate(cand_room_idx, cand_x, cand_y, kv_cache, config)
         preds = get_predictions(raw_preds, output_sizes)
         
         # Compute expected reward and sample to select an action (per environment)
         expected_reward = compute_expected_reward(preds, config)
+        expected_reward = torch.where(cand_room_idx == num_rooms, 
+                                      torch.full_like(expected_reward, float('-inf')),
+                                      expected_reward)
         probs = torch.softmax(expected_reward / torch.unsqueeze(config.temperature, 1), dim=1)
         action_index = rand_choice(probs)
-        selected_cand_room_idx = torch.index_select(cand_room_idx, 1, action_index)
-        selected_cand_x = torch.index_select(cand_x, 1, action_index)
-        selected_cand_y = torch.index_select(cand_y, 1, action_index)
+        selected_cand_room_idx = torch.gather(cand_room_idx, 1, action_index.unsqueeze(1)).squeeze(1)
+        selected_cand_x = torch.gather(cand_x, 1, action_index.unsqueeze(1)).squeeze(1)
+        selected_cand_y = torch.gather(cand_y, 1, action_index.unsqueeze(1)).squeeze(1)
         
         # Apply the selected action to the environment
         env.step(selected_cand_room_idx.cpu().numpy(), selected_cand_x.cpu().numpy(), selected_cand_y.cpu().numpy())
@@ -77,4 +81,6 @@ def generate(env: EnvironmentGroup, model, config: GenerationConfig, device):
         kv_cache = model.get_updated_kv_cache(kv_cache, kv_cache_candidates, action_index)
         
     env.finish()
-    
+    actions = env.get_actions()
+    outcomes = env.get_outcomes()
+    return actions, outcomes

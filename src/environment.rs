@@ -172,6 +172,7 @@ impl Environment {
         self.actions.push(action);
         if action.room_idx >= common.room.len() as RoomIdx {
             // Dummy/invalid action: do nothing more.
+            self.finished = true;
             return;
         }
         let room = &common.room[action.room_idx as usize];

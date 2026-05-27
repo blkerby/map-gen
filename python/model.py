@@ -1,6 +1,7 @@
 import torch
 import math
 
+from generate import GenerationConfig
 
 def normalize(x: torch.Tensor):
     return torch.nn.functional.rms_norm(x, (x.size(-1),))
@@ -73,11 +74,11 @@ class CausalTransformerModel(torch.nn.Module):
         self.num_outputs = num_outputs
         self.num_layers = num_layers
         self.embedding_width = embedding_width
-        self.global_lin = torch.nn.Linear(2, embedding_width)
+        self.global_lin = torch.nn.Linear(1, embedding_width)
         self.pos_embedding_x = torch.nn.Parameter(torch.randn([self.map_x, embedding_width]) / math.sqrt(embedding_width))
         self.pos_embedding_y = torch.nn.Parameter(torch.randn([self.map_y, embedding_width]) / math.sqrt(embedding_width))
         self.room_embedding = torch.nn.Parameter(
-            torch.randn([self.num_rooms, embedding_width]) / math.sqrt(embedding_width))
+            torch.randn([self.num_rooms + 1, embedding_width]) / math.sqrt(embedding_width))
         self.attn_layers = torch.nn.ModuleList()
         self.ff_layers = torch.nn.ModuleList()
         for i in range(num_layers):
@@ -98,10 +99,9 @@ class CausalTransformerModel(torch.nn.Module):
         self.output_lin = torch.nn.Linear(embedding_width, num_outputs, bias=False)
 
 
-    def get_embedding(self, room_idx, room_x, room_y, temperature, mc_dist_coef):
+    def get_embedding(self, room_idx, room_x, room_y, config: GenerationConfig):
         device = room_idx.device
-        global_data = torch.cat([torch.log(temperature.view(-1, 1)),
-                                    mc_dist_coef.view(-1, 1)], dim=1)
+        global_data = torch.cat([torch.log(config.temperature.view(-1, 1))], dim=1)
 
         global_emb = self.global_lin(global_data).unsqueeze(1)
         # TODO: try rotary positional embeddings
@@ -113,15 +113,13 @@ class CausalTransformerModel(torch.nn.Module):
         return X        
 
 
-    def forward(self, action, temperature, mc_dist_coef):
-        n = action.shape[0]
-        s = action.shape[1]
-        room_idx = action[:, :, 0].to(torch.int64)
-        room_x = action[:, :, 1].to(torch.int64)
-        room_y = action[:, :, 2].to(torch.int64)
+    def forward(self, room_idx, room_x, room_y, config: GenerationConfig):
+        room_idx = room_idx.to(torch.int64)
+        room_x = room_x.to(torch.int64)
+        room_y = room_y.to(torch.int64)
 
         with torch.cuda.amp.autocast():
-            X = self.get_embedding(room_idx, room_x, room_y, temperature, mc_dist_coef)
+            X = self.get_embedding(room_idx, room_x, room_y, config)
             # print("forward: X:", X.shape, X)
             for i in range(len(self.attn_layers)):
                 X = self.attn_layers[i](X)
@@ -188,20 +186,20 @@ class CausalTransformerModel(torch.nn.Module):
         return new_K_list, new_V_list
 
 
-    def generate(self, action_candidates, kv_cache, temperature, mc_dist_coef):
-        n = action_candidates.shape[0]  # batch size
-        c = action_candidates.shape[1]  # number of candidates per batch element
-        e = self.embedding_width
-        room_idx = action_candidates[:, :, 0].to(torch.int64)
-        room_x = action_candidates[:, :, 1].to(torch.int64)
-        room_y = action_candidates[:, :, 2].to(torch.int64)
+    def generate(self, room_idx, room_x, room_y, kv_cache, config: GenerationConfig):
+        n = room_idx.shape[0]  # batch size
+        c = room_idx.shape[1]  # number of candidates per batch element
+        # e = self.embedding_width
+        room_idx = room_idx.to(torch.int64)
+        room_x = room_x.to(torch.int64)
+        room_y = room_y.to(torch.int64)
         s = kv_cache[0][0].shape[2] if len(kv_cache) > 0 else 0  # current sequence length
         K_list, V_list = kv_cache
         K_cands = []
         V_cands = []
 
         with torch.cuda.amp.autocast():
-            X = self.get_embedding(room_idx, room_x, room_y, temperature, mc_dist_coef)
+            X = self.get_embedding(room_idx, room_x, room_y, config)
             # X: [n, c, e]
             # print("generate: X:", X.shape, X)
 

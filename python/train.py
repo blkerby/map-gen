@@ -10,7 +10,7 @@ from generate import generate, GenerationConfig
 # rooms_str = open("room_definitions/crateria.json", "r").read()
 rooms_str = open("room_definitions/zebes.json", "r").read()
 rooms = json.loads(rooms_str)
-num_environments = 4096
+num_environments = 4
 num_rounds = 1
 max_candidates = 32
 map_size = (72, 72)
@@ -51,16 +51,13 @@ config = GenerationConfig(
     temperature=torch.full([num_environments], temperature, dtype=torch.float32),
 )
 
-# visualizer = MapVisualizer(
-#     rooms,
-#     map_size=map_size,
-#     interactive=True,
-#     show_names=False,
-# )
-
 start = time.perf_counter()
 for _ in range(num_rounds):
-    generate(env, main_model, config, device)
+    actions, outcomes = generate(env, main_model, config, device)
+    door_invalid, connection_invalid = outcomes
+    door_invalid = np.count_nonzero(door_invalid, axis=1)
+    connection_invalid = np.count_nonzero(connection_invalid, axis=1)
+    print(f"Door invalid: {door_invalid}, Connection invalid: {connection_invalid}")
 
 end = time.perf_counter()
-print(f"Elapsed time: {(end - start)/(num_rounds*num_environments):.5f} seconds per episode")
+print(f"Elapsed time: {(end - start):.3f} seconds, {(end - start)/(num_rounds*num_environments):.5f} seconds per episode")
