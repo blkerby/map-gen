@@ -481,6 +481,10 @@ impl EnvironmentGroup {
 
 #[pymethods]
 impl EnvironmentGroup {
+    fn num_environments(&self) -> usize {
+        self.num_environments
+    }
+
     fn clear(&mut self, py: Python<'_>) -> PyResult<()> {
         py.allow_threads(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());

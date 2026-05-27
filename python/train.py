@@ -5,14 +5,17 @@ import numpy as np
 import torch
 
 from model import CausalTransformerModel
+from generate import generate, GenerationConfig
 
 # rooms_str = open("room_definitions/crateria.json", "r").read()
 rooms_str = open("room_definitions/zebes.json", "r").read()
 rooms = json.loads(rooms_str)
 num_environments = 4096
-num_rounds = 1000
+num_rounds = 1
 max_candidates = 32
 map_size = (72, 72)
+temperature = 1.0
+device = torch.device("cpu")
 
 engine = map_gen.Engine(rooms_str)
 env = engine.create_environment_group(map_size, num_environments, seed=6)
@@ -42,8 +45,11 @@ main_model = CausalTransformerModel(
     num_layers=num_layers,
 )
 
-
-
+config = GenerationConfig(
+    episode_length=len(rooms),
+    max_candidates=max_candidates,
+    temperature=torch.full([num_environments], temperature, dtype=torch.float32),
+)
 
 # visualizer = MapVisualizer(
 #     rooms,
@@ -54,50 +60,7 @@ main_model = CausalTransformerModel(
 
 start = time.perf_counter()
 for _ in range(num_rounds):
-    # round_start = time.perf_counter()
-    env.clear()
-    env.initial_step()
-    
-    
-    
-    # visualizer.add_engine_actions(env.get_actions())
-    for step in range(len(rooms) - 1):
-        cand_room_idx, cand_x, cand_y = env.get_candidates(
-            max_candidates=max_candidates
-        )
-
-        # print("step {}: candidates: {}".format(step, np.count_nonzero(cand_room_idx != 253, axis=1)))
-        selected_cand_room_idx = np.ascontiguousarray(cand_room_idx[:, 0])
-        selected_cand_x = np.ascontiguousarray(cand_x[:, 0])
-        selected_cand_y = np.ascontiguousarray(cand_y[:, 0])
-        env.step(selected_cand_room_idx, selected_cand_x, selected_cand_y)
-    
-    env.finish()
-    
-    
-        # print(outcomes)
-        # visualizer.add_selected_candidate(
-        #     selected_cand_room_idx,
-        #     selected_cand_x,
-        #     selected_cand_y,
-        # )
-        # visualizer.update(pause=0.1)
-
-    # door_valid, connection_valid = env.get_outcomes()
-    # assert np.all(door_valid >= 0)
-    # assert np.all(connection_valid >= 0)
-    # total_invalid_door = np.count_nonzero(door_valid, axis=1)
-    # total_invalid_connection = np.count_nonzero(connection_valid, axis=1)
-    # total_invalid = total_invalid_door + total_invalid_connection
-    # print(f"Total invalid outcomes per environment: {sorted(list(total_invalid))}")
-    # print(f"Total invalid doors per environment: {sorted(list(total_invalid_door))}")
-    # print(f"Total invalid connections per environment: {sorted(list(total_invalid_connection))}")
-
-    # room_idx, x, y = env.get_actions()
-    # dummy_cnt = np.count_nonzero(room_idx == len(rooms))
-    # round_end = time.perf_counter()
-    # print(f"Elapsed time: {round_end - round_start:.4f} seconds, placed {dummy_cnt} dummy rooms")
-    # visualizer.show()
+    generate(env, main_model, config, device)
 
 end = time.perf_counter()
 print(f"Elapsed time: {(end - start)/(num_rounds*num_environments):.5f} seconds per episode")

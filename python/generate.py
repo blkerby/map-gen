@@ -45,12 +45,13 @@ def compute_expected_reward(preds, ):
 
 
 def generate(env: EnvironmentGroup, model, config: GenerationConfig, device):
-    kv_cache = model.get_initial_kv_cache(env.num_envs, device)
+    num_envs = env.num_environments()
+    kv_cache = model.get_initial_kv_cache(num_envs, device)
     env.clear()
     env.initial_step()
     output_sizes = env.get_output_sizes()
     
-    for _ in range(config.episode_length):
+    for _ in range(config.episode_length - 1):
         # Get candidate info from environment, and load them to device (e.g. GPU)
         cand_room_idx, cand_x, cand_y = env.get_candidate_info()
         cand_room_idx = torch.from_numpy(cand_room_idx).to(device)
@@ -75,3 +76,5 @@ def generate(env: EnvironmentGroup, model, config: GenerationConfig, device):
         # Finalize the kv cache update based on the selected action
         kv_cache = model.get_updated_kv_cache(kv_cache, kv_cache_candidates, action_index)
         
+    env.finish()
+    
