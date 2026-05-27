@@ -5,8 +5,8 @@ import torch
 
 @dataclass
 class Predictions:
-    door_invalid: torch.tensor
-    connection_invalid: torch.tensor
+    door_invalid: torch.Tensor
+    connection_invalid: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -26,7 +26,7 @@ def get_predictions(raw_preds, output_sizes):
 class GenerationConfig:
     episode_length: int
     max_candidates: int
-    temperature: torch.tensor
+    temperature: torch.Tensor
 
 
 def rand_choice(p):
@@ -64,7 +64,7 @@ def generate(env: EnvironmentGroup, model, config: GenerationConfig, device):
         # Model inference to get predictions and updated key-value cache for next step
         raw_preds, kv_cache_candidates = model.generate(cand_room_idx, cand_x, cand_y, kv_cache, config)
         preds = get_predictions(raw_preds, output_sizes)
-        
+
         # Compute expected reward and sample to select an action (per environment)
         expected_reward = compute_expected_reward(preds, config)
         expected_reward = torch.where(cand_room_idx == num_rooms, # dummy action should only be selected if no other choice

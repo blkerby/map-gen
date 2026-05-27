@@ -370,12 +370,12 @@ fn wait_for_done_responses(
     }
 }
 
-#[pyclass]
+#[pyclass(module = "map_gen")]
 pub struct Engine {
     common_data: Arc<CommonData>, // pre-computed data that can be shared across environments
 }
 
-#[pyclass]
+#[pyclass(module = "map_gen")]
 pub struct EnvironmentGroup {
     common_data: Arc<CommonData>,
     workers: Vec<WorkerHandle>, // fixed worker-owned environment shards
@@ -496,7 +496,7 @@ impl EnvironmentGroup {
     }
 
     fn clear(&mut self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -515,7 +515,7 @@ impl EnvironmentGroup {
     }
 
     fn initial_step(&mut self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -534,7 +534,7 @@ impl EnvironmentGroup {
     }
 
     fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -564,7 +564,7 @@ impl EnvironmentGroup {
         let mut room_x = vec![0; output_len];
         let mut room_y = vec![0; output_len];
 
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -627,7 +627,7 @@ impl EnvironmentGroup {
             )));
         }
 
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -672,7 +672,7 @@ impl EnvironmentGroup {
         let mut room_x = vec![dummy_candidate.x; output_len];
         let mut room_y = vec![dummy_candidate.y; output_len];
 
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -711,7 +711,7 @@ impl EnvironmentGroup {
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
 
-        py.allow_threads(|| {
+        py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {

@@ -60,7 +60,7 @@ main_model = CausalTransformerModel(
 
 # Log experiment using Aim
 run = Run(experiment="initial testing")
-run["model_config"] = {
+run["model"] = {
     "num_rooms": len(rooms),
     "map_x": map_size[0],
     "map_y": map_size[1],
@@ -73,6 +73,8 @@ run["model_config"] = {
     "hidden_width": hidden_width,
     "num_layers": num_layers,
 }
+
+
 
 config = GenerationConfig(
     episode_length=len(rooms),
