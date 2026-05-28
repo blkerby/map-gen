@@ -32,7 +32,6 @@ num_rounds = 10000
 max_candidates = 16
 # max_candidates = 1
 map_size = (72, 72)
-temperature = 0.03
 device = torch.device("cuda:0")
 
 engine = Engine(rooms)
@@ -61,6 +60,10 @@ main_model = CausalTransformerModel(
     num_layers=num_layers,
 ).to(device)
 
+annealing_episodes = 2 ** 20
+temperature0 = 10.0
+temperature1 = 0.03
+
 # Log experiment using Aim
 run = Run(experiment="initial testing")
 run["model"] = {
@@ -76,20 +79,18 @@ run["model"] = {
     "hidden_width": hidden_width,
     "num_layers": num_layers,
 }
-
-
-gen_config = GenerationConfig(
-    episode_length=len(rooms),
-    max_candidates=max_candidates,
-    temperature=torch.full([num_environments], temperature, dtype=torch.float32, device=device),
-)
+run["schedule"] = {
+    "annealing_episodes": annealing_episodes,
+    "temperature0": temperature0,
+    "temperature1": temperature1,
+}
 
 loss_config = LossConfig(
     door_weight=output_sizes[0] / (output_sizes[0] + output_sizes[1]),
     connection_weight=output_sizes[1] / (output_sizes[0] + output_sizes[1]),
 )
 
-def log_outcomes(outcomes, loss, round):
+def log_outcomes(outcomes, loss, round, frac):
     door_invalid = torch.sum(outcomes.door_invalid != 0, dim=1)
     avg_door = torch.mean(door_invalid.to(torch.float32))
     min_door = torch.min(door_invalid)
@@ -108,15 +109,27 @@ def log_outcomes(outcomes, loss, round):
     run.track(avg_invalid, name="avg_invalid", step=round)
     run.track(min_invalid, name="min_invalid", step=round)
     
-    logging.info(f"round {round}, loss {loss:.4f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_connection:.2f} (min {min_connection})")
-    
+    logging.info(f"round {round}, loss {loss:.4f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_connection:.2f} (min {min_connection}), frac {frac:.4f}")
 
-main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0005)
 
+def get_gen_config(frac):
+    temperature = temperature0 * (temperature1 / temperature0) ** frac
+    return GenerationConfig(
+        episode_length=len(rooms),
+        max_candidates=max_candidates,
+        temperature=torch.full([num_environments], temperature, dtype=torch.float32, device=device),
+    )
+
+
+main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0005, betas=(0.9, 0.95))
+num_episodes = 0
 
 start = time.perf_counter()
 for round in range(num_rounds):
+    frac = min(num_episodes / annealing_episodes, 1.0)
+    gen_config = get_gen_config(frac)
     actions, outcomes = generate(env, main_model, gen_config, device)
+    num_episodes += num_environments
 
     main_model.zero_grad()
     preds = main_model(actions, gen_config)
@@ -130,7 +143,7 @@ for round in range(num_rounds):
     loss.backward()
     main_optimizer.step()
 
-    log_outcomes(outcomes, loss, round)
+    log_outcomes(outcomes, loss, round, frac)
 
 end = time.perf_counter()
 print(f"Elapsed time: {(end - start):.3f} seconds, {(end - start)/(num_rounds*num_environments):.5f} seconds per episode")

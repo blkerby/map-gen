@@ -4,7 +4,7 @@
 use crate::common::{Action, CommonData, Coord, DoorValidOutcome, Room, RoomIdx};
 use crate::environment::Environment;
 use crossbeam_channel as channel;
-use numpy::{Element, IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
+use numpy::{Element, IntoPyArray, PyArray2, PyArrayMethods, PyReadonlyArray1};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use std::cmp::{max, min};
@@ -79,11 +79,6 @@ impl<T> OutputShard<T> {
 
 enum WorkerCommand {
     Clear,
-    GetInitialAction {
-        room_idx: OutputShard<RoomIdx>,
-        room_x: OutputShard<Coord>,
-        room_y: OutputShard<Coord>,
-    },
     Finish,
     Step {
         room_idx: InputShard<RoomIdx>,
@@ -174,28 +169,6 @@ fn worker_loop(
             WorkerCommand::Clear => {
                 for env in &mut environments {
                     env.clear(&common_data);
-                }
-                WorkerResponse::Done
-            }
-            WorkerCommand::GetInitialAction {
-                room_idx,
-                room_x,
-                room_y,
-            } => {
-                let room_idx = unsafe { room_idx.into_mut_slice() };
-                let room_x = unsafe { room_x.into_mut_slice() };
-                let room_y = unsafe { room_y.into_mut_slice() };
-
-                for (env, ((room_idx, room_x), room_y)) in environments.iter_mut().zip(
-                    room_idx
-                        .iter_mut()
-                        .zip(room_x.iter_mut())
-                        .zip(room_y.iter_mut()),
-                ) {
-                    let action = env.get_initial_action(&common_data);
-                    *room_idx = action.room_idx;
-                    *room_x = action.x;
-                    *room_y = action.y;
                 }
                 WorkerResponse::Done
             }
@@ -524,47 +497,6 @@ impl EnvironmentGroup {
         Ok(())
     }
 
-    #[allow(clippy::type_complexity)]
-    fn get_initial_action<'py>(
-        &mut self,
-        py: Python<'py>,
-    ) -> PyResult<(
-        Bound<'py, PyArray1<RoomIdx>>,
-        Bound<'py, PyArray1<Coord>>,
-        Bound<'py, PyArray1<Coord>>,
-    )> {
-        let mut room_idx = vec![0; self.num_environments];
-        let mut room_x = vec![0; self.num_environments];
-        let mut room_y = vec![0; self.num_environments];
-
-        py.detach(|| {
-            let mut sent_workers = Vec::with_capacity(self.workers.len());
-            let mut first_error = None;
-            for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let output_start = worker.start;
-                let output_end = worker.end();
-
-                if let Err(err) = worker.send(WorkerCommand::GetInitialAction {
-                    room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
-                    room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
-                    room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
-                }) {
-                    set_first_error(&mut first_error, err);
-                    break;
-                }
-                sent_workers.push(worker_idx);
-            }
-
-            wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })?;
-
-        Ok((
-            room_idx.into_pyarray(py),
-            room_x.into_pyarray(py),
-            room_y.into_pyarray(py),
-        ))
-    }
-
     fn finish(&mut self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -687,12 +619,15 @@ impl EnvironmentGroup {
     fn get_candidates<'py>(
         &mut self,
         py: Python<'py>,
-        max_candidates: usize,
+        mut max_candidates: usize,
     ) -> PyResult<(
         Bound<'py, PyArray2<RoomIdx>>,
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
     )> {
+        if self.action_count == 0 {
+            max_candidates = 1;
+        }
         let output_len = self.num_environments * max_candidates;
         let dummy_candidate = Action {
             room_idx: self.common_data.room.len() as RoomIdx, // an invalid room index to indicate no-op

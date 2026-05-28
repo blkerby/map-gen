@@ -34,11 +34,12 @@ def generate(env: EnvironmentGroup, model, config: GenerationConfig, device: tor
             # Model inference to get predictions and updated key-value cache for next step
             preds, kv_cache_candidates = model.generate(candidates, kv_cache, config)
     
-            # Compute expected reward and sample to select an action (per environment)
             if candidates.room_idx.shape[1] == 1:
+                # Only one candidate, so select it directly (e.g. on the first step)
                 action_index = torch.zeros(candidates.room_idx.shape[0], dtype=torch.int64, device=device)
                 selected_actions = candidates.select(action_index)
             else:
+                # Compute expected reward and sample to select an action (per environment)
                 expected_reward = compute_expected_reward(preds, config)
                 expected_reward = torch.where(candidates.room_idx == num_rooms, # dummy action should only be selected if no other choice
                                             torch.full_like(expected_reward, float('-inf')),
