@@ -24,13 +24,15 @@ logging.basicConfig(format='%(asctime)s %(message)s',
 rooms_str = open("room_definitions/crateria.json", "r").read()
 # rooms_str = open("room_definitions/zebes.json", "r").read()
 rooms = json.loads(rooms_str)
-episode_length = len(rooms)
-# num_environments = 512
-num_environments = 1
-num_rounds = 1
+num_rooms = len(rooms)
+episode_length = num_rooms
+num_environments = 2048
+# num_environments = 1
+num_rounds = 10000
 max_candidates = 16
+# max_candidates = 1
 map_size = (72, 72)
-temperature = 100.0
+temperature = 0.03
 device = torch.device("cuda:0")
 
 engine = Engine(rooms)
@@ -83,8 +85,8 @@ gen_config = GenerationConfig(
 )
 
 loss_config = LossConfig(
-    door_weight=1.0,
-    connection_weight=1.0,
+    door_weight=output_sizes[0] / (output_sizes[0] + output_sizes[1]),
+    connection_weight=output_sizes[1] / (output_sizes[0] + output_sizes[1]),
 )
 
 def log_outcomes(outcomes, loss, round):
@@ -106,27 +108,25 @@ def log_outcomes(outcomes, loss, round):
     run.track(avg_invalid, name="avg_invalid", step=round)
     run.track(min_invalid, name="min_invalid", step=round)
     
-    logging.info(f"loss: {loss:.4f}, total: {avg_invalid:.2f} (min: {min_invalid}), door: {avg_door:.2f} (min: {min_door}), conn: {avg_connection:.2f} (min: {min_connection})")
+    logging.info(f"round {round}, loss {loss:.4f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_connection:.2f} (min {min_connection})")
     
 
-main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0002)
+main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0005)
 
 
 start = time.perf_counter()
 for round in range(num_rounds):
     actions, outcomes = generate(env, main_model, gen_config, device)
-    # print(actions)
 
-    main_optimizer.zero_grad()
+    main_model.zero_grad()
     preds = main_model(actions, gen_config)
-    print("outcomes:", outcomes.door_invalid.shape, outcomes.connection_invalid.shape)
-    print("preds:", preds.door_invalid.shape, preds.connection_invalid.shape)
 
     repeated_outcomes = Outcomes(
         door_invalid=outcomes.door_invalid.unsqueeze(1).repeat(1, episode_length, 1),
         connection_invalid=outcomes.connection_invalid.unsqueeze(1).repeat(1, episode_length, 1),
     )
-    loss = compute_loss(preds, repeated_outcomes, loss_config)
+    mask = (actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
+    loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
     loss.backward()
     main_optimizer.step()
 

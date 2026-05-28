@@ -354,6 +354,9 @@ impl Environment {
     }
 
     pub fn get_candidates(&mut self, common: &CommonData, max_candidates: usize) -> Vec<Action> {
+        if self.actions.is_empty() {
+            return vec![self.get_initial_action(common)];
+        }
         let smallest_frontier_size = self
             .frontier
             .values()

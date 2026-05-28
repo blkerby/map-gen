@@ -72,8 +72,13 @@ class EnvironmentGroup:
     def clear(self):
         self.env.clear()
 
-    def initial_step(self):
-        self.env.initial_step()
+    def get_initial_action(self, device: torch.device) -> Actions:
+        room_idx, room_x, room_y = self.env.get_initial_action()
+        return Actions(
+            room_idx=torch.from_numpy(room_idx).to(device),
+            room_x=torch.from_numpy(room_x).to(device),
+            room_y=torch.from_numpy(room_y),
+        )
 
     def step(self, actions: Actions):
         self.env.step(
