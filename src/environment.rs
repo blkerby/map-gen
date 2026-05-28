@@ -100,12 +100,7 @@ impl Environment {
         self.scc_dag.clear();
     }
 
-    pub fn initial_step(&mut self, common: &CommonData) {
-        let action = self.get_initial_action(common);
-        self.step(action, common);
-    }
-
-    fn get_initial_action(&mut self, common: &CommonData) -> Action {
+    pub fn get_initial_action(&mut self, common: &CommonData) -> Action {
         // Select a room and position uniformly at random.
         let room_idx = self.rng.random_range(0..common.room.len() as RoomIdx);
         let geometry_idx = common.room[room_idx as usize].geometry_idx;

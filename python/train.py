@@ -25,11 +25,12 @@ rooms_str = open("room_definitions/crateria.json", "r").read()
 # rooms_str = open("room_definitions/zebes.json", "r").read()
 rooms = json.loads(rooms_str)
 episode_length = len(rooms)
-num_environments = 512
-num_rounds = 10000
+# num_environments = 512
+num_environments = 1
+num_rounds = 1
 max_candidates = 16
 map_size = (72, 72)
-temperature = 0.03
+temperature = 100.0
 device = torch.device("cuda:0")
 
 engine = Engine(rooms)
@@ -108,15 +109,19 @@ def log_outcomes(outcomes, loss, round):
     logging.info(f"loss: {loss:.4f}, total: {avg_invalid:.2f} (min: {min_invalid}), door: {avg_door:.2f} (min: {min_door}), conn: {avg_connection:.2f} (min: {min_connection})")
     
 
-main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0001)
+main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0002)
 
 
 start = time.perf_counter()
 for round in range(num_rounds):
     actions, outcomes = generate(env, main_model, gen_config, device)
+    # print(actions)
 
     main_optimizer.zero_grad()
     preds = main_model(actions, gen_config)
+    print("outcomes:", outcomes.door_invalid.shape, outcomes.connection_invalid.shape)
+    print("preds:", preds.door_invalid.shape, preds.connection_invalid.shape)
+
     repeated_outcomes = Outcomes(
         door_invalid=outcomes.door_invalid.unsqueeze(1).repeat(1, episode_length, 1),
         connection_invalid=outcomes.connection_invalid.unsqueeze(1).repeat(1, episode_length, 1),

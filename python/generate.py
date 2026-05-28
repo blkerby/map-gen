@@ -25,7 +25,10 @@ def generate(env: EnvironmentGroup, model, config: GenerationConfig, device: tor
 
     kv_cache = model.get_initial_kv_cache(num_envs, device)
     env.clear()
+
+    # Place the first room uniformly at random
     env.initial_step()
+    
     
     for _ in range(config.episode_length - 1):
         # Get candidate actions from environment, and load them to device (e.g. GPU)
