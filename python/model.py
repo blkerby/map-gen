@@ -289,56 +289,50 @@ class CausalTransformerModel(torch.nn.Module):
         return get_predictions(X, self.output_sizes), cache_candidates
 
 
-# rooms = [
-#     {"map": [[0, 0], [0, 0]]},
-#     {"map": [[0]]},
-#     {"map": [[0]]},
-#     {"map": [[0, 0]]},
-# ]
-# state_model = CausalTransformerModel(
-#     num_rooms=len(rooms),
-#     map_x=8,
-#     map_y=8,
-#     output_sizes=(0, 2),
-#     embedding_width=3,
-#     key_width=4,
-#     value_width=5,
-#     attn_heads=9,
-#     head_groups=3,
-#     hidden_width=7,
-#     num_layers=2,
-# )
+if __name__ == "__main__":
+    rooms = [
+        {"map": [[0, 0], [0, 0]]},
+        {"map": [[0]]},
+        {"map": [[0]]},
+        {"map": [[0, 0]]},
+    ]
+    state_model = CausalTransformerModel(
+        num_rooms=len(rooms),
+        map_x=8,
+        map_y=8,
+        output_sizes=(0, 2),
+        embedding_width=3,
+        key_width=4,
+        value_width=5,
+        attn_heads=9,
+        head_groups=3,
+        hidden_width=7,
+        num_layers=2,
+    )
 
+    b = 2
+    s = 3
+    actions = Actions(
+        room_idx=torch.randint(0, 4, (b, s)),
+        room_x=torch.randint(0, 4, (b, s)),
+        room_y=torch.randint(0, 4, (b, s)),
+    )
+    config = GenerateConfig(
+        episode_length=len(rooms),
+        max_candidates=4,
+        temperature=torch.rand([b]),
+    )
+    out1 = state_model.forward(actions, config)
+    print("forward out:", out1)
 
-# # action = torch.tensor([[
-# #     [0, 0, 0],
-# #     [1, 1, 0]
-# # ]])
-# b = 2
-# s = 3
-# actions = Actions(
-#     room_idx=torch.randint(0, 4, (b, s)),
-#     room_x=torch.randint(0, 4, (b, s)),
-#     room_y=torch.randint(0, 4, (b, s)),
-# )
-# config = GenerationConfig(
-#     episode_length=len(rooms),
-#     max_candidates=4,
-#     temperature=torch.rand([b]),
-# )
-# out1 = state_model.forward(actions, config)
-# print("forward out:", out1)
-
-# kv_cache = state_model.get_initial_kv_cache(b, "cpu")
-# for i in range(s):
-#     cand = Actions(
-#         room_idx=actions.room_idx[:, i:i+1],
-#         room_x=actions.room_x[:, i:i+1],
-#         room_y=actions.room_y[:, i:i+1],
-#     )
-#     out2, kv_cache_cands = state_model.generate(cand, kv_cache, config)
-#     print(f"generate out {i}:", out2)
-
-#     action_idx = torch.tensor([0])
-#     kv_cache = state_model.get_updated_kv_cache(kv_cache, kv_cache_cands, action_idx)
-
+    kv_cache = state_model.get_initial_kv_cache(b, "cpu")
+    for i in range(s):
+        cand = Actions(
+            room_idx=actions.room_idx[:, i:i+1],
+            room_x=actions.room_x[:, i:i+1],
+            room_y=actions.room_y[:, i:i+1],
+        )
+        out2, kv_cache_cands = state_model.generate(cand, kv_cache, config)
+        print(f"generate out {i}:", out2)
+        action_idx = torch.zeros(b, dtype=torch.int64)
+        kv_cache = state_model.get_updated_kv_cache(kv_cache, kv_cache_cands, action_idx)

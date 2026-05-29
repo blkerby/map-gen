@@ -12,10 +12,9 @@ def rand_choice(p):
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
 def compute_expected_reward(preds, config: GenerateConfig):
-    door_logprobs = torch.logaddexp(-preds.door_invalid, torch.zeros_like(preds.door_invalid))
-    connection_logprobs = torch.logaddexp(-preds.connection_invalid, torch.zeros_like(preds.connection_invalid))
-    total_logprobs = torch.sum(door_logprobs, dim=2) + torch.sum(connection_logprobs, dim=2)
-    return total_logprobs
+    door_invalid_count = torch.sum(torch.sigmoid(preds.door_invalid), dim=2)
+    connection_invalid_count = torch.sum(torch.sigmoid(preds.connection_invalid), dim=2)
+    return -(door_invalid_count + connection_invalid_count)
 
 
 def generate(env: EnvironmentGroup, model, config: GenerateConfig, device: torch.device):
