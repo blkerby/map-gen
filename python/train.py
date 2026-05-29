@@ -127,22 +127,31 @@ def log_outcomes(outcomes, loss, round, frac):
     door_invalid = torch.sum(outcomes.door_invalid != 0, dim=1)
     avg_door = torch.mean(door_invalid.to(torch.float32))
     min_door = torch.min(door_invalid)
-    run.track(avg_door, name="avg_door", step=round)
-    run.track(min_door, name="min_door", step=round)
     
-    connection_invalid = torch.sum(outcomes.connection_invalid != 0, dim=1)
-    avg_connection = torch.mean(connection_invalid.to(torch.float32))
-    min_connection = torch.min(connection_invalid)
-    run.track(avg_connection, name="avg_connection", step=round)
-    run.track(min_connection, name="min_connection", step=round)
-    
-    total_invalid = door_invalid + connection_invalid
+    conn_invalid = torch.sum(outcomes.connection_invalid != 0, dim=1)
+    avg_conn = torch.mean(conn_invalid.to(torch.float32))
+    min_conn = torch.min(conn_invalid)
+
+    total_invalid = door_invalid + conn_invalid
     avg_invalid = torch.mean(total_invalid.to(torch.float32))
     min_invalid = torch.min(total_invalid)
+
+    success = total_invalid == 0
+    success_rate = torch.mean(success.to(torch.float32))
+    success_door = torch.mean((door_invalid == 0).to(torch.float32))
+    success_conn = torch.mean((conn_invalid == 0).to(torch.float32))
+
+    run.track(success_rate, name="success_rate", step=round)
     run.track(avg_invalid, name="avg_invalid", step=round)
     run.track(min_invalid, name="min_invalid", step=round)
+    run.track(success_door, name="success_door", step=round)
+    run.track(avg_door, name="avg_door", step=round)
+    run.track(min_door, name="min_door", step=round)
+    run.track(success_conn, name="success_conn", step=round)
+    run.track(avg_conn, name="avg_conn", step=round)
+    run.track(min_conn, name="min_conn", step=round)    
     
-    logging.info(f"round {round}, loss {loss:.4f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_connection:.2f} (min {min_connection}), frac {frac:.4f}")
+    logging.info(f"round {round}, loss {loss:.4f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_conn:.2f} (min {min_conn}), frac {frac:.4f}")
 
 
 def get_gen_config(frac):
@@ -171,36 +180,42 @@ scaler = torch.amp.GradScaler('cuda')
 num_batches = int(math.ceil(episodes_per_round * config.train.pass_factor / config.train.batch_size))
 num_episodes = 0
 
-for round in range(config.total_episodes):
-    frac = min(num_episodes / config.annealing_episodes, 1.0)
-
-    # Generate new maps:
-    gen_config = get_gen_config(frac)
-    actions, outcomes = generate(gen_env, main_model, gen_config, device)
-    num_episodes += config.generation.num_environments
-
-    # Store them as experience (to disk):
-    experience.store(actions)    
-
-    # Train the model on samples of past experience
-    for _ in range(num_batches):
-        actions = experience.sample(config.train.batch_size, config.train.episodes_per_file, config.train.hist_c)
-        train_env.replay(actions)
-        actions = actions.to(device)
-        outcomes = train_env.get_outcomes(device)
+try:
+    for round in range(config.total_episodes):
+        frac = min(num_episodes / config.annealing_episodes, 1.0)
+    
+        # Generate new maps:
+        gen_config = get_gen_config(frac)
+        actions, outcomes = generate(gen_env, main_model, gen_config, device)
+        num_episodes += config.generation.num_environments
+    
+        # Store them as experience (to disk):
+        experience.store(actions)    
+    
+        # Train the model on samples of past experience
+        for _ in range(num_batches):
+            actions = experience.sample(config.train.batch_size, config.train.episodes_per_file, config.train.hist_c)
+            train_env.replay(actions)
+            actions = actions.to(device)
+            outcomes = train_env.get_outcomes(device)
+            
+            main_model.zero_grad()
+            preds = main_model(actions, gen_config)
+    
+            repeated_outcomes = Outcomes(
+                door_invalid=outcomes.door_invalid.unsqueeze(1).repeat(1, episode_length, 1),
+                connection_invalid=outcomes.connection_invalid.unsqueeze(1).repeat(1, episode_length, 1),
+            )
+            mask = (actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
+            loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
         
-        main_model.zero_grad()
-        preds = main_model(actions, gen_config)
+            scaler.scale(loss).backward()
+            scaler.step(main_optimizer)
+            scaler.update()
+        
+        log_outcomes(outcomes, loss, round, frac)
 
-        repeated_outcomes = Outcomes(
-            door_invalid=outcomes.door_invalid.unsqueeze(1).repeat(1, episode_length, 1),
-            connection_invalid=outcomes.connection_invalid.unsqueeze(1).repeat(1, episode_length, 1),
-        )
-        mask = (actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
-        loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
-    
-        scaler.scale(loss).backward()
-        scaler.step(main_optimizer)
-        scaler.update()
-    
-    log_outcomes(outcomes, loss, round, frac)
+except KeyboardInterrupt:
+    print("\n[!] Training interrupted via Ctrl-C. Finalizing Aim run...")    
+finally:
+    run.close()    
