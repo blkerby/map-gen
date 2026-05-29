@@ -11,15 +11,17 @@ class LossConfig:
     connection_weight: float
 
 
-def masked_binary_cross_entropy_loss(preds: torch.Tensor, outcomes: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+def masked_binary_cross_entropy_loss(preds: torch.Tensor, outcomes: torch.Tensor, mask: torch.Tensor, weight: float) -> torch.Tensor:
     mask = (mask & (outcomes >= 0)).to(preds.dtype)
     binary_loss = torch.nn.functional.binary_cross_entropy_with_logits(
         preds, outcomes.to(preds.dtype), reduction='none')
-    return torch.mean(binary_loss * mask)
+    return weight * torch.sum(binary_loss * mask), weight * torch.sum(mask)
 
 
 def compute_loss(preds: Predictions, outcomes: Outcomes, mask: torch.Tensor, config: LossConfig) -> torch.Tensor:
-    door_loss = masked_binary_cross_entropy_loss(preds.door_invalid, outcomes.door_invalid, mask)
-    connection_loss = masked_binary_cross_entropy_loss(preds.connection_invalid, outcomes.connection_invalid, mask)
-    total_loss = config.door_weight * door_loss + config.connection_weight * connection_loss
-    return total_loss
+    door_loss, door_wt = masked_binary_cross_entropy_loss(
+        preds.door_invalid, outcomes.door_invalid, mask, config.door_weight)
+    conn_loss, conn_wt = masked_binary_cross_entropy_loss(
+        preds.connection_invalid, outcomes.connection_invalid, mask, config.connection_weight)
+    mean_loss = (door_loss + conn_loss) / (door_wt + conn_wt + 1e-15)
+    return mean_loss

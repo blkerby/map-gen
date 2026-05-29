@@ -4,90 +4,121 @@ import numpy as np
 import torch
 import logging
 from datetime import datetime
+from dataclasses import dataclass
+import argparse
+
 import os
 
 from aim import Run
+from pydantic import BaseModel
+from pathlib import Path
 
-from env import Engine, GenerationConfig, Outcomes
+from env import Engine, GenerateConfig, Outcomes
 from model import CausalTransformerModel
 from loss import LossConfig, compute_loss
 from generate import generate
 
+
+class ModelConfig(BaseModel):
+    embedding_width: int 
+    key_width: int
+    value_width: int
+    attn_heads: int
+    head_groups: int
+    hidden_width: int 
+    num_layers: int
+
+
+class OptimizerConfig(BaseModel):
+    lr: float
+    beta1: float
+    beta2: float
+    
+
+class GenerationConfig(BaseModel):
+    num_environments: int
+    action_candidates: int
+    temperature0: float
+    temperature1: float
+
+    
+class TrainConfig(BaseModel):
+    door_weight: float
+    connection_weight: float
+
+
+class Config(BaseModel):
+    experiment_name: str
+    room_set: Path
+    annealing_episodes: int
+    total_episodes: int
+    map_size: tuple[int, int]
+    model: ModelConfig
+    optimizer: OptimizerConfig
+    generation: GenerationConfig
+    train: TrainConfig
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("config", type=Path)
+args = parser.parse_args()
+config = Config.parse_file(args.config)
+
+
 start_time = datetime.now()
-os.makedirs("logs", exist_ok=True)
+run_path = f"runs/{start_time.isoformat()}-{config.experiment_name}/"
+os.makedirs(run_path, exist_ok=True)
 logging.basicConfig(format='%(asctime)s %(message)s',
                     level=logging.INFO,
-                    handlers=[logging.FileHandler(f"logs/train-{start_time.isoformat()}.log"),
+                    handlers=[logging.FileHandler(f"{run_path}/train-{start_time.isoformat()}.log"),
                               logging.StreamHandler()])
 
+logging.info("Config:\n{}".format(config.model_dump_json(indent=2)))
 
-rooms_str = open("room_definitions/crateria.json", "r").read()
-# rooms_str = open("room_definitions/zebes.json", "r").read()
+rooms_str = open(config.room_set, "r").read()
 rooms = json.loads(rooms_str)
 num_rooms = len(rooms)
 episode_length = num_rooms
-num_environments = 2048
-# num_environments = 1
-num_rounds = 10000
-max_candidates = 16
-# max_candidates = 1
-map_size = (72, 72)
 device = torch.device("cuda:0")
 
 engine = Engine(rooms)
-env = engine.create_environment_group(map_size, num_environments, seed=6)
+env = engine.create_environment_group(config.map_size, config.generation.num_environments, seed=0)
 output_sizes = engine.get_output_sizes()
-
-embedding_width = 256
-key_width = 64
-value_width = 64
-attn_heads = 16
-head_groups = 4
-hidden_width = 512
-num_layers = 4
 
 main_model = CausalTransformerModel(
     num_rooms=len(rooms),
-    map_x=map_size[0],
-    map_y=map_size[1],
+    map_x=config.map_size[0],
+    map_y=config.map_size[1],
     output_sizes=output_sizes,
-    embedding_width=embedding_width,
-    key_width=key_width,
-    value_width=value_width,
-    attn_heads=attn_heads,
-    head_groups=head_groups,
-    hidden_width=hidden_width,
-    num_layers=num_layers,
+    embedding_width=config.model.embedding_width,
+    key_width=config.model.key_width,
+    value_width=config.model.value_width,
+    attn_heads=config.model.attn_heads,
+    head_groups=config.model.head_groups,
+    hidden_width=config.model.hidden_width,
+    num_layers=config.model.num_layers,
 ).to(device)
 
-annealing_episodes = 2 ** 20
-temperature0 = 10.0
-temperature1 = 0.03
+
+@dataclass
+class TrainSession:
+    model: torch.nn.Module
+    optimizer: torch.optim.Optimizer
+    num_episodes: int = 0
+
+    def __init__(self, model: torch.nn.Module, optimizer: torch.optim.Optimizer, num_episodes: int = 0):
+        self.model = model
+        self.optimizer = optimizer
+        self.num_episodes = num_episodes
+
 
 # Log experiment using Aim
-run = Run(experiment="initial testing")
-run["model"] = {
-    "num_rooms": len(rooms),
-    "map_x": map_size[0],
-    "map_y": map_size[1],
-    "output_sizes": output_sizes,
-    "embedding_width": embedding_width,
-    "key_width": key_width,
-    "value_width": value_width,
-    "attn_heads": attn_heads,
-    "head_groups": head_groups,
-    "hidden_width": hidden_width,
-    "num_layers": num_layers,
-}
-run["schedule"] = {
-    "annealing_episodes": annealing_episodes,
-    "temperature0": temperature0,
-    "temperature1": temperature1,
-}
+run = Run(experiment=config.experiment_name)
+run["config"] = json.loads(config.model_dump_json())
 
 loss_config = LossConfig(
-    door_weight=output_sizes[0] / (output_sizes[0] + output_sizes[1]),
-    connection_weight=output_sizes[1] / (output_sizes[0] + output_sizes[1]),
+    door_weight=config.train.door_weight,
+    connection_weight=config.train.connection_weight,
 )
 
 def log_outcomes(outcomes, loss, round, frac):
@@ -113,23 +144,31 @@ def log_outcomes(outcomes, loss, round, frac):
 
 
 def get_gen_config(frac):
+    temperature0 = config.generation.temperature0
+    temperature1 = config.generation.temperature1
     temperature = temperature0 * (temperature1 / temperature0) ** frac
-    return GenerationConfig(
+    return GenerateConfig(
         episode_length=len(rooms),
-        max_candidates=max_candidates,
-        temperature=torch.full([num_environments], temperature, dtype=torch.float32, device=device),
+        max_candidates=config.generation.action_candidates,
+        temperature=torch.full([config.generation.num_environments],
+            temperature, dtype=torch.float32, device=device),
     )
 
 
-main_optimizer = torch.optim.Adam(main_model.parameters(), lr=0.0005, betas=(0.9, 0.95))
+main_optimizer = torch.optim.Adam(
+    main_model.parameters(),
+    lr=config.optimizer.lr,
+    betas=(config.optimizer.beta1, config.optimizer.beta2))
+
+scaler = torch.cuda.amp.GradScaler()
+
 num_episodes = 0
 
-start = time.perf_counter()
-for round in range(num_rounds):
-    frac = min(num_episodes / annealing_episodes, 1.0)
+for round in range(config.total_episodes):
+    frac = min(num_episodes / config.annealing_episodes, 1.0)
     gen_config = get_gen_config(frac)
     actions, outcomes = generate(env, main_model, gen_config, device)
-    num_episodes += num_environments
+    num_episodes += config.generation.num_environments
 
     main_model.zero_grad()
     preds = main_model(actions, gen_config)
@@ -140,10 +179,9 @@ for round in range(num_rounds):
     )
     mask = (actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
     loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
-    loss.backward()
-    main_optimizer.step()
+
+    scaler.scale(loss).backward()
+    scaler.step(main_optimizer)
+    scaler.update()
 
     log_outcomes(outcomes, loss, round, frac)
-
-end = time.perf_counter()
-print(f"Elapsed time: {(end - start):.3f} seconds, {(end - start)/(num_rounds*num_environments):.5f} seconds per episode")

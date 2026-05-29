@@ -2,7 +2,7 @@ import torch
 import math
 from dataclasses import dataclass
 
-from env import Actions, GenerationConfig
+from env import Actions, GenerateConfig
 
 # These tensors are all f32 with shape
 #    [batch, time, output]  during training,
@@ -125,7 +125,7 @@ class CausalTransformerModel(torch.nn.Module):
         self.output_lin = torch.nn.Linear(embedding_width, self.num_outputs, bias=False)
 
 
-    def get_embedding(self, room_idx, room_x, room_y, config: GenerationConfig):
+    def get_embedding(self, room_idx, room_x, room_y, config: GenerateConfig):
         global_data = torch.cat([torch.log(config.temperature.view(-1, 1))], dim=1)
 
         global_emb = self.global_lin(global_data).unsqueeze(1)
@@ -138,7 +138,7 @@ class CausalTransformerModel(torch.nn.Module):
         return X        
 
 
-    def forward(self, actions: Actions, config: GenerationConfig):
+    def forward(self, actions: Actions, config: GenerateConfig):
         room_idx = actions.room_idx.to(torch.int64)
         room_x = actions.room_x.to(torch.int64)
         room_y = actions.room_y.to(torch.int64)
@@ -211,7 +211,7 @@ class CausalTransformerModel(torch.nn.Module):
         return new_K_list, new_V_list
 
 
-    def generate(self, actions: Actions, kv_cache, config: GenerationConfig):
+    def generate(self, actions: Actions, kv_cache, config: GenerateConfig):
         room_idx = actions.room_idx
         room_x = actions.room_x
         room_y = actions.room_y

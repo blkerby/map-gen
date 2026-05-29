@@ -8,7 +8,7 @@ import json
 import map_gen
 
 @dataclass
-class GenerationConfig:
+class GenerateConfig:
     episode_length: int
     max_candidates: int
     temperature: torch.Tensor

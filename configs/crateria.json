@@ -1,0 +1,31 @@
+{
+  "experiment_name": "crateria-initial-testing",
+  "room_set": "room_definitions/crateria.json",
+  "annealing_episodes": 1000000,
+  "total_episodes": 4000000,
+  "map_size": [72, 72],
+  "model": {
+    "embedding_width": 256,
+    "key_width": 64,
+    "value_width": 64,
+    "attn_heads": 16,
+    "head_groups": 4,
+    "hidden_width": 512,
+    "num_layers": 4
+  },
+  "optimizer": {
+    "lr": 0.0003,
+    "beta1": 0.95,
+    "beta2": 0.95
+  },
+  "generation": {
+    "num_environments": 2048,
+    "action_candidates": 16,
+    "temperature0": 1.0,
+    "temperature1": 0.03
+  },
+  "train": {
+    "door_weight": 1.0,
+    "connection_weight": 1.0
+  }
+}
