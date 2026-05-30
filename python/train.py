@@ -68,8 +68,15 @@ class Config(BaseModel):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config", type=Path)
+parser.add_argument(
+    "--verify-outcome-consistency",
+    action="store_true",
+    help="fail if a known per-step outcome later changes",
+)
 args = parser.parse_args()
 config = Config.parse_file(args.config)
+
+verify_outcome_consistency = args.verify_outcome_consistency
 
 
 start_time = datetime.now()
@@ -81,6 +88,8 @@ logging.basicConfig(format='%(asctime)s %(message)s',
                               logging.StreamHandler()])
 
 logging.info("Config:\n{}".format(config.model_dump_json(indent=2)))
+if verify_outcome_consistency:
+    logging.info("Outcome consistency verification enabled.")
 
 if config.train.fresh_pass_factor != 0.0 and config.generation.num_environments % config.train.batch_size != 0:
     raise ValueError(
@@ -269,7 +278,13 @@ try:
 
         # Generate new maps:
         gen_config = get_gen_config(frac)
-        actions, gen_outcomes = generate(gen_env, ema_model, gen_config, device)
+        actions, gen_outcomes = generate(
+            gen_env,
+            ema_model,
+            gen_config,
+            device,
+            verify_outcome_consistency=verify_outcome_consistency,
+        )
         num_episodes += config.generation.num_environments
 
         # Train the model on the episodes generated in this round.

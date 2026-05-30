@@ -1,4 +1,4 @@
-from env import EnvironmentGroup, GenerateConfig
+from env import EnvironmentGroup, GenerateConfig, Outcomes
 import torch
 
 
@@ -31,16 +31,70 @@ def compute_expected_reward(preds, outcomes, config: GenerateConfig):
     return torch.sum(door_logprobs, dim=2) + torch.sum(connection_logprobs, dim=2)
 
 
-def generate(env: EnvironmentGroup, model, config: GenerateConfig, device: torch.device):
+def select_outcomes(outcomes: Outcomes, index: torch.Tensor) -> Outcomes:
+    gather_index = index.view(-1, 1, 1)
+    return Outcomes(
+        door_invalid=torch.gather(
+            outcomes.door_invalid, 1, gather_index.expand(-1, 1, outcomes.door_invalid.shape[2])
+        ).squeeze(1),
+        connection_invalid=torch.gather(
+            outcomes.connection_invalid,
+            1,
+            gather_index.expand(-1, 1, outcomes.connection_invalid.shape[2]),
+        ).squeeze(1),
+    )
+
+
+def merge_verified_outcomes(
+    known_outcomes: Outcomes | None,
+    current_outcomes: Outcomes,
+    stage: str,
+) -> Outcomes:
+    if known_outcomes is None:
+        return current_outcomes
+
+    def merge_known(known: torch.Tensor, current: torch.Tensor, outcome_name: str):
+        inconsistent = (known >= 0) & (current >= 0) & (known != current)
+        if torch.any(inconsistent):
+            first_idx = torch.nonzero(inconsistent, as_tuple=False)[0].tolist()
+            invalid_to_valid = torch.sum((known == 1) & (current == 0)).item()
+            valid_to_invalid = torch.sum((known == 0) & (current == 1)).item()
+            raise RuntimeError(
+                f"{outcome_name} outcome changed after becoming known at {stage}: "
+                f"first index {first_idx}, invalid->valid {invalid_to_valid}, "
+                f"valid->invalid {valid_to_invalid}"
+            )
+        return torch.where(known >= 0, known, current)
+
+    return Outcomes(
+        door_invalid=merge_known(
+            known_outcomes.door_invalid, current_outcomes.door_invalid, "door"
+        ),
+        connection_invalid=merge_known(
+            known_outcomes.connection_invalid,
+            current_outcomes.connection_invalid,
+            "connection",
+        ),
+    )
+
+
+def generate(
+    env: EnvironmentGroup,
+    model,
+    config: GenerateConfig,
+    device: torch.device,
+    verify_outcome_consistency: bool = False,
+):
     num_envs = env.num_envs
     engine = env.engine
     num_rooms = len(engine.rooms)
 
     kv_cache = model.get_initial_kv_cache(num_envs, device)
     env.clear()
+    known_outcomes = None
 
     with torch.no_grad():
-        for _ in range(config.episode_length):
+        for step in range(config.episode_length):
             if config.lookahead_outcomes:
                 # Get candidate actions and their post-step known outcomes from environment.
                 candidates, outcomes = env.get_candidates_with_outcomes(config.max_candidates, device)
@@ -68,9 +122,23 @@ def generate(env: EnvironmentGroup, model, config: GenerateConfig, device: torch
                 probs = torch.softmax(expected_reward / torch.unsqueeze(config.temperature, 1), dim=1)
                 action_index = rand_choice(probs)
                 selected_actions = candidates.select(action_index)
+
+            if verify_outcome_consistency and config.lookahead_outcomes:
+                known_outcomes = merge_verified_outcomes(
+                    known_outcomes,
+                    select_outcomes(outcomes, action_index),
+                    f"lookahead step {step}",
+                )
             
             # Apply the selected action to the environment
             env.step(selected_actions)
+
+            if verify_outcome_consistency:
+                known_outcomes = merge_verified_outcomes(
+                    known_outcomes,
+                    env.get_outcomes(device),
+                    f"step {step}",
+                )
             
             # Finalize the kv cache update based on the selected action
             kv_cache = model.get_updated_kv_cache(kv_cache, kv_cache_candidates, action_index)
@@ -78,4 +146,6 @@ def generate(env: EnvironmentGroup, model, config: GenerateConfig, device: torch
     env.finish()
     actions = env.get_actions(device)
     outcomes = env.get_outcomes(device)
+    if verify_outcome_consistency:
+        merge_verified_outcomes(known_outcomes, outcomes, "finish")
     return actions, outcomes
