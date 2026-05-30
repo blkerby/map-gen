@@ -61,7 +61,7 @@ impl SccDag {
         Some(self.merge_components(&merge_components))
     }
 
-    fn merge_components(&mut self, merge_components: &[usize]) -> ComponentMerge {
+    pub fn merge_components(&mut self, merge_components: &[usize]) -> ComponentMerge {
         debug_assert!(!merge_components.is_empty());
         let target = merge_components.iter().copied().min().unwrap();
         let mut in_merge = vec![false; self.component_count];

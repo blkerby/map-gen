@@ -15,6 +15,7 @@ const NO_COMPONENT: usize = usize::MAX;
 #[derive(Clone, Debug)]
 pub struct Frontier {
     dir_door_idx: DirDoorIdx,
+    component: usize,
     candidates: Vec<GeometryAction>, // possible geometry placements to connect to this frontier
 }
 
@@ -251,6 +252,7 @@ impl Environment {
                 }
                 let frontier = Frontier {
                     dir_door_idx: door.dir_door_idx,
+                    component: self.room_part_component(common, action.room_idx, door.part_idx),
                     candidates,
                 };
                 self.frontier.insert(door_loc, frontier);
@@ -342,6 +344,9 @@ impl Environment {
                     *component = component_merge.component_remap[*component];
                 }
             }
+            for frontier in self.frontier.values_mut() {
+                frontier.component = component_merge.component_remap[frontier.component];
+            }
         }
     }
 
@@ -359,6 +364,26 @@ impl Environment {
             self.room_part_component[Self::room_part_idx(common, room_idx, part_idx) as usize];
         debug_assert_ne!(component, NO_COMPONENT);
         component
+    }
+
+    fn scc_dag_with_merged_frontiers(&self) -> (SccDag, Vec<usize>) {
+        let mut scc_dag = self.scc_dag.clone();
+        let mut component_remap = (0..self.scc_dag.component_count).collect::<Vec<_>>();
+        let mut frontier_components = self
+            .frontier
+            .values()
+            .map(|frontier| frontier.component)
+            .collect::<Vec<_>>();
+        frontier_components.sort_unstable();
+        frontier_components.dedup();
+
+        if frontier_components.len() >= 2 {
+            component_remap = scc_dag
+                .merge_components(&frontier_components)
+                .component_remap;
+        }
+
+        (scc_dag, component_remap)
     }
 
     pub fn get_candidates(&mut self, common: &CommonData, max_candidates: usize) -> Vec<Action> {
@@ -466,6 +491,8 @@ impl Environment {
             }
         }
 
+        let (frontier_merged_scc_dag, frontier_merged_component_remap) =
+            self.scc_dag_with_merged_frontiers();
         let mut connections_valid = Vec::with_capacity(common.room_connection.len());
         for connection in &common.room_connection {
             let mut outcome = if self.room_used[connection.room_idx as usize] {
@@ -475,8 +502,13 @@ impl Environment {
                     self.room_part_component(common, connection.room_idx, connection.to_part);
                 if self.scc_dag.can_reach(to_component, from_component) {
                     DoorValidOutcome::Valid
-                } else {
+                } else if frontier_merged_scc_dag.can_reach(
+                    frontier_merged_component_remap[to_component],
+                    frontier_merged_component_remap[from_component],
+                ) {
                     DoorValidOutcome::Unknown
+                } else {
+                    DoorValidOutcome::Invalid
                 }
             } else {
                 DoorValidOutcome::Unknown
@@ -630,6 +662,60 @@ mod tests {
         ));
 
         env.finish();
+        let outcomes = env.outcomes(&common);
+        assert!(matches!(
+            outcomes.connections_valid.as_slice(),
+            [DoorValidOutcome::Invalid]
+        ));
+    }
+
+    #[test]
+    fn connection_outcome_is_invalid_when_frontier_merge_cannot_make_path() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1]]
+            },
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 4), 0);
+
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+            },
+            &common,
+        );
+        assert!(matches!(
+            env.outcomes(&common).connections_valid.as_slice(),
+            [DoorValidOutcome::Unknown]
+        ));
+
+        env.step(
+            Action {
+                room_idx: 1,
+                x: 1,
+                y: 0,
+            },
+            &common,
+        );
+
         let outcomes = env.outcomes(&common);
         assert!(matches!(
             outcomes.connections_valid.as_slice(),
