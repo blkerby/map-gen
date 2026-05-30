@@ -53,6 +53,7 @@ def get_outcome_metadata(rooms):
         geometry_key = (
             tuple(tuple(row) for row in room["map"]),
             tuple(sorted(doors, key=lambda door: (direction_order[door[0]], *door[1:]))),
+            tuple(sorted(tuple(connection) for connection in room.get("connections", []))),
         )
         geometry_idx = geometry_by_key.get(geometry_key)
         if geometry_idx is None:
