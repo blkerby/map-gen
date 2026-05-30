@@ -114,19 +114,24 @@ class FactorizedOutcomeHead(torch.nn.Module):
         self.identity_embedding = torch.nn.Parameter(
             torch.randn([num_identities, embedding_width]) / math.sqrt(embedding_width))
         self.state = torch.nn.Linear(embedding_width, embedding_width, bias=False)
+        self.logit_scale = torch.nn.Parameter(torch.tensor(math.log(math.sqrt(embedding_width) / 2)))
 
     def forward(self, X, room_x, room_y, room_placed, pos_embedding_x, pos_embedding_y):
         if self.num_outputs == 0:
             return X.new_empty([X.shape[0], X.shape[1], 0])
-        state = self.state(X)
-        base_query = self.geometry_embedding[self.geometry_idx] + self.identity_embedding[self.identity_idx]
+        state = torch.nn.functional.normalize(self.state(X), dim=-1)
+        geometry_embedding = torch.nn.functional.normalize(self.geometry_embedding, dim=-1)
+        identity_embedding = torch.nn.functional.normalize(self.identity_embedding, dim=-1)
+        pos_embedding_x = torch.nn.functional.normalize(pos_embedding_x, dim=-1)
+        pos_embedding_y = torch.nn.functional.normalize(pos_embedding_y, dim=-1)
+        base_query = geometry_embedding[self.geometry_idx] + identity_embedding[self.identity_idx]
         base_logits = torch.matmul(state, base_query.transpose(0, 1))
         x_logits = torch.matmul(state, pos_embedding_x.transpose(0, 1))
         y_logits = torch.matmul(state, pos_embedding_y.transpose(0, 1))
         room_logits = torch.gather(x_logits, -1, room_x) + torch.gather(y_logits, -1, room_y)
         room_logits = torch.where(room_placed, room_logits, 0.0)
         position_logits = room_logits[..., self.room_idx]
-        return (base_logits + position_logits) / math.sqrt(self.embedding_width)
+        return (base_logits + position_logits) * torch.exp(torch.clamp(self.logit_scale, max=math.log(100.0)))
 
 
 class GroupedQueryAttentionLayer(torch.nn.Module):

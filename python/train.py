@@ -264,8 +264,14 @@ def train_batch(train_actions, train_outcomes, gen_config):
     )
     mask = (train_actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
     loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
+    if not torch.isfinite(loss):
+        raise RuntimeError(f"non-finite loss before backward: {loss.item()}")
 
     scaler.scale(loss).backward()
+    scaler.unscale_(main_optimizer)
+    grad_norm = torch.nn.utils.clip_grad_norm_(main_model.parameters(), max_norm=1.0)
+    if not torch.isfinite(grad_norm):
+        raise RuntimeError(f"non-finite gradient norm: {grad_norm.item()}")
     scaler.step(main_optimizer)
     scaler.update()
     update_ema_model()
