@@ -21,6 +21,7 @@
   "generation": {
     "num_environments": 8192,
     "action_candidates": 16,
+    "lookahead_outcomes": true,
     "temperature0": 10.0,
     "temperature1": 0.03
   },

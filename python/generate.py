@@ -41,8 +41,13 @@ def generate(env: EnvironmentGroup, model, config: GenerateConfig, device: torch
 
     with torch.no_grad():
         for _ in range(config.episode_length):
-            # Get candidate actions and their post-step known outcomes from environment.
-            candidates, outcomes = env.get_candidates_with_outcomes(config.max_candidates, device)
+            if config.lookahead_outcomes:
+                # Get candidate actions and their post-step known outcomes from environment.
+                candidates, outcomes = env.get_candidates_with_outcomes(config.max_candidates, device)
+            else:
+                # Use current known outcomes for all candidates.
+                candidates = env.get_candidates(config.max_candidates, device)
+                outcomes = env.get_outcomes(device)
             
             # Model inference to get predictions and updated key-value cache for next step
             preds, kv_cache_candidates = model.generate(candidates, kv_cache, config)
@@ -55,9 +60,8 @@ def generate(env: EnvironmentGroup, model, config: GenerateConfig, device: torch
                 # Compute expected reward and sample to select an action (per environment)
                 expected_reward = compute_expected_reward(preds, outcomes, config)
                 dummy_candidate = candidates.room_idx == num_rooms
-                has_real_candidate = torch.any(~dummy_candidate, dim=1, keepdim=True)
                 expected_reward = torch.where(
-                    dummy_candidate & has_real_candidate,
+                    dummy_candidate,
                     torch.full_like(expected_reward, float('-inf')),
                     expected_reward,
                 )

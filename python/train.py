@@ -38,6 +38,7 @@ class OptimizerConfig(BaseModel):
 class GenerationConfig(BaseModel):
     num_environments: int  # number of maps to generate in parallel
     action_candidates: int  # number of candidates to score for each room placement step
+    lookahead_outcomes: bool  # use post-candidate known outcomes when scoring candidates (greater CPU usage, better accuracy)
     temperature0: float  # initial temperature (higher = candidates selected more randomly)
     temperature1: float  # final temperature
 
@@ -201,6 +202,7 @@ def get_gen_config(frac):
         max_candidates=config.generation.action_candidates,
         temperature=torch.full([config.generation.num_environments],
             temperature, dtype=torch.float32, device=device),
+        lookahead_outcomes=config.generation.lookahead_outcomes,
     )
 
 
