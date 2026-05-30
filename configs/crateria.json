@@ -14,12 +14,12 @@
     "num_layers": 4
   },
   "optimizer": {
-    "lr": 0.0003,
+    "lr": 0.0005,
     "beta1": 0.95,
     "beta2": 0.95
   },
   "generation": {
-    "num_environments": 2048,
+    "num_environments": 8192,
     "action_candidates": 16,
     "temperature0": 1.0,
     "temperature1": 0.03

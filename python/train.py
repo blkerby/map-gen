@@ -2,6 +2,8 @@ import json
 import math
 import torch
 import logging
+import signal
+import atexit
 from datetime import datetime
 import argparse
 
@@ -77,6 +79,17 @@ logging.basicConfig(format='%(asctime)s %(message)s',
 
 logging.info("Config:\n{}".format(config.model_dump_json(indent=2)))
 
+stop_requested = False
+
+def handle_stop(signum, frame):
+    global stop_requested
+    stop_requested = True
+    logging.info("Stop signal received; training will stop after the current round finishes.")
+
+
+signal.signal(signal.SIGINT, handle_stop)
+signal.signal(signal.SIGTERM, handle_stop)
+
 rooms_str = open(config.room_set, "r").read()
 rooms = json.loads(rooms_str)
 num_rooms = len(rooms)
@@ -115,8 +128,8 @@ main_model = CausalTransformerModel(
 #         self.num_episodes = num_episodes
 
 # Log experiment using Aim
-run = Run(experiment=config.experiment_name)
-run["config"] = json.loads(config.model_dump_json())
+aim_run = Run(experiment=config.experiment_name)
+aim_run["config"] = json.loads(config.model_dump_json())
 
 loss_config = LossConfig(
     door_weight=config.train.door_weight,
@@ -141,17 +154,23 @@ def log_outcomes(outcomes, loss, round, frac):
     success_door = torch.mean((door_invalid == 0).to(torch.float32))
     success_conn = torch.mean((conn_invalid == 0).to(torch.float32))
 
-    run.track(success_rate, name="success_rate", step=round)
-    run.track(avg_invalid, name="avg_invalid", step=round)
-    run.track(min_invalid, name="min_invalid", step=round)
-    run.track(success_door, name="success_door", step=round)
-    run.track(avg_door, name="avg_door", step=round)
-    run.track(min_door, name="min_door", step=round)
-    run.track(success_conn, name="success_conn", step=round)
-    run.track(avg_conn, name="avg_conn", step=round)
-    run.track(min_conn, name="min_conn", step=round)    
+    metrics = {
+        "loss": loss,
+        "success_rate": success_rate,
+        "success_door": success_door,
+        "success_conn": success_conn,
+        "avg_invalid": avg_invalid,
+        "avg_door": avg_door,
+        "avg_conn": avg_conn,
+        "min_invalid": min_invalid,
+        "min_door": min_door,
+        "min_conn": min_conn,
+    }
+
+    for name, value in metrics.items():
+        aim_run.track(value, name=name, step=round)
     
-    logging.info(f"round {round}, loss {loss:.4f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_conn:.2f} (min {min_conn}), frac {frac:.4f}")
+    logging.info(f"round {round}, loss {loss:.4f}, succ {success_rate:.5f}, total {avg_invalid:.2f} (min {min_invalid}), door {avg_door:.2f} (min {min_door}), conn {avg_conn:.2f} (min {min_conn}), frac {frac:.4f}")
 
 
 def get_gen_config(frac):
@@ -183,39 +202,40 @@ num_episodes = 0
 try:
     for round in range(config.total_episodes):
         frac = min(num_episodes / config.annealing_episodes, 1.0)
-    
+
         # Generate new maps:
         gen_config = get_gen_config(frac)
         actions, outcomes = generate(gen_env, main_model, gen_config, device)
         num_episodes += config.generation.num_environments
-    
+
         # Store them as experience (to disk):
-        experience.store(actions)    
-    
+        experience.store(actions)
+
         # Train the model on samples of past experience
         for _ in range(num_batches):
             actions = experience.sample(config.train.batch_size, config.train.episodes_per_file, config.train.hist_c)
             train_env.replay(actions)
             actions = actions.to(device)
             outcomes = train_env.get_outcomes(device)
-            
+
             main_model.zero_grad()
             preds = main_model(actions, gen_config)
-    
+
             repeated_outcomes = Outcomes(
                 door_invalid=outcomes.door_invalid.unsqueeze(1).repeat(1, episode_length, 1),
                 connection_invalid=outcomes.connection_invalid.unsqueeze(1).repeat(1, episode_length, 1),
             )
             mask = (actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
             loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
-        
+
             scaler.scale(loss).backward()
             scaler.step(main_optimizer)
             scaler.update()
-        
+
         log_outcomes(outcomes, loss, round, frac)
 
-except KeyboardInterrupt:
-    print("\n[!] Training interrupted via Ctrl-C. Finalizing Aim run...")    
+        if stop_requested:
+            logging.info("Stopping training after completing round %s.", round)
+            break
 finally:
-    run.close()    
+    aim_run.close()
