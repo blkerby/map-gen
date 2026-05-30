@@ -372,6 +372,7 @@ impl Environment {
         let mut frontier_components = self
             .frontier
             .values()
+            .filter(|frontier| !frontier.candidates.is_empty())
             .map(|frontier| frontier.component)
             .collect::<Vec<_>>();
         frontier_components.sort_unstable();
@@ -658,7 +659,7 @@ mod tests {
         assert_eq!(outcomes.connections_valid.len(), 1);
         assert!(matches!(
             outcomes.connections_valid.as_slice(),
-            [DoorValidOutcome::Unknown]
+            [DoorValidOutcome::Invalid]
         ));
 
         env.finish();
@@ -704,13 +705,61 @@ mod tests {
         );
         assert!(matches!(
             env.outcomes(&common).connections_valid.as_slice(),
-            [DoorValidOutcome::Unknown]
+            [DoorValidOutcome::Invalid]
         ));
 
         env.step(
             Action {
                 room_idx: 1,
                 x: 1,
+                y: 0,
+            },
+            &common,
+        );
+
+        let outcomes = env.outcomes(&common);
+        assert!(matches!(
+            outcomes.connections_valid.as_slice(),
+            [DoorValidOutcome::Invalid]
+        ));
+    }
+
+    #[test]
+    fn empty_frontiers_do_not_make_connection_outcomes_unknown() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1]]
+            },
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": []
+            },
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "up", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 1), 0);
+
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
                 y: 0,
             },
             &common,

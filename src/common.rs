@@ -262,6 +262,14 @@ impl GeometryData {
 
 impl CommonData {
     pub fn new(rooms: Vec<Room>) -> Result<Self> {
+        if rooms.len() > RoomIdx::MAX as usize {
+            bail!(
+                "room set has {} rooms, exceeding the maximum {} supported by RoomIdx plus one dummy action",
+                rooms.len(),
+                RoomIdx::MAX
+            );
+        }
+
         let mut room_data = vec![];
         let mut geometry_data = vec![];
         let mut geometry_rooms = vec![];
@@ -305,6 +313,13 @@ impl CommonData {
                 let room_part_idx = (door_group_count + part_idx) as RoomPartIdx;
                 for door in door_group {
                     let dir_idx = door.direction as usize;
+                    if room_dir_door[dir_idx].len() >= DirDoorIdx::MAX as usize {
+                        bail!(
+                            "room set has too many {:?} doors, exceeding the maximum {} usable door indices before the sentinel",
+                            door.direction,
+                            DirDoorIdx::MAX
+                        );
+                    }
                     let dir_door_idx = room_dir_door[dir_idx].len() as DirDoorIdx;
                     room_dir_door[dir_idx].push(RoomDirDoorData {
                         room_idx: room_idx as RoomIdx,
@@ -327,6 +342,12 @@ impl CommonData {
             let geometry_idx = if let Some(&geometry_idx) = geometry_by_key.get(&geometry_key) {
                 geometry_idx
             } else {
+                if geometry_data.len() > GeometryIdx::MAX as usize {
+                    bail!(
+                        "room set has too many unique geometries, exceeding the maximum {}",
+                        GeometryIdx::MAX as usize + 1
+                    );
+                }
                 let geometry_idx = geometry_data.len() as GeometryIdx;
                 let geometry = GeometryData::new(&geometry_key)?;
                 for door in geometry.doors.iter() {
@@ -349,6 +370,12 @@ impl CommonData {
             {
                 connection_variant_idx
             } else {
+                if connection_variant_rooms.len() > ConnectionVariantIdx::MAX as usize {
+                    bail!(
+                        "room set has too many connection variants, exceeding the maximum {}",
+                        ConnectionVariantIdx::MAX as usize + 1
+                    );
+                }
                 let connection_variant_idx = connection_variant_rooms.len() as ConnectionVariantIdx;
                 connection_variant_rooms.push(vec![]);
                 geometry_connection_variants[geometry_idx as usize].push(connection_variant_idx);
