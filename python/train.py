@@ -4,7 +4,6 @@ import copy
 import torch
 import logging
 import signal
-import atexit
 from datetime import datetime
 import argparse
 
@@ -225,6 +224,7 @@ try:
         experience.store(actions)
 
         # Train the model on samples of past experience
+        total_loss = 0.0
         for _ in range(num_batches):
             actions = experience.sample(config.train.batch_size, config.train.episodes_per_file, config.train.hist_c)
             train_env.replay(actions)
@@ -240,13 +240,14 @@ try:
             )
             mask = (actions.room_idx < num_rooms).unsqueeze(2)  # exclude dummy actions
             loss = compute_loss(preds, repeated_outcomes, mask, loss_config)
+            total_loss += loss.item()
 
             scaler.scale(loss).backward()
             scaler.step(main_optimizer)
             scaler.update()
             update_ema_model()
 
-        log_outcomes(gen_outcomes, loss, round, frac)
+        log_outcomes(gen_outcomes, total_loss / num_batches, round, frac)
 
         if stop_requested:
             logging.info("Stopping training after completing round %s.", round)
