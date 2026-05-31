@@ -16,6 +16,7 @@ class GenerateConfig:
     lookahead_outcomes: bool = True
     state_candidate_chunk: int = 1
     state_environment_chunk: int = 8
+    state_autocast: bool = True
 
 
 # Each tensor here is uint8 with shape
@@ -56,7 +57,7 @@ class StateFeatures:
     room_placed: torch.Tensor
     frontier: torch.Tensor
     frontier_pair: torch.Tensor
-    occupancy: torch.Tensor
+    frontier_obstruction: torch.Tensor
 
     def to(self, device: torch.device) -> "StateFeatures":
         return StateFeatures(*(value.to(device) for value in vars(self).values()))
@@ -207,11 +208,14 @@ class EnvironmentGroup:
     def get_state_features(self, device: torch.device) -> StateFeatures:
         return self._state_features(self.env.get_state_features(), device)
 
-    def get_state_features_after_candidates(self, actions: Actions, device: torch.device) -> StateFeatures:
+    def get_state_features_after_candidates(
+        self, actions: Actions, device: torch.device, environment_start: int = 0
+    ) -> StateFeatures:
         values = self.env.get_state_features_after_candidates(
             actions.room_idx.contiguous().cpu().numpy(),
             actions.room_x.contiguous().cpu().numpy(),
             actions.room_y.contiguous().cpu().numpy(),
+            environment_start,
         )
         return self._state_features(values, device)
 

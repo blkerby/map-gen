@@ -105,42 +105,61 @@ def generate(
                 candidates = env.get_candidates(config.max_candidates, device)
                 outcomes = env.get_outcomes(device)
             
-            if uses_state_features:
-                door_preds = []
-                connection_preds = []
-                for start in range(0, candidates.room_idx.shape[1], config.state_candidate_chunk):
-                    end = start + config.state_candidate_chunk
-                    chunk = Actions(
-                        candidates.room_idx[:, start:end],
-                        candidates.room_x[:, start:end],
-                        candidates.room_y[:, start:end],
-                    )
-                    chunk_features = env.get_state_features_after_candidates(chunk, torch.device("cpu"))
-                    env_door_preds = []
-                    env_connection_preds = []
-                    for env_start in range(0, num_envs, config.state_environment_chunk):
-                        env_end = env_start + config.state_environment_chunk
-                        env_features = chunk_features.slice(env_start, env_end).flatten_candidates().to(device)
-                        chunk_preds = model(env_features)
-                        chunk_size = min(env_end, num_envs) - env_start
-                        candidate_count = chunk.room_idx.shape[1]
-                        env_door_preds.append(chunk_preds.door_invalid.view(chunk_size, candidate_count, -1))
-                        env_connection_preds.append(chunk_preds.connection_invalid.view(chunk_size, candidate_count, -1))
-                    door_preds.append(torch.cat(env_door_preds, dim=0))
-                    connection_preds.append(torch.cat(env_connection_preds, dim=0))
-                preds = Predictions(torch.cat(door_preds, dim=1), torch.cat(connection_preds, dim=1))
-                kv_cache_candidates = None
-            else:
-                # Model inference to get predictions and updated key-value cache for next step
-                preds, kv_cache_candidates = model.generate(candidates, kv_cache, config)
-    
             if candidates.room_idx.shape[1] == 1:
                 # Only one candidate, so select it directly (e.g. on the first step)
+                if not uses_state_features:
+                    _, kv_cache_candidates = model.generate(candidates, kv_cache, config)
                 action_index = torch.zeros(candidates.room_idx.shape[0], dtype=torch.int64, device=device)
                 selected_actions = candidates.select(action_index)
             else:
+                if uses_state_features:
+                    candidate_rewards = []
+                    for start in range(0, candidates.room_idx.shape[1], config.state_candidate_chunk):
+                        end = start + config.state_candidate_chunk
+                        chunk = Actions(
+                            candidates.room_idx[:, start:end],
+                            candidates.room_x[:, start:end],
+                            candidates.room_y[:, start:end],
+                        )
+                        env_rewards = []
+                        for env_start in range(0, num_envs, config.state_environment_chunk):
+                            env_end = min(env_start + config.state_environment_chunk, num_envs)
+                            env_chunk = Actions(
+                                chunk.room_idx[env_start:env_end],
+                                chunk.room_x[env_start:env_end],
+                                chunk.room_y[env_start:env_end],
+                            )
+                            env_features = env.get_state_features_after_candidates(
+                                env_chunk, torch.device("cpu"), env_start
+                            ).flatten_candidates().to(device)
+                            with torch.amp.autocast(
+                                "cuda",
+                                enabled=device.type == "cuda" and config.state_autocast,
+                            ):
+                                chunk_preds = model(env_features)
+                            candidate_count = chunk.room_idx.shape[1]
+                            chunk_outcomes = Outcomes(
+                                outcomes.door_invalid[env_start:env_end, start:end]
+                                if outcomes.door_invalid.ndim == 3 else outcomes.door_invalid[env_start:env_end],
+                                outcomes.connection_invalid[env_start:env_end, start:end]
+                                if outcomes.connection_invalid.ndim == 3 else outcomes.connection_invalid[env_start:env_end],
+                            )
+                            env_rewards.append(compute_expected_reward(
+                                Predictions(
+                                    chunk_preds.door_invalid.view(env_end - env_start, candidate_count, -1),
+                                    chunk_preds.connection_invalid.view(env_end - env_start, candidate_count, -1),
+                                ),
+                                chunk_outcomes,
+                                config,
+                            ))
+                        candidate_rewards.append(torch.cat(env_rewards, dim=0))
+                    expected_reward = torch.cat(candidate_rewards, dim=1)
+                    kv_cache_candidates = None
+                else:
+                    # Model inference to get predictions and updated key-value cache for next step
+                    preds, kv_cache_candidates = model.generate(candidates, kv_cache, config)
+                    expected_reward = compute_expected_reward(preds, outcomes, config)
                 # Compute expected reward and sample to select an action (per environment)
-                expected_reward = compute_expected_reward(preds, outcomes, config)
                 dummy_candidate = candidates.room_idx == num_rooms
                 expected_reward = torch.where(
                     dummy_candidate,
@@ -169,7 +188,7 @@ def generate(
                 )
             
             # Finalize the kv cache update based on the selected action
-            if not uses_state_features:
+            if not uses_state_features and kv_cache_candidates is not None:
                 kv_cache = model.get_updated_kv_cache(kv_cache, kv_cache_candidates, action_index)
         
     env.finish()

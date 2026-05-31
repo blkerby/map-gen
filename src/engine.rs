@@ -5,7 +5,7 @@ use crate::common::{Action, CommonData, Coord, DoorValidOutcome, Room, RoomIdx};
 use crate::environment::{Environment, StateFeatures};
 use crossbeam_channel as channel;
 use numpy::{
-    Element, IntoPyArray, PyArray2, PyArray3, PyArray4, PyArrayMethods, PyReadonlyArray1,
+    Element, IntoPyArray, PyArray2, PyArray3, PyArray4, PyArray5, PyArrayMethods, PyReadonlyArray1,
     PyReadonlyArray2,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -43,6 +43,19 @@ fn pyarray4_from_flat_vec<'py, T: Element>(
     dim3: usize,
 ) -> PyResult<Bound<'py, PyArray4<T>>> {
     data.into_pyarray(py).reshape([dim0, dim1, dim2, dim3])
+}
+
+fn pyarray5_from_flat_vec<'py, T: Element>(
+    py: Python<'py>,
+    data: Vec<T>,
+    dim0: usize,
+    dim1: usize,
+    dim2: usize,
+    dim3: usize,
+    dim4: usize,
+) -> PyResult<Bound<'py, PyArray5<T>>> {
+    data.into_pyarray(py)
+        .reshape([dim0, dim1, dim2, dim3, dim4])
 }
 
 // We use shards to share slices of memory between the main thread and worker threads. This allows us
@@ -93,7 +106,7 @@ struct StateFeatureShards {
     room_placed: OutputShard<u8>,
     frontier: OutputShard<i16>,
     frontier_pair: OutputShard<u8>,
-    occupancy: OutputShard<u8>,
+    frontier_obstruction: OutputShard<u16>,
 }
 
 unsafe impl Send for StateFeatureShards {}
@@ -119,7 +132,11 @@ unsafe fn write_state_features(shards: StateFeatureShards, features: &[StateFeat
     unsafe { copy_rows(shards.room_placed, features, |x| &x.room_placed) };
     unsafe { copy_rows(shards.frontier, features, |x| &x.frontier) };
     unsafe { copy_rows(shards.frontier_pair, features, |x| &x.frontier_pair) };
-    unsafe { copy_rows(shards.occupancy, features, |x| &x.occupancy) };
+    unsafe {
+        copy_rows(shards.frontier_obstruction, features, |x| {
+            &x.frontier_obstruction
+        })
+    };
 }
 
 unsafe impl<T: Send> Send for OutputShard<T> {}
@@ -184,6 +201,8 @@ enum WorkerCommand {
         features: StateFeatureShards,
     },
     GetStateFeaturesAfterCandidates {
+        environment_start: usize,
+        environment_count: usize,
         candidate_count: usize,
         room_idx: InputShard<RoomIdx>,
         room_x: InputShard<Coord>,
@@ -499,6 +518,8 @@ fn worker_loop(
                 WorkerResponse::Done
             }
             WorkerCommand::GetStateFeaturesAfterCandidates {
+                environment_start,
+                environment_count,
                 candidate_count,
                 room_idx,
                 room_x,
@@ -508,17 +529,24 @@ fn worker_loop(
                 let room_idx = unsafe { room_idx.into_slice() };
                 let room_x = unsafe { room_x.into_slice() };
                 let room_y = unsafe { room_y.into_slice() };
-                let mut snapshots = Vec::with_capacity(environments.len() * candidate_count);
-                for (env_idx, env) in environments.iter().enumerate() {
+                let mut snapshots = Vec::with_capacity(environment_count * candidate_count);
+                for (env_idx, env) in environments
+                    .iter()
+                    .skip(environment_start)
+                    .take(environment_count)
+                    .enumerate()
+                {
+                    let occupancy_prefix = env.occupancy_prefix();
                     for candidate_idx in 0..candidate_count {
                         let idx = env_idx * candidate_count + candidate_idx;
-                        snapshots.push(env.state_features_after_candidate(
+                        snapshots.push(env.state_features_after_candidate_with_occupancy(
                             &common_data,
                             Action {
                                 room_idx: room_idx[idx],
                                 x: room_x[idx],
                                 y: room_y[idx],
                             },
+                            &occupancy_prefix,
                         ));
                     }
                 }
@@ -602,7 +630,6 @@ pub struct EnvironmentGroup {
     workers: Vec<WorkerHandle>, // fixed worker-owned environment shards
     num_environments: usize,
     action_count: usize,
-    map_size: (Coord, Coord),
 }
 
 fn output_sizes(common_data: &CommonData) -> (usize, usize) {
@@ -622,11 +649,11 @@ struct StateFeatureBuffers {
     room_placed: Vec<u8>,
     frontier: Vec<i16>,
     frontier_pair: Vec<u8>,
-    occupancy: Vec<u8>,
+    frontier_obstruction: Vec<u16>,
 }
 
 impl StateFeatureBuffers {
-    fn new(common_data: &CommonData, map_size: (Coord, Coord), snapshot_count: usize) -> Self {
+    fn new(common_data: &CommonData, snapshot_count: usize) -> Self {
         let max_frontiers = Environment::max_frontiers(common_data);
         Self {
             inventory: vec![0; snapshot_count * common_data.connection_variant_rooms.len()],
@@ -635,21 +662,14 @@ impl StateFeatureBuffers {
             room_placed: vec![0; snapshot_count * common_data.room.len()],
             frontier: vec![0; snapshot_count * max_frontiers * 7],
             frontier_pair: vec![0; snapshot_count * max_frontiers * max_frontiers],
-            occupancy: vec![0; snapshot_count * map_size.0 as usize * map_size.1 as usize],
+            frontier_obstruction: vec![0; snapshot_count * max_frontiers * max_frontiers * 3],
         }
     }
 
-    fn shards(
-        &mut self,
-        common_data: &CommonData,
-        map_size: (Coord, Coord),
-        start: usize,
-        len: usize,
-    ) -> StateFeatureShards {
+    fn shards(&mut self, common_data: &CommonData, start: usize, len: usize) -> StateFeatureShards {
         let max_frontiers = Environment::max_frontiers(common_data);
         let inventory_count = common_data.connection_variant_rooms.len();
         let room_count = common_data.room.len();
-        let occupancy_count = map_size.0 as usize * map_size.1 as usize;
         StateFeatureShards {
             inventory: OutputShard::from_slice(
                 &mut self.inventory[start * inventory_count..(start + len) * inventory_count],
@@ -670,8 +690,9 @@ impl StateFeatureBuffers {
                 &mut self.frontier_pair[start * max_frontiers * max_frontiers
                     ..(start + len) * max_frontiers * max_frontiers],
             ),
-            occupancy: OutputShard::from_slice(
-                &mut self.occupancy[start * occupancy_count..(start + len) * occupancy_count],
+            frontier_obstruction: OutputShard::from_slice(
+                &mut self.frontier_obstruction[start * max_frontiers * max_frontiers * 3
+                    ..(start + len) * max_frontiers * max_frontiers * 3],
             ),
         }
     }
@@ -807,7 +828,6 @@ impl EnvironmentGroup {
             workers,
             num_environments,
             action_count: 0,
-            map_size,
         })
     }
 }
@@ -1211,19 +1231,17 @@ impl EnvironmentGroup {
         Bound<'py, PyArray2<u8>>,
         Bound<'py, PyArray3<i16>>,
         Bound<'py, PyArray3<u8>>,
-        Bound<'py, PyArray3<u8>>,
+        Bound<'py, PyArray4<u16>>,
     )> {
         let inventory_count = self.common_data.connection_variant_rooms.len();
         let room_count = self.common_data.room.len();
         let max_frontiers = Environment::max_frontiers(&self.common_data);
-        let mut buffers =
-            StateFeatureBuffers::new(&self.common_data, self.map_size, self.num_environments);
+        let mut buffers = StateFeatureBuffers::new(&self.common_data, self.num_environments);
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let features =
-                    buffers.shards(&self.common_data, self.map_size, worker.start, worker.len);
+                let features = buffers.shards(&self.common_data, worker.start, worker.len);
                 if let Err(err) = worker.send(WorkerCommand::GetStateFeatures { features }) {
                     set_first_error(&mut first_error, err);
                     break;
@@ -1256,12 +1274,13 @@ impl EnvironmentGroup {
                 max_frontiers,
                 max_frontiers,
             )?,
-            pyarray3_from_flat_vec(
+            pyarray4_from_flat_vec(
                 py,
-                buffers.occupancy,
+                buffers.frontier_obstruction,
                 self.num_environments,
-                self.map_size.1 as usize,
-                self.map_size.0 as usize,
+                max_frontiers,
+                max_frontiers,
+                3,
             )?,
         ))
     }
@@ -1273,6 +1292,7 @@ impl EnvironmentGroup {
         room_idx: PyReadonlyArray2<'py, RoomIdx>,
         room_x: PyReadonlyArray2<'py, Coord>,
         room_y: PyReadonlyArray2<'py, Coord>,
+        environment_start: usize,
     ) -> PyResult<(
         Bound<'py, PyArray3<u8>>,
         Bound<'py, PyArray3<Coord>>,
@@ -1280,15 +1300,15 @@ impl EnvironmentGroup {
         Bound<'py, PyArray3<u8>>,
         Bound<'py, PyArray4<i16>>,
         Bound<'py, PyArray4<u8>>,
-        Bound<'py, PyArray4<u8>>,
+        Bound<'py, PyArray5<u16>>,
     )> {
         let shape = room_idx.as_array().shape().to_vec();
         if room_x.as_array().shape() != shape
             || room_y.as_array().shape() != shape
-            || shape[0] != self.num_environments
+            || environment_start + shape[0] > self.num_environments
         {
             return Err(PyValueError::new_err(
-                "candidate action arrays must have shape [num_environments, candidate_count]",
+                "candidate action arrays must fit within the environment group",
             ));
         }
         let candidate_count = shape[1];
@@ -1304,21 +1324,29 @@ impl EnvironmentGroup {
         let inventory_count = self.common_data.connection_variant_rooms.len();
         let room_count = self.common_data.room.len();
         let max_frontiers = Environment::max_frontiers(&self.common_data);
-        let snapshot_count = self.num_environments * candidate_count;
-        let mut buffers =
-            StateFeatureBuffers::new(&self.common_data, self.map_size, snapshot_count);
+        let environment_count = shape[0];
+        let snapshot_count = environment_count * candidate_count;
+        let mut buffers = StateFeatureBuffers::new(&self.common_data, snapshot_count);
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let start = worker.start * candidate_count;
-                let len = worker.len * candidate_count;
-                let features = buffers.shards(&self.common_data, self.map_size, start, len);
+                let start = max(environment_start, worker.start);
+                let end = min(environment_start + environment_count, worker.end());
+                if start >= end {
+                    continue;
+                }
+                let environment_count = end - start;
+                let input_start = (start - environment_start) * candidate_count;
+                let len = environment_count * candidate_count;
+                let features = buffers.shards(&self.common_data, input_start, len);
                 if let Err(err) = worker.send(WorkerCommand::GetStateFeaturesAfterCandidates {
+                    environment_start: start - worker.start,
+                    environment_count,
                     candidate_count,
-                    room_idx: InputShard::from_slice(&room_idx[start..start + len]),
-                    room_x: InputShard::from_slice(&room_x[start..start + len]),
-                    room_y: InputShard::from_slice(&room_y[start..start + len]),
+                    room_idx: InputShard::from_slice(&room_idx[input_start..input_start + len]),
+                    room_x: InputShard::from_slice(&room_x[input_start..input_start + len]),
+                    room_y: InputShard::from_slice(&room_y[input_start..input_start + len]),
                     features,
                 }) {
                     set_first_error(&mut first_error, err);
@@ -1332,35 +1360,35 @@ impl EnvironmentGroup {
             pyarray3_from_flat_vec(
                 py,
                 buffers.inventory,
-                self.num_environments,
+                environment_count,
                 candidate_count,
                 inventory_count,
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.room_x,
-                self.num_environments,
+                environment_count,
                 candidate_count,
                 room_count,
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.room_y,
-                self.num_environments,
+                environment_count,
                 candidate_count,
                 room_count,
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.room_placed,
-                self.num_environments,
+                environment_count,
                 candidate_count,
                 room_count,
             )?,
             pyarray4_from_flat_vec(
                 py,
                 buffers.frontier,
-                self.num_environments,
+                environment_count,
                 candidate_count,
                 max_frontiers,
                 7,
@@ -1368,18 +1396,19 @@ impl EnvironmentGroup {
             pyarray4_from_flat_vec(
                 py,
                 buffers.frontier_pair,
-                self.num_environments,
+                environment_count,
                 candidate_count,
                 max_frontiers,
                 max_frontiers,
             )?,
-            pyarray4_from_flat_vec(
+            pyarray5_from_flat_vec(
                 py,
-                buffers.occupancy,
-                self.num_environments,
+                buffers.frontier_obstruction,
+                environment_count,
                 candidate_count,
-                self.map_size.1 as usize,
-                self.map_size.0 as usize,
+                max_frontiers,
+                max_frontiers,
+                3,
             )?,
         ))
     }

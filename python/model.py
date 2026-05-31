@@ -349,12 +349,20 @@ class FrontierStateModel(torch.nn.Module):
         self.orientation_embedding = torch.nn.Embedding(2, embedding_width)
         self.kind_embedding = torch.nn.Embedding(256, embedding_width)
         self.node_numeric = torch.nn.Linear(7, embedding_width)
-        self.message_layers = torch.nn.ModuleList([
+        self.source_message_layers = torch.nn.ModuleList([
+            torch.nn.Linear(embedding_width, hidden_width)
+            for _ in range(num_layers)
+        ])
+        self.pair_message_layers = torch.nn.ModuleList([
+            torch.nn.Linear(11, hidden_width)
+            for _ in range(num_layers)
+        ])
+        self.message_output_layers = torch.nn.ModuleList([
             torch.nn.Sequential(
-                torch.nn.Linear(embedding_width + 11, hidden_width),
                 torch.nn.GELU(),
                 torch.nn.Linear(hidden_width, embedding_width),
-            ) for _ in range(num_layers)
+            )
+            for _ in range(num_layers)
         ])
         self.update_layers = torch.nn.ModuleList([
             torch.nn.Sequential(
@@ -377,15 +385,6 @@ class FrontierStateModel(torch.nn.Module):
         self.connection_output = FactorizedOutcomeHead(
             output_metadata.connection, output_metadata.num_connection_variants, embedding_width)
 
-    @staticmethod
-    def _rect_sum(prefix, x0, y0, x1, y1):
-        width = prefix.shape[-1]
-        flat = prefix.flatten(1)
-        def get(x, y):
-            index = y * width + x
-            return torch.gather(flat, 1, index.flatten(1)).view_as(index)
-        return get(x1 + 1, y1 + 1) - get(x0, y1 + 1) - get(x1 + 1, y0) + get(x0, y0)
-
     def _pair_features(self, features, node_mask):
         node = features.frontier
         raw_x = node[:, :, 1].to(torch.int64)
@@ -398,16 +397,10 @@ class FrontierStateModel(torch.nn.Module):
         raw_y0, raw_y1 = raw_y.unsqueeze(2), raw_y.unsqueeze(1)
         min_x, max_x = torch.minimum(x0, x1), torch.maximum(x0, x1)
         min_y, max_y = torch.minimum(y0, y1), torch.maximum(y0, y1)
-        occupancy = features.occupancy.to(torch.float32)
-        prefix = torch.nn.functional.pad(occupancy, (1, 0, 1, 0)).cumsum(1).cumsum(2)
-        rect = self._rect_sum(prefix, min_x, min_y, max_x, max_y)
         area = (max_x - min_x + 1) * (max_y - min_y + 1)
-        horizontal0 = self._rect_sum(prefix, min_x, y0, max_x, y0)
-        horizontal1 = self._rect_sum(prefix, min_x, y1, max_x, y1)
-        vertical0 = self._rect_sum(prefix, x1, min_y, x1, max_y)
-        vertical1 = self._rect_sum(prefix, x0, min_y, x0, max_y)
         path_length = (max_x - min_x + 1) + (max_y - min_y + 1)
         flags = features.frontier_pair
+        obstruction = features.frontier_obstruction.to(torch.float32)
         pair = torch.stack([
             (raw_x1 - raw_x0).to(torch.float32) / self.map_x,
             (raw_y1 - raw_y0).to(torch.float32) / self.map_y,
@@ -417,9 +410,9 @@ class FrontierStateModel(torch.nn.Module):
             (flags & 1 != 0).to(torch.float32),
             (flags & 2 != 0).to(torch.float32),
             (flags & 4 != 0).to(torch.float32),
-            rect / area.clamp_min(1),
-            (horizontal0 + vertical0) / path_length.clamp_min(1),
-            (horizontal1 + vertical1) / path_length.clamp_min(1),
+            obstruction[:, :, :, 0] / area.clamp_min(1),
+            obstruction[:, :, :, 1] / path_length.clamp_min(1),
+            obstruction[:, :, :, 2] / path_length.clamp_min(1),
         ], dim=-1)
         return pair * (node_mask.unsqueeze(1) & node_mask.unsqueeze(2)).unsqueeze(-1)
 
@@ -441,9 +434,13 @@ class FrontierStateModel(torch.nn.Module):
         X = X * node_mask.unsqueeze(-1)
         pair = self._pair_features(features, node_mask)
         pair_mask = (node_mask.unsqueeze(1) & node_mask.unsqueeze(2)).unsqueeze(-1)
-        for message_layer, update_layer in zip(self.message_layers, self.update_layers):
-            src = X.unsqueeze(1).expand(-1, X.shape[1], -1, -1)
-            messages = message_layer(torch.cat([src, pair], dim=-1)) * pair_mask
+        for source_layer, pair_layer, output_layer, update_layer in zip(
+            self.source_message_layers,
+            self.pair_message_layers,
+            self.message_output_layers,
+            self.update_layers,
+        ):
+            messages = output_layer(source_layer(X).unsqueeze(1) + pair_layer(pair)) * pair_mask
             messages = messages.sum(2) / pair_mask.sum(2).clamp_min(1)
             X = X + update_layer(torch.cat([X, messages], dim=-1))
             X = X * node_mask.unsqueeze(-1)

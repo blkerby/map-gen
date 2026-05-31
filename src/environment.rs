@@ -44,7 +44,8 @@ pub struct StateFeatures {
     pub frontier: Vec<i16>,
     // Bit flags: same SCC, source reaches destination, destination reaches source.
     pub frontier_pair: Vec<u8>,
-    pub occupancy: Vec<u8>,
+    // Occupied tile counts: bounding rectangle and the two Manhattan L paths.
+    pub frontier_obstruction: Vec<u16>,
 }
 
 pub struct Environment {
@@ -498,6 +499,32 @@ impl Environment {
     }
 
     pub fn state_features(&self, common: &CommonData) -> StateFeatures {
+        let occupancy_prefix = self.occupancy_prefix();
+        self.state_features_with_occupancy(&common, &occupancy_prefix, &[])
+    }
+
+    pub(crate) fn occupancy_prefix(&self) -> Vec<u16> {
+        let map_width = self.map_size.0 as usize;
+        let map_height = self.map_size.1 as usize;
+        let prefix_width = map_width + 1;
+        let mut occupancy_prefix = vec![0u16; prefix_width * (map_height + 1)];
+        for y in 0..map_height {
+            let mut row_sum = 0u16;
+            for x in 0..map_width {
+                row_sum += self.occupancy[y * map_width + x] as u16;
+                occupancy_prefix[(y + 1) * prefix_width + x + 1] =
+                    occupancy_prefix[y * prefix_width + x + 1] + row_sum;
+            }
+        }
+        occupancy_prefix
+    }
+
+    fn state_features_with_occupancy(
+        &self,
+        common: &CommonData,
+        occupancy_prefix: &[u16],
+        extra_occupied: &[(Coord, Coord)],
+    ) -> StateFeatures {
         let max_frontiers = Self::max_frontiers(common);
         assert!(self.frontier.len() <= max_frontiers);
         let mut inventory = self
@@ -512,8 +539,27 @@ impl Environment {
             .collect::<Vec<_>>();
         let mut frontier = vec![0; max_frontiers * 7];
         let mut frontier_pair = vec![0; max_frontiers * max_frontiers];
+        let mut frontier_obstruction = vec![0; max_frontiers * max_frontiers * 3];
         let mut sorted_frontiers = self.frontier.iter().collect::<Vec<_>>();
         sorted_frontiers.sort_unstable_by_key(|(location, _)| **location);
+        let map_width = self.map_size.0 as usize;
+        let prefix_width = map_width + 1;
+        let rect_sum = |x0: Coord, y0: Coord, x1: Coord, y1: Coord| {
+            let x0 = x0.clamp(0, self.map_size.0 - 1) as usize;
+            let y0 = y0.clamp(0, self.map_size.1 - 1) as usize;
+            let x1 = x1.clamp(0, self.map_size.0 - 1) as usize + 1;
+            let y1 = y1.clamp(0, self.map_size.1 - 1) as usize + 1;
+            let base = occupancy_prefix[y1 * prefix_width + x1]
+                + occupancy_prefix[y0 * prefix_width + x0]
+                - occupancy_prefix[y1 * prefix_width + x0]
+                - occupancy_prefix[y0 * prefix_width + x1];
+            base + extra_occupied
+                .iter()
+                .filter(|&&(x, y)| {
+                    x >= x0 as Coord && x < x1 as Coord && y >= y0 as Coord && y < y1 as Coord
+                })
+                .count() as u16
+        };
         for (idx, (location, data)) in sorted_frontiers.iter().enumerate() {
             let row = idx * 7;
             frontier[row] = 1;
@@ -524,8 +570,8 @@ impl Environment {
             frontier[row + 5] = data.candidates.len() as i16;
             frontier[row + 6] = data.component as i16;
         }
-        for (src_idx, (_, src)) in sorted_frontiers.iter().enumerate() {
-            for (dst_idx, (_, dst)) in sorted_frontiers.iter().enumerate() {
+        for (src_idx, (src_location, src)) in sorted_frontiers.iter().enumerate() {
+            for (dst_idx, (dst_location, dst)) in sorted_frontiers.iter().enumerate() {
                 let mut flags = 0;
                 if src.component == dst.component {
                     flags |= 1;
@@ -537,6 +583,18 @@ impl Environment {
                     flags |= 4;
                 }
                 frontier_pair[src_idx * max_frontiers + dst_idx] = flags;
+                let min_x = src_location.x().min(dst_location.x());
+                let max_x = src_location.x().max(dst_location.x());
+                let min_y = src_location.y().min(dst_location.y());
+                let max_y = src_location.y().max(dst_location.y());
+                let obstruction_idx = (src_idx * max_frontiers + dst_idx) * 3;
+                frontier_obstruction[obstruction_idx] = rect_sum(min_x, min_y, max_x, max_y);
+                frontier_obstruction[obstruction_idx + 1] =
+                    rect_sum(min_x, src_location.y(), max_x, src_location.y())
+                        + rect_sum(dst_location.x(), min_y, dst_location.x(), max_y);
+                frontier_obstruction[obstruction_idx + 2] =
+                    rect_sum(min_x, dst_location.y(), max_x, dst_location.y())
+                        + rect_sum(src_location.x(), min_y, src_location.x(), max_y);
             }
         }
         StateFeatures {
@@ -546,18 +604,45 @@ impl Environment {
             room_placed,
             frontier,
             frontier_pair,
-            occupancy: self.occupancy.clone(),
+            frontier_obstruction,
         }
     }
 
+    #[cfg(test)]
     pub fn state_features_after_candidate(
         &self,
         common: &CommonData,
         candidate: Action,
     ) -> StateFeatures {
+        let occupancy_prefix = self.occupancy_prefix();
+        self.state_features_after_candidate_with_occupancy(common, candidate, &occupancy_prefix)
+    }
+
+    pub fn state_features_after_candidate_with_occupancy(
+        &self,
+        common: &CommonData,
+        candidate: Action,
+        occupancy_prefix: &[u16],
+    ) -> StateFeatures {
+        let extra_occupied = if candidate.room_idx < common.room.len() as RoomIdx {
+            let geometry_idx = common.room[candidate.room_idx as usize].geometry_idx;
+            common.geometry[geometry_idx as usize]
+                .map
+                .iter()
+                .enumerate()
+                .flat_map(|(dy, row)| {
+                    row.iter().enumerate().filter_map(move |(dx, &tile)| {
+                        (tile != 0)
+                            .then_some((candidate.x + dx as Coord, candidate.y + dy as Coord))
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
         let mut env = self.clone_for_lookahead();
         env.step(candidate, common);
-        env.state_features(common)
+        env.state_features_with_occupancy(common, occupancy_prefix, &extra_occupied)
     }
 
     pub fn actions(&self) -> &[Action] {
@@ -982,7 +1067,16 @@ mod tests {
         let simulated = env.state_features_after_candidate(&common, candidate);
         env.step(candidate, &common);
         assert_eq!(simulated, env.state_features(&common));
-        assert_eq!(simulated.occupancy[0], 1);
-        assert_eq!(simulated.occupancy[1], 1);
+        assert_eq!(env.occupancy[0], 1);
+        assert_eq!(env.occupancy[1], 1);
+        let mut sorted_frontiers = env.frontier.iter().collect::<Vec<_>>();
+        sorted_frontiers.sort_unstable_by_key(|(location, _)| **location);
+        let (location, _) = sorted_frontiers[0];
+        let x = location.x().clamp(0, env.map_size.0 - 1) as usize;
+        let y = location.y().clamp(0, env.map_size.1 - 1) as usize;
+        let occupied = env.occupancy[y * env.map_size.0 as usize + x] as u16;
+        assert_eq!(simulated.frontier_obstruction[0], occupied);
+        assert_eq!(simulated.frontier_obstruction[1], occupied * 2);
+        assert_eq!(simulated.frontier_obstruction[2], occupied * 2);
     }
 }

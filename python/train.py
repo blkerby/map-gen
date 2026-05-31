@@ -14,13 +14,15 @@ from pydantic import BaseModel
 from pathlib import Path
 
 from env import Actions, Engine, GenerateConfig, Outcomes
-from model import CausalTransformerModel, FrontierStateModel, Predictions
+from model import CausalTransformerModel, FrontierStateModel
 from loss import LossConfig, compute_loss
 from generate import generate
 from experience import ExperienceStorage
 
 class ModelConfig(BaseModel):
-    type: str
+    type: str = "causal_transformer"
+    compile: bool = True
+    autocast: bool = True
     embedding_width: int 
     key_width: int
     value_width: int
@@ -42,8 +44,8 @@ class GenerationConfig(BaseModel):
     lookahead_outcomes: bool  # use post-candidate known outcomes when scoring candidates (greater CPU usage, better accuracy)
     temperature0: float  # initial temperature (higher = candidates selected more randomly)
     temperature1: float  # final temperature
-    state_candidate_chunk: int
-    state_environment_chunk: int 
+    state_candidate_chunk: int = 1
+    state_environment_chunk: int = 8
 
     
 class TrainConfig(BaseModel):
@@ -55,8 +57,8 @@ class TrainConfig(BaseModel):
     door_weight: float  # amount of weight assigned to door outcomes in the loss function
     connection_weight: float  # amount of weight assigned to connection outcomes in the loss function
     ema_decay: float  # decay factor for exponential moving average model used during generation
-    state_prefix_samples: int
-    state_batch_chunk: int
+    state_prefix_samples: int = 1
+    state_batch_chunk: int = 8
 
 
 class Config(BaseModel):
@@ -156,6 +158,9 @@ main_model = model_class(
 ema_model = copy.deepcopy(main_model).to(device)
 ema_model.requires_grad_(False)
 ema_model.eval()
+if config.model.type == "frontier_state" and config.model.compile:
+    main_model = torch.compile(main_model)
+    ema_model = torch.compile(ema_model)
 
 
 def update_ema_model():
@@ -234,6 +239,7 @@ def get_gen_config(frac):
         lookahead_outcomes=config.generation.lookahead_outcomes,
         state_candidate_chunk=config.generation.state_candidate_chunk,
         state_environment_chunk=config.generation.state_environment_chunk,
+        state_autocast=config.model.autocast,
     )
 
 
@@ -284,26 +290,37 @@ def train_batch(train_actions, train_outcomes, gen_config):
             connection_invalid=train_outcomes.connection_invalid.unsqueeze(1),
         )
         mask = torch.ones([train_actions.room_idx.shape[0], 1, 1], dtype=torch.bool, device=device)
-        losses = []
-        for _ in range(config.train.state_prefix_samples):
-            prefix_length = int(torch.randint(1, episode_length + 1, ()).item())
-            prefix_actions = Actions(
-                train_actions.room_idx[:, :prefix_length],
-                train_actions.room_x[:, :prefix_length],
-                train_actions.room_y[:, :prefix_length],
-            )
-            train_env.replay(prefix_actions)
+        prefix_lengths = torch.randint(
+            1, episode_length + 1, [config.train.state_prefix_samples]).sort().values.tolist()
+        train_env.clear()
+        current_prefix_length = 0
+        total_loss = 0.0
+        for prefix_length in prefix_lengths:
+            for action_idx in range(current_prefix_length, prefix_length):
+                train_env.step(Actions(
+                    train_actions.room_idx[:, action_idx],
+                    train_actions.room_x[:, action_idx],
+                    train_actions.room_y[:, action_idx],
+                ))
+            current_prefix_length = prefix_length
             features = train_env.get_state_features(torch.device("cpu"))
-            door_preds = []
-            connection_preds = []
             for start in range(0, train_actions.room_idx.shape[0], config.train.state_batch_chunk):
-                end = start + config.train.state_batch_chunk
-                chunk_preds = main_model(features.slice(start, end).to(device))
-                door_preds.append(chunk_preds.door_invalid)
-                connection_preds.append(chunk_preds.connection_invalid)
-            preds = Predictions(torch.cat(door_preds, dim=0), torch.cat(connection_preds, dim=0))
-            losses.append(compute_loss(preds, repeated_outcomes, mask, loss_config))
-        loss = torch.stack(losses).mean()
+                end = min(start + config.train.state_batch_chunk, train_actions.room_idx.shape[0])
+                with torch.amp.autocast("cuda", enabled=device.type == "cuda" and config.model.autocast):
+                    chunk_preds = main_model(features.slice(start, end).to(device))
+                    chunk_loss = compute_loss(
+                        chunk_preds,
+                        Outcomes(
+                            repeated_outcomes.door_invalid[start:end],
+                            repeated_outcomes.connection_invalid[start:end],
+                        ),
+                        mask[start:end],
+                        loss_config,
+                    )
+                chunk_weight = (end - start) / train_actions.room_idx.shape[0] / len(prefix_lengths)
+                scaler.scale(chunk_loss * chunk_weight).backward()
+                total_loss += chunk_loss.item() * chunk_weight
+        loss = torch.tensor(total_loss, device=device)
     else:
         preds = main_model(train_actions, gen_config)
         repeated_outcomes = Outcomes(
@@ -315,7 +332,8 @@ def train_batch(train_actions, train_outcomes, gen_config):
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite loss before backward: {loss.item()}")
 
-    scaler.scale(loss).backward()
+    if not getattr(main_model, "uses_state_features", False):
+        scaler.scale(loss).backward()
     scaler.unscale_(main_optimizer)
     grad_norm = torch.nn.utils.clip_grad_norm_(main_model.parameters(), max_norm=1.0)
     if not torch.isfinite(grad_norm):
