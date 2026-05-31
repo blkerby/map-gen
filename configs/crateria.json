@@ -10,7 +10,7 @@
     "embedding_width": 256,
     "key_width": 64,
     "value_width": 64,
-    "attn_heads": 16,
+    "attn_heads": 4,
     "head_groups": 4,
     "hidden_width": 512,
     "num_layers": 4
