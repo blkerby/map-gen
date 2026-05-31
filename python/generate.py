@@ -1,5 +1,6 @@
 from env import Actions, EnvironmentGroup, GenerateConfig, Outcomes
 from model import Predictions
+from profile_stats import ProfileStats
 from concurrent.futures import ThreadPoolExecutor
 import torch
 
@@ -14,17 +15,25 @@ class Prefetcher:
     def close(self):
         self.executor.shutdown()
 
-    def map(self, items, prepare):
+    def map(self, items, prepare, profiler=None, wait_name=None):
         items = iter(items)
         try:
             future = self.executor.submit(prepare, next(items))
         except StopIteration:
             return
         for item in items:
-            result = future.result()
+            if profiler is None or wait_name is None:
+                result = future.result()
+            else:
+                with profiler.timer(wait_name):
+                    result = future.result()
             future = self.executor.submit(prepare, item)
             yield result
-        yield future.result()
+        if profiler is None or wait_name is None:
+            yield future.result()
+        else:
+            with profiler.timer(wait_name):
+                yield future.result()
 
 
 def rand_choice(p):
@@ -106,6 +115,7 @@ def generate(
     config: GenerateConfig,
     device: torch.device,
     verify_outcome_consistency: bool = False,
+    profiler: ProfileStats | None = None,
 ):
     num_envs = env.num_envs
     engine = env.engine
@@ -115,6 +125,7 @@ def generate(
     kv_cache = None if uses_state_features else model.get_initial_kv_cache(num_envs, device)
     env.clear()
     known_outcomes = None
+    profiler = profiler or ProfileStats(False)
 
     prefetcher = Prefetcher()
     try:
@@ -122,11 +133,13 @@ def generate(
             for step in range(config.episode_length):
                 if config.lookahead_outcomes:
                     # Get candidate actions and their post-step known outcomes from environment.
-                    candidates, outcomes = env.get_candidates_with_outcomes(config.max_candidates, device)
+                    with profiler.timer("gen.cpu_candidates"):
+                        candidates, outcomes = env.get_candidates_with_outcomes(config.max_candidates, device)
                 else:
                     # Use current known outcomes for all candidates.
-                    candidates = env.get_candidates(config.max_candidates, device)
-                    outcomes = env.get_outcomes(device)
+                    with profiler.timer("gen.cpu_candidates"):
+                        candidates = env.get_candidates(config.max_candidates, device)
+                        outcomes = env.get_outcomes(device)
 
                 if candidates.room_idx.shape[1] == 1:
                     # Only one candidate, so select it directly (e.g. on the first step)
@@ -154,18 +167,17 @@ def generate(
                                     chunk.room_x[env_start:env_end],
                                     chunk.room_y[env_start:env_end],
                                 )
-                                features = env.get_state_features_after_candidates(
-                                    env_chunk, torch.device("cpu"), env_start
-                                ).flatten_candidates().compact_frontiers()
+                                with profiler.timer("gen.cpu_extract"):
+                                    features = env.get_state_features_after_candidates(
+                                        env_chunk, torch.device("cpu"), env_start
+                                    ).flatten_candidates().compact_frontiers()
                                 return env_start, env_end, features
 
-                            for env_start, env_end, features in prefetcher.map(env_starts, prepare_features):
-                                env_features = features.to(device)
-                                with torch.amp.autocast(
-                                    "cuda",
-                                    enabled=device.type == "cuda" and config.state_autocast,
-                                ):
-                                    chunk_preds = model(env_features)
+                            for env_start, env_end, features in prefetcher.map(
+                                env_starts, prepare_features, profiler, "gen.cpu_extract_wait"
+                            ):
+                                with profiler.timer("gen.cpu_transfer_submit"):
+                                    env_features = features.to(device)
                                 candidate_count = chunk.room_idx.shape[1]
                                 chunk_outcomes = Outcomes(
                                     outcomes.door_invalid[env_start:env_end, start:end]
@@ -173,14 +185,20 @@ def generate(
                                     outcomes.connection_invalid[env_start:env_end, start:end]
                                     if outcomes.connection_invalid.ndim == 3 else outcomes.connection_invalid[env_start:env_end],
                                 )
-                                env_rewards.append(compute_expected_reward(
-                                    Predictions(
-                                        chunk_preds.door_invalid.view(env_end - env_start, candidate_count, -1),
-                                        chunk_preds.connection_invalid.view(env_end - env_start, candidate_count, -1),
-                                    ),
-                                    chunk_outcomes,
-                                    config,
-                                ))
+                                with profiler.cuda_timer("gen.gpu_model_reward", device):
+                                    with torch.amp.autocast(
+                                        "cuda",
+                                        enabled=device.type == "cuda" and config.state_autocast,
+                                    ):
+                                        chunk_preds = model(env_features)
+                                    env_rewards.append(compute_expected_reward(
+                                        Predictions(
+                                            chunk_preds.door_invalid.view(env_end - env_start, candidate_count, -1),
+                                            chunk_preds.connection_invalid.view(env_end - env_start, candidate_count, -1),
+                                        ),
+                                        chunk_outcomes,
+                                        config,
+                                    ))
                             candidate_rewards.append(torch.cat(env_rewards, dim=0))
                         expected_reward = torch.cat(candidate_rewards, dim=1)
                         kv_cache_candidates = None
@@ -195,9 +213,10 @@ def generate(
                         torch.full_like(expected_reward, float('-inf')),
                         expected_reward,
                     )
-                    probs = torch.softmax(expected_reward / torch.unsqueeze(config.temperature, 1), dim=1)
-                    action_index = rand_choice(probs)
-                    selected_actions = candidates.select(action_index)
+                    with profiler.cuda_timer("gen.gpu_select", device):
+                        probs = torch.softmax(expected_reward / torch.unsqueeze(config.temperature, 1), dim=1)
+                        action_index = rand_choice(probs)
+                        selected_actions = candidates.select(action_index)
 
                 if verify_outcome_consistency and config.lookahead_outcomes:
                     known_outcomes = merge_verified_outcomes(
@@ -207,7 +226,8 @@ def generate(
                     )
 
                 # Apply the selected action to the environment
-                env.step(selected_actions)
+                with profiler.timer("gen.cpu_step"):
+                    env.step(selected_actions)
 
                 if verify_outcome_consistency:
                     known_outcomes = merge_verified_outcomes(
@@ -222,9 +242,10 @@ def generate(
     finally:
         prefetcher.close()
         
-    env.finish()
-    actions = env.get_actions(device)
-    outcomes = env.get_outcomes(device)
+    with profiler.timer("gen.cpu_finish"):
+        env.finish()
+        actions = env.get_actions(device)
+        outcomes = env.get_outcomes(device)
     if verify_outcome_consistency:
         merge_verified_outcomes(known_outcomes, outcomes, "finish")
     return actions, outcomes

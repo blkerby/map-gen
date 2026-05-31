@@ -115,11 +115,12 @@ class Engine:
         num_envs: int,
         seed: Optional[int] = None,
         frontier_neighbor_count: int = 4,
+        num_threads: Optional[int] = None,
     ) -> "EnvironmentGroup":
         if seed is None:
             seed = int(torch.randint(0, 2**31 - 1, ()).item())
         env = self.engine.create_environment_group(
-            map_size, num_envs, seed, frontier_neighbor_count
+            map_size, num_envs, seed, frontier_neighbor_count, num_threads
         )
         return EnvironmentGroup(self, env, map_size, num_envs)
 

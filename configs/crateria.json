@@ -28,7 +28,8 @@
     "temperature1": 0.03,
     "state_candidate_chunk": 16,
     "state_environment_chunk": 256,
-    "frontier_neighbor_count": 4
+    "frontier_neighbor_count": 4,
+    "num_threads": 32
   },
   "train": {
     "batch_size": 512,
