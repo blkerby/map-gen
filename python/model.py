@@ -338,7 +338,7 @@ class CausalTransformerModel(torch.nn.Module):
 class FrontierStateModel(torch.nn.Module):
     uses_state_features = True
 
-    def __init__(self, num_rooms, output_metadata: OutputMetadata, map_x, map_y, embedding_width, hidden_width, num_layers, **_):
+    def __init__(self, num_rooms, output_metadata: OutputMetadata, map_x, map_y, embedding_width, value_width, attn_heads, hidden_width, num_layers, **_):
         super().__init__()
         self.num_rooms = num_rooms
         self.map_x = map_x
@@ -349,24 +349,21 @@ class FrontierStateModel(torch.nn.Module):
         self.orientation_embedding = torch.nn.Embedding(2, embedding_width)
         self.kind_embedding = torch.nn.Embedding(256, embedding_width)
         self.node_numeric = torch.nn.Linear(7, embedding_width)
-        self.source_message_layers = torch.nn.ModuleList([
-            torch.nn.Linear(embedding_width, hidden_width)
+        self.pair_weight_layers = torch.nn.ModuleList([
+            torch.nn.Linear(11, attn_heads)
             for _ in range(num_layers)
         ])
-        self.pair_message_layers = torch.nn.ModuleList([
-            torch.nn.Linear(11, hidden_width)
+        self.value_layers = torch.nn.ModuleList([
+            torch.nn.Linear(embedding_width, value_width)
             for _ in range(num_layers)
         ])
         self.message_output_layers = torch.nn.ModuleList([
-            torch.nn.Sequential(
-                torch.nn.GELU(),
-                torch.nn.Linear(hidden_width, embedding_width),
-            )
+            torch.nn.Linear(attn_heads * value_width, embedding_width)
             for _ in range(num_layers)
         ])
         self.update_layers = torch.nn.ModuleList([
             torch.nn.Sequential(
-                torch.nn.Linear(embedding_width * 2, hidden_width),
+                torch.nn.Linear(embedding_width, hidden_width),
                 torch.nn.GELU(),
                 torch.nn.Linear(hidden_width, embedding_width),
             ) for _ in range(num_layers)
@@ -421,9 +418,24 @@ class FrontierStateModel(torch.nn.Module):
         ], dim=-1)
         return pair * (features.frontier_neighbor >= 0).unsqueeze(-1)
 
+    def _aggregate_neighbors(self, values, neighbor, weights):
+        # Accumulate one neighbor slot at a time to avoid an edge-wise
+        # [b, f, k, v] value gather.
+        b, f, v = values.shape
+        a = weights.shape[-1]
+        aggregated = values.new_zeros([b, f, a, v])
+        for neighbor_idx in range(neighbor.shape[2]):
+            source = torch.gather(
+                values,
+                1,
+                neighbor[:, :, neighbor_idx].unsqueeze(-1).expand(-1, -1, v),
+            )
+            aggregated = aggregated + weights[:, :, neighbor_idx].unsqueeze(-1) * source.unsqueeze(2)
+        return aggregated
+
     def forward(self, features: StateFeatures):
         # Shapes below use: b=batch, f=frontiers, k=neighbors, e=embedding width,
-        # h=message hidden width.
+        # a=aggregation heads, v=value width.
         # node: [b, f, 7]
         node = features.frontier
         node_mask = node[:, :, 0] != 0
@@ -449,24 +461,21 @@ class FrontierStateModel(torch.nn.Module):
             pair = self._pair_features(features, node_mask)
             neighbor = features.frontier_neighbor.clamp_min(0).to(torch.int64)
             pair_mask = (features.frontier_neighbor >= 0).unsqueeze(-1)
-            for source_layer, pair_layer, output_layer, update_layer in zip(
-                self.source_message_layers,
-                self.pair_message_layers,
+            for pair_weight_layer, value_layer, output_layer, update_layer in zip(
+                self.pair_weight_layers,
+                self.value_layers,
                 self.message_output_layers,
                 self.update_layers,
             ):
-                # source: [b, f, h]
-                source = source_layer(X)
-                # Gather each frontier's neighbors: source: [b, f, k, h]
-                source = torch.gather(
-                    source,
-                    1,
-                    neighbor.flatten(1).unsqueeze(-1).expand(-1, -1, source.shape[-1]),
-                ).view(*neighbor.shape, source.shape[-1])
-                # messages: [b, f, k, e], then [b, f, e] after neighbor pooling
-                messages = output_layer(source + pair_layer(pair)) * pair_mask
-                messages = messages.sum(2) / pair_mask.sum(2).clamp_min(1)
-                X = X + update_layer(torch.cat([X, messages], dim=-1))
+                # logits, weights: [b, f, k, a]; values: [b, f, v]
+                logits = pair_weight_layer(pair)
+                logits = logits.masked_fill(~pair_mask, torch.finfo(logits.dtype).min)
+                weights = torch.softmax(logits, dim=2) * pair_mask
+                values = value_layer(normalize(X))
+                # aggregated: [b, f, a, v]; no [b, f, k, h] activation is created.
+                aggregated = self._aggregate_neighbors(values, neighbor, weights)
+                X = X + output_layer(aggregated.flatten(2))
+                X = X + update_layer(normalize(X))
                 X = X * node_mask.unsqueeze(-1)
             count = node_mask.sum(1, keepdim=True).clamp_min(1)
             mean_pool = X.sum(1) / count
