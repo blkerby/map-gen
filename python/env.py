@@ -109,10 +109,18 @@ class Engine:
         self.engine = map_gen.Engine(json.dumps(rooms))
         self.rooms = rooms
 
-    def create_environment_group(self, map_size: tuple[int, int], num_envs: int, seed: Optional[int] = None) -> "EnvironmentGroup":
+    def create_environment_group(
+        self,
+        map_size: tuple[int, int],
+        num_envs: int,
+        seed: Optional[int] = None,
+        frontier_neighbor_count: int = 4,
+    ) -> "EnvironmentGroup":
         if seed is None:
             seed = int(torch.randint(0, 2**31 - 1, ()).item())
-        env = self.engine.create_environment_group(map_size, num_envs, seed)
+        env = self.engine.create_environment_group(
+            map_size, num_envs, seed, frontier_neighbor_count
+        )
         return EnvironmentGroup(self, env, map_size, num_envs)
 
     def get_output_sizes(self) -> tuple[int, int]:

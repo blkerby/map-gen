@@ -46,6 +46,7 @@ class GenerationConfig(BaseModel):
     temperature1: float  # final temperature
     state_candidate_chunk: int = 1
     state_environment_chunk: int = 8
+    frontier_neighbor_count: int = 4
 
     
 class TrainConfig(BaseModel):
@@ -88,6 +89,8 @@ if config.generation.state_candidate_chunk <= 0:
     raise ValueError("generation.state_candidate_chunk must be greater than zero")
 if config.generation.state_environment_chunk <= 0:
     raise ValueError("generation.state_environment_chunk must be greater than zero")
+if config.generation.frontier_neighbor_count <= 0:
+    raise ValueError("generation.frontier_neighbor_count must be greater than zero")
 if config.train.state_prefix_samples <= 0:
     raise ValueError("train.state_prefix_samples must be greater than zero")
 if config.train.state_batch_chunk <= 0:
@@ -130,8 +133,17 @@ episode_length = num_rooms
 device = torch.device("cuda:0")
 
 engine = Engine(rooms)
-gen_env = engine.create_environment_group(config.map_size, config.generation.num_environments, seed=0)
-train_env = engine.create_environment_group(config.map_size, config.train.batch_size)
+gen_env = engine.create_environment_group(
+    config.map_size,
+    config.generation.num_environments,
+    seed=0,
+    frontier_neighbor_count=config.generation.frontier_neighbor_count,
+)
+train_env = engine.create_environment_group(
+    config.map_size,
+    config.train.batch_size,
+    frontier_neighbor_count=config.generation.frontier_neighbor_count,
+)
 output_metadata = engine.get_output_metadata()
 
 model_class = {

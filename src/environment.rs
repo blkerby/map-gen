@@ -10,8 +10,6 @@ use crate::common::{
 use crate::scc_dag::SccDag;
 
 const NO_COMPONENT: usize = usize::MAX;
-pub const FRONTIER_NEIGHBOR_COUNT: usize = 4;
-
 // Frontier: location of an unconnected door on the map.
 #[derive(Clone, Debug)]
 pub struct Frontier {
@@ -502,9 +500,13 @@ impl Environment {
             + 2
     }
 
-    pub fn state_features(&self, common: &CommonData) -> StateFeatures {
+    pub fn state_features(
+        &self,
+        common: &CommonData,
+        frontier_neighbor_count: usize,
+    ) -> StateFeatures {
         let occupancy_prefix = self.occupancy_prefix();
-        self.state_features_with_occupancy(&common, &occupancy_prefix, &[])
+        self.state_features_with_occupancy(&common, &occupancy_prefix, &[], frontier_neighbor_count)
     }
 
     pub(crate) fn occupancy_prefix(&self) -> Vec<u16> {
@@ -528,6 +530,7 @@ impl Environment {
         common: &CommonData,
         occupancy_prefix: &[u16],
         extra_occupied: &[(Coord, Coord)],
+        frontier_neighbor_count: usize,
     ) -> StateFeatures {
         let max_frontiers = Self::max_frontiers(common);
         assert!(self.frontier.len() <= max_frontiers);
@@ -542,9 +545,9 @@ impl Environment {
             .map(|bit| u8::from(*bit))
             .collect::<Vec<_>>();
         let mut frontier = vec![0; max_frontiers * 7];
-        let mut frontier_neighbor = vec![-1; max_frontiers * FRONTIER_NEIGHBOR_COUNT];
-        let mut frontier_neighbor_pair = vec![0; max_frontiers * FRONTIER_NEIGHBOR_COUNT];
-        let mut frontier_obstruction = vec![0; max_frontiers * FRONTIER_NEIGHBOR_COUNT * 3];
+        let mut frontier_neighbor = vec![-1; max_frontiers * frontier_neighbor_count];
+        let mut frontier_neighbor_pair = vec![0; max_frontiers * frontier_neighbor_count];
+        let mut frontier_obstruction = vec![0; max_frontiers * frontier_neighbor_count * 3];
         let mut sorted_frontiers = self.frontier.iter().collect::<Vec<_>>();
         sorted_frontiers.sort_unstable_by_key(|(location, _)| **location);
         let map_width = self.map_size.0 as usize;
@@ -575,6 +578,7 @@ impl Environment {
             frontier[row + 5] = data.candidates.len() as i16;
             frontier[row + 6] = data.component as i16;
         }
+        let mut neighbors = vec![usize::MAX; frontier_neighbor_count];
         for (src_idx, (src_location, src)) in sorted_frontiers.iter().enumerate() {
             let distance = |dst_idx: usize| {
                 let dst_location = sorted_frontiers[dst_idx].0;
@@ -585,16 +589,16 @@ impl Environment {
                     dst_idx,
                 )
             };
-            let mut neighbors = [usize::MAX; FRONTIER_NEIGHBOR_COUNT];
+            neighbors.fill(usize::MAX);
             let mut neighbor_count = 0;
             for dst_idx in 0..sorted_frontiers.len() {
                 let insert_idx = (0..neighbor_count)
                     .position(|idx| distance(neighbors[idx]) > distance(dst_idx))
                     .unwrap_or(neighbor_count);
-                if insert_idx >= FRONTIER_NEIGHBOR_COUNT {
+                if insert_idx >= frontier_neighbor_count {
                     continue;
                 }
-                neighbor_count = (neighbor_count + 1).min(FRONTIER_NEIGHBOR_COUNT);
+                neighbor_count = (neighbor_count + 1).min(frontier_neighbor_count);
                 for idx in (insert_idx + 1..neighbor_count).rev() {
                     neighbors[idx] = neighbors[idx - 1];
                 }
@@ -612,7 +616,7 @@ impl Environment {
                 if self.scc_dag.can_reach(dst.component, src.component) {
                     flags |= 4;
                 }
-                let pair_idx = src_idx * FRONTIER_NEIGHBOR_COUNT + neighbor_idx;
+                let pair_idx = src_idx * frontier_neighbor_count + neighbor_idx;
                 frontier_neighbor[pair_idx] = dst_idx as i16;
                 frontier_neighbor_pair[pair_idx] = flags;
                 let min_x = src_location.x().min(dst_location.x());
@@ -646,9 +650,15 @@ impl Environment {
         &self,
         common: &CommonData,
         candidate: Action,
+        frontier_neighbor_count: usize,
     ) -> StateFeatures {
         let occupancy_prefix = self.occupancy_prefix();
-        self.state_features_after_candidate_with_occupancy(common, candidate, &occupancy_prefix)
+        self.state_features_after_candidate_with_occupancy(
+            common,
+            candidate,
+            &occupancy_prefix,
+            frontier_neighbor_count,
+        )
     }
 
     pub fn state_features_after_candidate_with_occupancy(
@@ -656,6 +666,7 @@ impl Environment {
         common: &CommonData,
         candidate: Action,
         occupancy_prefix: &[u16],
+        frontier_neighbor_count: usize,
     ) -> StateFeatures {
         let extra_occupied = if candidate.room_idx < common.room.len() as RoomIdx {
             let geometry_idx = common.room[candidate.room_idx as usize].geometry_idx;
@@ -675,7 +686,12 @@ impl Environment {
         };
         let mut env = self.clone_for_lookahead();
         env.step(candidate, common);
-        env.state_features_with_occupancy(common, occupancy_prefix, &extra_occupied)
+        env.state_features_with_occupancy(
+            common,
+            occupancy_prefix,
+            &extra_occupied,
+            frontier_neighbor_count,
+        )
     }
 
     pub fn actions(&self) -> &[Action] {
@@ -1097,9 +1113,9 @@ mod tests {
             x: 1,
             y: 0,
         };
-        let simulated = env.state_features_after_candidate(&common, candidate);
+        let simulated = env.state_features_after_candidate(&common, candidate, 4);
         env.step(candidate, &common);
-        assert_eq!(simulated, env.state_features(&common));
+        assert_eq!(simulated, env.state_features(&common, 4));
         assert_eq!(env.occupancy[0], 1);
         assert_eq!(env.occupancy[1], 1);
         let mut sorted_frontiers = env.frontier.iter().collect::<Vec<_>>();

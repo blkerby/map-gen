@@ -2,7 +2,7 @@
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
 use crate::common::{Action, CommonData, Coord, DoorValidOutcome, Room, RoomIdx};
-use crate::environment::{Environment, FRONTIER_NEIGHBOR_COUNT, StateFeatures};
+use crate::environment::{Environment, StateFeatures};
 use crossbeam_channel as channel;
 use numpy::{
     Element, IntoPyArray, PyArray2, PyArray3, PyArray4, PyArray5, PyArrayMethods, PyReadonlyArray1,
@@ -204,9 +204,11 @@ enum WorkerCommand {
         connections_valid: OutputShard<i8>,
     },
     GetStateFeatures {
+        frontier_neighbor_count: usize,
         features: StateFeatureShards,
     },
     GetStateFeaturesAfterCandidates {
+        frontier_neighbor_count: usize,
         environment_start: usize,
         environment_count: usize,
         candidate_count: usize,
@@ -515,15 +517,19 @@ fn worker_loop(
                 }
                 WorkerResponse::Done
             }
-            WorkerCommand::GetStateFeatures { features } => {
+            WorkerCommand::GetStateFeatures {
+                frontier_neighbor_count,
+                features,
+            } => {
                 let snapshots = environments
                     .iter()
-                    .map(|env| env.state_features(&common_data))
+                    .map(|env| env.state_features(&common_data, frontier_neighbor_count))
                     .collect::<Vec<_>>();
                 unsafe { write_state_features(features, &snapshots) };
                 WorkerResponse::Done
             }
             WorkerCommand::GetStateFeaturesAfterCandidates {
+                frontier_neighbor_count,
                 environment_start,
                 environment_count,
                 candidate_count,
@@ -553,6 +559,7 @@ fn worker_loop(
                                 y: room_y[idx],
                             },
                             &occupancy_prefix,
+                            frontier_neighbor_count,
                         ));
                     }
                 }
@@ -635,6 +642,7 @@ pub struct EnvironmentGroup {
     common_data: Arc<CommonData>,
     workers: Vec<WorkerHandle>, // fixed worker-owned environment shards
     num_environments: usize,
+    frontier_neighbor_count: usize,
     action_count: usize,
 }
 
@@ -660,7 +668,11 @@ struct StateFeatureBuffers {
 }
 
 impl StateFeatureBuffers {
-    fn new(common_data: &CommonData, snapshot_count: usize) -> Self {
+    fn new(
+        common_data: &CommonData,
+        snapshot_count: usize,
+        frontier_neighbor_count: usize,
+    ) -> Self {
         let max_frontiers = Environment::max_frontiers(common_data);
         Self {
             inventory: vec![0; snapshot_count * common_data.connection_variant_rooms.len()],
@@ -668,19 +680,25 @@ impl StateFeatureBuffers {
             room_y: vec![0; snapshot_count * common_data.room.len()],
             room_placed: vec![0; snapshot_count * common_data.room.len()],
             frontier: vec![0; snapshot_count * max_frontiers * 7],
-            frontier_neighbor: vec![-1; snapshot_count * max_frontiers * FRONTIER_NEIGHBOR_COUNT],
+            frontier_neighbor: vec![-1; snapshot_count * max_frontiers * frontier_neighbor_count],
             frontier_neighbor_pair: vec![
                 0;
-                snapshot_count * max_frontiers * FRONTIER_NEIGHBOR_COUNT
+                snapshot_count * max_frontiers * frontier_neighbor_count
             ],
             frontier_obstruction: vec![
                 0;
-                snapshot_count * max_frontiers * FRONTIER_NEIGHBOR_COUNT * 3
+                snapshot_count * max_frontiers * frontier_neighbor_count * 3
             ],
         }
     }
 
-    fn shards(&mut self, common_data: &CommonData, start: usize, len: usize) -> StateFeatureShards {
+    fn shards(
+        &mut self,
+        common_data: &CommonData,
+        start: usize,
+        len: usize,
+        frontier_neighbor_count: usize,
+    ) -> StateFeatureShards {
         let max_frontiers = Environment::max_frontiers(common_data);
         let inventory_count = common_data.connection_variant_rooms.len();
         let room_count = common_data.room.len();
@@ -701,16 +719,16 @@ impl StateFeatureBuffers {
                 &mut self.frontier[start * max_frontiers * 7..(start + len) * max_frontiers * 7],
             ),
             frontier_neighbor: OutputShard::from_slice(
-                &mut self.frontier_neighbor[start * max_frontiers * FRONTIER_NEIGHBOR_COUNT
-                    ..(start + len) * max_frontiers * FRONTIER_NEIGHBOR_COUNT],
+                &mut self.frontier_neighbor[start * max_frontiers * frontier_neighbor_count
+                    ..(start + len) * max_frontiers * frontier_neighbor_count],
             ),
             frontier_neighbor_pair: OutputShard::from_slice(
-                &mut self.frontier_neighbor_pair[start * max_frontiers * FRONTIER_NEIGHBOR_COUNT
-                    ..(start + len) * max_frontiers * FRONTIER_NEIGHBOR_COUNT],
+                &mut self.frontier_neighbor_pair[start * max_frontiers * frontier_neighbor_count
+                    ..(start + len) * max_frontiers * frontier_neighbor_count],
             ),
             frontier_obstruction: OutputShard::from_slice(
-                &mut self.frontier_obstruction[start * max_frontiers * FRONTIER_NEIGHBOR_COUNT * 3
-                    ..(start + len) * max_frontiers * FRONTIER_NEIGHBOR_COUNT * 3],
+                &mut self.frontier_obstruction[start * max_frontiers * frontier_neighbor_count * 3
+                    ..(start + len) * max_frontiers * frontier_neighbor_count * 3],
             ),
         }
     }
@@ -740,12 +758,13 @@ impl Engine {
         self.common_data.room.len()
     }
 
-    #[pyo3(signature = (map_size, num_environments, seed, num_threads=None))]
+    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, num_threads=None))]
     fn create_environment_group(
         &self,
         map_size: (Coord, Coord),
         num_environments: usize,
         seed: u64,
+        frontier_neighbor_count: usize,
         num_threads: Option<usize>,
     ) -> PyResult<EnvironmentGroup> {
         EnvironmentGroup::new(
@@ -753,6 +772,7 @@ impl Engine {
             map_size,
             num_environments,
             seed,
+            frontier_neighbor_count,
             num_threads,
         )
     }
@@ -812,8 +832,14 @@ impl EnvironmentGroup {
         map_size: (Coord, Coord),
         num_environments: usize,
         seed: u64,
+        frontier_neighbor_count: usize,
         num_threads: Option<usize>,
     ) -> PyResult<Self> {
+        if frontier_neighbor_count == 0 {
+            return Err(PyValueError::new_err(
+                "frontier_neighbor_count must be greater than zero",
+            ));
+        }
         let requested_threads = requested_num_threads(num_threads)?;
         let worker_count = min(requested_threads, max(num_environments, 1));
 
@@ -845,6 +871,7 @@ impl EnvironmentGroup {
             common_data,
             workers,
             num_environments,
+            frontier_neighbor_count,
             action_count: 0,
         })
     }
@@ -1255,13 +1282,25 @@ impl EnvironmentGroup {
         let inventory_count = self.common_data.connection_variant_rooms.len();
         let room_count = self.common_data.room.len();
         let max_frontiers = Environment::max_frontiers(&self.common_data);
-        let mut buffers = StateFeatureBuffers::new(&self.common_data, self.num_environments);
+        let mut buffers = StateFeatureBuffers::new(
+            &self.common_data,
+            self.num_environments,
+            self.frontier_neighbor_count,
+        );
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let features = buffers.shards(&self.common_data, worker.start, worker.len);
-                if let Err(err) = worker.send(WorkerCommand::GetStateFeatures { features }) {
+                let features = buffers.shards(
+                    &self.common_data,
+                    worker.start,
+                    worker.len,
+                    self.frontier_neighbor_count,
+                );
+                if let Err(err) = worker.send(WorkerCommand::GetStateFeatures {
+                    frontier_neighbor_count: self.frontier_neighbor_count,
+                    features,
+                }) {
                     set_first_error(&mut first_error, err);
                     break;
                 }
@@ -1291,21 +1330,21 @@ impl EnvironmentGroup {
                 buffers.frontier_neighbor,
                 self.num_environments,
                 max_frontiers,
-                FRONTIER_NEIGHBOR_COUNT,
+                self.frontier_neighbor_count,
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.frontier_neighbor_pair,
                 self.num_environments,
                 max_frontiers,
-                FRONTIER_NEIGHBOR_COUNT,
+                self.frontier_neighbor_count,
             )?,
             pyarray4_from_flat_vec(
                 py,
                 buffers.frontier_obstruction,
                 self.num_environments,
                 max_frontiers,
-                FRONTIER_NEIGHBOR_COUNT,
+                self.frontier_neighbor_count,
                 3,
             )?,
         ))
@@ -1353,7 +1392,11 @@ impl EnvironmentGroup {
         let max_frontiers = Environment::max_frontiers(&self.common_data);
         let environment_count = shape[0];
         let snapshot_count = environment_count * candidate_count;
-        let mut buffers = StateFeatureBuffers::new(&self.common_data, snapshot_count);
+        let mut buffers = StateFeatureBuffers::new(
+            &self.common_data,
+            snapshot_count,
+            self.frontier_neighbor_count,
+        );
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
@@ -1366,8 +1409,14 @@ impl EnvironmentGroup {
                 let environment_count = end - start;
                 let input_start = (start - environment_start) * candidate_count;
                 let len = environment_count * candidate_count;
-                let features = buffers.shards(&self.common_data, input_start, len);
+                let features = buffers.shards(
+                    &self.common_data,
+                    input_start,
+                    len,
+                    self.frontier_neighbor_count,
+                );
                 if let Err(err) = worker.send(WorkerCommand::GetStateFeaturesAfterCandidates {
+                    frontier_neighbor_count: self.frontier_neighbor_count,
                     environment_start: start - worker.start,
                     environment_count,
                     candidate_count,
@@ -1426,7 +1475,7 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 max_frontiers,
-                FRONTIER_NEIGHBOR_COUNT,
+                self.frontier_neighbor_count,
             )?,
             pyarray4_from_flat_vec(
                 py,
@@ -1434,7 +1483,7 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 max_frontiers,
-                FRONTIER_NEIGHBOR_COUNT,
+                self.frontier_neighbor_count,
             )?,
             pyarray5_from_flat_vec(
                 py,
@@ -1442,7 +1491,7 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 max_frontiers,
-                FRONTIER_NEIGHBOR_COUNT,
+                self.frontier_neighbor_count,
                 3,
             )?,
         ))
