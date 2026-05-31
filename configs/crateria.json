@@ -18,7 +18,7 @@
   "optimizer": {
     "lr": 0.0005,
     "beta1": 0.95,
-    "beta2": 0.95
+    "beta2": 0.99
   },
   "generation": {
     "num_environments": 2048,
