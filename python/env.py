@@ -175,9 +175,9 @@ class EnvironmentGroup:
 
     def step(self, actions: Actions):
         self.env.step(
-            actions.room_idx.cpu().numpy(),
-            actions.room_x.cpu().numpy(),
-            actions.room_y.cpu().numpy(),
+            actions.room_idx.contiguous().cpu().numpy(),
+            actions.room_x.contiguous().cpu().numpy(),
+            actions.room_y.contiguous().cpu().numpy(),
         )
 
     def replay(self, actions: Actions):

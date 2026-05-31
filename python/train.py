@@ -16,7 +16,7 @@ from pathlib import Path
 from env import Actions, Engine, GenerateConfig, Outcomes
 from model import CausalTransformerModel, FrontierStateModel
 from loss import LossConfig, compute_loss
-from generate import generate
+from generate import Prefetcher, generate
 from experience import ExperienceStorage
 
 class ModelConfig(BaseModel):
@@ -266,6 +266,7 @@ main_optimizer = torch.optim.Adam(
     betas=(config.optimizer.beta1, config.optimizer.beta2))
 
 scaler = torch.amp.GradScaler('cuda')
+train_prefetcher = Prefetcher()
 
 num_episodes = 0
 
@@ -305,18 +306,23 @@ def train_batch(train_actions, train_outcomes, gen_config):
         mask = torch.ones([train_actions.room_idx.shape[0], 1, 1], dtype=torch.bool, device=device)
         prefix_lengths = torch.randint(
             1, episode_length + 1, [config.train.state_prefix_samples]).sort().values.tolist()
+        train_actions_cpu = train_actions.to(torch.device("cpu"))
         train_env.clear()
         current_prefix_length = 0
         total_loss = 0.0
-        for prefix_length in prefix_lengths:
+
+        def prepare_prefix(prefix_length):
+            nonlocal current_prefix_length
             for action_idx in range(current_prefix_length, prefix_length):
                 train_env.step(Actions(
-                    train_actions.room_idx[:, action_idx],
-                    train_actions.room_x[:, action_idx],
-                    train_actions.room_y[:, action_idx],
+                    train_actions_cpu.room_idx[:, action_idx],
+                    train_actions_cpu.room_x[:, action_idx],
+                    train_actions_cpu.room_y[:, action_idx],
                 ))
             current_prefix_length = prefix_length
-            features = train_env.get_state_features(torch.device("cpu"))
+            return train_env.get_state_features(torch.device("cpu"))
+
+        for features in train_prefetcher.map(prefix_lengths, prepare_prefix):
             for start in range(0, train_actions.room_idx.shape[0], config.train.state_batch_chunk):
                 end = min(start + config.train.state_batch_chunk, train_actions.room_idx.shape[0])
                 with torch.amp.autocast("cuda", enabled=device.type == "cuda" and config.model.autocast):
@@ -404,4 +410,5 @@ try:
             logging.info("Stopping training after completing round %s.", round)
             break
 finally:
+    train_prefetcher.close()
     aim_run.close()
