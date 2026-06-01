@@ -488,7 +488,7 @@ fn worker_loop(
                 environment_count,
             } => {
                 pending_state_features = environments
-                    .iter_mut()
+                    .iter()
                     .skip(environment_start)
                     .take(environment_count)
                     .map(|env| {
@@ -519,13 +519,13 @@ fn worker_loop(
                 pending_state_features.reserve(environment_count * candidate_count);
                 let mut profile = StateFeatureProfile::default();
                 for (env_idx, env) in environments
-                    .iter_mut()
+                    .iter()
                     .skip(environment_start)
                     .take(environment_count)
                     .enumerate()
                 {
                     let start = Instant::now();
-                    env.refresh_occupancy_prefix();
+                    let occupancy_prefix = env.occupancy_prefix();
                     profile.occupancy_prefix_ns += start.elapsed().as_nanos() as u64;
                     for candidate_idx in 0..candidate_count {
                         let idx = env_idx * candidate_count + candidate_idx;
@@ -537,7 +537,7 @@ fn worker_loop(
                                     x: room_x[idx],
                                     y: room_y[idx],
                                 },
-                                env.occupancy_prefix(),
+                                &occupancy_prefix,
                                 frontier_neighbor_count,
                                 frontier_window_size,
                             );

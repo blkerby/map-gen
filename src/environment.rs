@@ -104,14 +104,10 @@ pub struct Environment {
     room_part_component: Vec<usize>,             // maps placed room door groups to SCC components
     scc_dag: SccDag, // DAG of strongly connected components (condensation graph)
     occupancy: Vec<u8>,
-    occupancy_prefix: Vec<u16>,
-    occupancy_prefix_dirty: bool,
 }
 
 impl Environment {
     pub fn new(common: &CommonData, map_size: (Coord, Coord), seed: u64) -> Self {
-        let map_width = map_size.0 as usize;
-        let map_height = map_size.1 as usize;
         Self {
             rng: rand::rngs::StdRng::seed_from_u64(seed),
             map_size,
@@ -136,9 +132,7 @@ impl Environment {
                 .collect(),
             room_part_component: vec![NO_COMPONENT; common.room_part.len()],
             scc_dag: SccDag::default(),
-            occupancy: vec![0; map_width * map_height],
-            occupancy_prefix: vec![0; (map_width + 1) * (map_height + 1)],
-            occupancy_prefix_dirty: false,
+            occupancy: vec![0; map_size.0 as usize * map_size.1 as usize],
         }
     }
 
@@ -163,8 +157,6 @@ impl Environment {
         self.room_part_component.fill(NO_COMPONENT);
         self.scc_dag.clear();
         self.occupancy.fill(0);
-        self.occupancy_prefix.fill(0);
-        self.occupancy_prefix_dirty = false;
     }
 
     pub fn get_initial_action(&mut self, common: &CommonData) -> Action {
@@ -268,7 +260,6 @@ impl Environment {
                     self.occupancy[y as usize * self.map_size.0 as usize + x as usize] = 1;
                 }
             }
-            self.occupancy_prefix_dirty = true;
         }
 
         // Remove the frontiers that the new room connects to (if any),
@@ -544,8 +535,6 @@ impl Environment {
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
             occupancy: self.occupancy.clone(),
-            occupancy_prefix: vec![],
-            occupancy_prefix_dirty: false,
         }
     }
 
@@ -566,8 +555,6 @@ impl Environment {
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
             occupancy: vec![],
-            occupancy_prefix: vec![],
-            occupancy_prefix_dirty: false,
         }
     }
 
@@ -581,15 +568,15 @@ impl Environment {
     }
 
     pub fn state_features(
-        &mut self,
+        &self,
         common: &CommonData,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
     ) -> StateFeatures {
-        self.refresh_occupancy_prefix();
+        let occupancy_prefix = self.occupancy_prefix();
         self.state_features_with_occupancy(
             common,
-            &self.occupancy_prefix,
+            &occupancy_prefix,
             &self.occupancy,
             None,
             frontier_neighbor_count,
@@ -598,27 +585,20 @@ impl Environment {
         )
     }
 
-    pub(crate) fn refresh_occupancy_prefix(&mut self) {
-        if !self.occupancy_prefix_dirty {
-            return;
-        }
+    pub(crate) fn occupancy_prefix(&self) -> Vec<u16> {
         let map_width = self.map_size.0 as usize;
         let map_height = self.map_size.1 as usize;
         let prefix_width = map_width + 1;
-        self.occupancy_prefix.fill(0);
+        let mut occupancy_prefix = vec![0u16; prefix_width * (map_height + 1)];
         for y in 0..map_height {
             let mut row_sum = 0u16;
             for x in 0..map_width {
                 row_sum += self.occupancy[y * map_width + x] as u16;
-                self.occupancy_prefix[(y + 1) * prefix_width + x + 1] =
-                    self.occupancy_prefix[y * prefix_width + x + 1] + row_sum;
+                occupancy_prefix[(y + 1) * prefix_width + x + 1] =
+                    occupancy_prefix[y * prefix_width + x + 1] + row_sum;
             }
         }
-        self.occupancy_prefix_dirty = false;
-    }
-
-    pub(crate) fn occupancy_prefix(&self) -> &[u16] {
-        &self.occupancy_prefix
+        occupancy_prefix
     }
 
     fn state_features_with_occupancy(
@@ -716,6 +696,7 @@ impl Environment {
         let frontier_ns = frontier_start.elapsed().as_nanos() as u64;
         let neighbor_start = Instant::now();
         let mut neighbors = vec![usize::MAX; frontier_neighbor_count];
+        let mut neighbor_keys = vec![(Coord::MAX, usize::MAX, usize::MAX); frontier_neighbor_count];
         for (src_idx, (src_location, _)) in sorted_frontiers.iter().enumerate() {
             let distance = |dst_idx: usize| {
                 let dst_location = sorted_frontiers[dst_idx].0;
@@ -727,10 +708,12 @@ impl Environment {
                 )
             };
             neighbors.fill(usize::MAX);
+            neighbor_keys.fill((Coord::MAX, usize::MAX, usize::MAX));
             let mut neighbor_count = 0;
             for dst_idx in 0..sorted_frontiers.len() {
+                let dst_key = distance(dst_idx);
                 let insert_idx = (0..neighbor_count)
-                    .position(|idx| distance(neighbors[idx]) > distance(dst_idx))
+                    .position(|idx| neighbor_keys[idx] > dst_key)
                     .unwrap_or(neighbor_count);
                 if insert_idx >= frontier_neighbor_count {
                     continue;
@@ -738,8 +721,10 @@ impl Environment {
                 neighbor_count = (neighbor_count + 1).min(frontier_neighbor_count);
                 for idx in (insert_idx + 1..neighbor_count).rev() {
                     neighbors[idx] = neighbors[idx - 1];
+                    neighbor_keys[idx] = neighbor_keys[idx - 1];
                 }
                 neighbors[insert_idx] = dst_idx;
+                neighbor_keys[insert_idx] = dst_key;
             }
             for (neighbor_idx, &dst_idx) in neighbors[..neighbor_count].iter().enumerate() {
                 frontier_neighbor[src_idx * frontier_neighbor_count + neighbor_idx] =
@@ -864,17 +849,17 @@ impl Environment {
 
     #[cfg(test)]
     pub fn state_features_after_candidate(
-        &mut self,
+        &self,
         common: &CommonData,
         candidate: Action,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
     ) -> StateFeatures {
-        self.refresh_occupancy_prefix();
+        let occupancy_prefix = self.occupancy_prefix();
         self.state_features_after_candidate_with_occupancy(
             common,
             candidate,
-            &self.occupancy_prefix,
+            &occupancy_prefix,
             frontier_neighbor_count,
             frontier_window_size,
         )
