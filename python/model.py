@@ -51,24 +51,26 @@ class FactorizedOutcomeHead(torch.nn.Module):
     def forward(self, X, room_x, room_y, room_placed, pos_embedding_x, pos_embedding_y):
         if self.num_outputs == 0:
             return X.new_empty([X.shape[0], X.shape[1], 0], dtype=torch.float32)
-        # Keep normalized dot products and logits out of reduced precision. These
-        # scores directly drive both the loss and candidate selection.
+        state = self.state(X)
+        # Keep normalization, base logits, and final logits out of reduced
+        # precision. These scores directly drive both the loss and candidate
+        # selection.
         with torch.amp.autocast(X.device.type, enabled=False):
-            state = torch.nn.functional.normalize(self.state(X.to(torch.float32)), dim=-1)
+            state = torch.nn.functional.normalize(state.to(torch.float32), dim=-1)
             geometry_outcome_embedding = torch.nn.functional.normalize(
                 self.geometry_outcome_embedding.to(torch.float32), dim=-1)
             pos_embedding_x = torch.nn.functional.normalize(pos_embedding_x.to(torch.float32), dim=-1)
             pos_embedding_y = torch.nn.functional.normalize(pos_embedding_y.to(torch.float32), dim=-1)
             base_query = geometry_outcome_embedding[self.geometry_outcome_idx]
             base_logits = torch.matmul(state, base_query.transpose(0, 1))
-            x_logits = torch.matmul(state, pos_embedding_x.transpose(0, 1))
-            y_logits = torch.matmul(state, pos_embedding_y.transpose(0, 1))
-            room_logits = torch.gather(x_logits, -1, room_x) + torch.gather(y_logits, -1, room_y)
-            room_logits = torch.where(room_placed, room_logits, 0.0)
-            position_logits = room_logits[..., self.room_idx]
-            return (base_logits + position_logits) * torch.exp(
-                torch.clamp(self.logit_scale, max=math.log(100.0))
-            )
+        x_logits = torch.matmul(state, pos_embedding_x.transpose(0, 1))
+        y_logits = torch.matmul(state, pos_embedding_y.transpose(0, 1))
+        room_logits = torch.gather(x_logits, -1, room_x) + torch.gather(y_logits, -1, room_y)
+        room_logits = torch.where(room_placed, room_logits, 0.0)
+        position_logits = room_logits[..., self.room_idx]
+        return (base_logits + position_logits) * torch.exp(
+            torch.clamp(self.logit_scale, max=math.log(100.0))
+        )
 
 
 class GroupedQueryAttentionLayer(torch.nn.Module):

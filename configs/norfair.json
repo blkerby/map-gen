@@ -7,6 +7,7 @@
   "model": {
     "type": "frontier_state",
     "compile": "true",
+    "generation_autocast": true,
     "embedding_width": 256,
     "key_width": 64,
     "value_width": 64,

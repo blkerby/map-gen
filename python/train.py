@@ -252,6 +252,7 @@ loss_config = LossConfig(
     connection_weight=config.train.connection_weight,
 )
 
+
 def log_outcomes(outcomes, loss, round, frac, num_episodes):
     door_invalid = torch.sum(outcomes.door_invalid != 0, dim=1)
     avg_door = torch.mean(door_invalid.to(torch.float32))
