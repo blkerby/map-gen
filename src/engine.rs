@@ -172,15 +172,17 @@ enum WorkerCommand {
         room_x: InputShard<Coord>,
         room_y: InputShard<Coord>,
     },
+    PackStateFeatures {
+        outputs: StateFeatureOutputShards,
+    },
     Shutdown,
 }
 
-// For now we only need a "done" response to indicate that the worker has finished processing a command,
-// since all other communication is done through shared memory. In the future, we could extend this
-// to include error reporting or other types of responses if needed.
+// State feature preparation reports only metadata needed to allocate output buffers. Bulk data is
+// written through shared memory, and other commands return "done" when they finish.
 enum WorkerResponse {
     Done,
-    StateFeatures(Vec<StateFeatures>, StateFeatureProfile),
+    StateFeatureProfile(StateFeatureProfile, usize),
 }
 
 struct WorkerHandle {
@@ -211,8 +213,8 @@ impl WorkerHandle {
     fn recv_done(&self) -> PyResult<()> {
         match self.recv()? {
             WorkerResponse::Done => Ok(()),
-            WorkerResponse::StateFeatures(_, _) => Err(PyRuntimeError::new_err(
-                "engine worker thread returned unexpected state features",
+            WorkerResponse::StateFeatureProfile(_, _) => Err(PyRuntimeError::new_err(
+                "engine worker thread returned unexpected state feature profile",
             )),
         }
     }
@@ -237,6 +239,7 @@ fn worker_loop(
     command_rx: channel::Receiver<WorkerCommand>,
     response_tx: channel::Sender<WorkerResponse>,
 ) {
+    let mut pending_state_features = Vec::new();
     while let Ok(command) = command_rx.recv() {
         let response = match command {
             WorkerCommand::Clear => {
@@ -481,13 +484,14 @@ fn worker_loop(
                 environment_start,
                 environment_count,
             } => {
-                let snapshots = environments
+                pending_state_features = environments
                     .iter()
                     .skip(environment_start)
                     .take(environment_count)
                     .map(|env| env.state_features(&common_data, frontier_neighbor_count))
-                    .collect::<Vec<_>>();
-                WorkerResponse::StateFeatures(snapshots, StateFeatureProfile::default())
+                    .collect();
+                let frontier_count = max_state_feature_frontier_count(&pending_state_features);
+                WorkerResponse::StateFeatureProfile(StateFeatureProfile::default(), frontier_count)
             }
             WorkerCommand::GetStateFeaturesAfterCandidates {
                 frontier_neighbor_count,
@@ -501,7 +505,8 @@ fn worker_loop(
                 let room_idx = unsafe { room_idx.into_slice() };
                 let room_x = unsafe { room_x.into_slice() };
                 let room_y = unsafe { room_y.into_slice() };
-                let mut snapshots = Vec::with_capacity(environment_count * candidate_count);
+                pending_state_features.clear();
+                pending_state_features.reserve(environment_count * candidate_count);
                 let mut profile = StateFeatureProfile::default();
                 for (env_idx, env) in environments
                     .iter()
@@ -525,11 +530,19 @@ fn worker_loop(
                                 &occupancy_prefix,
                                 frontier_neighbor_count,
                             );
-                        snapshots.push(features);
+                        pending_state_features.push(features);
                         profile.add(&candidate_profile);
                     }
                 }
-                WorkerResponse::StateFeatures(snapshots, profile)
+                let frontier_count = max_state_feature_frontier_count(&pending_state_features);
+                WorkerResponse::StateFeatureProfile(profile, frontier_count)
+            }
+            WorkerCommand::PackStateFeatures { outputs } => {
+                let mut outputs = unsafe { outputs.into_slices() };
+                for (idx, features) in pending_state_features.drain(..).enumerate() {
+                    outputs.write_features(idx, &features);
+                }
+                WorkerResponse::Done
             }
             WorkerCommand::Shutdown => break,
         };
@@ -597,22 +610,22 @@ fn wait_for_done_responses(
     }
 }
 
-fn collect_state_feature_responses(
+fn collect_state_feature_profiles(
     workers: &[WorkerHandle],
     sent_workers: Vec<usize>,
     mut first_error: Option<PyErr>,
-) -> PyResult<(Vec<StateFeatures>, StateFeatureProfile)> {
-    let mut snapshots = Vec::new();
+) -> PyResult<(StateFeatureProfile, usize)> {
     let mut profile = StateFeatureProfile::default();
+    let mut frontier_count = 0;
     for worker_idx in sent_workers {
         match workers[worker_idx].recv() {
-            Ok(WorkerResponse::StateFeatures(mut worker_snapshots, worker_profile)) => {
-                snapshots.append(&mut worker_snapshots);
+            Ok(WorkerResponse::StateFeatureProfile(worker_profile, worker_frontier_count)) => {
                 profile.add(&worker_profile);
+                frontier_count = max(frontier_count, worker_frontier_count);
             }
             Ok(WorkerResponse::Done) => set_first_error(
                 &mut first_error,
-                PyRuntimeError::new_err("engine worker thread returned no state features"),
+                PyRuntimeError::new_err("engine worker thread returned no state feature profile"),
             ),
             Err(err) => set_first_error(&mut first_error, err),
         }
@@ -621,8 +634,16 @@ fn collect_state_feature_responses(
     if let Some(err) = first_error {
         Err(err)
     } else {
-        Ok((snapshots, profile))
+        Ok((profile, frontier_count))
     }
+}
+
+fn max_state_feature_frontier_count(features: &[StateFeatures]) -> usize {
+    features
+        .iter()
+        .map(|features| features.frontier.len() / 7)
+        .max()
+        .unwrap_or(0)
 }
 
 #[pyclass(module = "map_gen")]
@@ -676,6 +697,102 @@ struct StateFeatureBuffers {
     frontier_obstruction: Vec<u16>,
 }
 
+struct StateFeatureOutputShards {
+    inventory: OutputShard<u8>,
+    room_x: OutputShard<Coord>,
+    room_y: OutputShard<Coord>,
+    room_placed: OutputShard<u8>,
+    frontier: OutputShard<i16>,
+    frontier_neighbor: OutputShard<i16>,
+    frontier_neighbor_pair: OutputShard<u8>,
+    frontier_obstruction: OutputShard<u16>,
+    inventory_count: usize,
+    room_count: usize,
+    frontier_count: usize,
+    frontier_neighbor_count: usize,
+}
+
+struct StateFeatureOutputSlices<'a> {
+    inventory: &'a mut [u8],
+    room_x: &'a mut [Coord],
+    room_y: &'a mut [Coord],
+    room_placed: &'a mut [u8],
+    frontier: &'a mut [i16],
+    frontier_neighbor: &'a mut [i16],
+    frontier_neighbor_pair: &'a mut [u8],
+    frontier_obstruction: &'a mut [u16],
+    inventory_count: usize,
+    room_count: usize,
+    frontier_count: usize,
+    frontier_neighbor_count: usize,
+}
+
+impl StateFeatureOutputShards {
+    unsafe fn into_slices<'a>(self) -> StateFeatureOutputSlices<'a> {
+        StateFeatureOutputSlices {
+            inventory: unsafe { self.inventory.into_mut_slice() },
+            room_x: unsafe { self.room_x.into_mut_slice() },
+            room_y: unsafe { self.room_y.into_mut_slice() },
+            room_placed: unsafe { self.room_placed.into_mut_slice() },
+            frontier: unsafe { self.frontier.into_mut_slice() },
+            frontier_neighbor: unsafe { self.frontier_neighbor.into_mut_slice() },
+            frontier_neighbor_pair: unsafe { self.frontier_neighbor_pair.into_mut_slice() },
+            frontier_obstruction: unsafe { self.frontier_obstruction.into_mut_slice() },
+            inventory_count: self.inventory_count,
+            room_count: self.room_count,
+            frontier_count: self.frontier_count,
+            frontier_neighbor_count: self.frontier_neighbor_count,
+        }
+    }
+}
+
+impl StateFeatureOutputSlices<'_> {
+    fn write_features(&mut self, idx: usize, features: &StateFeatures) {
+        fn copy_row<T: Copy>(dst: &mut [T], row: &[T], idx: usize, stride: usize) {
+            dst[idx * stride..idx * stride + row.len()].copy_from_slice(row);
+        }
+
+        copy_row(
+            &mut self.inventory,
+            &features.inventory,
+            idx,
+            self.inventory_count,
+        );
+        copy_row(&mut self.room_x, &features.room_x, idx, self.room_count);
+        copy_row(&mut self.room_y, &features.room_y, idx, self.room_count);
+        copy_row(
+            &mut self.room_placed,
+            &features.room_placed,
+            idx,
+            self.room_count,
+        );
+        copy_row(
+            &mut self.frontier,
+            &features.frontier,
+            idx,
+            self.frontier_count * 7,
+        );
+        copy_row(
+            &mut self.frontier_neighbor,
+            &features.frontier_neighbor,
+            idx,
+            self.frontier_count * self.frontier_neighbor_count,
+        );
+        copy_row(
+            &mut self.frontier_neighbor_pair,
+            &features.frontier_neighbor_pair,
+            idx,
+            self.frontier_count * self.frontier_neighbor_count,
+        );
+        copy_row(
+            &mut self.frontier_obstruction,
+            &features.frontier_obstruction,
+            idx,
+            self.frontier_count * self.frontier_neighbor_count * 3,
+        );
+    }
+}
+
 impl StateFeatureBuffers {
     fn new(
         common_data: &CommonData,
@@ -701,69 +818,60 @@ impl StateFeatureBuffers {
         }
     }
 
-    fn from_features(
-        common_data: &CommonData,
+    fn output_shard(
+        &mut self,
+        snapshot_start: usize,
+        snapshot_count: usize,
+        inventory_count: usize,
+        room_count: usize,
+        frontier_count: usize,
         frontier_neighbor_count: usize,
-        features: &[StateFeatures],
-    ) -> (Self, usize) {
-        fn copy_row<T: Copy>(dst: &mut [T], row: &[T], idx: usize, stride: usize) {
-            dst[idx * stride..idx * stride + row.len()].copy_from_slice(row);
+    ) -> StateFeatureOutputShards {
+        fn output_shard<T>(values: &mut [T], start: usize, len: usize) -> OutputShard<T> {
+            OutputShard::from_slice(&mut values[start..start + len])
         }
 
-        let frontier_count = features
-            .iter()
-            .map(|features| features.frontier.len() / 7)
-            .max()
-            .unwrap_or(0);
-        let mut buffers = Self::new(
-            common_data,
-            features.len(),
+        let inventory_start = snapshot_start * inventory_count;
+        let room_start = snapshot_start * room_count;
+        let frontier_start = snapshot_start * frontier_count;
+        StateFeatureOutputShards {
+            inventory: output_shard(
+                &mut self.inventory,
+                inventory_start,
+                snapshot_count * inventory_count,
+            ),
+            room_x: output_shard(&mut self.room_x, room_start, snapshot_count * room_count),
+            room_y: output_shard(&mut self.room_y, room_start, snapshot_count * room_count),
+            room_placed: output_shard(
+                &mut self.room_placed,
+                room_start,
+                snapshot_count * room_count,
+            ),
+            frontier: output_shard(
+                &mut self.frontier,
+                frontier_start * 7,
+                snapshot_count * frontier_count * 7,
+            ),
+            frontier_neighbor: output_shard(
+                &mut self.frontier_neighbor,
+                frontier_start * frontier_neighbor_count,
+                snapshot_count * frontier_count * frontier_neighbor_count,
+            ),
+            frontier_neighbor_pair: output_shard(
+                &mut self.frontier_neighbor_pair,
+                frontier_start * frontier_neighbor_count,
+                snapshot_count * frontier_count * frontier_neighbor_count,
+            ),
+            frontier_obstruction: output_shard(
+                &mut self.frontier_obstruction,
+                frontier_start * frontier_neighbor_count * 3,
+                snapshot_count * frontier_count * frontier_neighbor_count * 3,
+            ),
+            inventory_count,
+            room_count,
             frontier_count,
             frontier_neighbor_count,
-        );
-        let inventory_count = common_data.connection_variant_rooms.len();
-        let room_count = common_data.room.len();
-        for (idx, features) in features.iter().enumerate() {
-            copy_row(
-                &mut buffers.inventory,
-                &features.inventory,
-                idx,
-                inventory_count,
-            );
-            copy_row(&mut buffers.room_x, &features.room_x, idx, room_count);
-            copy_row(&mut buffers.room_y, &features.room_y, idx, room_count);
-            copy_row(
-                &mut buffers.room_placed,
-                &features.room_placed,
-                idx,
-                room_count,
-            );
-            copy_row(
-                &mut buffers.frontier,
-                &features.frontier,
-                idx,
-                frontier_count * 7,
-            );
-            copy_row(
-                &mut buffers.frontier_neighbor,
-                &features.frontier_neighbor,
-                idx,
-                frontier_count * frontier_neighbor_count,
-            );
-            copy_row(
-                &mut buffers.frontier_neighbor_pair,
-                &features.frontier_neighbor_pair,
-                idx,
-                frontier_count * frontier_neighbor_count,
-            );
-            copy_row(
-                &mut buffers.frontier_obstruction,
-                &features.frontier_obstruction,
-                idx,
-                frontier_count * frontier_neighbor_count * 3,
-            );
         }
-        (buffers, frontier_count)
     }
 }
 
@@ -1345,7 +1453,7 @@ impl EnvironmentGroup {
                 "state feature range must fit within the environment group",
             ));
         }
-        let (snapshots, _) = py.detach(|| {
+        let (_, frontier_count) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -1364,13 +1472,40 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_responses(&self.workers, sent_workers, first_error)
+            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
-        let (buffers, frontier_count) = StateFeatureBuffers::from_features(
+        let mut buffers = StateFeatureBuffers::new(
             &self.common_data,
+            environment_count,
+            frontier_count,
             self.frontier_neighbor_count,
-            &snapshots,
         );
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let start = max(environment_start, worker.start);
+                let end = min(environment_start + environment_count, worker.end());
+                if start >= end {
+                    continue;
+                }
+                if let Err(err) = worker.send(WorkerCommand::PackStateFeatures {
+                    outputs: buffers.output_shard(
+                        start - environment_start,
+                        end - start,
+                        inventory_count,
+                        room_count,
+                        frontier_count,
+                        self.frontier_neighbor_count,
+                    ),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
         Ok((
             pyarray2_from_flat_vec(py, buffers.inventory, environment_count, inventory_count)?,
             pyarray2_from_flat_vec(py, buffers.room_x, environment_count, room_count)?,
@@ -1444,7 +1579,7 @@ impl EnvironmentGroup {
         let environment_count = shape[0];
         let snapshot_count = environment_count * candidate_count;
         let worker_start = Instant::now();
-        let (snapshots, worker_profile) = py.detach(|| {
+        let (worker_profile, frontier_count) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -1470,10 +1605,47 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_responses(&self.workers, sent_workers, first_error)
+            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
         self.state_feature_worker_ns
             .fetch_add(worker_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let mut buffers = StateFeatureBuffers::new(
+            &self.common_data,
+            snapshot_count,
+            frontier_count,
+            self.frontier_neighbor_count,
+        );
+        let pack_start = Instant::now();
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let start = max(environment_start, worker.start);
+                let end = min(environment_start + environment_count, worker.end());
+                if start >= end {
+                    continue;
+                }
+                let snapshot_start = (start - environment_start) * candidate_count;
+                let snapshot_count = (end - start) * candidate_count;
+                if let Err(err) = worker.send(WorkerCommand::PackStateFeatures {
+                    outputs: buffers.output_shard(
+                        snapshot_start,
+                        snapshot_count,
+                        inventory_count,
+                        room_count,
+                        frontier_count,
+                        self.frontier_neighbor_count,
+                    ),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
+        self.state_feature_pack_ns
+            .fetch_add(pack_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
         self.state_feature_occupancy_prefix_ns
             .fetch_add(worker_profile.occupancy_prefix_ns, Ordering::Relaxed);
         self.state_feature_clone_ns
@@ -1508,15 +1680,6 @@ impl EnvironmentGroup {
             );
         self.state_feature_assemble_output_ns
             .fetch_add(worker_profile.assemble_output_ns, Ordering::Relaxed);
-        debug_assert_eq!(snapshots.len(), snapshot_count);
-        let pack_start = Instant::now();
-        let (buffers, frontier_count) = StateFeatureBuffers::from_features(
-            &self.common_data,
-            self.frontier_neighbor_count,
-            &snapshots,
-        );
-        self.state_feature_pack_ns
-            .fetch_add(pack_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
         self.state_feature_profile_calls
             .fetch_add(1, Ordering::Relaxed);
         Ok((
