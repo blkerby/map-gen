@@ -1,7 +1,7 @@
 # Python wrappers around the Rust map generation engine, includes (zero-copy) conversions
 # between numpy and torch tensors.
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 import json
@@ -106,14 +106,16 @@ class Engine:
         map_size: tuple[int, int],
         num_envs: int,
         seed: Optional[int] = None,
-        frontier_neighbor_count: int = 4,  # maximum external Delaunay neighbors per frontier
+        frontier_neighbor_count: int = 4,
         frontier_window_size: int = 16,
         num_threads: Optional[int] = None,
+        frontier_neighbor_algorithm: Literal["delaunay", "nearest"] = "delaunay",
     ) -> "EnvironmentGroup":
         if seed is None:
             seed = int(torch.randint(0, 2**31 - 1, ()).item())
         env = self.engine.create_environment_group(
-            map_size, num_envs, seed, frontier_neighbor_count, frontier_window_size, num_threads
+            map_size, num_envs, seed, frontier_neighbor_count, frontier_window_size, num_threads,
+            frontier_neighbor_algorithm
         )
         return EnvironmentGroup(self, env, map_size, num_envs)
 

@@ -23,6 +23,12 @@ struct FrontierEdge {
     active: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrontierNeighborAlgorithm {
+    Delaunay,
+    Nearest,
+}
+
 // Frontier: location of an unconnected door on the map.
 #[derive(Clone, Debug)]
 pub struct Frontier {
@@ -130,8 +136,8 @@ pub struct StateFeatures {
     pub frontier: Vec<i16>,
     // Occupied tiles in a square window centered on each frontier, flattened row-major.
     pub frontier_occupancy: Vec<u8>,
-    // Indices into frontier. Each frontier keeps nearby frontiers connected by
-    // symmetric degree-capped Delaunay edges. -1 marks padding.
+    // Indices into frontier. Semantics depend on FrontierNeighborAlgorithm.
+    // -1 marks padding.
     pub frontier_neighbor: Vec<i16>,
     // Bit flags: same SCC, source reaches destination, destination reaches source.
     pub frontier_neighbor_pair: Vec<u8>,
@@ -237,6 +243,45 @@ fn frontier_delaunay_neighbors(locations: &[DoorLocation], max_degree: usize) ->
         debug_assert!(row.len() <= max_degree);
     }
     neighbors
+}
+
+fn frontier_nearest_neighbors(
+    locations: &[DoorLocation],
+    neighbor_count: usize,
+) -> Vec<Vec<usize>> {
+    let mut rows = Vec::with_capacity(locations.len());
+    let mut neighbors = vec![usize::MAX; neighbor_count];
+    let mut neighbor_keys = vec![(Coord::MAX, usize::MAX, usize::MAX); neighbor_count];
+    for (src_idx, src) in locations.iter().enumerate() {
+        neighbors.fill(usize::MAX);
+        neighbor_keys.fill((Coord::MAX, usize::MAX, usize::MAX));
+        let mut count = 0;
+        for dst_idx in 0..locations.len() {
+            let dst_key = {
+                let dst = locations[dst_idx];
+                (
+                    (src.x() - dst.x()).abs() + (src.y() - dst.y()).abs(),
+                    usize::from(dst_idx != src_idx),
+                    dst_idx,
+                )
+            };
+            let insert_idx = (0..count)
+                .position(|idx| neighbor_keys[idx] > dst_key)
+                .unwrap_or(count);
+            if insert_idx >= neighbor_count {
+                continue;
+            }
+            count = (count + 1).min(neighbor_count);
+            for idx in (insert_idx + 1..count).rev() {
+                neighbors[idx] = neighbors[idx - 1];
+                neighbor_keys[idx] = neighbor_keys[idx - 1];
+            }
+            neighbors[insert_idx] = dst_idx;
+            neighbor_keys[insert_idx] = dst_key;
+        }
+        rows.push(neighbors[..count].to_vec());
+    }
+    rows
 }
 
 fn prune_frontier_edges(
@@ -781,6 +826,7 @@ impl Environment {
         &self,
         common: &CommonData,
         config: &StateFeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
     ) -> StateFeatures {
@@ -795,6 +841,7 @@ impl Environment {
             &occupancy_prefix,
             &self.occupancy,
             None,
+            frontier_neighbor_algorithm,
             frontier_neighbor_count,
             frontier_window_size,
             None,
@@ -824,6 +871,7 @@ impl Environment {
         occupancy_prefix: &[u16],
         occupancy: &[u8],
         extra_occupied: Option<(&GeometryData, Coord, Coord)>,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         profile: Option<&mut StateFeatureProfile>,
@@ -996,11 +1044,15 @@ impl Environment {
                 .iter()
                 .map(|(location, _)| **location)
                 .collect::<Vec<_>>();
-            for (src_idx, neighbors) in
-                frontier_delaunay_neighbors(&locations, frontier_neighbor_count)
-                    .iter()
-                    .enumerate()
-            {
+            let neighbors = match frontier_neighbor_algorithm {
+                FrontierNeighborAlgorithm::Delaunay => {
+                    frontier_delaunay_neighbors(&locations, frontier_neighbor_count)
+                }
+                FrontierNeighborAlgorithm::Nearest => {
+                    frontier_nearest_neighbors(&locations, frontier_neighbor_count)
+                }
+            };
+            for (src_idx, neighbors) in neighbors.iter().enumerate() {
                 for (neighbor_idx, &dst_idx) in neighbors.iter().enumerate() {
                     frontier_neighbor[src_idx * frontier_neighbor_count + neighbor_idx] =
                         dst_idx as i16;
@@ -1147,6 +1199,7 @@ impl Environment {
         common: &CommonData,
         candidate: Action,
         config: &StateFeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
     ) -> StateFeatures {
@@ -1156,6 +1209,7 @@ impl Environment {
             candidate,
             config,
             &occupancy_prefix,
+            frontier_neighbor_algorithm,
             frontier_neighbor_count,
             frontier_window_size,
         )
@@ -1168,6 +1222,7 @@ impl Environment {
         candidate: Action,
         config: &StateFeatureConfig,
         occupancy_prefix: &[u16],
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
     ) -> (StateFeatures, StateFeatureProfile) {
@@ -1200,6 +1255,7 @@ impl Environment {
             occupancy_prefix,
             &self.occupancy,
             extra_occupied,
+            frontier_neighbor_algorithm,
             frontier_neighbor_count,
             frontier_window_size,
             Some(&mut profile),
@@ -1378,6 +1434,21 @@ mod tests {
             2,
         );
         assert_symmetric_neighbors(&cocircular, 2);
+    }
+
+    #[test]
+    fn nearest_neighbors_keep_self_then_manhattan_nearest_frontiers() {
+        let neighbors = frontier_nearest_neighbors(
+            &[
+                door_location(0, 0, false),
+                door_location(2, 0, false),
+                door_location(0, 1, false),
+                door_location(1, 0, false),
+            ],
+            3,
+        );
+        assert_eq!(neighbors[0], vec![0, 2, 3]);
+        assert_eq!(neighbors[1], vec![1, 3, 0]);
     }
 
     #[test]
@@ -1750,9 +1821,19 @@ mod tests {
             y: 0,
         };
         let config = StateFeatureConfig::all();
-        let simulated = env.state_features_after_candidate(&common, candidate, &config, 4, 4);
+        let simulated = env.state_features_after_candidate(
+            &common,
+            candidate,
+            &config,
+            FrontierNeighborAlgorithm::Delaunay,
+            4,
+            4,
+        );
         env.step(candidate, &common);
-        assert_eq!(simulated, env.state_features(&common, &config, 4, 4));
+        assert_eq!(
+            simulated,
+            env.state_features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+        );
         assert_eq!(env.occupancy[0], 1);
         assert_eq!(env.occupancy[1], 1);
         let mut sorted_frontiers = env.frontier.iter().collect::<Vec<_>>();
@@ -1827,7 +1908,8 @@ mod tests {
             frontier_connection_reachability: true,
             ..StateFeatureConfig::default()
         };
-        let features = env.state_features(&common, &config, 1, 1);
+        let features =
+            env.state_features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 1, 1);
         assert_eq!(features.connection_reachability, vec![0]);
         assert_eq!(features.frontier_connection_reachability, vec![1, 2]);
     }
@@ -1849,6 +1931,7 @@ mod tests {
             },
             &StateFeatureConfig::default(),
             &[],
+            FrontierNeighborAlgorithm::Delaunay,
             4,
             4,
         );

@@ -2,7 +2,9 @@
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
 use crate::common::{Action, CommonData, Coord, DoorValidOutcome, Room, RoomIdx};
-use crate::environment::{Environment, StateFeatureConfig, StateFeatureProfile, StateFeatures};
+use crate::environment::{
+    Environment, FrontierNeighborAlgorithm, StateFeatureConfig, StateFeatureProfile, StateFeatures,
+};
 use crossbeam_channel as channel;
 use numpy::{
     Element, IntoPyArray, PyArray2, PyArray3, PyArray4, PyArray5, PyArrayMethods, PyReadonlyArray1,
@@ -159,12 +161,14 @@ enum WorkerCommand {
         connections_valid: OutputShard<i8>,
     },
     GetStateFeatures {
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         environment_start: usize,
         environment_count: usize,
     },
     GetStateFeaturesAfterCandidates {
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         environment_start: usize,
@@ -483,6 +487,7 @@ fn worker_loop(
                 WorkerResponse::Done
             }
             WorkerCommand::GetStateFeatures {
+                frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
                 environment_start,
@@ -496,6 +501,7 @@ fn worker_loop(
                         env.state_features(
                             &common_data,
                             &state_features,
+                            frontier_neighbor_algorithm,
                             frontier_neighbor_count,
                             frontier_window_size,
                         )
@@ -505,6 +511,7 @@ fn worker_loop(
                 WorkerResponse::StateFeatureProfile(StateFeatureProfile::default(), frontier_count)
             }
             WorkerCommand::GetStateFeaturesAfterCandidates {
+                frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
                 environment_start,
@@ -546,6 +553,7 @@ fn worker_loop(
                                 },
                                 &state_features,
                                 &occupancy_prefix,
+                                frontier_neighbor_algorithm,
                                 frontier_neighbor_count,
                                 frontier_window_size,
                             );
@@ -686,6 +694,7 @@ pub struct EnvironmentGroup {
     state_features: StateFeatureConfig,
     workers: Vec<WorkerHandle>, // fixed worker-owned environment shards
     num_environments: usize,
+    frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
     frontier_neighbor_count: usize,
     frontier_window_size: usize,
     action_count: usize,
@@ -1099,7 +1108,7 @@ impl Engine {
         self.common_data.room.len()
     }
 
-    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, frontier_window_size, num_threads=None))]
+    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, frontier_window_size, num_threads=None, frontier_neighbor_algorithm="delaunay"))]
     fn create_environment_group(
         &self,
         map_size: (Coord, Coord),
@@ -1108,13 +1117,24 @@ impl Engine {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         num_threads: Option<usize>,
+        frontier_neighbor_algorithm: &str,
     ) -> PyResult<EnvironmentGroup> {
+        let frontier_neighbor_algorithm = match frontier_neighbor_algorithm {
+            "delaunay" => FrontierNeighborAlgorithm::Delaunay,
+            "nearest" => FrontierNeighborAlgorithm::Nearest,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "frontier_neighbor_algorithm must be \"delaunay\" or \"nearest\"",
+                ));
+            }
+        };
         EnvironmentGroup::new(
             Arc::clone(&self.common_data),
             self.state_features,
             map_size,
             num_environments,
             seed,
+            frontier_neighbor_algorithm,
             frontier_neighbor_count,
             frontier_window_size,
             num_threads,
@@ -1177,6 +1197,7 @@ impl EnvironmentGroup {
         map_size: (Coord, Coord),
         num_environments: usize,
         seed: u64,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         num_threads: Option<usize>,
@@ -1224,6 +1245,7 @@ impl EnvironmentGroup {
             state_features,
             workers,
             num_environments,
+            frontier_neighbor_algorithm,
             frontier_neighbor_count,
             frontier_window_size,
             action_count: 0,
@@ -1680,6 +1702,7 @@ impl EnvironmentGroup {
                     continue;
                 }
                 if let Err(err) = worker.send(WorkerCommand::GetStateFeatures {
+                    frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
                     environment_start: start - worker.start,
@@ -1863,6 +1886,7 @@ impl EnvironmentGroup {
                 let input_start = (start - environment_start) * candidate_count;
                 let len = environment_count * candidate_count;
                 if let Err(err) = worker.send(WorkerCommand::GetStateFeaturesAfterCandidates {
+                    frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
                     environment_start: start - worker.start,

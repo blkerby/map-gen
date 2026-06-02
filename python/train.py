@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 import os
 
@@ -52,7 +53,8 @@ class GenerationConfig(BaseModel):
     temperature1: float  # final temperature
     state_candidate_chunk: int = 1
     state_environment_chunk: int = 8
-    frontier_neighbor_count: int = 4  # maximum external Delaunay neighbors per frontier
+    frontier_neighbor_algorithm: Literal["delaunay", "nearest"] = "delaunay"
+    frontier_neighbor_count: int = 4
     frontier_window_size: int = 16
     num_threads: int | None = None
 
@@ -283,6 +285,7 @@ gen_envs = [
         config.map_size,
         num_environments,
         seed=device_index,
+        frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
         frontier_neighbor_count=config.generation.frontier_neighbor_count,
         frontier_window_size=config.generation.frontier_window_size,
         num_threads=config.generation.num_threads,
@@ -292,6 +295,7 @@ gen_envs = [
 train_env = engine.create_environment_group(
     config.map_size,
     config.train.batch_size,
+    frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
     frontier_neighbor_count=config.generation.frontier_neighbor_count,
     frontier_window_size=config.generation.frontier_window_size,
     num_threads=config.generation.num_threads,
