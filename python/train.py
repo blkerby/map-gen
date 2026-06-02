@@ -53,7 +53,7 @@ class GenerationConfig(BaseModel):
     temperature1: float  # final temperature
     state_candidate_chunk: int = 1
     state_environment_chunk: int = 8
-    frontier_neighbor_algorithm: Literal["delaunay", "nearest"] = "delaunay"
+    frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"] = "delaunay"
     frontier_neighbor_count: int = 4
     frontier_window_size: int = 16
     num_threads: int | None = None
@@ -675,7 +675,7 @@ try:
         if profiler.enabled:
             for name, value in profiler.metrics().items():
                 aim_run.track(value, name=name, step=round)
-            logging.info("profile round %s: %s", round, profiler.format())
+            logging.info("profile round %s:\n%s", round, profiler.format())
 
         if stop_requested:
             logging.info("Stopping training after completing round %s.", round)

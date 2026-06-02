@@ -27,6 +27,7 @@ struct FrontierEdge {
 pub enum FrontierNeighborAlgorithm {
     Delaunay,
     Nearest,
+    NearestExclusive,
 }
 
 // Frontier: location of an unconnected door on the map.
@@ -248,6 +249,7 @@ fn frontier_delaunay_neighbors(locations: &[DoorLocation], max_degree: usize) ->
 fn frontier_nearest_neighbors(
     locations: &[DoorLocation],
     neighbor_count: usize,
+    include_self: bool,
 ) -> Vec<Vec<usize>> {
     let mut rows = Vec::with_capacity(locations.len());
     let mut neighbors = vec![usize::MAX; neighbor_count];
@@ -257,6 +259,9 @@ fn frontier_nearest_neighbors(
         neighbor_keys.fill((Coord::MAX, usize::MAX, usize::MAX));
         let mut count = 0;
         for dst_idx in 0..locations.len() {
+            if !include_self && dst_idx == src_idx {
+                continue;
+            }
             let dst_key = {
                 let dst = locations[dst_idx];
                 (
@@ -1049,7 +1054,10 @@ impl Environment {
                     frontier_delaunay_neighbors(&locations, frontier_neighbor_count)
                 }
                 FrontierNeighborAlgorithm::Nearest => {
-                    frontier_nearest_neighbors(&locations, frontier_neighbor_count)
+                    frontier_nearest_neighbors(&locations, frontier_neighbor_count, true)
+                }
+                FrontierNeighborAlgorithm::NearestExclusive => {
+                    frontier_nearest_neighbors(&locations, frontier_neighbor_count, false)
                 }
             };
             for (src_idx, neighbors) in neighbors.iter().enumerate() {
@@ -1446,9 +1454,23 @@ mod tests {
                 door_location(1, 0, false),
             ],
             3,
+            true,
         );
         assert_eq!(neighbors[0], vec![0, 2, 3]);
         assert_eq!(neighbors[1], vec![1, 3, 0]);
+
+        let neighbors = frontier_nearest_neighbors(
+            &[
+                door_location(0, 0, false),
+                door_location(2, 0, false),
+                door_location(0, 1, false),
+                door_location(1, 0, false),
+            ],
+            3,
+            false,
+        );
+        assert_eq!(neighbors[0], vec![2, 3, 1]);
+        assert_eq!(neighbors[1], vec![3, 0, 2]);
     }
 
     #[test]

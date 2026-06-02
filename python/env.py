@@ -109,7 +109,7 @@ class Engine:
         frontier_neighbor_count: int = 4,
         frontier_window_size: int = 16,
         num_threads: Optional[int] = None,
-        frontier_neighbor_algorithm: Literal["delaunay", "nearest"] = "delaunay",
+        frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"] = "delaunay",
     ) -> "EnvironmentGroup":
         if seed is None:
             seed = int(torch.randint(0, 2**31 - 1, ()).item())

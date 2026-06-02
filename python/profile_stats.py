@@ -59,7 +59,7 @@ class ProfileStats:
 
     def format(self):
         with self.lock:
-            return ", ".join(
+            return ",\n".join(
                 f"{name}={self.totals[name] * 1000.0:.1f}ms/{self.counts[name]}"
                 for name in sorted(self.totals)
             )

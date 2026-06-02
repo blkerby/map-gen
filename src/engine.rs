@@ -1122,9 +1122,10 @@ impl Engine {
         let frontier_neighbor_algorithm = match frontier_neighbor_algorithm {
             "delaunay" => FrontierNeighborAlgorithm::Delaunay,
             "nearest" => FrontierNeighborAlgorithm::Nearest,
+            "nearest-exclusive" => FrontierNeighborAlgorithm::NearestExclusive,
             _ => {
                 return Err(PyValueError::new_err(
-                    "frontier_neighbor_algorithm must be \"delaunay\" or \"nearest\"",
+                    "frontier_neighbor_algorithm must be \"delaunay\", \"nearest\", or \"nearest-exclusive\"",
                 ));
             }
         };
