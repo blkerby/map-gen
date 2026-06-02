@@ -25,6 +25,7 @@
     "num_environments": 1024,
     "num_iterations": 8,
     "num_devices": 2,
+    "state_pipeline_cohorts": 2,
     "action_candidates": 16,
     "lookahead_outcomes": false,
     "temperature0": 10.0,

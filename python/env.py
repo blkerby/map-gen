@@ -81,6 +81,40 @@ class StateFeatures:
 
 
 @dataclass
+class SparseStateFeatures:
+    inventory: torch.Tensor
+    room_x: torch.Tensor
+    room_y: torch.Tensor
+    room_placed: torch.Tensor
+    frontier: torch.Tensor
+    frontier_occupancy: torch.Tensor
+    frontier_neighbor: torch.Tensor
+    frontier_neighbor_pair: torch.Tensor
+    frontier_obstruction: torch.Tensor
+    connection_reachability: torch.Tensor
+    frontier_connection_reachability: torch.Tensor
+    dense_row_idx: torch.Tensor
+    frontier_count: int
+
+    def flatten_candidates(self) -> "SparseStateFeatures":
+        return SparseStateFeatures(
+            self.inventory.flatten(0, 1),
+            self.room_x.flatten(0, 1),
+            self.room_y.flatten(0, 1),
+            self.room_placed.flatten(0, 1),
+            self.frontier,
+            self.frontier_occupancy,
+            self.frontier_neighbor,
+            self.frontier_neighbor_pair,
+            self.frontier_obstruction,
+            self.connection_reachability.flatten(0, 1),
+            self.frontier_connection_reachability,
+            self.dense_row_idx,
+            self.frontier_count,
+        )
+
+
+@dataclass
 class OutputMetadata:
     door: list[tuple[int, int]]
     connection: list[tuple[int, int]]
@@ -98,7 +132,8 @@ class Engine:
     rooms: list[dict]
 
     def __init__(self, rooms: list[dict], state_features: dict[str, bool] | None = None):
-        self.engine = map_gen.Engine(json.dumps(rooms), json.dumps(state_features or {}))
+        self.state_features = state_features or {}
+        self.engine = map_gen.Engine(json.dumps(rooms), json.dumps(self.state_features))
         self.rooms = rooms
 
     def create_environment_group(
@@ -117,7 +152,9 @@ class Engine:
             map_size, num_envs, seed, frontier_neighbor_count, frontier_window_size, num_threads,
             frontier_neighbor_algorithm
         )
-        return EnvironmentGroup(self, env, map_size, num_envs)
+        return EnvironmentGroup(
+            self, env, map_size, num_envs, frontier_neighbor_count, frontier_window_size
+        )
 
     def get_output_sizes(self) -> tuple[int, int]:
         return self.engine.get_output_sizes()
@@ -152,11 +189,21 @@ class EnvironmentGroup:
     map_size: tuple[int, int]
     num_envs: int
 
-    def __init__(self, engine: Engine, env: map_gen.EnvironmentGroup, map_size: tuple[int, int], num_envs: int):
+    def __init__(
+        self,
+        engine: Engine,
+        env: map_gen.EnvironmentGroup,
+        map_size: tuple[int, int],
+        num_envs: int,
+        frontier_neighbor_count: int,
+        frontier_window_size: int,
+    ):
         self.engine = engine
         self.env = env
         self.map_size = map_size
         self.num_envs = num_envs
+        self.frontier_neighbor_count = frontier_neighbor_count
+        self.frontier_window_size = frontier_window_size
 
     def clear(self):
         self.env.clear()
@@ -245,6 +292,20 @@ class EnvironmentGroup:
             environment_start,
         )
         return self._state_features(values, device)
+
+    def get_sparse_state_features_after_candidates(
+        self, actions: Actions, device: torch.device, environment_start: int = 0
+    ) -> SparseStateFeatures:
+        values, frontier_count = self.env.get_sparse_state_features_after_candidates(
+            actions.room_idx.contiguous().cpu().numpy(),
+            actions.room_x.contiguous().cpu().numpy(),
+            actions.room_y.contiguous().cpu().numpy(),
+            environment_start,
+        )
+        return SparseStateFeatures(
+            *(torch.from_numpy(value).to(device) for value in values),
+            frontier_count,
+        )
 
     def take_state_feature_profile(self) -> list[float]:
         return self.env.take_state_feature_profile()

@@ -19,7 +19,7 @@ from pathlib import Path
 from env import Actions, Engine, GenerateConfig, Outcomes
 from model import CausalTransformerModel, FrontierStateModel
 from loss import LossConfig, compute_loss
-from generate import Prefetcher, generate
+from generate import Prefetcher, generate_cohorts
 from experience import ExperienceStorage
 from profile_stats import ProfileStats
 
@@ -47,6 +47,7 @@ class GenerationConfig(BaseModel):
     num_environments: int  # number of maps to generate in parallel
     num_iterations: int = 1  # number of sequential parallel batches to generate per training round
     num_devices: int = 1  # number of GPUs to use for generation; training remains on the first device
+    state_pipeline_cohorts: int = 1  # independently stepped CPU cohorts scheduled on each GPU
     action_candidates: int  # number of candidates to score for each room placement step
     lookahead_outcomes: bool  # use post-candidate known outcomes when scoring candidates (greater CPU usage, better accuracy)
     temperature0: float  # initial temperature (higher = candidates selected more randomly)
@@ -130,10 +131,16 @@ if config.generation.num_iterations <= 0:
     raise ValueError("generation.num_iterations must be greater than zero")
 if config.generation.num_devices <= 0:
     raise ValueError("generation.num_devices must be greater than zero")
+if config.generation.state_pipeline_cohorts <= 0:
+    raise ValueError("generation.state_pipeline_cohorts must be greater than zero")
 if config.generation.num_devices > config.generation.num_environments:
     raise ValueError("generation.num_devices must not exceed generation.num_environments")
-if config.generation.num_environments % config.generation.num_devices != 0:
-    raise ValueError("generation.num_environments must be divisible by generation.num_devices")
+num_generation_cohorts = config.generation.num_devices * config.generation.state_pipeline_cohorts
+if config.generation.num_environments % num_generation_cohorts != 0:
+    raise ValueError(
+        "generation.num_environments must be divisible by "
+        "generation.num_devices * generation.state_pipeline_cohorts"
+    )
 if config.generation.state_candidate_chunk <= 0:
     raise ValueError("generation.state_candidate_chunk must be greater than zero")
 if config.generation.state_environment_chunk <= 0:
@@ -144,6 +151,13 @@ if config.generation.frontier_window_size <= 0:
     raise ValueError("generation.frontier_window_size must be greater than zero")
 if config.generation.num_threads is not None and config.generation.num_threads <= 0:
     raise ValueError("generation.num_threads must be greater than zero")
+if (
+    config.generation.num_threads is not None
+    and config.generation.num_threads % config.generation.state_pipeline_cohorts != 0
+):
+    raise ValueError("generation.num_threads must be divisible by generation.state_pipeline_cohorts")
+if config.model.type != "frontier_state" and config.generation.state_pipeline_cohorts != 1:
+    raise ValueError("generation.state_pipeline_cohorts must be 1 unless model.type is frontier_state")
 if config.train.state_prefix_samples <= 0:
     raise ValueError("train.state_prefix_samples must be greater than zero")
 if config.train.state_batch_chunk <= 0:
@@ -274,21 +288,32 @@ logging.info(
 )
 
 engine = Engine(rooms, config.state_features.model_dump())
-generation_environment_counts = [
-    config.generation.num_environments // len(generation_devices)
-    for _ in generation_devices
-]
+generation_cohort_environments = config.generation.num_environments // num_generation_cohorts
+generation_cohort_threads = (
+    None
+    if config.generation.num_threads is None
+    else config.generation.num_threads // config.generation.state_pipeline_cohorts
+)
+logging.info(
+    "Using %s state pipeline cohort(s) per generation device with %s environment(s) and %s Rust worker(s) per cohort.",
+    config.generation.state_pipeline_cohorts,
+    generation_cohort_environments,
+    generation_cohort_threads if generation_cohort_threads is not None else "automatic",
+)
 gen_envs = [
-    engine.create_environment_group(
-        config.map_size,
-        num_environments,
-        seed=device_index,
-        frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
-        frontier_neighbor_count=config.generation.frontier_neighbor_count,
-        frontier_window_size=config.generation.frontier_window_size,
-        num_threads=config.generation.num_threads,
-    )
-    for device_index, num_environments in enumerate(generation_environment_counts)
+    [
+        engine.create_environment_group(
+            config.map_size,
+            generation_cohort_environments,
+            seed=device_index * config.generation.state_pipeline_cohorts + cohort_index,
+            frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
+            frontier_neighbor_count=config.generation.frontier_neighbor_count,
+            frontier_window_size=config.generation.frontier_window_size,
+            num_threads=generation_cohort_threads,
+        )
+        for cohort_index in range(config.generation.state_pipeline_cohorts)
+    ]
+    for device_index in range(len(generation_devices))
 ]
 train_env = engine.create_environment_group(
     config.map_size,
@@ -583,22 +608,23 @@ try:
                     1.0,
                 )
                 shard_args = []
-                for gen_env, generation_model, generation_device in zip(
+                for device_envs, generation_model, generation_device in zip(
                     gen_envs, generation_models, generation_devices
                 ):
-                    gen_config = get_gen_config(
-                        iteration_frac, gen_env.num_envs, generation_device
-                    )
+                    gen_configs = [
+                        get_gen_config(iteration_frac, gen_env.num_envs, generation_device)
+                        for gen_env in device_envs
+                    ]
                     shard_args.append((
-                        gen_env,
+                        device_envs,
                         generation_model,
-                        gen_config,
+                        gen_configs,
                         generation_device,
                     ))
                 if generation_models_warmed_up:
                     shard_results = [
                         generation_executor.submit(
-                            generate,
+                            generate_cohorts,
                             *args,
                             verify_outcome_consistency=verify_outcome_consistency,
                             profiler=profiler,
@@ -611,7 +637,7 @@ try:
                         "Warming up compiled generation models serially before concurrent generation."
                     )
                     shard_results = [
-                        generate(
+                        generate_cohorts(
                             *args,
                             verify_outcome_consistency=verify_outcome_consistency,
                             profiler=profiler,
