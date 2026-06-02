@@ -529,7 +529,7 @@ fn worker_loop(
                 pending_state_features.reserve(environment_count * candidate_count);
                 let mut profile = StateFeatureProfile::default();
                 for (env_idx, env) in environments
-                    .iter()
+                    .iter_mut()
                     .skip(environment_start)
                     .take(environment_count)
                     .enumerate()

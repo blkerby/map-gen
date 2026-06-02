@@ -177,8 +177,8 @@ def generate(
                                         pack_seconds,
                                         profile_calls,
                                         occupancy_prefix_cpu_seconds,
-                                        clone_cpu_seconds,
-                                        step_cpu_seconds,
+                                        snapshot_apply_cpu_seconds,
+                                        restore_cpu_seconds,
                                         assemble_cpu_seconds,
                                         assemble_setup_cpu_seconds,
                                         assemble_frontier_cpu_seconds,
@@ -198,8 +198,8 @@ def generate(
                                     profiler.add("gen.cpu_extract_worker", worker_seconds)
                                     profiler.add("gen.cpu_extract_pack", pack_seconds)
                                     profiler.add("gen.cpu_extract_occupancy_prefix_sum", occupancy_prefix_cpu_seconds)
-                                    profiler.add("gen.cpu_extract_clone_sum", clone_cpu_seconds)
-                                    profiler.add("gen.cpu_extract_step_sum", step_cpu_seconds)
+                                    profiler.add("gen.cpu_extract_snapshot_apply_sum", snapshot_apply_cpu_seconds)
+                                    profiler.add("gen.cpu_extract_restore_sum", restore_cpu_seconds)
                                     profiler.add("gen.cpu_extract_assemble_sum", assemble_cpu_seconds)
                                     profiler.add("gen.cpu_extract_assemble_setup_sum", assemble_setup_cpu_seconds)
                                     profiler.add("gen.cpu_extract_assemble_frontier_sum", assemble_frontier_cpu_seconds)

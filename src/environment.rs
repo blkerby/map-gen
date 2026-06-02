@@ -32,7 +32,7 @@ pub enum FrontierNeighborAlgorithm {
 }
 
 // Frontier: location of an unconnected door on the map.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frontier {
     dir_door_idx: DirDoorIdx,
     component: usize,
@@ -364,6 +364,15 @@ pub struct Environment {
     occupancy: Vec<u8>,
 }
 
+struct StateFeatureSnapshot {
+    finished: bool,
+    frontier: HashMap<DoorLocation, Frontier>,
+    connection_variant_idx: Option<ConnectionVariantIdx>,
+    connection_variant_unused_count: usize,
+    room_part_component: Vec<usize>,
+    scc_dag: SccDag,
+}
+
 impl Environment {
     pub fn new(common: &CommonData, map_size: (Coord, Coord), seed: u64) -> Self {
         Self {
@@ -482,7 +491,55 @@ impl Environment {
     }
 
     fn step_for_state_features(&mut self, action: Action, common: &CommonData) {
-        self.step_impl(action, common, false);
+        if self.finished {
+            return;
+        }
+        if action.room_idx >= common.room.len() as RoomIdx {
+            // Dummy/invalid action: do nothing more.
+            self.finished = true;
+            return;
+        }
+        let room = &common.room[action.room_idx as usize];
+        let connection_variant_idx = room.connection_variant_idx;
+        assert!(!self.room_used[action.room_idx as usize]);
+        self.room_used.set(action.room_idx as usize, true);
+        self.room_x[action.room_idx as usize] = action.x;
+        self.room_y[action.room_idx as usize] = action.y;
+        self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
+        self.add_room_components_and_edges(action, common);
+
+        // Feature extraction only needs frontier metadata. Future attachment candidates are
+        // maintained by committed steps when an action is selected.
+        for door in &room.doors {
+            let door_loc = DoorLocation::new(door, action.x, action.y);
+            if let Some(frontier) = self.frontier.remove(&door_loc) {
+                let i1 = door.dir_door_idx;
+                let i2 = frontier.dir_door_idx;
+                let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
+                let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
+                    .room_part_idx;
+                self.add_component_edge(
+                    self.room_part_component[p1 as usize],
+                    self.room_part_component[p2 as usize],
+                );
+                self.add_component_edge(
+                    self.room_part_component[p2 as usize],
+                    self.room_part_component[p1 as usize],
+                );
+            } else {
+                self.frontier.insert(
+                    door_loc,
+                    Frontier {
+                        dir_door_idx: door.dir_door_idx,
+                        component: self.room_part_component(common, action.room_idx, door.part_idx),
+                        kind: common.room_dir_door[door.direction as usize]
+                            [door.dir_door_idx as usize]
+                            .kind,
+                        candidates: vec![],
+                    },
+                );
+            }
+        }
     }
 
     fn step_impl(
@@ -796,24 +853,60 @@ impl Environment {
         }
     }
 
-    fn clone_for_state_features(&self) -> Self {
-        Self {
-            // Feature-only lookahead does not read outcomes or the cloned occupancy grid.
-            rng: rand::rngs::StdRng::seed_from_u64(0),
-            map_size: self.map_size,
-            actions: self.actions.clone(),
+    fn apply_state_feature_candidate(
+        &mut self,
+        candidate: Action,
+        common: &CommonData,
+    ) -> StateFeatureSnapshot {
+        let frontier = std::mem::take(&mut self.frontier);
+        self.frontier = frontier
+            .iter()
+            .map(|(&location, frontier)| {
+                (
+                    location,
+                    Frontier {
+                        dir_door_idx: frontier.dir_door_idx,
+                        component: frontier.component,
+                        kind: frontier.kind,
+                        candidates: vec![],
+                    },
+                )
+            })
+            .collect();
+        let room_idx =
+            (candidate.room_idx < common.room.len() as RoomIdx).then_some(candidate.room_idx);
+        let connection_variant_idx =
+            room_idx.map(|room_idx| common.room[room_idx as usize].connection_variant_idx);
+        let snapshot = StateFeatureSnapshot {
             finished: self.finished,
-            frontier: self.frontier.clone(),
-            door_matches: std::array::from_fn(|_| vec![]),
-            room_used: self.room_used.clone(),
-            room_x: self.room_x.clone(),
-            room_y: self.room_y.clone(),
-            geometry_unused_count: self.geometry_unused_count.clone(),
-            connection_variant_unused_count: self.connection_variant_unused_count.clone(),
+            frontier,
+            connection_variant_idx,
+            connection_variant_unused_count: connection_variant_idx
+                .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
-            occupancy: vec![],
+        };
+        self.step_for_state_features(candidate, common);
+        snapshot
+    }
+
+    fn restore_state_feature_candidate(
+        &mut self,
+        candidate: Action,
+        snapshot: StateFeatureSnapshot,
+    ) {
+        self.finished = snapshot.finished;
+        self.frontier = snapshot.frontier;
+        if candidate.room_idx < self.room_used.len() as RoomIdx {
+            // Coordinates for unused rooms are intentionally left unspecified.
+            self.room_used.set(candidate.room_idx as usize, false);
         }
+        if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
+            self.connection_variant_unused_count[connection_variant_idx as usize] =
+                snapshot.connection_variant_unused_count;
+        }
+        self.room_part_component = snapshot.room_part_component;
+        self.scc_dag = snapshot.scc_dag;
     }
 
     pub fn max_frontiers(common: &CommonData) -> usize {
@@ -1198,7 +1291,7 @@ impl Environment {
 
     #[cfg(test)]
     pub fn state_features_after_candidate(
-        &self,
+        &mut self,
         common: &CommonData,
         candidate: Action,
         config: &StateFeatureConfig,
@@ -1220,7 +1313,7 @@ impl Environment {
     }
 
     pub fn state_features_after_candidate_with_occupancy(
-        &self,
+        &mut self,
         common: &CommonData,
         candidate: Action,
         config: &StateFeatureConfig,
@@ -1246,13 +1339,10 @@ impl Environment {
             None
         };
         let start = Instant::now();
-        let mut env = self.clone_for_state_features();
+        let snapshot = self.apply_state_feature_candidate(candidate, common);
         profile.clone_ns = start.elapsed().as_nanos() as u64;
         let start = Instant::now();
-        env.step_for_state_features(candidate, common);
-        profile.step_ns = start.elapsed().as_nanos() as u64;
-        let start = Instant::now();
-        let features = env.state_features_with_occupancy(
+        let features = self.state_features_with_occupancy(
             common,
             config,
             occupancy_prefix,
@@ -1264,6 +1354,9 @@ impl Environment {
             Some(&mut profile),
         );
         profile.assemble_ns = start.elapsed().as_nanos() as u64;
+        let start = Instant::now();
+        self.restore_state_feature_candidate(candidate, snapshot);
+        profile.step_ns = start.elapsed().as_nanos() as u64;
         (features, profile)
     }
 
@@ -1838,6 +1931,12 @@ mod tests {
             y: 0,
         };
         let config = StateFeatureConfig::all();
+        let expected_actions = env.actions.clone();
+        let expected_frontier = env.frontier.clone();
+        let expected_room_used = env.room_used.clone();
+        let expected_connection_variant_unused_count = env.connection_variant_unused_count.clone();
+        let expected_room_part_component = env.room_part_component.clone();
+        let expected_scc_dag = env.scc_dag.clone();
         let simulated = env.state_features_after_candidate(
             &common,
             candidate,
@@ -1846,6 +1945,17 @@ mod tests {
             4,
             4,
         );
+        assert_eq!(env.actions, expected_actions);
+        assert_eq!(env.frontier, expected_frontier);
+        assert_eq!(env.room_used, expected_room_used);
+        assert_eq!(env.room_x[candidate.room_idx as usize], candidate.x);
+        assert_eq!(env.room_y[candidate.room_idx as usize], candidate.y);
+        assert_eq!(
+            env.connection_variant_unused_count,
+            expected_connection_variant_unused_count
+        );
+        assert_eq!(env.room_part_component, expected_room_part_component);
+        assert_eq!(env.scc_dag, expected_scc_dag);
         env.step(candidate, &common);
         assert_eq!(
             simulated,
@@ -1868,6 +1978,25 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0,
                 0, 0, 0, 0,
             ]
+        );
+
+        let dummy_candidate = Action {
+            room_idx: common.room.len() as RoomIdx,
+            x: 0,
+            y: 0,
+        };
+        let simulated = env.state_features_after_candidate(
+            &common,
+            dummy_candidate,
+            &config,
+            FrontierNeighborAlgorithm::Delaunay,
+            4,
+            4,
+        );
+        env.step(dummy_candidate, &common);
+        assert_eq!(
+            simulated,
+            env.state_features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
         );
     }
 
@@ -1938,7 +2067,7 @@ mod tests {
         )
         .unwrap();
         let common = CommonData::new(rooms, false).unwrap();
-        let env = Environment::new(&common, (4, 4), 0);
+        let mut env = Environment::new(&common, (4, 4), 0);
         let (features, profile) = env.state_features_after_candidate_with_occupancy(
             &common,
             Action {

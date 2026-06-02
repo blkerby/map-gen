@@ -2,7 +2,7 @@ use bitvec::vec::BitVec;
 
 const NO_COMPONENT: usize = usize::MAX;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SccDag {
     pub component_count: usize,
     reachability: BitVec,
