@@ -80,12 +80,12 @@ class TrainConfig(BaseModel):
     batch_size: int  # number of episodes per training batch
     fresh_pass_factor: float  # number of passes over just-generated episodes
     replay_pass_factor: float  # average number of passes over past episodes
+    sample_period: int  # number of steps between training within an episode (e.g. 8 = train on every 8th step)
     episodes_per_file: int  # number of episodes to read from each file (higher values = lower disk I/O, lower values = more diverse sampling)
     hist_c: float  # extent to which replay sampling biases towards recent episodes (0.0 = no bias)
     door_weight: float  # amount of weight assigned to door outcomes in the loss function
     connection_weight: float  # amount of weight assigned to connection outcomes in the loss function
     ema_decay: float  # decay factor for exponential moving average model used during generation
-    state_prefix_samples: int
     state_batch_chunk: int
     state_gpu_chunk: int  # maximum prepared state rows per GPU training batch
     state_pipeline_cohorts: int
@@ -161,8 +161,8 @@ if (
     raise ValueError("generation.num_threads must be divisible by generation.state_pipeline_cohorts")
 if config.model.type != "frontier_state" and config.generation.state_pipeline_cohorts != 1:
     raise ValueError("generation.state_pipeline_cohorts must be 1 unless model.type is frontier_state")
-if config.train.state_prefix_samples <= 0:
-    raise ValueError("train.state_prefix_samples must be greater than zero")
+if config.train.sample_period <= 0:
+    raise ValueError("train.sample_period must be greater than zero")
 if config.train.state_batch_chunk <= 0:
     raise ValueError("train.state_batch_chunk must be greater than zero")
 if config.train.state_gpu_chunk <= 0:
@@ -563,24 +563,21 @@ def iter_train_batch_tasks(num_items, fresh_pass_factor, replay_pass_factor, bat
 
 
 def prepare_state_feature_training_chunks(train_actions, env):
-    prefix_lengths = torch.randint(
-        1, episode_length + 1, [config.train.state_prefix_samples]).sort().values.tolist()
     with profiler.timer("train.cpu_setup"):
+        offset = torch.randint(0, config.train.sample_period, [1]).item()
         train_actions_cpu = train_actions.to(torch.device("cpu"))
         env.clear()
-    current_prefix_length = 0
-    feature_chunks = []
-    for prefix_length in prefix_lengths:
-        with profiler.timer("train.cpu_prefix_prepare"):
-            for action_idx in range(current_prefix_length, prefix_length):
-                env.step(Actions(
-                    train_actions_cpu.room_idx[:, action_idx],
-                    train_actions_cpu.room_x[:, action_idx],
-                    train_actions_cpu.room_y[:, action_idx],
-                ))
-            current_prefix_length = prefix_length
-            for start in range(0, train_actions.room_idx.shape[0], config.train.state_batch_chunk):
-                end = min(start + config.train.state_batch_chunk, train_actions.room_idx.shape[0])
+        feature_chunks = []
+    with profiler.timer("train.cpu_prefix_prepare"):
+        for step in range(0, episode_length):
+            env.step(Actions(
+                train_actions_cpu.room_idx[:, step],
+                train_actions_cpu.room_x[:, step],
+                train_actions_cpu.room_y[:, step],
+            ))
+            if step % config.train.sample_period == offset:
+                for start in range(0, train_actions.room_idx.shape[0], config.train.state_batch_chunk):
+                    end = min(start + config.train.state_batch_chunk, train_actions.room_idx.shape[0])
                 feature_chunks.append((
                     start,
                     end,
@@ -590,7 +587,7 @@ def prepare_state_feature_training_chunks(train_actions, env):
                         end - start,
                     ),
                 ))
-    return len(prefix_lengths), feature_chunks
+    return len(feature_chunks), feature_chunks
 
 
 def prepare_state_feature_batch(kind, train_actions, train_outcomes, env):
