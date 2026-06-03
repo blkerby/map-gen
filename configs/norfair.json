@@ -53,7 +53,7 @@
   },
   "train": {
     "batch_size": 512,
-    "fresh_pass_factor": 1.0,
+    "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "episodes_per_file": 64,
     "ema_decay": 0.995,
