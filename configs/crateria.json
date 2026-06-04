@@ -2,6 +2,7 @@
   "experiment_name": "crateria-initial-testing",
   "room_set": "room_definitions/crateria.json",
   "knot_episodes": [0, 1000000, 4000000],
+  "checkpoint_period": 50,
   "map_size": [72, 72],
   "model": {
     "type": "frontier_state",

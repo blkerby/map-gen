@@ -10,10 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+import safetensors.torch
 import torch
 from aim import Run
+from safetensors import safe_open
 
 from env import Actions, Engine, GenerateConfig, Outcomes, StateFeatures
 from experience import ExperienceStorage
@@ -30,6 +32,7 @@ class Args:
     verify_outcome_consistency: bool
     profile: bool
     device: str
+    load_checkpoint: Path | None
 
 
 @dataclass
@@ -46,6 +49,69 @@ class PreparedTrainBatch:
     outcomes: Outcomes
     prefix_count: int | None
     state_feature_batches: list[StateFeatures] | None = None
+
+
+def as_checkpoint_tensor(value: torch.Tensor) -> torch.Tensor:
+    return value.detach().cpu().contiguous()
+
+
+def prefixed_state_dict(prefix: str, module: torch.nn.Module) -> dict[str, torch.Tensor]:
+    return {
+        f"{prefix}.{name}": as_checkpoint_tensor(value)
+        for name, value in module.state_dict().items()
+    }
+
+
+def without_prefix(
+    tensors: dict[str, torch.Tensor],
+    prefix: str,
+) -> dict[str, torch.Tensor]:
+    full_prefix = f"{prefix}."
+    return {
+        name[len(full_prefix):]: value
+        for name, value in tensors.items()
+        if name.startswith(full_prefix)
+    }
+
+
+def optimizer_checkpoint_state(
+    optimizer: torch.optim.Optimizer,
+) -> tuple[dict[str, torch.Tensor], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    state_dict = optimizer.state_dict()
+    tensors = {}
+    scalar_state = {}
+    for param_id, param_state in state_dict["state"].items():
+        param_scalar_state = {}
+        for state_name, value in param_state.items():
+            if torch.is_tensor(value):
+                tensors[f"optimizer.state.{param_id}.{state_name}"] = as_checkpoint_tensor(value)
+            else:
+                param_scalar_state[state_name] = value
+        if param_scalar_state:
+            scalar_state[str(param_id)] = param_scalar_state
+    return tensors, state_dict["param_groups"], scalar_state
+
+
+def load_optimizer_checkpoint_state(
+    optimizer: torch.optim.Optimizer,
+    tensors: dict[str, torch.Tensor],
+    param_groups: list[dict[str, Any]],
+    scalar_state: dict[str, dict[str, Any]],
+) -> None:
+    state: dict[int, dict[str, Any]] = {}
+    prefix = "optimizer.state."
+    for key, value in tensors.items():
+        if not key.startswith(prefix):
+            continue
+        suffix = key[len(prefix):]
+        param_id_text, state_name = suffix.split(".", 1)
+        state.setdefault(int(param_id_text), {})[state_name] = value
+    for param_id_text, param_scalar_state in scalar_state.items():
+        state.setdefault(int(param_id_text), {}).update(param_scalar_state)
+    optimizer.load_state_dict({
+        "state": state,
+        "param_groups": param_groups,
+    })
 
 
 @dataclass
@@ -92,6 +158,60 @@ class TrainingSession:
     def request_stop(self) -> None:
         self.stop_requested = True
         logging.info("Stop signal received; training will stop after the current round finishes.")
+
+    def checkpoint_path(self, completed_round: int) -> Path:
+        return Path(self.run_path) / "checkpoints" / f"round_{completed_round}.safetensors"
+
+    def save_checkpoint(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tensors = {}
+        tensors.update(prefixed_state_dict("main_model", self.main_model))
+        tensors.update(prefixed_state_dict("ema_model", self.ema_model))
+        optimizer_tensors, optimizer_param_groups, optimizer_scalar_state = optimizer_checkpoint_state(
+            self.main_optimizer
+        )
+        tensors.update(optimizer_tensors)
+        metadata = {
+            "format": "map-gen-training-session-checkpoint-v1",
+            "num_episodes": str(self.num_episodes),
+            "experience_num_files": str(self.experience.num_files),
+            "optimizer_param_groups": json.dumps(optimizer_param_groups),
+            "optimizer_scalar_state": json.dumps(optimizer_scalar_state),
+        }
+        temp_path = path.with_suffix(f"{path.suffix}.tmp")
+        safetensors.torch.save_file(tensors, temp_path, metadata=metadata)
+        os.replace(temp_path, path)
+        logging.info("Saved checkpoint: %s", path)
+
+    def load_checkpoint(self, path: Path) -> None:
+        with safe_open(path, framework="pt", device="cpu") as checkpoint:
+            metadata = checkpoint.metadata() or {}
+            tensors = {name: checkpoint.get_tensor(name) for name in checkpoint.keys()}
+        if metadata.get("format") != "map-gen-training-session-checkpoint-v1":
+            raise ValueError(f"unsupported checkpoint format in {path}")
+
+        self.main_model.load_state_dict(without_prefix(tensors, "main_model"))
+        self.ema_model.load_state_dict(without_prefix(tensors, "ema_model"))
+        load_optimizer_checkpoint_state(
+            self.main_optimizer,
+            tensors,
+            json.loads(metadata["optimizer_param_groups"]),
+            json.loads(metadata["optimizer_scalar_state"]),
+        )
+        self.num_episodes = int(metadata["num_episodes"])
+        if self.num_episodes % self.episodes_per_round != 0:
+            raise ValueError(
+                f"checkpoint num_episodes={self.num_episodes} is not divisible by episodes_per_round="
+                f"{self.episodes_per_round}"
+            )
+        self.experience.num_files = int(metadata["experience_num_files"])
+        self.sync_generation_models()
+        logging.info(
+            "Loaded checkpoint %s at %s episode(s) with %s replay file(s).",
+            path,
+            self.num_episodes,
+            self.experience.num_files,
+        )
 
     def update_ema_model(self) -> None:
         with torch.no_grad():
@@ -493,7 +613,8 @@ class TrainingSession:
     def run(self) -> None:
         try:
             total_episodes = self.config.knot_episodes[-1]
-            for round_idx in range(total_episodes // self.episodes_per_round):
+            start_round = self.num_episodes // self.episodes_per_round
+            for round_idx in range(start_round, total_episodes // self.episodes_per_round):
                 self.profiler.reset()
                 round_start = time.perf_counter()
 
@@ -511,6 +632,10 @@ class TrainingSession:
                     for name, value in self.profiler.metrics().items():
                         self.aim_run.track(value, name=name, step=round_idx)
                     logging.info("profile round %s:\n%s", round_idx, self.profiler.format())
+
+                completed_round = round_idx + 1
+                if completed_round % self.config.checkpoint_period == 0:
+                    self.save_checkpoint(self.checkpoint_path(completed_round))
 
                 if self.stop_requested:
                     logging.info("Stopping training after completing round %s.", round_idx)
@@ -542,12 +667,18 @@ def parse_args() -> Args:
             "(default: auto; training uses the first selected device)"
         ),
     )
+    parser.add_argument(
+        "--load-checkpoint",
+        type=Path,
+        help="resume mutable training state from a safetensors checkpoint",
+    )
     namespace = parser.parse_args()
     return Args(
         config=namespace.config,
         verify_outcome_consistency=namespace.verify_outcome_consistency,
         profile=namespace.profile,
         device=namespace.device,
+        load_checkpoint=namespace.load_checkpoint,
     )
 
 
@@ -617,7 +748,12 @@ def select_devices(args: Args, config: Config) -> tuple[torch.device, list[torch
 def setup_logging(config: Config, args: Args) -> tuple[ProfileStats, str]:
     profiler = ProfileStats(args.profile)
     start_time = datetime.now()
-    run_path = f"runs/{start_time.isoformat()}-{config.experiment_name}/"
+    if args.load_checkpoint is not None:
+        if args.load_checkpoint.parent.name != "checkpoints":
+            raise ValueError("--load-checkpoint must point to a file in a run's checkpoints directory")
+        run_path = f"{args.load_checkpoint.parent.parent}/"
+    else:
+        run_path = f"runs/{start_time.isoformat()}-{config.experiment_name}/"
     os.makedirs(run_path, exist_ok=True)
     logging.basicConfig(
         format="%(asctime)s %(message)s",
@@ -633,6 +769,8 @@ def setup_logging(config: Config, args: Args) -> tuple[ProfileStats, str]:
         logging.info("Outcome consistency verification enabled.")
     if profiler.enabled:
         logging.info("Profiling enabled. CUDA timings synchronize the device and change throughput.")
+    if args.load_checkpoint is not None:
+        logging.info("Loading checkpoint from %s", args.load_checkpoint)
     return profiler, run_path
 
 
@@ -781,7 +919,7 @@ def build_session(args: Args) -> TrainingSession:
     aim_run = Run(experiment=config.experiment_name, system_tracking_interval=None)
     aim_run["config"] = json.loads(config.model_dump_json())
 
-    return TrainingSession(
+    session = TrainingSession(
         args=args,
         config=config,
         profiler=profiler,
@@ -814,6 +952,9 @@ def build_session(args: Args) -> TrainingSession:
             and len(generation_devices) > 1
         ),
     )
+    if args.load_checkpoint is not None:
+        session.load_checkpoint(args.load_checkpoint)
+    return session
 
 
 def main() -> None:

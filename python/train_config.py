@@ -87,6 +87,7 @@ class Config(StrictBaseModel):
     room_set: Path
     map_size: tuple[int, int]
     knot_episodes: list[int]
+    checkpoint_period: int
     model: ModelConfig
     optimizer: OptimizerConfig
     generation: GenerationConfig
@@ -131,6 +132,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("knot_episodes must contain at least one episode count")
     if config.knot_episodes[-1] <= 0:
         raise ValueError("last knot_episodes value must be greater than zero")
+    if config.checkpoint_period <= 0:
+        raise ValueError("checkpoint_period must be greater than zero")
     if config.generation.num_iterations <= 0:
         raise ValueError("generation.num_iterations must be greater than zero")
     if config.generation.num_devices <= 0:
@@ -184,6 +187,11 @@ def validate_config(config: Config) -> None:
         or config.state_features.frontier_connection_reachability
     ) and not config.state_features.frontier_mask:
         raise ValueError("frontier state features require state_features.frontier_mask")
+    if (
+        config.state_features.inventory
+        or config.state_features.connection_reachability
+    ) and not config.state_features.frontier_mask:
+        raise ValueError("start-of-network state features require state_features.frontier_mask")
     if (
         config.state_features.frontier_neighbor_position_embedding
         or config.state_features.frontier_neighbor_flags

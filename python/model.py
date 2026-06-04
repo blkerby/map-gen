@@ -426,12 +426,7 @@ class FrontierStateModel(torch.nn.Module):
             ) for _ in range(num_layers if use_neighbors else 0)
         ])
         global_width = embedding_width * (
-            self.state_features.get("inventory", False)
-            + 2 * self.state_features.get("frontier_mask", False)
-            + (
-                self.state_features.get("connection_reachability", False)
-                and self.num_connection_outputs > 0
-            )
+            2 * self.state_features.get("frontier_mask", False)
         )
         self.global_mlp = torch.nn.Sequential(
             torch.nn.Linear(global_width, hidden_width, bias=False),
@@ -549,6 +544,14 @@ class FrontierStateModel(torch.nn.Module):
             X = X + self.orientation_embedding(node[:, :, 3].to(torch.int64))
         if self.kind_embedding is not None:
             X = X + self.kind_embedding(node[:, :, 4].to(torch.int64))
+        if self.inventory_embedding is not None:
+            X = X + torch.matmul(
+                features.inventory.to(torch.float32), self.inventory_embedding
+            ).unsqueeze(1)
+        if self.connection_reachability_embedding is not None:
+            X = X + self.connection_reachability_embedding(
+                features.connection_reachability.to(torch.float32)
+            ).unsqueeze(1)
         X = X * node_mask.unsqueeze(-1)
         if node.shape[1] == 0:
             mean_pool = max_pool = X.new_zeros([X.shape[0], X.shape[2]])
@@ -586,16 +589,10 @@ class FrontierStateModel(torch.nn.Module):
             mean_pool = X.sum(1) / count
             max_pool = torch.where(node_mask.unsqueeze(-1), X, -torch.inf).max(1).values
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
-        # inventory, mean_pool, max_pool, global_state: [b, e]
+        # mean_pool, max_pool, global_state: [b, e]
         global_inputs = []
-        if self.inventory_embedding is not None:
-            global_inputs.append(torch.matmul(features.inventory.to(torch.float32), self.inventory_embedding))
         if self.state_features.get("frontier_mask", False):
             global_inputs.extend([mean_pool, max_pool])
-        if self.connection_reachability_embedding is not None:
-            global_inputs.append(self.connection_reachability_embedding(
-                features.connection_reachability.to(torch.float32)
-            ))
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None
