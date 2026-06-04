@@ -590,16 +590,13 @@ class TrainingSession:
         success_door = torch.mean((door_invalid == 0).to(torch.float32))
         success_conn = torch.mean((conn_invalid == 0).to(torch.float32))
 
-        door_match_denominator = torch.tensor(
-            self.episodes_per_round,
-            dtype=torch.float64,
-            device=self.device,
-        )
+        horizontal_door_match_counts = door_match_counts.horizontal[:-1, :-1].to(torch.float64)
+        vertical_door_match_counts = door_match_counts.vertical[:-1, :-1].to(torch.float64)
         horizontal_door_match_proportions = (
-            door_match_counts.horizontal.to(torch.float64) / door_match_denominator
+            horizontal_door_match_counts / torch.sum(horizontal_door_match_counts, dim=1, keepdim=True)
         )
         vertical_door_match_proportions = (
-            door_match_counts.vertical.to(torch.float64) / door_match_denominator
+            vertical_door_match_counts / torch.sum(vertical_door_match_counts, dim=1, keepdim=True)
         )
         horizontal_topk = torch.topk(horizontal_door_match_proportions.flatten(), k=3).values
         vertical_topk = torch.topk(vertical_door_match_proportions.flatten(), k=3).values
