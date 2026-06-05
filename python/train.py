@@ -20,7 +20,7 @@ from safetensors import safe_open
 
 from env import Actions, DoorMatchCounts, Engine, GenerateConfig, Outcomes, StateFeatures
 from experience import ExperienceStorage
-from generate import create_generation_environment_groups, generate_cohorts
+from generate import create_generation_environment_groups, run_generation_groups
 from loss import LossConfig, compute_loss
 from model import FrontierStateModel
 from profile_stats import ProfileStats
@@ -190,8 +190,8 @@ class TrainingSession:
         return episodes_per_round(self.config)
 
     @property
-    def train_state_pipeline_cohorts(self) -> int:
-        return self.config.train.state_pipeline_cohorts
+    def train_state_pipeline_groups(self) -> int:
+        return self.config.train.state_pipeline_groups
 
     def room_door_labels_by_direction(self, direction: str) -> list[str]:
         labels = []
@@ -350,7 +350,7 @@ class TrainingSession:
         task_idx = 0
         for batch_idx in self.iter_fresh_batch_starts():
             start = (batch_idx * self.config.train.batch_size) % self.episodes_per_round
-            tasks.append(TrainBatchTask("fresh", start, task_idx % self.train_state_pipeline_cohorts))
+            tasks.append(TrainBatchTask("fresh", start, task_idx % self.train_state_pipeline_groups))
             task_idx += 1
         if self.experience.num_files > 0:
             replay_batches = int(
@@ -361,7 +361,7 @@ class TrainingSession:
                 )
             )
             for _ in range(replay_batches):
-                tasks.append(TrainBatchTask("replay", None, task_idx % self.train_state_pipeline_cohorts))
+                tasks.append(TrainBatchTask("replay", None, task_idx % self.train_state_pipeline_groups))
                 task_idx += 1
         return tasks
 
@@ -512,7 +512,7 @@ class TrainingSession:
                 if self.generation_models_warmed_up:
                     shard_results = [
                         self.generation_executor.submit(
-                            generate_cohorts,
+                            run_generation_groups,
                             *args,
                             verify_outcome_consistency=self.args.verify_outcome_consistency,
                             profiler=self.profiler,
@@ -525,7 +525,7 @@ class TrainingSession:
                         "Warming up compiled generation models serially before concurrent generation."
                     )
                     shard_results = [
-                        generate_cohorts(
+                        run_generation_groups(
                             *args,
                             verify_outcome_consistency=self.args.verify_outcome_consistency,
                             profiler=self.profiler,
@@ -877,15 +877,15 @@ def setup_logging(config: Config, args: Args) -> tuple[ProfileStats, str]:
 
 
 def create_train_batch_environment_groups(config: Config, engine: Engine):
-    train_state_cohort_threads = (
+    train_state_group_threads = (
         None
         if config.generation.num_threads is None
-        else config.generation.num_threads // config.train.state_pipeline_cohorts
+        else config.generation.num_threads // config.train.state_pipeline_groups
     )
     logging.info(
-        "Using %s training state pipeline cohort(s) with %s Rust worker(s) per cohort.",
-        config.train.state_pipeline_cohorts,
-        train_state_cohort_threads if train_state_cohort_threads is not None else "automatic",
+        "Using %s training state pipeline group(s) with %s Rust worker(s) per group.",
+        config.train.state_pipeline_groups,
+        train_state_group_threads if train_state_group_threads is not None else "automatic",
     )
     return [
         engine.create_environment_group(
@@ -894,9 +894,9 @@ def create_train_batch_environment_groups(config: Config, engine: Engine):
             frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
             frontier_neighbor_count=config.generation.frontier_neighbor_count,
             frontier_window_size=config.generation.frontier_window_size,
-            num_threads=train_state_cohort_threads,
+            num_threads=train_state_group_threads,
         )
-        for _ in range(config.train.state_pipeline_cohorts)
+        for _ in range(config.train.state_pipeline_groups)
     ]
 
 
@@ -999,7 +999,7 @@ def build_session(args: Args) -> TrainingSession:
             f"{run_path}/experience",
             round_episode_count,
         ),
-        train_batch_prefetcher=Prefetcher(max_workers=config.train.state_pipeline_cohorts),
+        train_batch_prefetcher=Prefetcher(max_workers=config.train.state_pipeline_groups),
         generation_executor=ThreadPoolExecutor(max_workers=len(generation_devices)),
         generation_models_warmed_up=not (
             config.model.compile

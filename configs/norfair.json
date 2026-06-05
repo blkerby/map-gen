@@ -21,7 +21,7 @@
     "num_environments": 1024,
     "num_iterations": 8,
     "num_devices": 2,
-    "state_pipeline_cohorts": 2,
+    "state_pipeline_groups": 2,
     "action_candidates": 16,
     "lookahead_outcomes": false,
     "temperature": {"log": [10.0, 1.0, 0.03, 0.03]},
@@ -54,7 +54,7 @@
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,
-    "state_pipeline_cohorts": 4,
+    "state_pipeline_groups": 4,
     "gradient_accumulation_steps": 1
   }
 }

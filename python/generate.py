@@ -22,13 +22,13 @@ import torch
 from train_config import Config
 
 
-# Generation runs several environment cohorts for each generation device.
+# Generation runs several environment groups for each generation device.
 # The coordinator thread reads candidates/outcomes, submits only CPU feature
 # extraction to a small executor, then consumes completed extractions in FIFO
-# order. For each completed cohort step it transfers and scores candidates on the
-# generation device, steps that cohort's environment, and immediately starts the
-# next step for that cohort. This keeps expensive CPU extraction overlapped
-# across cohorts while avoiding CUDA work from multiple Python worker threads.
+# order. For each completed group step it transfers and scores candidates on the
+# generation device, steps that group's environment, and immediately starts the
+# next step for that group. This keeps expensive CPU extraction overlapped
+# across groups while avoiding CUDA work from multiple Python worker threads.
 KNOWN_INVALID_REWARD = -100.0
 
 
@@ -407,7 +407,7 @@ class PinnedSparseStateFeatureSlot:
 
 
 @dataclass
-class GenerationCohort:
+class GenerationGroup:
     env: EnvironmentGroup
     config: GenerateConfig
     known_outcomes: Outcomes | None
@@ -417,7 +417,7 @@ class GenerationCohort:
 
 @dataclass
 class PendingGenerationStep:
-    cohort: GenerationCohort
+    group: GenerationGroup
     candidates: Actions
     outcomes: Outcomes
     future: Future[StateFeatures | SparseStateFeatures]
@@ -428,54 +428,54 @@ def create_generation_environment_groups(
     engine: Engine,
     generation_devices: list[torch.device],
 ) -> list[list[EnvironmentGroup]]:
-    num_generation_cohorts = (
-        config.generation.num_devices * config.generation.state_pipeline_cohorts
+    num_generation_groups = (
+        config.generation.num_devices * config.generation.state_pipeline_groups
     )
-    generation_cohort_environments = config.generation.num_environments // num_generation_cohorts
-    generation_cohort_threads = (
+    generation_group_environments = config.generation.num_environments // num_generation_groups
+    generation_group_threads = (
         None
         if config.generation.num_threads is None
-        else config.generation.num_threads // config.generation.state_pipeline_cohorts
+        else config.generation.num_threads // config.generation.state_pipeline_groups
     )
     logging.info(
-        "Using %s state pipeline cohort(s) per generation device with %s environment(s) and %s Rust worker(s) per cohort.",
-        config.generation.state_pipeline_cohorts,
-        generation_cohort_environments,
-        generation_cohort_threads if generation_cohort_threads is not None else "automatic",
+        "Using %s state pipeline group(s) per generation device with %s environment(s) and %s Rust worker(s) per group.",
+        config.generation.state_pipeline_groups,
+        generation_group_environments,
+        generation_group_threads if generation_group_threads is not None else "automatic",
     )
     return [
         [
             engine.create_environment_group(
                 config.map_size,
-                generation_cohort_environments,
-                seed=device_index * config.generation.state_pipeline_cohorts + cohort_index,
+                generation_group_environments,
+                seed=device_index * config.generation.state_pipeline_groups + group_index,
                 frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
                 frontier_neighbor_count=config.generation.frontier_neighbor_count,
                 frontier_window_size=config.generation.frontier_window_size,
-                num_threads=generation_cohort_threads,
+                num_threads=generation_group_threads,
             )
-            for cohort_index in range(config.generation.state_pipeline_cohorts)
+            for group_index in range(config.generation.state_pipeline_groups)
         ]
         for device_index in range(len(generation_devices))
     ]
 
 
 def get_generation_candidates(
-    cohort: GenerationCohort,
+    group: GenerationGroup,
     device: torch.device,
     profiler: ProfileStats,
 ) -> tuple[Actions, Outcomes]:
     with profiler.timer("gen.cpu_candidates"):
-        if cohort.config.lookahead_outcomes:
-            return cohort.env.get_candidates_with_outcomes(
-                cohort.config.max_candidates, device
+        if group.config.lookahead_outcomes:
+            return group.env.get_candidates_with_outcomes(
+                group.config.max_candidates, device
             )
-        candidates = cohort.env.get_candidates(cohort.config.max_candidates, device)
-        return candidates, cohort.env.get_outcomes(device)
+        candidates = group.env.get_candidates(group.config.max_candidates, device)
+        return candidates, group.env.get_outcomes(device)
 
 
 def select_candidate_actions(
-    cohort: GenerationCohort,
+    group: GenerationGroup,
     model,
     candidates: Actions,
     outcomes: Outcomes,
@@ -494,7 +494,7 @@ def select_candidate_actions(
             with torch.amp.autocast(
                 "cuda",
                 dtype=torch.bfloat16,
-                enabled=device.type == "cuda" and cohort.config.state_autocast,
+                enabled=device.type == "cuda" and group.config.state_autocast,
             ):
                 preds = model(env_features)
             expected_reward = compute_expected_reward(
@@ -503,7 +503,7 @@ def select_candidate_actions(
                     preds.connection_invalid.view(environment_count, candidate_count, -1),
                 ),
                 outcomes,
-                cohort.config,
+                group.config,
             )
             expected_reward = torch.where(
                 candidates.room_idx == num_rooms,
@@ -512,7 +512,7 @@ def select_candidate_actions(
             )
         with profiler.cuda_timer("gen.gpu_select", device):
             probs = torch.softmax(
-                expected_reward / torch.unsqueeze(cohort.config.temperature, 1),
+                expected_reward / torch.unsqueeze(group.config.temperature, 1),
                 dim=1,
             )
             action_index = rand_choice(probs)
@@ -521,7 +521,7 @@ def select_candidate_actions(
 
 
 def verify_and_step(
-    cohort: GenerationCohort,
+    group: GenerationGroup,
     selected_actions: Actions,
     action_index: torch.Tensor,
     outcomes: Outcomes,
@@ -530,24 +530,24 @@ def verify_and_step(
     verify_outcome_consistency: bool,
     profiler: ProfileStats,
 ) -> None:
-    if verify_outcome_consistency and cohort.config.lookahead_outcomes:
-        cohort.known_outcomes = merge_verified_outcomes(
-            cohort.known_outcomes,
+    if verify_outcome_consistency and group.config.lookahead_outcomes:
+        group.known_outcomes = merge_verified_outcomes(
+            group.known_outcomes,
             select_outcomes(outcomes, action_index),
             f"lookahead step {step}",
         )
     with profiler.timer("gen.cpu_step"):
-        cohort.env.step(selected_actions)
+        group.env.step(selected_actions)
     if verify_outcome_consistency:
-        cohort.known_outcomes = merge_verified_outcomes(
-            cohort.known_outcomes,
-            cohort.env.get_outcomes(device),
+        group.known_outcomes = merge_verified_outcomes(
+            group.known_outcomes,
+            group.env.get_outcomes(device),
             f"step {step}",
         )
 
 
 def start_generation_step(
-    cohort: GenerationCohort,
+    group: GenerationGroup,
     device: torch.device,
     sparse_frontiers: bool,
     verify_outcome_consistency: bool,
@@ -555,21 +555,21 @@ def start_generation_step(
     executor: ThreadPoolExecutor,
     pending: deque[PendingGenerationStep],
 ) -> None:
-    while cohort.step < cohort.config.episode_length:
-        candidates, outcomes = get_generation_candidates(cohort, device, profiler)
+    while group.step < group.config.episode_length:
+        candidates, outcomes = get_generation_candidates(group, device, profiler)
         if candidates.room_idx.shape[1] != 1:
             pending.append(
                 PendingGenerationStep(
-                    cohort,
+                    group,
                     candidates,
                     outcomes,
                     executor.submit(
                         extract_candidate_features,
-                        cohort.env,
+                        group.env,
                         candidates,
                         profiler,
                         sparse_frontiers,
-                        cohort.feature_slot,
+                        group.feature_slot,
                     ),
                 )
             )
@@ -580,16 +580,16 @@ def start_generation_step(
             device=device,
         )
         verify_and_step(
-            cohort,
+            group,
             candidates.select(action_index),
             action_index,
             outcomes,
-            cohort.step,
+            group.step,
             device,
             verify_outcome_consistency,
             profiler,
         )
-        cohort.step += 1
+        group.step += 1
 
 
 def merge_generation_results(
@@ -620,7 +620,7 @@ def merge_generation_results(
     )
 
 
-def generate_cohorts(
+def run_generation_groups(
     envs: list[EnvironmentGroup],
     model,
     configs: list[GenerateConfig],
@@ -629,14 +629,14 @@ def generate_cohorts(
     profiler: ProfileStats | None = None,
 ) -> tuple[Actions, Outcomes, DoorMatchCounts]:
     if not envs or len(envs) != len(configs):
-        raise ValueError("generation cohorts require one config per environment group")
+        raise ValueError("generation groups require one config per environment group")
     profiler = profiler or ProfileStats(False)
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     gpu_lock = threading.Lock()
     num_rooms = len(envs[0].engine.rooms)
     sparse_frontiers = device.type == "cuda"
-    cohorts = [
-        GenerationCohort(
+    groups = [
+        GenerationGroup(
             env,
             config,
             None,
@@ -647,13 +647,13 @@ def generate_cohorts(
         )
         for env, config in zip(envs, configs)
     ]
-    with ThreadPoolExecutor(max_workers=len(cohorts)) as executor:
+    with ThreadPoolExecutor(max_workers=len(groups)) as executor:
         pending: deque[PendingGenerationStep] = deque()
         with torch.no_grad():
-            for cohort in cohorts:
-                cohort.env.clear()
+            for group in groups:
+                group.env.clear()
                 start_generation_step(
-                    cohort,
+                    group,
                     device,
                     sparse_frontiers,
                     verify_outcome_consistency,
@@ -666,7 +666,7 @@ def generate_cohorts(
                 with profiler.timer("gen.cpu_extract_wait"):
                     features = step.future.result()
                 action_index, selected_actions = select_candidate_actions(
-                    step.cohort,
+                    step.group,
                     model,
                     step.candidates,
                     step.outcomes,
@@ -678,19 +678,19 @@ def generate_cohorts(
                     num_rooms,
                 )
                 verify_and_step(
-                    step.cohort,
+                    step.group,
                     selected_actions,
                     action_index,
                     step.outcomes,
-                    step.cohort.step,
+                    step.group.step,
                     device,
                     verify_outcome_consistency,
                     profiler,
                 )
-                step.cohort.step += 1
-                if step.cohort.step < step.cohort.config.episode_length:
+                step.group.step += 1
+                if step.group.step < step.group.config.episode_length:
                     start_generation_step(
-                        step.cohort,
+                        step.group,
                         device,
                         sparse_frontiers,
                         verify_outcome_consistency,
@@ -699,13 +699,13 @@ def generate_cohorts(
                         pending,
                     )
         results = []
-        for cohort in cohorts:
+        for group in groups:
             with profiler.timer("gen.cpu_finish"):
-                cohort.env.finish()
-                actions = cohort.env.get_actions(device)
-                outcomes = cohort.env.get_outcomes(device)
-                door_match_counts = cohort.env.get_door_match_counts(device)
+                group.env.finish()
+                actions = group.env.get_actions(device)
+                outcomes = group.env.get_outcomes(device)
+                door_match_counts = group.env.get_door_match_counts(device)
             if verify_outcome_consistency:
-                merge_verified_outcomes(cohort.known_outcomes, outcomes, "finish")
+                merge_verified_outcomes(group.known_outcomes, outcomes, "finish")
             results.append((actions, outcomes, door_match_counts))
     return merge_generation_results(results)
