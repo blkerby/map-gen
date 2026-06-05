@@ -11,7 +11,7 @@ import json
 import map_gen
 
 if TYPE_CHECKING:
-    from train_config import StateFeatureConfig
+    from train_config import FeatureConfig
 
 @dataclass
 class GenerateConfig:
@@ -19,7 +19,7 @@ class GenerateConfig:
     max_candidates: int
     temperature: torch.Tensor
     lookahead_outcomes: bool
-    state_autocast: bool
+    autocast: bool
 
 
 # Each tensor here is uint8 with shape
@@ -71,7 +71,7 @@ class DoorMatchCounts:
 
 
 @dataclass
-class StateFeatures:
+class Features:
     inventory: torch.Tensor
     room_x: torch.Tensor
     room_y: torch.Tensor
@@ -83,18 +83,18 @@ class StateFeatures:
     connection_reachability: torch.Tensor
     frontier_connection_reachability: torch.Tensor
 
-    def to(self, device: torch.device) -> "StateFeatures":
-        return StateFeatures(*(value.to(device) for value in vars(self).values()))
+    def to(self, device: torch.device) -> "Features":
+        return Features(*(value.to(device) for value in vars(self).values()))
 
-    def flatten_candidates(self) -> "StateFeatures":
-        return StateFeatures(*(value.flatten(0, 1) for value in vars(self).values()))
+    def flatten_candidates(self) -> "Features":
+        return Features(*(value.flatten(0, 1) for value in vars(self).values()))
 
-    def slice(self, start: int, end: int) -> "StateFeatures":
-        return StateFeatures(*(value[start:end] for value in vars(self).values()))
+    def slice(self, start: int, end: int) -> "Features":
+        return Features(*(value[start:end] for value in vars(self).values()))
 
 
 @dataclass
-class SparseStateFeatures:
+class SparseFeatures:
     inventory: torch.Tensor
     room_x: torch.Tensor
     room_y: torch.Tensor
@@ -108,8 +108,8 @@ class SparseStateFeatures:
     dense_row_idx: torch.Tensor
     frontier_count: int
 
-    def flatten_candidates(self) -> "SparseStateFeatures":
-        return SparseStateFeatures(
+    def flatten_candidates(self) -> "SparseFeatures":
+        return SparseFeatures(
             self.inventory.flatten(0, 1),
             self.room_x.flatten(0, 1),
             self.room_y.flatten(0, 1),
@@ -142,9 +142,9 @@ class Engine:
     engine: map_gen.Engine
     rooms: list[dict]
 
-    def __init__(self, rooms: list[dict], state_features: StateFeatureConfig):
-        self.state_features = state_features
-        self.engine = map_gen.Engine(json.dumps(rooms), state_features.model_dump_json())
+    def __init__(self, rooms: list[dict], features: FeatureConfig):
+        self.features = features
+        self.engine = map_gen.Engine(json.dumps(rooms), features.model_dump_json())
         self.rooms = rooms
 
     def create_environment_group(
@@ -190,8 +190,8 @@ class Engine:
             num_room_connection_variants=num_room_connection_variants,
         )
 
-    def get_state_feature_sizes(self) -> tuple[int, int, int]:
-        return self.engine.get_state_feature_sizes()
+    def get_feature_sizes(self) -> tuple[int, int, int]:
+        return self.engine.get_feature_sizes()
 
 
 class EnvironmentGroup:
@@ -290,43 +290,43 @@ class EnvironmentGroup:
         )
 
     @staticmethod
-    def _state_features(values, device: torch.device) -> StateFeatures:
-        return StateFeatures(*(torch.from_numpy(value).to(device) for value in values))
+    def _features(values, device: torch.device) -> Features:
+        return Features(*(torch.from_numpy(value).to(device) for value in values))
 
-    def get_state_features(
+    def get_features(
         self, device: torch.device, environment_start: int = 0, environment_count: Optional[int] = None
-    ) -> StateFeatures:
-        return self._state_features(
-            self.env.get_state_features(environment_start, environment_count), device
+    ) -> Features:
+        return self._features(
+            self.env.get_features(environment_start, environment_count), device
         )
 
-    def get_state_features_after_candidates(
+    def get_features_after_candidates(
         self, actions: Actions, device: torch.device, environment_start: int = 0
-    ) -> StateFeatures:
-        values = self.env.get_state_features_after_candidates(
+    ) -> Features:
+        values = self.env.get_features_after_candidates(
             actions.room_idx.contiguous().cpu().numpy(),
             actions.room_x.contiguous().cpu().numpy(),
             actions.room_y.contiguous().cpu().numpy(),
             environment_start,
         )
-        return self._state_features(values, device)
+        return self._features(values, device)
 
-    def get_sparse_state_features_after_candidates(
+    def get_sparse_features_after_candidates(
         self, actions: Actions, device: torch.device, environment_start: int = 0
-    ) -> SparseStateFeatures:
-        values, frontier_count = self.env.get_sparse_state_features_after_candidates(
+    ) -> SparseFeatures:
+        values, frontier_count = self.env.get_sparse_features_after_candidates(
             actions.room_idx.contiguous().cpu().numpy(),
             actions.room_x.contiguous().cpu().numpy(),
             actions.room_y.contiguous().cpu().numpy(),
             environment_start,
         )
-        return SparseStateFeatures(
+        return SparseFeatures(
             *(torch.from_numpy(value).to(device) for value in values),
             frontier_count,
         )
 
-    def take_state_feature_profile(self) -> list[float]:
-        return self.env.take_state_feature_profile()
+    def take_feature_profile(self) -> list[float]:
+        return self.env.take_feature_profile()
 
     def finish(self):
         self.env.finish()

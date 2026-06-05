@@ -16,7 +16,7 @@ use crate::common::{
 use crate::scc_dag::SccDag;
 
 const NO_COMPONENT: usize = usize::MAX;
-pub const STATE_FEATURE_FRONTIER_WIDTH: usize = 5;
+pub const FEATURE_FRONTIER_WIDTH: usize = 5;
 
 #[derive(Clone, Copy, Debug)]
 struct FrontierEdge {
@@ -57,7 +57,7 @@ pub struct Outcomes {
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StateFeatureConfig {
+pub struct FeatureConfig {
     pub inventory: bool,
     pub room_position: bool,
     pub frontier_mask: bool,
@@ -72,7 +72,7 @@ pub struct StateFeatureConfig {
     pub frontier_connection_reachability: bool,
 }
 
-impl StateFeatureConfig {
+impl FeatureConfig {
     pub fn is_empty(&self) -> bool {
         !self.inventory
             && !self.room_position
@@ -141,7 +141,7 @@ impl StateFeatureConfig {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct StateFeatures {
+pub struct Features {
     pub inventory: Vec<u8>,
     pub room_x: Vec<Coord>,
     pub room_y: Vec<Coord>,
@@ -163,7 +163,7 @@ pub struct StateFeatures {
 }
 
 #[derive(Default)]
-pub struct StateFeatureProfile {
+pub struct FeatureProfile {
     pub clone_ns: u64,
     pub step_ns: u64,
     pub assemble_ns: u64,
@@ -337,7 +337,7 @@ fn prune_frontier_edges(
     }
 }
 
-impl StateFeatureProfile {
+impl FeatureProfile {
     pub fn add(&mut self, other: &Self) {
         self.clone_ns += other.clone_ns;
         self.step_ns += other.step_ns;
@@ -369,7 +369,7 @@ pub struct Environment {
     occupancy: Vec<u8>,
 }
 
-struct StateFeatureSnapshot {
+struct FeatureSnapshot {
     finished: bool,
     frontier: HashMap<DoorLocation, Frontier>,
     connection_variant_idx: Option<ConnectionVariantIdx>,
@@ -495,7 +495,7 @@ impl Environment {
         self.step_impl(action, common, true);
     }
 
-    fn step_for_state_features(&mut self, action: Action, common: &CommonData) {
+    fn step_for_features(&mut self, action: Action, common: &CommonData) {
         if self.finished {
             return;
         }
@@ -858,11 +858,11 @@ impl Environment {
         }
     }
 
-    fn apply_state_feature_candidate(
+    fn apply_feature_candidate(
         &mut self,
         candidate: Action,
         common: &CommonData,
-    ) -> StateFeatureSnapshot {
+    ) -> FeatureSnapshot {
         let frontier = std::mem::take(&mut self.frontier);
         self.frontier = frontier
             .iter()
@@ -882,7 +882,7 @@ impl Environment {
             (candidate.room_idx < common.room.len() as RoomIdx).then_some(candidate.room_idx);
         let connection_variant_idx =
             room_idx.map(|room_idx| common.room[room_idx as usize].connection_variant_idx);
-        let snapshot = StateFeatureSnapshot {
+        let snapshot = FeatureSnapshot {
             finished: self.finished,
             frontier,
             connection_variant_idx,
@@ -891,15 +891,11 @@ impl Environment {
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
         };
-        self.step_for_state_features(candidate, common);
+        self.step_for_features(candidate, common);
         snapshot
     }
 
-    fn restore_state_feature_candidate(
-        &mut self,
-        candidate: Action,
-        snapshot: StateFeatureSnapshot,
-    ) {
+    fn restore_feature_candidate(&mut self, candidate: Action, snapshot: FeatureSnapshot) {
         self.finished = snapshot.finished;
         self.frontier = snapshot.frontier;
         if candidate.room_idx < self.room_used.len() as RoomIdx {
@@ -914,7 +910,7 @@ impl Environment {
         self.scc_dag = snapshot.scc_dag;
     }
 
-    pub fn state_feature_frontier_count_after_candidate(
+    pub fn feature_frontier_count_after_candidate(
         &self,
         candidate: Action,
         common: &CommonData,
@@ -949,15 +945,15 @@ impl Environment {
             + 2
     }
 
-    pub fn state_features(
+    pub fn features(
         &self,
         common: &CommonData,
-        config: &StateFeatureConfig,
+        config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-    ) -> StateFeatures {
-        self.state_features_with_occupancy(
+    ) -> Features {
+        self.features_with_occupancy(
             common,
             config,
             &self.occupancy,
@@ -969,17 +965,17 @@ impl Environment {
         )
     }
 
-    fn state_features_with_occupancy(
+    fn features_with_occupancy(
         &self,
         common: &CommonData,
-        config: &StateFeatureConfig,
+        config: &FeatureConfig,
         occupancy: &[u8],
         extra_occupied: Option<(&GeometryData, Coord, Coord)>,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-        profile: Option<&mut StateFeatureProfile>,
-    ) -> StateFeatures {
+        profile: Option<&mut FeatureProfile>,
+    ) -> Features {
         let setup_start = Instant::now();
         assert!(self.frontier.len() <= Self::max_frontiers(common));
         let frontier_count = if config.has_frontier_features() {
@@ -1003,7 +999,7 @@ impl Environment {
         } else {
             vec![]
         };
-        let mut frontier = vec![0; frontier_count * STATE_FEATURE_FRONTIER_WIDTH];
+        let mut frontier = vec![0; frontier_count * FEATURE_FRONTIER_WIDTH];
         let frontier_window_area = frontier_window_size * frontier_window_size;
         let packed_frontier_window_size = frontier_window_area.div_ceil(8);
         let mut frontier_occupancy = if config.frontier_occupancy {
@@ -1041,7 +1037,7 @@ impl Environment {
         sorted_frontiers.sort_unstable_by_key(|(location, _)| **location);
         let map_width = self.map_size.0 as usize;
         for (idx, (location, data)) in sorted_frontiers.iter().enumerate() {
-            let row = idx * STATE_FEATURE_FRONTIER_WIDTH;
+            let row = idx * FEATURE_FRONTIER_WIDTH;
             frontier[row] = i8::from(config.frontier_mask);
             if config.frontier_position || config.frontier_neighbor_position_embedding {
                 frontier[row + 1] = location.x();
@@ -1198,7 +1194,7 @@ impl Environment {
         let pair_flags_ns = pair_flags_start.elapsed().as_nanos() as u64;
         let pair_ns = pair_flags_ns;
         let output_start = Instant::now();
-        let features = StateFeatures {
+        let features = Features {
             inventory,
             room_x: if config.room_position {
                 self.room_x.clone()
@@ -1231,16 +1227,16 @@ impl Environment {
     }
 
     #[cfg(test)]
-    pub fn state_features_after_candidate(
+    pub fn features_after_candidate(
         &mut self,
         common: &CommonData,
         candidate: Action,
-        config: &StateFeatureConfig,
+        config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-    ) -> StateFeatures {
-        self.state_features_after_candidate_with_occupancy(
+    ) -> Features {
+        self.features_after_candidate_with_occupancy(
             common,
             candidate,
             config,
@@ -1251,18 +1247,18 @@ impl Environment {
         .0
     }
 
-    pub fn state_features_after_candidate_with_occupancy(
+    pub fn features_after_candidate_with_occupancy(
         &mut self,
         common: &CommonData,
         candidate: Action,
-        config: &StateFeatureConfig,
+        config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-    ) -> (StateFeatures, StateFeatureProfile) {
-        let mut profile = StateFeatureProfile::default();
+    ) -> (Features, FeatureProfile) {
+        let mut profile = FeatureProfile::default();
         if config.is_empty() {
-            return (StateFeatures::default(), profile);
+            return (Features::default(), profile);
         }
         let extra_occupied =
             if config.frontier_occupancy && candidate.room_idx < common.room.len() as RoomIdx {
@@ -1276,10 +1272,10 @@ impl Environment {
                 None
             };
         let start = Instant::now();
-        let snapshot = self.apply_state_feature_candidate(candidate, common);
+        let snapshot = self.apply_feature_candidate(candidate, common);
         profile.clone_ns = start.elapsed().as_nanos() as u64;
         let start = Instant::now();
-        let features = self.state_features_with_occupancy(
+        let features = self.features_with_occupancy(
             common,
             config,
             &self.occupancy,
@@ -1291,7 +1287,7 @@ impl Environment {
         );
         profile.assemble_ns = start.elapsed().as_nanos() as u64;
         let start = Instant::now();
-        self.restore_state_feature_candidate(candidate, snapshot);
+        self.restore_feature_candidate(candidate, snapshot);
         profile.step_ns = start.elapsed().as_nanos() as u64;
         (features, profile)
     }
@@ -1960,7 +1956,7 @@ mod tests {
     }
 
     #[test]
-    fn state_features_after_candidate_match_direct_step() {
+    fn features_after_candidate_match_direct_step() {
         let rooms_json = r#"
         [
             {
@@ -2000,7 +1996,7 @@ mod tests {
             x: 1,
             y: 0,
         };
-        let config = StateFeatureConfig::all();
+        let config = FeatureConfig::all();
         let expected_actions = env.actions.clone();
         let expected_frontier = env.frontier.clone();
         let expected_room_used = env.room_used.clone();
@@ -2008,8 +2004,8 @@ mod tests {
         let expected_room_part_component = env.room_part_component.clone();
         let expected_scc_dag = env.scc_dag.clone();
         let expected_frontier_count =
-            env.state_feature_frontier_count_after_candidate(candidate, &common);
-        let simulated = env.state_features_after_candidate(
+            env.feature_frontier_count_after_candidate(candidate, &common);
+        let simulated = env.features_after_candidate(
             &common,
             candidate,
             &config,
@@ -2018,7 +2014,7 @@ mod tests {
             4,
         );
         assert_eq!(
-            simulated.frontier.len() / STATE_FEATURE_FRONTIER_WIDTH,
+            simulated.frontier.len() / FEATURE_FRONTIER_WIDTH,
             expected_frontier_count
         );
         assert_eq!(env.actions, expected_actions);
@@ -2035,7 +2031,7 @@ mod tests {
         env.step(candidate, &common);
         assert_eq!(
             simulated,
-            env.state_features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+            env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
         );
         assert_eq!(env.occupancy[0], 1);
         assert_eq!(env.occupancy[1], 1);
@@ -2046,7 +2042,7 @@ mod tests {
             x: 0,
             y: 0,
         };
-        let simulated = env.state_features_after_candidate(
+        let simulated = env.features_after_candidate(
             &common,
             dummy_candidate,
             &config,
@@ -2057,39 +2053,39 @@ mod tests {
         env.step(dummy_candidate, &common);
         assert_eq!(
             simulated,
-            env.state_features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+            env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
         );
     }
 
     #[test]
-    fn state_feature_config_validates_dependencies() {
+    fn feature_config_validates_dependencies() {
         assert!(
-            StateFeatureConfig {
+            FeatureConfig {
                 frontier_position: true,
-                ..StateFeatureConfig::all_disabled()
+                ..FeatureConfig::all_disabled()
             }
             .validate()
             .is_err()
         );
         assert!(
-            StateFeatureConfig {
+            FeatureConfig {
                 frontier_neighbor_flags: true,
-                ..StateFeatureConfig::all_disabled()
+                ..FeatureConfig::all_disabled()
             }
             .validate()
             .is_err()
         );
         assert!(
-            StateFeatureConfig {
+            FeatureConfig {
                 frontier_neighbor_position_embedding: true,
-                ..StateFeatureConfig::all_disabled()
+                ..FeatureConfig::all_disabled()
             }
             .validate()
             .is_err()
         );
-        assert!(StateFeatureConfig::all_disabled().validate().is_ok());
-        assert!(StateFeatureConfig::all().validate().is_ok());
-        let err = serde_json::from_str::<StateFeatureConfig>(
+        assert!(FeatureConfig::all_disabled().validate().is_ok());
+        assert!(FeatureConfig::all().validate().is_ok());
+        let err = serde_json::from_str::<FeatureConfig>(
             r#"{
                 "inventory": false,
                 "room_position": false,
@@ -2109,7 +2105,7 @@ mod tests {
     }
 
     #[test]
-    fn state_features_include_missing_connection_reachability() {
+    fn features_include_missing_connection_reachability() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [{
@@ -2134,39 +2130,38 @@ mod tests {
             },
             &common,
         );
-        let config = StateFeatureConfig {
+        let config = FeatureConfig {
             frontier_mask: true,
             connection_reachability: true,
             frontier_connection_reachability: true,
-            ..StateFeatureConfig::all_disabled()
+            ..FeatureConfig::all_disabled()
         };
-        let features =
-            env.state_features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 1, 1);
+        let features = env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 1, 1);
         assert_eq!(features.connection_reachability, vec![0]);
         assert_eq!(features.frontier_connection_reachability, vec![1, 2]);
     }
 
     #[test]
-    fn disabled_state_features_skip_candidate_simulation() {
+    fn disabled_features_skip_candidate_simulation() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"[{"map": [[1]], "doors": [], "connections": [], "missing_connections": []}]"#,
         )
         .unwrap();
         let common = CommonData::new(rooms).unwrap();
         let mut env = Environment::new(&common, (4, 4), 0);
-        let (features, profile) = env.state_features_after_candidate_with_occupancy(
+        let (features, profile) = env.features_after_candidate_with_occupancy(
             &common,
             Action {
                 room_idx: 0,
                 x: 0,
                 y: 0,
             },
-            &StateFeatureConfig::all_disabled(),
+            &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Delaunay,
             4,
             4,
         );
-        assert_eq!(features, StateFeatures::default());
+        assert_eq!(features, Features::default());
         assert_eq!(profile.clone_ns, 0);
         assert_eq!(profile.step_ns, 0);
         assert_eq!(profile.assemble_ns, 0);

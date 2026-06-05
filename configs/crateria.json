@@ -21,7 +21,7 @@
     "num_environments": 2048,
     "num_iterations": 1,
     "num_devices": 1,
-    "state_pipeline_groups": 1,
+    "pipeline_groups": 1,
     "action_candidates": 8,
     "lookahead_outcomes": false,
     "temperature": {"linear": [10.0, 0.03, 0.03]},
@@ -30,7 +30,7 @@
     "frontier_window_size": 16,
     "num_threads": 32
   },
-  "state_features": {
+  "features": {
     "inventory": true,
     "room_position": true,
     "frontier_mask": true,
@@ -54,7 +54,7 @@
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,
-    "state_pipeline_groups": 1,
+    "pipeline_groups": 1,
     "gradient_accumulation_steps": 1
   }
 }

@@ -36,7 +36,7 @@ class GenerationConfig(StrictBaseModel):
     num_environments: int
     num_iterations: int
     num_devices: int
-    state_pipeline_groups: int
+    pipeline_groups: int
     action_candidates: int
     lookahead_outcomes: bool
     temperature: ScheduleableFloat
@@ -46,7 +46,7 @@ class GenerationConfig(StrictBaseModel):
     num_threads: int | None
 
 
-class StateFeatureConfig(StrictBaseModel):
+class FeatureConfig(StrictBaseModel):
     inventory: bool
     room_position: bool
     frontier_mask: bool
@@ -71,7 +71,7 @@ class TrainConfig(StrictBaseModel):
     door_weight: float
     connection_weight: float
     ema_decay: float
-    state_pipeline_groups: int
+    pipeline_groups: int
     gradient_accumulation_steps: int
 
 
@@ -84,7 +84,7 @@ class Config(StrictBaseModel):
     model: ModelConfig
     optimizer: OptimizerConfig
     generation: GenerationConfig
-    state_features: StateFeatureConfig
+    features: FeatureConfig
     train: TrainConfig
 
 
@@ -131,17 +131,17 @@ def validate_config(config: Config) -> None:
         raise ValueError("generation.num_iterations must be greater than zero")
     if config.generation.num_devices <= 0:
         raise ValueError("generation.num_devices must be greater than zero")
-    if config.generation.state_pipeline_groups <= 0:
-        raise ValueError("generation.state_pipeline_groups must be greater than zero")
+    if config.generation.pipeline_groups <= 0:
+        raise ValueError("generation.pipeline_groups must be greater than zero")
     if config.generation.num_devices > config.generation.num_environments:
         raise ValueError("generation.num_devices must not exceed generation.num_environments")
     num_generation_groups = (
-        config.generation.num_devices * config.generation.state_pipeline_groups
+        config.generation.num_devices * config.generation.pipeline_groups
     )
     if config.generation.num_environments % num_generation_groups != 0:
         raise ValueError(
             "generation.num_environments must be divisible by "
-            "generation.num_devices * generation.state_pipeline_groups"
+            "generation.num_devices * generation.pipeline_groups"
         )
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError("generation.frontier_neighbor_count must be greater than or equal to zero")
@@ -151,39 +151,39 @@ def validate_config(config: Config) -> None:
         raise ValueError("generation.num_threads must be greater than zero")
     if (
         config.generation.num_threads is not None
-        and config.generation.num_threads % config.generation.state_pipeline_groups != 0
+        and config.generation.num_threads % config.generation.pipeline_groups != 0
     ):
-        raise ValueError("generation.num_threads must be divisible by generation.state_pipeline_groups")
+        raise ValueError("generation.num_threads must be divisible by generation.pipeline_groups")
     if config.train.sample_period <= 0:
         raise ValueError("train.sample_period must be greater than zero")
-    if config.train.state_pipeline_groups <= 0:
-        raise ValueError("train.state_pipeline_groups must be greater than zero")
+    if config.train.pipeline_groups <= 0:
+        raise ValueError("train.pipeline_groups must be greater than zero")
     if config.train.gradient_accumulation_steps <= 0:
         raise ValueError("train.gradient_accumulation_steps must be greater than zero")
     if (
         config.generation.num_threads is not None
-        and config.generation.num_threads % config.train.state_pipeline_groups != 0
+        and config.generation.num_threads % config.train.pipeline_groups != 0
     ):
-        raise ValueError("generation.num_threads must be divisible by train.state_pipeline_groups")
+        raise ValueError("generation.num_threads must be divisible by train.pipeline_groups")
     if (
-        config.state_features.frontier_position
-        or config.state_features.frontier_orientation
-        or config.state_features.frontier_kind
-        or config.state_features.frontier_occupancy
-        or config.state_features.frontier_neighbor
-        or config.state_features.frontier_connection_reachability
-    ) and not config.state_features.frontier_mask:
-        raise ValueError("frontier state features require state_features.frontier_mask")
+        config.features.frontier_position
+        or config.features.frontier_orientation
+        or config.features.frontier_kind
+        or config.features.frontier_occupancy
+        or config.features.frontier_neighbor
+        or config.features.frontier_connection_reachability
+    ) and not config.features.frontier_mask:
+        raise ValueError("frontier features require features.frontier_mask")
     if (
-        config.state_features.inventory
-        or config.state_features.connection_reachability
-    ) and not config.state_features.frontier_mask:
-        raise ValueError("start-of-network state features require state_features.frontier_mask")
+        config.features.inventory
+        or config.features.connection_reachability
+    ) and not config.features.frontier_mask:
+        raise ValueError("start-of-network features require features.frontier_mask")
     if (
-        config.state_features.frontier_neighbor_position_embedding
-        or config.state_features.frontier_neighbor_flags
-    ) and not config.state_features.frontier_neighbor:
-        raise ValueError("frontier neighbor pair features require state_features.frontier_neighbor")
+        config.features.frontier_neighbor_position_embedding
+        or config.features.frontier_neighbor_flags
+    ) and not config.features.frontier_neighbor:
+        raise ValueError("frontier neighbor pair features require features.frontier_neighbor")
 
 
 def episodes_per_round(config: Config) -> int:

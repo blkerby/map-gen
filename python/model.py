@@ -5,10 +5,10 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from env import OutputMetadata, StateFeatures
+from env import OutputMetadata, Features
 
 if TYPE_CHECKING:
-    from train_config import StateFeatureConfig
+    from train_config import FeatureConfig
 
 NUM_COORD_VALUES = 256
 COORD_OFFSET = 128
@@ -79,7 +79,7 @@ class FactorizedOutcomeHead(torch.nn.Module):
         )
 
 
-class FrontierStateModel(torch.nn.Module):
+class FrontierModel(torch.nn.Module):
     def __init__(
         self,
         num_rooms,
@@ -90,31 +90,31 @@ class FrontierStateModel(torch.nn.Module):
         hidden_width,
         num_layers,
         frontier_window_size,
-        state_features: StateFeatureConfig,
+        features: FeatureConfig,
     ):
         super().__init__()
-        self.state_features = state_features
+        self.features = features
         self.num_rooms = num_rooms
         self.map_x = map_x
         self.map_y = map_y
         self.embedding_width = embedding_width
         self.output_sizes = output_metadata.get_output_sizes()
         self.num_connection_outputs = len(output_metadata.connection)
-        self.include_inventory = self.state_features.inventory
+        self.include_inventory = self.features.inventory
         # self.inventory_embedding = torch.nn.Parameter(
         #     torch.randn([output_metadata.num_room_connection_variants, embedding_width]) / math.sqrt(embedding_width)
-        # ) if self.state_features.inventory else None
+        # ) if self.features.inventory else None
         self.orientation_embedding = (
             torch.nn.Embedding(2, embedding_width)
-            if self.state_features.frontier_orientation else None
+            if self.features.frontier_orientation else None
         )
         self.kind_embedding = (
             torch.nn.Embedding(256, embedding_width)
-            if self.state_features.frontier_kind else None
+            if self.features.frontier_kind else None
         )
         node_numeric_width = (
-            frontier_window_size**2 * self.state_features.frontier_occupancy
-            + 2 * self.num_connection_outputs * self.state_features.frontier_connection_reachability
+            frontier_window_size**2 * self.features.frontier_occupancy
+            + 2 * self.num_connection_outputs * self.features.frontier_connection_reachability
         )
         self.node_numeric = (
             torch.nn.Linear(node_numeric_width, embedding_width, bias=False)
@@ -126,8 +126,8 @@ class FrontierStateModel(torch.nn.Module):
             1 << torch.arange(8, dtype=torch.uint8),
             persistent=False,
         )
-        pair_width = 3 * self.state_features.frontier_neighbor_flags
-        use_neighbors = self.state_features.frontier_neighbor
+        pair_width = 3 * self.features.frontier_neighbor_flags
+        use_neighbors = self.features.frontier_neighbor
         self.source_message_layers = torch.nn.ModuleList([
             torch.nn.Linear(embedding_width, hidden_width, bias=False)
             for _ in range(num_layers if use_neighbors else 0)
@@ -153,11 +153,11 @@ class FrontierStateModel(torch.nn.Module):
                 torch.nn.Linear(hidden_width, embedding_width, bias=False),
             ) for _ in range(num_layers if use_neighbors else 0)
         ])
-        global_width = output_metadata.num_room_connection_variants * self.state_features.inventory + \
+        global_width = output_metadata.num_room_connection_variants * self.features.inventory + \
             embedding_width * (
-                2 * self.state_features.frontier_mask
+                2 * self.features.frontier_mask
                 + (
-                    self.state_features.connection_reachability
+                    self.features.connection_reachability
                     and self.num_connection_outputs > 0
                 )
             )
@@ -168,28 +168,28 @@ class FrontierStateModel(torch.nn.Module):
         ) if global_width > 0 else None
         self.connection_reachability_embedding = (
             torch.nn.Linear(self.num_connection_outputs, embedding_width, bias=False)
-            if self.state_features.connection_reachability
+            if self.features.connection_reachability
             and self.num_connection_outputs > 0 else None
         )
         self.frontier_pos_embedding_x = (
             torch.nn.Parameter(
                 torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
-            if self.state_features.frontier_position else None
+            if self.features.frontier_position else None
         )
         self.frontier_pos_embedding_y = (
             torch.nn.Parameter(
                 torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
-            if self.state_features.frontier_position else None
+            if self.features.frontier_position else None
         )
         self.frontier_relative_pos_embedding_x = (
             torch.nn.Parameter(
                 torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width))
-            if self.state_features.frontier_neighbor_position_embedding else None
+            if self.features.frontier_neighbor_position_embedding else None
         )
         self.frontier_relative_pos_embedding_y = (
             torch.nn.Parameter(
                 torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width))
-            if self.state_features.frontier_neighbor_position_embedding else None
+            if self.features.frontier_neighbor_position_embedding else None
         )
         self.pos_embedding_x = torch.nn.Parameter(
             torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
@@ -207,7 +207,7 @@ class FrontierStateModel(torch.nn.Module):
 
     def _pair_features(self, features, dtype):
         values = []
-        if self.state_features.frontier_neighbor_flags:
+        if self.features.frontier_neighbor_flags:
             flags = features.frontier_neighbor_pair
             values.append(torch.stack([
                 (flags & 1 != 0).to(dtype),
@@ -245,7 +245,7 @@ class FrontierStateModel(torch.nn.Module):
             COORD_OFFSET,
         )
 
-    def forward(self, features: StateFeatures):
+    def forward(self, features: Features):
         # Shapes below use: b=batch, f=frontiers, k=neighbors, e=embedding width,
         # h=message hidden width.
         # node: [b, f, 5]
@@ -254,7 +254,7 @@ class FrontierStateModel(torch.nn.Module):
         # numeric: [b, f, numeric_width]
         numeric = []
         dtype = self._feature_dtype(node.device)
-        if self.state_features.frontier_occupancy:
+        if self.features.frontier_occupancy:
             numeric.append(
                 features.frontier_occupancy.unsqueeze(-1)
                 .bitwise_and(self.frontier_occupancy_bits)
@@ -262,7 +262,7 @@ class FrontierStateModel(torch.nn.Module):
                 .flatten(-2)[..., :self.frontier_window_area]
                 .to(dtype)
             )
-        if self.state_features.frontier_connection_reachability:
+        if self.features.frontier_connection_reachability:
             flags = features.frontier_connection_reachability
             numeric.append(torch.stack([
                 (flags & 1 != 0).to(dtype),
@@ -334,7 +334,7 @@ class FrontierStateModel(torch.nn.Module):
         if self.include_inventory:
             # global_inputs.append(torch.matmul(features.inventory.to(torch.float32), self.inventory_embedding))
             global_inputs.append(features.inventory.to(X.dtype))
-        if self.state_features.frontier_mask:
+        if self.features.frontier_mask:
             global_inputs.extend([mean_pool, max_pool])
         if self.connection_reachability_embedding is not None:
             global_inputs.append(self.connection_reachability_embedding(
@@ -345,7 +345,7 @@ class FrontierStateModel(torch.nn.Module):
             if self.global_mlp is not None
             else X.new_zeros([X.shape[0], self.embedding_width])
         )
-        if self.state_features.room_position:
+        if self.features.room_position:
             room_x = (features.room_x.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_y = (features.room_y.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_placed = features.room_placed.to(torch.bool).unsqueeze(1)

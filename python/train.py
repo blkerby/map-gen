@@ -18,11 +18,11 @@ import torch
 from aim import Run
 from safetensors import safe_open
 
-from env import Actions, DoorMatchCounts, Engine, GenerateConfig, Outcomes, StateFeatures
+from env import Actions, DoorMatchCounts, Engine, GenerateConfig, Outcomes, Features
 from experience import ExperienceStorage
 from generate import create_generation_environment_groups, run_generation_groups
 from loss import LossConfig, compute_loss
-from model import FrontierStateModel
+from model import FrontierModel
 from profile_stats import ProfileStats
 from train_config import Config, episodes_per_round, instantiate_scheduleable_config, validate_config
 
@@ -49,7 +49,7 @@ class PreparedTrainBatch:
     actions: Actions
     outcomes: Outcomes
     prefix_count: int
-    state_feature_batches: list[StateFeatures]
+    feature_batches: list[Features]
 
 
 class Prefetcher:
@@ -190,8 +190,8 @@ class TrainingSession:
         return episodes_per_round(self.config)
 
     @property
-    def train_state_pipeline_groups(self) -> int:
-        return self.config.train.state_pipeline_groups
+    def train_pipeline_groups(self) -> int:
+        return self.config.train.pipeline_groups
 
     def room_door_labels_by_direction(self, direction: str) -> list[str]:
         labels = []
@@ -318,7 +318,7 @@ class TrainingSession:
                 device=generation_device,
             ),
             lookahead_outcomes=step_config.generation.lookahead_outcomes,
-            state_autocast=step_config.model.generation_autocast,
+            autocast=step_config.model.generation_autocast,
         )
 
     def select_batch(self, actions: Actions, outcomes: Outcomes, start: int) -> tuple[Actions, Outcomes]:
@@ -350,7 +350,7 @@ class TrainingSession:
         task_idx = 0
         for batch_idx in self.iter_fresh_batch_starts():
             start = (batch_idx * self.config.train.batch_size) % self.episodes_per_round
-            tasks.append(TrainBatchTask("fresh", start, task_idx % self.train_state_pipeline_groups))
+            tasks.append(TrainBatchTask("fresh", start, task_idx % self.train_pipeline_groups))
             task_idx += 1
         if self.experience.num_files > 0:
             replay_batches = int(
@@ -361,16 +361,16 @@ class TrainingSession:
                 )
             )
             for _ in range(replay_batches):
-                tasks.append(TrainBatchTask("replay", None, task_idx % self.train_state_pipeline_groups))
+                tasks.append(TrainBatchTask("replay", None, task_idx % self.train_pipeline_groups))
                 task_idx += 1
         return tasks
 
-    def prepare_state_feature_batches(self, train_actions: Actions, env) -> tuple[int, list[StateFeatures]]:
+    def prepare_feature_batches(self, train_actions: Actions, env) -> tuple[int, list[Features]]:
         with self.profiler.timer("train.cpu_setup"):
             offset = torch.randint(0, self.config.train.sample_period, [1]).item()
             train_actions_cpu = train_actions.to(torch.device("cpu"))
             env.clear()
-            state_feature_batches = []
+            feature_batches = []
         with self.profiler.timer("train.cpu_prefix_prepare"):
             for step in range(self.episode_length):
                 env.step(Actions(
@@ -379,23 +379,23 @@ class TrainingSession:
                     train_actions_cpu.room_y[:, step],
                 ))
                 if step % self.config.train.sample_period == offset:
-                    state_feature_batches.append(
-                        env.get_state_features(
+                    feature_batches.append(
+                        env.get_features(
                             torch.device("cpu"),
                             0,
                             train_actions.room_idx.shape[0],
                         )
                     )
-        return len(state_feature_batches), state_feature_batches
+        return len(feature_batches), feature_batches
 
-    def prepare_state_feature_batch(
+    def prepare_feature_batch(
         self,
         kind: Literal["fresh", "replay"],
         train_actions: Actions,
         train_outcomes: Outcomes,
         env,
     ) -> PreparedTrainBatch:
-        prefix_count, state_feature_batches = self.prepare_state_feature_batches(
+        prefix_count, feature_batches = self.prepare_feature_batches(
             train_actions,
             env,
         )
@@ -404,7 +404,7 @@ class TrainingSession:
             train_actions,
             train_outcomes,
             prefix_count=prefix_count,
-            state_feature_batches=state_feature_batches,
+            feature_batches=feature_batches,
         )
 
     def prepare_train_batch_task(
@@ -417,7 +417,7 @@ class TrainingSession:
         if task.kind == "fresh":
             assert task.start is not None
             train_actions, train_outcomes = self.select_batch(fresh_actions, fresh_outcomes, task.start)
-            return self.prepare_state_feature_batch(task.kind, train_actions, train_outcomes, env)
+            return self.prepare_feature_batch(task.kind, train_actions, train_outcomes, env)
 
         with self.profiler.timer("round.replay_prepare"):
             replay_actions = self.experience.sample(
@@ -428,27 +428,27 @@ class TrainingSession:
             env.replay(replay_actions)
             replay_actions = replay_actions.to(self.device)
             replay_outcomes = env.get_outcomes(self.device)
-        return self.prepare_state_feature_batch(task.kind, replay_actions, replay_outcomes, env)
+        return self.prepare_feature_batch(task.kind, replay_actions, replay_outcomes, env)
 
     def train_batch_backward(
         self,
         prepared_batch: PreparedTrainBatch,
         loss_scale: float,
     ) -> float:
-        loss = self.train_state_feature_batch_backward(prepared_batch, loss_scale)
+        loss = self.train_feature_batch_backward(prepared_batch, loss_scale)
 
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite loss before backward: {loss.item()}")
 
         return loss.item()
 
-    def train_state_feature_batch_backward(
+    def train_feature_batch_backward(
         self,
         prepared_batch: PreparedTrainBatch,
         loss_scale: float,
     ) -> torch.Tensor:
         if prepared_batch.prefix_count == 0:
-            raise RuntimeError("state-feature training batch has no sampled prefixes")
+            raise RuntimeError("feature training batch has no sampled prefixes")
 
         train_outcomes = prepared_batch.outcomes
         repeated_outcomes = Outcomes(
@@ -463,16 +463,16 @@ class TrainingSession:
         total_loss = 0.0
         prefix_weight = 1.0 / prepared_batch.prefix_count
 
-        for state_features in prepared_batch.state_feature_batches:
+        for features in prepared_batch.feature_batches:
             with self.profiler.timer("train.cpu_transfer_submit"):
-                state_features = state_features.to(self.device)
+                features = features.to(self.device)
             with self.profiler.cuda_timer("train.gpu_forward_backward", self.device):
                 with torch.amp.autocast(
                     "cuda",
                     dtype=torch.bfloat16,
                     enabled=self.device.type == "cuda" and self.config.model.autocast,
                 ):
-                    preds = self.main_model(state_features)
+                    preds = self.main_model(features)
                 prefix_loss = compute_loss(preds, repeated_outcomes, mask, self.loss_config)
                 (prefix_loss * prefix_weight * loss_scale).backward()
             total_loss += prefix_loss.item() * prefix_weight
@@ -877,15 +877,15 @@ def setup_logging(config: Config, args: Args) -> tuple[ProfileStats, str]:
 
 
 def create_train_batch_environment_groups(config: Config, engine: Engine):
-    train_state_group_threads = (
+    train_group_threads = (
         None
         if config.generation.num_threads is None
-        else config.generation.num_threads // config.train.state_pipeline_groups
+        else config.generation.num_threads // config.train.pipeline_groups
     )
     logging.info(
-        "Using %s training state pipeline group(s) with %s Rust worker(s) per group.",
-        config.train.state_pipeline_groups,
-        train_state_group_threads if train_state_group_threads is not None else "automatic",
+        "Using %s training pipeline group(s) with %s Rust worker(s) per group.",
+        config.train.pipeline_groups,
+        train_group_threads if train_group_threads is not None else "automatic",
     )
     return [
         engine.create_environment_group(
@@ -894,9 +894,9 @@ def create_train_batch_environment_groups(config: Config, engine: Engine):
             frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
             frontier_neighbor_count=config.generation.frontier_neighbor_count,
             frontier_window_size=config.generation.frontier_window_size,
-            num_threads=train_state_group_threads,
+            num_threads=train_group_threads,
         )
-        for _ in range(config.train.state_pipeline_groups)
+        for _ in range(config.train.pipeline_groups)
     ]
 
 
@@ -911,10 +911,10 @@ def create_models(config: Config, rooms: list[dict], engine: Engine, device: tor
         "hidden_width": config.model.hidden_width,
         "num_layers": config.model.num_layers,
         "frontier_window_size": config.generation.frontier_window_size,
-        "state_features": config.state_features,
+        "features": config.features,
     }
 
-    main_model = FrontierStateModel(**model_kwargs).to(device)
+    main_model = FrontierModel(**model_kwargs).to(device)
 
     ema_model = copy.deepcopy(main_model).to(device)
     ema_model.requires_grad_(False)
@@ -955,7 +955,7 @@ def build_session(args: Args) -> TrainingSession:
         ", ".join(str(generation_device) for generation_device in generation_devices),
     )
 
-    engine = Engine(rooms, config.state_features)
+    engine = Engine(rooms, config.features)
     gen_envs = create_generation_environment_groups(config, engine, generation_devices)
     train_batch_envs = create_train_batch_environment_groups(config, engine)
     main_model, ema_model, generation_models = create_models(
@@ -999,7 +999,7 @@ def build_session(args: Args) -> TrainingSession:
             f"{run_path}/experience",
             round_episode_count,
         ),
-        train_batch_prefetcher=Prefetcher(max_workers=config.train.state_pipeline_groups),
+        train_batch_prefetcher=Prefetcher(max_workers=config.train.pipeline_groups),
         generation_executor=ThreadPoolExecutor(max_workers=len(generation_devices)),
         generation_models_warmed_up=not (
             config.model.compile

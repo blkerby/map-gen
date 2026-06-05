@@ -7,8 +7,8 @@ from env import (
     EnvironmentGroup,
     GenerateConfig,
     Outcomes,
-    SparseStateFeatures,
-    StateFeatures,
+    SparseFeatures,
+    Features,
 )
 from model import Predictions
 from profile_stats import ProfileStats
@@ -22,13 +22,18 @@ import torch
 from train_config import Config
 
 
-# Generation runs several environment groups for each generation device.
+# We make use of a somewhat complicated way of pipelining the generation process,
+# to keep the GPU busy while CPU extraction is ongoing. This pays off heavily
+# because we are using a relatively small model on the GPU.
+#
+# Generation runs several environment groups (typically two) per generation device.
 # The coordinator thread reads candidates/outcomes, submits only CPU feature
 # extraction to a small executor, then consumes completed extractions in FIFO
 # order. For each completed group step it transfers and scores candidates on the
 # generation device, steps that group's environment, and immediately starts the
 # next step for that group. This keeps expensive CPU extraction overlapped
 # across groups while avoiding CUDA work from multiple Python worker threads.
+
 KNOWN_INVALID_REWARD = -100.0
 
 
@@ -117,12 +122,12 @@ def extract_candidate_features(
     candidates: Actions,
     profiler: ProfileStats,
     sparse_frontiers: bool = False,
-    feature_slot: PinnedSparseStateFeatureSlot | None = None,
+    feature_slot: PinnedSparseFeatureSlot | None = None,
 ):
     with profiler.timer("gen.cpu_extract"):
         if sparse_frontiers and feature_slot is not None:
             frontier_count, sparse_row_count, worker_sparse_row_counts = (
-                env.env.get_sparse_state_feature_requirements_after_candidates(
+                env.env.get_sparse_feature_requirements_after_candidates(
                     candidates.room_idx.contiguous().cpu().numpy(),
                     candidates.room_x.contiguous().cpu().numpy(),
                     candidates.room_y.contiguous().cpu().numpy(),
@@ -134,7 +139,7 @@ def extract_candidate_features(
                 sparse_row_count,
                 profiler,
             )
-            env.env.get_sparse_state_features_after_candidates_into(
+            env.env.get_sparse_features_after_candidates_into(
                 candidates.room_idx.contiguous().cpu().numpy(),
                 candidates.room_x.contiguous().cpu().numpy(),
                 candidates.room_y.contiguous().cpu().numpy(),
@@ -161,11 +166,11 @@ def extract_candidate_features(
                 frontier_count,
             ).flatten_candidates()
         elif sparse_frontiers:
-            features = env.get_sparse_state_features_after_candidates(
+            features = env.get_sparse_features_after_candidates(
                 candidates, torch.device("cpu"), 0
             ).flatten_candidates()
         else:
-            features = env.get_state_features_after_candidates(
+            features = env.get_features_after_candidates(
                 candidates, torch.device("cpu"), 0
             ).flatten_candidates()
     if profiler.enabled:
@@ -182,10 +187,10 @@ def extract_candidate_features(
             assemble_pair_cpu_seconds,
             assemble_pair_flags_cpu_seconds,
             assemble_output_cpu_seconds,
-        ) = env.take_state_feature_profile()
+        ) = env.take_feature_profile()
         if profile_calls != 1:
             raise RuntimeError(
-                f"unexpected state feature profile call count: {profile_calls}"
+                f"unexpected feature profile call count: {profile_calls}"
             )
         profiler.add("gen.cpu_extract_worker", worker_seconds)
         profiler.add("gen.cpu_extract_pack", pack_seconds)
@@ -201,18 +206,18 @@ def extract_candidate_features(
     return features
 
 
-def transfer_state_features(
-    features: StateFeatures | SparseStateFeatures,
+def transfer_features(
+    features: Features | SparseFeatures,
     device: torch.device,
     profiler: ProfileStats,
     transfer_stream: torch.cuda.Stream | None = None,
-) -> StateFeatures:
-    if isinstance(features, SparseStateFeatures):
+) -> Features:
+    if isinstance(features, SparseFeatures):
         if transfer_stream is None or device.type != "cuda":
-            return transfer_state_features_sync(features, device, profiler)
+            return transfer_features_sync(features, device, profiler)
         current_stream = torch.cuda.current_stream(device)
         with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
-            result = transfer_state_features_sync(features, device, profiler, non_blocking=True)
+            result = transfer_features_sync(features, device, profiler, non_blocking=True)
             ready = torch.cuda.Event()
             ready.record(transfer_stream)
         current_stream.wait_event(ready)
@@ -220,12 +225,12 @@ def transfer_state_features(
     return features.to(device)
 
 
-def transfer_state_features_sync(
-    features: SparseStateFeatures,
+def transfer_features_sync(
+    features: SparseFeatures,
     device: torch.device,
     profiler: ProfileStats,
     non_blocking: bool = False,
-) -> StateFeatures:
+) -> Features:
     dense_shape = (features.inventory.shape[0], features.frontier_count)
     with profiler.timer("gen.cpu_transfer_sparse_index"):
         dense_row_idx = features.dense_row_idx.to(device, non_blocking=non_blocking)
@@ -238,7 +243,7 @@ def transfer_state_features_sync(
         connection_reachability = features.connection_reachability.to(
             device, non_blocking=non_blocking
         )
-    return StateFeatures(
+    return Features(
         inventory,
         room_x,
         room_y,
@@ -293,29 +298,31 @@ def densify_sparse_feature(
     return dense_value
 
 
-class PinnedSparseStateFeatureSlot:
+# When a GPU is available, we use pinned memory for model input tensors,
+# to allow for asynchronous CPU-to-GPU transfers.
+class PinnedSparseFeatureSlot:
     def __init__(self, env: EnvironmentGroup, pin_memory: bool):
-        state_features = env.engine.state_features
-        inventory_count, max_frontier_count, room_count = env.engine.get_state_feature_sizes()
+        features = env.engine.features
+        inventory_count, max_frontier_count, room_count = env.engine.get_feature_sizes()
         _, connection_count = env.engine.get_output_sizes()
-        self.inventory_width = inventory_count * int(state_features.inventory)
-        self.room_width = room_count * int(state_features.room_position)
+        self.inventory_width = inventory_count * int(features.inventory)
+        self.room_width = room_count * int(features.room_position)
         self.frontier_occupancy_width = (
             (env.frontier_window_size * env.frontier_window_size + 7) // 8
-        ) * int(state_features.frontier_occupancy)
+        ) * int(features.frontier_occupancy)
         self.frontier_neighbor_width = (
-            env.frontier_neighbor_count * int(state_features.frontier_neighbor)
+            env.frontier_neighbor_count * int(features.frontier_neighbor)
         )
         self.frontier_neighbor_pair_width = (
             env.frontier_neighbor_count
-            * int(state_features.frontier_neighbor_flags)
+            * int(features.frontier_neighbor_flags)
         )
         self.connection_reachability_width = (
-            connection_count * int(state_features.connection_reachability)
+            connection_count * int(features.connection_reachability)
         )
         self.frontier_connection_reachability_width = (
             connection_count
-            * int(state_features.frontier_connection_reachability)
+            * int(features.frontier_connection_reachability)
         )
         self.pin_memory = pin_memory
         self.snapshot_capacity = 0
@@ -382,9 +389,9 @@ class PinnedSparseStateFeatureSlot:
         candidate_count: int,
         sparse_row_count: int,
         frontier_count: int,
-    ) -> SparseStateFeatures:
+    ) -> SparseFeatures:
         snapshot_count = environment_count * candidate_count
-        return SparseStateFeatures(
+        return SparseFeatures(
             self.inventory[:snapshot_count].view(
                 environment_count, candidate_count, self.inventory_width
             ),
@@ -412,7 +419,7 @@ class GenerationGroup:
     config: GenerateConfig
     known_outcomes: Outcomes | None
     step: int
-    feature_slot: PinnedSparseStateFeatureSlot | None
+    feature_slot: PinnedSparseFeatureSlot | None
 
 
 @dataclass
@@ -420,7 +427,7 @@ class PendingGenerationStep:
     group: GenerationGroup
     candidates: Actions
     outcomes: Outcomes
-    future: Future[StateFeatures | SparseStateFeatures]
+    future: Future[Features | SparseFeatures]
 
 
 def create_generation_environment_groups(
@@ -429,17 +436,17 @@ def create_generation_environment_groups(
     generation_devices: list[torch.device],
 ) -> list[list[EnvironmentGroup]]:
     num_generation_groups = (
-        config.generation.num_devices * config.generation.state_pipeline_groups
+        config.generation.num_devices * config.generation.pipeline_groups
     )
     generation_group_environments = config.generation.num_environments // num_generation_groups
     generation_group_threads = (
         None
         if config.generation.num_threads is None
-        else config.generation.num_threads // config.generation.state_pipeline_groups
+        else config.generation.num_threads // config.generation.pipeline_groups
     )
     logging.info(
-        "Using %s state pipeline group(s) per generation device with %s environment(s) and %s Rust worker(s) per group.",
-        config.generation.state_pipeline_groups,
+        "Using %s pipeline group(s) per generation device with %s environment(s) and %s Rust worker(s) per group.",
+        config.generation.pipeline_groups,
         generation_group_environments,
         generation_group_threads if generation_group_threads is not None else "automatic",
     )
@@ -448,13 +455,13 @@ def create_generation_environment_groups(
             engine.create_environment_group(
                 config.map_size,
                 generation_group_environments,
-                seed=device_index * config.generation.state_pipeline_groups + group_index,
+                seed=device_index * config.generation.pipeline_groups + group_index,
                 frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
                 frontier_neighbor_count=config.generation.frontier_neighbor_count,
                 frontier_window_size=config.generation.frontier_window_size,
                 num_threads=generation_group_threads,
             )
-            for group_index in range(config.generation.state_pipeline_groups)
+            for group_index in range(config.generation.pipeline_groups)
         ]
         for device_index in range(len(generation_devices))
     ]
@@ -479,7 +486,7 @@ def select_candidate_actions(
     model,
     candidates: Actions,
     outcomes: Outcomes,
-    features: StateFeatures | SparseStateFeatures,
+    features: Features | SparseFeatures,
     device: torch.device,
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
@@ -489,12 +496,12 @@ def select_candidate_actions(
     environment_count, candidate_count = candidates.room_idx.shape
     with gpu_lock:
         with profiler.timer("gen.cpu_transfer_submit"):
-            env_features = transfer_state_features(features, device, profiler, transfer_stream)
+            env_features = transfer_features(features, device, profiler, transfer_stream)
         with profiler.cuda_timer("gen.gpu_model_reward", device):
             with torch.amp.autocast(
                 "cuda",
                 dtype=torch.bfloat16,
-                enabled=device.type == "cuda" and group.config.state_autocast,
+                enabled=device.type == "cuda" and group.config.autocast,
             ):
                 preds = model(env_features)
             expected_reward = compute_expected_reward(
@@ -641,7 +648,7 @@ def run_generation_groups(
             config,
             None,
             0,
-            PinnedSparseStateFeatureSlot(env, pin_memory=True)
+            PinnedSparseFeatureSlot(env, pin_memory=True)
             if device.type == "cuda"
             else None,
         )

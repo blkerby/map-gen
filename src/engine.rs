@@ -3,8 +3,8 @@
 /// environment simulations in parallel.
 use crate::common::{Action, CommonData, Coord, Direction, DoorValidOutcome, Room, RoomIdx};
 use crate::environment::{
-    Environment, FrontierNeighborAlgorithm, STATE_FEATURE_FRONTIER_WIDTH, StateFeatureConfig,
-    StateFeatureProfile, StateFeatures,
+    Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig, FeatureProfile, Features,
+    FrontierNeighborAlgorithm,
 };
 use crossbeam_channel as channel;
 use numpy::{
@@ -161,26 +161,14 @@ enum WorkerCommand {
         horizontal_counts: OutputShard<u64>,
         vertical_counts: OutputShard<u64>,
     },
-    GetStateFeatures {
+    GetFeatures {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         environment_start: usize,
         environment_count: usize,
     },
-    GetStateFeaturesAfterCandidates {
-        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
-        frontier_neighbor_count: usize,
-        frontier_window_size: usize,
-        environment_start: usize,
-        environment_count: usize,
-        candidate_count: usize,
-        room_idx: InputShard<RoomIdx>,
-        room_x: InputShard<Coord>,
-        room_y: InputShard<Coord>,
-        outputs: StateFeatureOutputShards,
-    },
-    GetSparseStateFeaturesAfterCandidates {
+    GetFeaturesAfterCandidates {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
@@ -190,9 +178,21 @@ enum WorkerCommand {
         room_idx: InputShard<RoomIdx>,
         room_x: InputShard<Coord>,
         room_y: InputShard<Coord>,
-        outputs: SparseStateFeatureOutputShards,
+        outputs: FeatureOutputShards,
     },
-    GetStateFeatureFrontierCountAfterCandidates {
+    GetSparseFeaturesAfterCandidates {
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+        environment_start: usize,
+        environment_count: usize,
+        candidate_count: usize,
+        room_idx: InputShard<RoomIdx>,
+        room_x: InputShard<Coord>,
+        room_y: InputShard<Coord>,
+        outputs: SparseFeatureOutputShards,
+    },
+    GetFeatureFrontierCountAfterCandidates {
         environment_start: usize,
         environment_count: usize,
         candidate_count: usize,
@@ -200,17 +200,17 @@ enum WorkerCommand {
         room_x: InputShard<Coord>,
         room_y: InputShard<Coord>,
     },
-    PackStateFeatures {
-        outputs: StateFeatureOutputShards,
+    PackFeatures {
+        outputs: FeatureOutputShards,
     },
     Shutdown,
 }
 
-// State feature preparation reports only metadata needed to allocate output buffers. Bulk data is
+// Feature preparation reports only metadata needed to allocate output buffers. Bulk data is
 // written through shared memory, and other commands return "done" when they finish.
 enum WorkerResponse {
     Done,
-    StateFeatureProfile(StateFeatureProfile, usize, usize),
+    FeatureProfile(FeatureProfile, usize, usize),
 }
 
 struct WorkerHandle {
@@ -241,8 +241,8 @@ impl WorkerHandle {
     fn recv_done(&self) -> PyResult<()> {
         match self.recv()? {
             WorkerResponse::Done => Ok(()),
-            WorkerResponse::StateFeatureProfile(_, _, _) => Err(PyRuntimeError::new_err(
-                "engine worker thread returned unexpected state feature profile",
+            WorkerResponse::FeatureProfile(_, _, _) => Err(PyRuntimeError::new_err(
+                "engine worker thread returned unexpected feature profile",
             )),
         }
     }
@@ -264,11 +264,11 @@ impl Drop for WorkerHandle {
 fn worker_loop(
     mut environments: Vec<Environment>,
     common_data: Arc<CommonData>,
-    state_features: StateFeatureConfig,
+    features: FeatureConfig,
     command_rx: channel::Receiver<WorkerCommand>,
     response_tx: channel::Sender<WorkerResponse>,
 ) {
-    let mut pending_state_features = Vec::new();
+    let mut pending_features = Vec::new();
     while let Ok(command) = command_rx.recv() {
         let response = match command {
             WorkerCommand::Clear => {
@@ -522,38 +522,38 @@ fn worker_loop(
                 }
                 WorkerResponse::Done
             }
-            WorkerCommand::GetStateFeatures {
+            WorkerCommand::GetFeatures {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
                 environment_start,
                 environment_count,
             } => {
-                pending_state_features = environments
+                pending_features = environments
                     .iter()
                     .skip(environment_start)
                     .take(environment_count)
                     .map(|env| {
-                        env.state_features(
+                        env.features(
                             &common_data,
-                            &state_features,
+                            &features,
                             frontier_neighbor_algorithm,
                             frontier_neighbor_count,
                             frontier_window_size,
                         )
                     })
                     .collect();
-                let frontier_count = max_state_feature_frontier_count(&pending_state_features);
-                WorkerResponse::StateFeatureProfile(
-                    StateFeatureProfile::default(),
+                let frontier_count = max_feature_frontier_count(&pending_features);
+                WorkerResponse::FeatureProfile(
+                    FeatureProfile::default(),
                     frontier_count,
-                    pending_state_features
+                    pending_features
                         .iter()
-                        .map(|features| features.frontier.len() / STATE_FEATURE_FRONTIER_WIDTH)
+                        .map(|features| features.frontier.len() / FEATURE_FRONTIER_WIDTH)
                         .sum(),
                 )
             }
-            WorkerCommand::GetStateFeaturesAfterCandidates {
+            WorkerCommand::GetFeaturesAfterCandidates {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
@@ -569,7 +569,7 @@ fn worker_loop(
                 let room_x = unsafe { room_x.into_slice() };
                 let room_y = unsafe { room_y.into_slice() };
                 let mut outputs = unsafe { outputs.into_slices() };
-                let mut profile = StateFeatureProfile::default();
+                let mut profile = FeatureProfile::default();
                 for (env_idx, env) in environments
                     .iter_mut()
                     .skip(environment_start)
@@ -579,14 +579,14 @@ fn worker_loop(
                     for candidate_idx in 0..candidate_count {
                         let idx = env_idx * candidate_count + candidate_idx;
                         let (features, candidate_profile) = env
-                            .state_features_after_candidate_with_occupancy(
+                            .features_after_candidate_with_occupancy(
                                 &common_data,
                                 Action {
                                     room_idx: room_idx[idx],
                                     x: room_x[idx],
                                     y: room_y[idx],
                                 },
-                                &state_features,
+                                &features,
                                 frontier_neighbor_algorithm,
                                 frontier_neighbor_count,
                                 frontier_window_size,
@@ -595,9 +595,9 @@ fn worker_loop(
                         profile.add(&candidate_profile);
                     }
                 }
-                WorkerResponse::StateFeatureProfile(profile, 0, 0)
+                WorkerResponse::FeatureProfile(profile, 0, 0)
             }
-            WorkerCommand::GetSparseStateFeaturesAfterCandidates {
+            WorkerCommand::GetSparseFeaturesAfterCandidates {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
@@ -613,7 +613,7 @@ fn worker_loop(
                 let room_x = unsafe { room_x.into_slice() };
                 let room_y = unsafe { room_y.into_slice() };
                 let mut outputs = unsafe { outputs.into_slices() };
-                let mut profile = StateFeatureProfile::default();
+                let mut profile = FeatureProfile::default();
                 for (env_idx, env) in environments
                     .iter_mut()
                     .skip(environment_start)
@@ -623,14 +623,14 @@ fn worker_loop(
                     for candidate_idx in 0..candidate_count {
                         let idx = env_idx * candidate_count + candidate_idx;
                         let (features, candidate_profile) = env
-                            .state_features_after_candidate_with_occupancy(
+                            .features_after_candidate_with_occupancy(
                                 &common_data,
                                 Action {
                                     room_idx: room_idx[idx],
                                     x: room_x[idx],
                                     y: room_y[idx],
                                 },
-                                &state_features,
+                                &features,
                                 frontier_neighbor_algorithm,
                                 frontier_neighbor_count,
                                 frontier_window_size,
@@ -639,9 +639,9 @@ fn worker_loop(
                         profile.add(&candidate_profile);
                     }
                 }
-                WorkerResponse::StateFeatureProfile(profile, 0, outputs.sparse_row_count)
+                WorkerResponse::FeatureProfile(profile, 0, outputs.sparse_row_count)
             }
-            WorkerCommand::GetStateFeatureFrontierCountAfterCandidates {
+            WorkerCommand::GetFeatureFrontierCountAfterCandidates {
                 environment_start,
                 environment_count,
                 candidate_count,
@@ -662,28 +662,27 @@ fn worker_loop(
                 {
                     for candidate_idx in 0..candidate_count {
                         let idx = env_idx * candidate_count + candidate_idx;
-                        let candidate_frontier_count = env
-                            .state_feature_frontier_count_after_candidate(
-                                Action {
-                                    room_idx: room_idx[idx],
-                                    x: room_x[idx],
-                                    y: room_y[idx],
-                                },
-                                &common_data,
-                            );
+                        let candidate_frontier_count = env.feature_frontier_count_after_candidate(
+                            Action {
+                                room_idx: room_idx[idx],
+                                x: room_x[idx],
+                                y: room_y[idx],
+                            },
+                            &common_data,
+                        );
                         frontier_count = max(frontier_count, candidate_frontier_count);
                         sparse_row_count += candidate_frontier_count;
                     }
                 }
-                WorkerResponse::StateFeatureProfile(
-                    StateFeatureProfile::default(),
+                WorkerResponse::FeatureProfile(
+                    FeatureProfile::default(),
                     frontier_count,
                     sparse_row_count,
                 )
             }
-            WorkerCommand::PackStateFeatures { outputs } => {
+            WorkerCommand::PackFeatures { outputs } => {
                 let mut outputs = unsafe { outputs.into_slices() };
-                for (idx, features) in pending_state_features.drain(..).enumerate() {
+                for (idx, features) in pending_features.drain(..).enumerate() {
                     outputs.write_features(idx, &features);
                 }
                 WorkerResponse::Done
@@ -702,22 +701,14 @@ fn spawn_worker(
     start: usize,
     environments: Vec<Environment>,
     common_data: Arc<CommonData>,
-    state_features: StateFeatureConfig,
+    features: FeatureConfig,
 ) -> PyResult<WorkerHandle> {
     let len = environments.len();
     let (command_tx, command_rx) = channel::bounded(1);
     let (response_tx, response_rx) = channel::bounded(1);
     let join_handle = thread::Builder::new()
         .name(format!("map-gen-worker-{worker_idx}"))
-        .spawn(move || {
-            worker_loop(
-                environments,
-                common_data,
-                state_features,
-                command_rx,
-                response_tx,
-            )
-        })
+        .spawn(move || worker_loop(environments, common_data, features, command_rx, response_tx))
         .map_err(|err| PyRuntimeError::new_err(format!("failed to spawn worker thread: {err}")))?;
 
     Ok(WorkerHandle {
@@ -763,18 +754,18 @@ fn wait_for_done_responses(
     }
 }
 
-fn collect_state_feature_profiles(
+fn collect_feature_profiles(
     workers: &[WorkerHandle],
     sent_workers: Vec<usize>,
     mut first_error: Option<PyErr>,
-) -> PyResult<(StateFeatureProfile, usize, usize, Vec<usize>)> {
-    let mut profile = StateFeatureProfile::default();
+) -> PyResult<(FeatureProfile, usize, usize, Vec<usize>)> {
+    let mut profile = FeatureProfile::default();
     let mut frontier_count = 0;
     let mut sparse_row_count = 0;
     let mut worker_sparse_row_counts = vec![0; workers.len()];
     for worker_idx in sent_workers {
         match workers[worker_idx].recv() {
-            Ok(WorkerResponse::StateFeatureProfile(
+            Ok(WorkerResponse::FeatureProfile(
                 worker_profile,
                 worker_frontier_count,
                 worker_sparse_row_count,
@@ -786,7 +777,7 @@ fn collect_state_feature_profiles(
             }
             Ok(WorkerResponse::Done) => set_first_error(
                 &mut first_error,
-                PyRuntimeError::new_err("engine worker thread returned no state feature profile"),
+                PyRuntimeError::new_err("engine worker thread returned no feature profile"),
             ),
             Err(err) => set_first_error(&mut first_error, err),
         }
@@ -814,10 +805,10 @@ fn check_dim(name: &str, actual: usize, expected: usize) -> PyResult<()> {
     }
 }
 
-fn max_state_feature_frontier_count(features: &[StateFeatures]) -> usize {
+fn max_feature_frontier_count(features: &[Features]) -> usize {
     features
         .iter()
-        .map(|features| features.frontier.len() / STATE_FEATURE_FRONTIER_WIDTH)
+        .map(|features| features.frontier.len() / FEATURE_FRONTIER_WIDTH)
         .max()
         .unwrap_or(0)
 }
@@ -825,31 +816,31 @@ fn max_state_feature_frontier_count(features: &[StateFeatures]) -> usize {
 #[pyclass(module = "map_gen")]
 pub struct Engine {
     common_data: Arc<CommonData>, // pre-computed data that can be shared across environments
-    state_features: StateFeatureConfig,
+    features: FeatureConfig,
 }
 
 #[pyclass(module = "map_gen")]
 pub struct EnvironmentGroup {
     common_data: Arc<CommonData>,
-    state_features: StateFeatureConfig,
+    features: FeatureConfig,
     workers: Vec<WorkerHandle>, // fixed worker-owned environment shards
     num_environments: usize,
     frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
     frontier_neighbor_count: usize,
     frontier_window_size: usize,
     action_count: usize,
-    state_feature_worker_ns: AtomicU64,
-    state_feature_pack_ns: AtomicU64,
-    state_feature_profile_calls: AtomicUsize,
-    state_feature_clone_ns: AtomicU64,
-    state_feature_step_ns: AtomicU64,
-    state_feature_assemble_ns: AtomicU64,
-    state_feature_assemble_setup_ns: AtomicU64,
-    state_feature_assemble_frontier_ns: AtomicU64,
-    state_feature_assemble_neighbor_ns: AtomicU64,
-    state_feature_assemble_pair_ns: AtomicU64,
-    state_feature_assemble_pair_flags_ns: AtomicU64,
-    state_feature_assemble_output_ns: AtomicU64,
+    feature_worker_ns: AtomicU64,
+    feature_pack_ns: AtomicU64,
+    feature_profile_calls: AtomicUsize,
+    feature_clone_ns: AtomicU64,
+    feature_step_ns: AtomicU64,
+    feature_assemble_ns: AtomicU64,
+    feature_assemble_setup_ns: AtomicU64,
+    feature_assemble_frontier_ns: AtomicU64,
+    feature_assemble_neighbor_ns: AtomicU64,
+    feature_assemble_pair_ns: AtomicU64,
+    feature_assemble_pair_flags_ns: AtomicU64,
+    feature_assemble_output_ns: AtomicU64,
 }
 
 fn output_sizes(common_data: &CommonData) -> (usize, usize) {
@@ -862,7 +853,7 @@ fn output_sizes(common_data: &CommonData) -> (usize, usize) {
     (door_outcome_count, connection_outcome_count)
 }
 
-struct StateFeatureBuffers {
+struct FeatureBuffers {
     inventory: Vec<u8>,
     room_x: Vec<Coord>,
     room_y: Vec<Coord>,
@@ -875,7 +866,7 @@ struct StateFeatureBuffers {
     frontier_connection_reachability: Vec<u8>,
 }
 
-struct StateFeatureOutputShards {
+struct FeatureOutputShards {
     inventory: OutputShard<u8>,
     room_x: OutputShard<Coord>,
     room_y: OutputShard<Coord>,
@@ -894,7 +885,7 @@ struct StateFeatureOutputShards {
     frontier_window_size: usize,
 }
 
-struct StateFeatureOutputSlices<'a> {
+struct FeatureOutputSlices<'a> {
     inventory: &'a mut [u8],
     room_x: &'a mut [Coord],
     room_y: &'a mut [Coord],
@@ -913,9 +904,9 @@ struct StateFeatureOutputSlices<'a> {
     frontier_window_size: usize,
 }
 
-impl StateFeatureOutputShards {
-    unsafe fn into_slices<'a>(self) -> StateFeatureOutputSlices<'a> {
-        StateFeatureOutputSlices {
+impl FeatureOutputShards {
+    unsafe fn into_slices<'a>(self) -> FeatureOutputSlices<'a> {
+        FeatureOutputSlices {
             inventory: unsafe { self.inventory.into_mut_slice() },
             room_x: unsafe { self.room_x.into_mut_slice() },
             room_y: unsafe { self.room_y.into_mut_slice() },
@@ -938,8 +929,8 @@ impl StateFeatureOutputShards {
     }
 }
 
-impl StateFeatureOutputSlices<'_> {
-    fn write_fixed_features(&mut self, idx: usize, features: &StateFeatures) {
+impl FeatureOutputSlices<'_> {
+    fn write_fixed_features(&mut self, idx: usize, features: &Features) {
         fn copy_row<T: Copy>(dst: &mut [T], row: &[T], idx: usize, stride: usize) {
             if row.is_empty() {
                 return;
@@ -969,7 +960,7 @@ impl StateFeatureOutputSlices<'_> {
         );
     }
 
-    fn write_features(&mut self, idx: usize, features: &StateFeatures) {
+    fn write_features(&mut self, idx: usize, features: &Features) {
         fn copy_row<T: Copy>(dst: &mut [T], row: &[T], idx: usize, stride: usize) {
             if row.is_empty() {
                 return;
@@ -982,7 +973,7 @@ impl StateFeatureOutputSlices<'_> {
             &mut self.frontier,
             &features.frontier,
             idx,
-            self.frontier_count * STATE_FEATURE_FRONTIER_WIDTH,
+            self.frontier_count * FEATURE_FRONTIER_WIDTH,
         );
         copy_row(
             &mut self.frontier_occupancy,
@@ -1011,7 +1002,7 @@ impl StateFeatureOutputSlices<'_> {
         );
     }
 
-    fn write_frontier_row(&mut self, dst_idx: usize, features: &StateFeatures, src_idx: usize) {
+    fn write_frontier_row(&mut self, dst_idx: usize, features: &Features, src_idx: usize) {
         fn copy_row<T: Copy>(
             dst: &mut [T],
             src: &[T],
@@ -1031,7 +1022,7 @@ impl StateFeatureOutputSlices<'_> {
             &features.frontier,
             dst_idx,
             src_idx,
-            STATE_FEATURE_FRONTIER_WIDTH,
+            FEATURE_FRONTIER_WIDTH,
         );
         copy_row(
             &mut self.frontier_occupancy,
@@ -1064,32 +1055,32 @@ impl StateFeatureOutputSlices<'_> {
     }
 }
 
-struct SparseStateFeatureBuffers {
-    fixed: StateFeatureBuffers,
-    sparse: StateFeatureBuffers,
+struct SparseFeatureBuffers {
+    fixed: FeatureBuffers,
+    sparse: FeatureBuffers,
     dense_row_idx: Vec<i64>,
 }
 
-struct SparseStateFeatureOutputShards {
-    fixed: StateFeatureOutputShards,
-    sparse: StateFeatureOutputShards,
+struct SparseFeatureOutputShards {
+    fixed: FeatureOutputShards,
+    sparse: FeatureOutputShards,
     dense_row_idx: OutputShard<i64>,
     snapshot_start: usize,
     dense_frontier_count: usize,
 }
 
-struct SparseStateFeatureOutputSlices<'a> {
-    fixed: StateFeatureOutputSlices<'a>,
-    sparse: StateFeatureOutputSlices<'a>,
+struct SparseFeatureOutputSlices<'a> {
+    fixed: FeatureOutputSlices<'a>,
+    sparse: FeatureOutputSlices<'a>,
     dense_row_idx: &'a mut [i64],
     snapshot_start: usize,
     dense_frontier_count: usize,
     sparse_row_count: usize,
 }
 
-impl SparseStateFeatureOutputShards {
-    unsafe fn into_slices<'a>(self) -> SparseStateFeatureOutputSlices<'a> {
-        SparseStateFeatureOutputSlices {
+impl SparseFeatureOutputShards {
+    unsafe fn into_slices<'a>(self) -> SparseFeatureOutputSlices<'a> {
+        SparseFeatureOutputSlices {
             fixed: unsafe { self.fixed.into_slices() },
             sparse: unsafe { self.sparse.into_slices() },
             dense_row_idx: unsafe { self.dense_row_idx.into_mut_slice() },
@@ -1100,10 +1091,10 @@ impl SparseStateFeatureOutputShards {
     }
 }
 
-impl SparseStateFeatureOutputSlices<'_> {
-    fn write_features(&mut self, snapshot_idx: usize, features: &StateFeatures) {
+impl SparseFeatureOutputSlices<'_> {
+    fn write_features(&mut self, snapshot_idx: usize, features: &Features) {
         self.fixed.write_fixed_features(snapshot_idx, features);
-        let frontier_count = features.frontier.len() / STATE_FEATURE_FRONTIER_WIDTH;
+        let frontier_count = features.frontier.len() / FEATURE_FRONTIER_WIDTH;
         for frontier_idx in 0..frontier_count {
             let sparse_row_idx = self.sparse_row_count;
             self.dense_row_idx[sparse_row_idx] = ((self.snapshot_start + snapshot_idx)
@@ -1116,10 +1107,10 @@ impl SparseStateFeatureOutputSlices<'_> {
     }
 }
 
-impl StateFeatureBuffers {
+impl FeatureBuffers {
     fn new(
         common_data: &CommonData,
-        state_features: &StateFeatureConfig,
+        features: &FeatureConfig,
         snapshot_count: usize,
         frontier_count: usize,
         frontier_neighbor_count: usize,
@@ -1130,53 +1121,53 @@ impl StateFeatureBuffers {
                 0;
                 snapshot_count
                     * common_data.connection_variant_rooms.len()
-                    * usize::from(state_features.inventory)
+                    * usize::from(features.inventory)
             ],
             room_x: vec![
                 0;
                 snapshot_count
                     * common_data.room.len()
-                    * usize::from(state_features.room_position)
+                    * usize::from(features.room_position)
             ],
             room_y: vec![
                 0;
                 snapshot_count
                     * common_data.room.len()
-                    * usize::from(state_features.room_position)
+                    * usize::from(features.room_position)
             ],
             room_placed: vec![
                 0;
                 snapshot_count
                     * common_data.room.len()
-                    * usize::from(state_features.room_position)
+                    * usize::from(features.room_position)
             ],
-            frontier: vec![0; snapshot_count * frontier_count * STATE_FEATURE_FRONTIER_WIDTH],
+            frontier: vec![0; snapshot_count * frontier_count * FEATURE_FRONTIER_WIDTH],
             frontier_occupancy: vec![
                 0;
                 snapshot_count
                     * frontier_count
                     * (frontier_window_size * frontier_window_size).div_ceil(8)
-                    * usize::from(state_features.frontier_occupancy)
+                    * usize::from(features.frontier_occupancy)
             ],
             frontier_neighbor: vec![
                 -1;
                 snapshot_count
                     * frontier_count
                     * frontier_neighbor_count
-                    * usize::from(state_features.frontier_neighbor)
+                    * usize::from(features.frontier_neighbor)
             ],
             frontier_neighbor_pair: vec![
                 0;
                 snapshot_count
                     * frontier_count
                     * frontier_neighbor_count
-                    * usize::from(state_features.frontier_neighbor_flags)
+                    * usize::from(features.frontier_neighbor_flags)
             ],
             connection_reachability: vec![
                 0;
                 snapshot_count
                     * common_data.room_connection.len()
-                    * usize::from(state_features.connection_reachability)
+                    * usize::from(features.connection_reachability)
             ],
             frontier_connection_reachability: vec![
                 0;
@@ -1184,7 +1175,7 @@ impl StateFeatureBuffers {
                     * frontier_count
                     * common_data.room_connection.len()
                     * usize::from(
-                        state_features.frontier_connection_reachability
+                        features.frontier_connection_reachability
                     )
             ],
         }
@@ -1200,29 +1191,29 @@ impl StateFeatureBuffers {
         frontier_count: usize,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-        state_features: &StateFeatureConfig,
-    ) -> StateFeatureOutputShards {
+        features: &FeatureConfig,
+    ) -> FeatureOutputShards {
         fn output_shard<T>(values: &mut [T], start: usize, len: usize) -> OutputShard<T> {
             OutputShard::from_slice(&mut values[start..start + len])
         }
 
-        let inventory_count = inventory_count * usize::from(state_features.inventory);
-        let room_count = room_count * usize::from(state_features.room_position);
+        let inventory_count = inventory_count * usize::from(features.inventory);
+        let room_count = room_count * usize::from(features.room_position);
         let inventory_start = snapshot_start * inventory_count;
         let room_start = snapshot_start * room_count;
         let frontier_start = snapshot_start * frontier_count;
         let packed_window_size = (frontier_window_size * frontier_window_size).div_ceil(8)
-            * usize::from(state_features.frontier_occupancy);
+            * usize::from(features.frontier_occupancy);
         let output_neighbor_count =
-            frontier_neighbor_count * usize::from(state_features.frontier_neighbor);
+            frontier_neighbor_count * usize::from(features.frontier_neighbor);
         let pair_neighbor_count =
-            frontier_neighbor_count * usize::from(state_features.frontier_neighbor_flags);
+            frontier_neighbor_count * usize::from(features.frontier_neighbor_flags);
         let direct_connection_count =
-            connection_count * usize::from(state_features.connection_reachability);
+            connection_count * usize::from(features.connection_reachability);
         let frontier_connection_count =
-            connection_count * usize::from(state_features.frontier_connection_reachability);
+            connection_count * usize::from(features.frontier_connection_reachability);
         let connection_start = snapshot_start * direct_connection_count;
-        StateFeatureOutputShards {
+        FeatureOutputShards {
             inventory: output_shard(
                 &mut self.inventory,
                 inventory_start,
@@ -1237,8 +1228,8 @@ impl StateFeatureBuffers {
             ),
             frontier: output_shard(
                 &mut self.frontier,
-                frontier_start * STATE_FEATURE_FRONTIER_WIDTH,
-                snapshot_count * frontier_count * STATE_FEATURE_FRONTIER_WIDTH,
+                frontier_start * FEATURE_FRONTIER_WIDTH,
+                snapshot_count * frontier_count * FEATURE_FRONTIER_WIDTH,
             ),
             frontier_occupancy: output_shard(
                 &mut self.frontier_occupancy,
@@ -1275,33 +1266,33 @@ impl StateFeatureBuffers {
     }
 }
 
-impl SparseStateFeatureBuffers {
+impl SparseFeatureBuffers {
     fn new(
         common_data: &CommonData,
-        state_features: &StateFeatureConfig,
+        features: &FeatureConfig,
         snapshot_count: usize,
         sparse_row_count: usize,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
     ) -> Self {
-        let sparse_state_features = StateFeatureConfig {
+        let sparse_features = FeatureConfig {
             inventory: false,
             room_position: false,
             connection_reachability: false,
-            ..*state_features
+            ..*features
         };
         Self {
-            fixed: StateFeatureBuffers::new(
+            fixed: FeatureBuffers::new(
                 common_data,
-                state_features,
+                features,
                 snapshot_count,
                 0,
                 frontier_neighbor_count,
                 frontier_window_size,
             ),
-            sparse: StateFeatureBuffers::new(
+            sparse: FeatureBuffers::new(
                 common_data,
-                &sparse_state_features,
+                &sparse_features,
                 sparse_row_count,
                 1,
                 frontier_neighbor_count,
@@ -1324,15 +1315,15 @@ impl SparseStateFeatureBuffers {
         dense_frontier_count: usize,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-        state_features: &StateFeatureConfig,
-    ) -> SparseStateFeatureOutputShards {
-        let sparse_state_features = StateFeatureConfig {
+        features: &FeatureConfig,
+    ) -> SparseFeatureOutputShards {
+        let sparse_features = FeatureConfig {
             inventory: false,
             room_position: false,
             connection_reachability: false,
-            ..*state_features
+            ..*features
         };
-        SparseStateFeatureOutputShards {
+        SparseFeatureOutputShards {
             fixed: self.fixed.output_shard(
                 snapshot_start,
                 snapshot_count,
@@ -1342,7 +1333,7 @@ impl SparseStateFeatureBuffers {
                 0,
                 frontier_neighbor_count,
                 frontier_window_size,
-                state_features,
+                features,
             ),
             sparse: self.sparse.output_shard(
                 sparse_row_start,
@@ -1353,7 +1344,7 @@ impl SparseStateFeatureBuffers {
                 1,
                 frontier_neighbor_count,
                 frontier_window_size,
-                &sparse_state_features,
+                &sparse_features,
             ),
             dense_row_idx: OutputShard::from_slice(
                 &mut self.dense_row_idx[sparse_row_start..sparse_row_start + sparse_row_count],
@@ -1365,33 +1356,28 @@ impl SparseStateFeatureBuffers {
 }
 
 impl EnvironmentGroup {
-    fn record_state_feature_profile(
-        &self,
-        worker_start: Instant,
-        worker_profile: &StateFeatureProfile,
-    ) {
-        self.state_feature_worker_ns
+    fn record_feature_profile(&self, worker_start: Instant, worker_profile: &FeatureProfile) {
+        self.feature_worker_ns
             .fetch_add(worker_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        self.state_feature_clone_ns
+        self.feature_clone_ns
             .fetch_add(worker_profile.clone_ns, Ordering::Relaxed);
-        self.state_feature_step_ns
+        self.feature_step_ns
             .fetch_add(worker_profile.step_ns, Ordering::Relaxed);
-        self.state_feature_assemble_ns
+        self.feature_assemble_ns
             .fetch_add(worker_profile.assemble_ns, Ordering::Relaxed);
-        self.state_feature_assemble_setup_ns
+        self.feature_assemble_setup_ns
             .fetch_add(worker_profile.assemble_setup_ns, Ordering::Relaxed);
-        self.state_feature_assemble_frontier_ns
+        self.feature_assemble_frontier_ns
             .fetch_add(worker_profile.assemble_frontier_ns, Ordering::Relaxed);
-        self.state_feature_assemble_neighbor_ns
+        self.feature_assemble_neighbor_ns
             .fetch_add(worker_profile.assemble_neighbor_ns, Ordering::Relaxed);
-        self.state_feature_assemble_pair_ns
+        self.feature_assemble_pair_ns
             .fetch_add(worker_profile.assemble_pair_ns, Ordering::Relaxed);
-        self.state_feature_assemble_pair_flags_ns
+        self.feature_assemble_pair_flags_ns
             .fetch_add(worker_profile.assemble_pair_flags_ns, Ordering::Relaxed);
-        self.state_feature_assemble_output_ns
+        self.feature_assemble_output_ns
             .fetch_add(worker_profile.assemble_output_ns, Ordering::Relaxed);
-        self.state_feature_profile_calls
-            .fetch_add(1, Ordering::Relaxed);
+        self.feature_profile_calls.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1406,20 +1392,19 @@ impl Drop for EnvironmentGroup {
 #[pymethods]
 impl Engine {
     #[new]
-    #[pyo3(signature = (rooms_json, state_features_json))]
-    fn new(rooms_json: &str, state_features_json: &str) -> PyResult<Self> {
+    #[pyo3(signature = (rooms_json, features_json))]
+    fn new(rooms_json: &str, features_json: &str) -> PyResult<Self> {
         let rooms: Vec<Room> = serde_json::from_str(rooms_json)
             .map_err(|err| PyValueError::new_err(format!("failed to parse rooms JSON: {err}")))?;
-        let state_features: StateFeatureConfig = serde_json::from_str(state_features_json)
-            .map_err(|err| {
-                PyValueError::new_err(format!("failed to parse state features JSON: {err}"))
-            })?;
-        state_features.validate().map_err(PyValueError::new_err)?;
+        let features: FeatureConfig = serde_json::from_str(features_json).map_err(|err| {
+            PyValueError::new_err(format!("failed to parse features JSON: {err}"))
+        })?;
+        features.validate().map_err(PyValueError::new_err)?;
         let common_data = Arc::new(CommonData::new(rooms)?);
 
         Ok(Self {
             common_data,
-            state_features,
+            features,
         })
     }
 
@@ -1450,7 +1435,7 @@ impl Engine {
         };
         EnvironmentGroup::new(
             Arc::clone(&self.common_data),
-            self.state_features,
+            self.features,
             map_size,
             num_environments,
             seed,
@@ -1465,7 +1450,7 @@ impl Engine {
         output_sizes(&self.common_data)
     }
 
-    fn get_state_feature_sizes(&self) -> (usize, usize, usize) {
+    fn get_feature_sizes(&self) -> (usize, usize, usize) {
         (
             self.common_data.connection_variant_rooms.len(),
             Environment::max_frontiers(&self.common_data),
@@ -1513,7 +1498,7 @@ impl Engine {
 impl EnvironmentGroup {
     fn new(
         common_data: Arc<CommonData>,
-        state_features: StateFeatureConfig,
+        features: FeatureConfig,
         map_size: (Coord, Coord),
         num_environments: usize,
         seed: u64,
@@ -1545,32 +1530,32 @@ impl EnvironmentGroup {
                 start,
                 environments,
                 Arc::clone(&common_data),
-                state_features,
+                features,
             )?);
             start = end;
         }
 
         Ok(Self {
             common_data,
-            state_features,
+            features,
             workers,
             num_environments,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
             frontier_window_size,
             action_count: 0,
-            state_feature_worker_ns: AtomicU64::new(0),
-            state_feature_pack_ns: AtomicU64::new(0),
-            state_feature_profile_calls: AtomicUsize::new(0),
-            state_feature_clone_ns: AtomicU64::new(0),
-            state_feature_step_ns: AtomicU64::new(0),
-            state_feature_assemble_ns: AtomicU64::new(0),
-            state_feature_assemble_setup_ns: AtomicU64::new(0),
-            state_feature_assemble_frontier_ns: AtomicU64::new(0),
-            state_feature_assemble_neighbor_ns: AtomicU64::new(0),
-            state_feature_assemble_pair_ns: AtomicU64::new(0),
-            state_feature_assemble_pair_flags_ns: AtomicU64::new(0),
-            state_feature_assemble_output_ns: AtomicU64::new(0),
+            feature_worker_ns: AtomicU64::new(0),
+            feature_pack_ns: AtomicU64::new(0),
+            feature_profile_calls: AtomicUsize::new(0),
+            feature_clone_ns: AtomicU64::new(0),
+            feature_step_ns: AtomicU64::new(0),
+            feature_assemble_ns: AtomicU64::new(0),
+            feature_assemble_setup_ns: AtomicU64::new(0),
+            feature_assemble_frontier_ns: AtomicU64::new(0),
+            feature_assemble_neighbor_ns: AtomicU64::new(0),
+            feature_assemble_pair_ns: AtomicU64::new(0),
+            feature_assemble_pair_flags_ns: AtomicU64::new(0),
+            feature_assemble_output_ns: AtomicU64::new(0),
         })
     }
 }
@@ -2024,7 +2009,7 @@ impl EnvironmentGroup {
 
     #[allow(clippy::type_complexity)]
     #[pyo3(signature = (environment_start=0, environment_count=None))]
-    fn get_state_features<'py>(
+    fn get_features<'py>(
         &self,
         py: Python<'py>,
         environment_start: usize,
@@ -2047,13 +2032,13 @@ impl EnvironmentGroup {
         let Some(remaining_environments) = self.num_environments.checked_sub(environment_start)
         else {
             return Err(PyValueError::new_err(
-                "state feature range must fit within the environment group",
+                "feature range must fit within the environment group",
             ));
         };
         let environment_count = environment_count.unwrap_or(remaining_environments);
         if environment_count > remaining_environments {
             return Err(PyValueError::new_err(
-                "state feature range must fit within the environment group",
+                "feature range must fit within the environment group",
             ));
         }
         let (_, frontier_count, _, _) = py.detach(|| {
@@ -2065,7 +2050,7 @@ impl EnvironmentGroup {
                 if start >= end {
                     continue;
                 }
-                if let Err(err) = worker.send(WorkerCommand::GetStateFeatures {
+                if let Err(err) = worker.send(WorkerCommand::GetFeatures {
                     frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
@@ -2077,11 +2062,11 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
-        let mut buffers = StateFeatureBuffers::new(
+        let mut buffers = FeatureBuffers::new(
             &self.common_data,
-            &self.state_features,
+            &self.features,
             environment_count,
             frontier_count,
             self.frontier_neighbor_count,
@@ -2096,7 +2081,7 @@ impl EnvironmentGroup {
                 if start >= end {
                     continue;
                 }
-                if let Err(err) = worker.send(WorkerCommand::PackStateFeatures {
+                if let Err(err) = worker.send(WorkerCommand::PackFeatures {
                     outputs: buffers.output_shard(
                         start - environment_start,
                         end - start,
@@ -2106,7 +2091,7 @@ impl EnvironmentGroup {
                         frontier_count,
                         self.frontier_neighbor_count,
                         self.frontier_window_size,
-                        &self.state_features,
+                        &self.features,
                     ),
                 }) {
                     set_first_error(&mut first_error, err);
@@ -2121,32 +2106,32 @@ impl EnvironmentGroup {
                 py,
                 buffers.inventory,
                 environment_count,
-                inventory_count * usize::from(self.state_features.inventory),
+                inventory_count * usize::from(self.features.inventory),
             )?,
             pyarray2_from_flat_vec(
                 py,
                 buffers.room_x,
                 environment_count,
-                room_count * usize::from(self.state_features.room_position),
+                room_count * usize::from(self.features.room_position),
             )?,
             pyarray2_from_flat_vec(
                 py,
                 buffers.room_y,
                 environment_count,
-                room_count * usize::from(self.state_features.room_position),
+                room_count * usize::from(self.features.room_position),
             )?,
             pyarray2_from_flat_vec(
                 py,
                 buffers.room_placed,
                 environment_count,
-                room_count * usize::from(self.state_features.room_position),
+                room_count * usize::from(self.features.room_position),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.frontier,
                 environment_count,
                 frontier_count,
-                STATE_FEATURE_FRONTIER_WIDTH,
+                FEATURE_FRONTIER_WIDTH,
             )?,
             pyarray3_from_flat_vec(
                 py,
@@ -2154,42 +2139,40 @@ impl EnvironmentGroup {
                 environment_count,
                 frontier_count,
                 (self.frontier_window_size * self.frontier_window_size).div_ceil(8)
-                    * usize::from(self.state_features.frontier_occupancy),
+                    * usize::from(self.features.frontier_occupancy),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.frontier_neighbor,
                 environment_count,
                 frontier_count,
-                self.frontier_neighbor_count * usize::from(self.state_features.frontier_neighbor),
+                self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.frontier_neighbor_pair,
                 environment_count,
                 frontier_count,
-                self.frontier_neighbor_count
-                    * usize::from(self.state_features.frontier_neighbor_flags),
+                self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor_flags),
             )?,
             pyarray2_from_flat_vec(
                 py,
                 buffers.connection_reachability,
                 environment_count,
-                connection_count * usize::from(self.state_features.connection_reachability),
+                connection_count * usize::from(self.features.connection_reachability),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.frontier_connection_reachability,
                 environment_count,
                 frontier_count,
-                connection_count
-                    * usize::from(self.state_features.frontier_connection_reachability),
+                connection_count * usize::from(self.features.frontier_connection_reachability),
             )?,
         ))
     }
 
     #[allow(clippy::type_complexity)]
-    fn get_state_features_after_candidates<'py>(
+    fn get_features_after_candidates<'py>(
         &self,
         py: Python<'py>,
         room_idx: PyReadonlyArray2<'py, RoomIdx>,
@@ -2246,7 +2229,7 @@ impl EnvironmentGroup {
                 let input_start = (start - environment_start) * candidate_count;
                 let len = environment_count * candidate_count;
                 if let Err(err) =
-                    worker.send(WorkerCommand::GetStateFeatureFrontierCountAfterCandidates {
+                    worker.send(WorkerCommand::GetFeatureFrontierCountAfterCandidates {
                         environment_start: start - worker.start,
                         environment_count,
                         candidate_count,
@@ -2260,13 +2243,12 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
-        let frontier_count =
-            frontier_count * usize::from(self.state_features.has_frontier_features());
-        let mut buffers = StateFeatureBuffers::new(
+        let frontier_count = frontier_count * usize::from(self.features.has_frontier_features());
+        let mut buffers = FeatureBuffers::new(
             &self.common_data,
-            &self.state_features,
+            &self.features,
             snapshot_count,
             frontier_count,
             self.frontier_neighbor_count,
@@ -2285,7 +2267,7 @@ impl EnvironmentGroup {
                 let snapshot_count = (end - start) * candidate_count;
                 let input_start = snapshot_start;
                 let len = snapshot_count;
-                if let Err(err) = worker.send(WorkerCommand::GetStateFeaturesAfterCandidates {
+                if let Err(err) = worker.send(WorkerCommand::GetFeaturesAfterCandidates {
                     frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
@@ -2304,7 +2286,7 @@ impl EnvironmentGroup {
                         frontier_count,
                         self.frontier_neighbor_count,
                         self.frontier_window_size,
-                        &self.state_features,
+                        &self.features,
                     ),
                 }) {
                     set_first_error(&mut first_error, err);
@@ -2312,58 +2294,57 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
-        self.state_feature_worker_ns
+        self.feature_worker_ns
             .fetch_add(worker_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        self.state_feature_clone_ns
+        self.feature_clone_ns
             .fetch_add(worker_profile.clone_ns, Ordering::Relaxed);
-        self.state_feature_step_ns
+        self.feature_step_ns
             .fetch_add(worker_profile.step_ns, Ordering::Relaxed);
-        self.state_feature_assemble_ns
+        self.feature_assemble_ns
             .fetch_add(worker_profile.assemble_ns, Ordering::Relaxed);
-        self.state_feature_assemble_setup_ns
+        self.feature_assemble_setup_ns
             .fetch_add(worker_profile.assemble_setup_ns, Ordering::Relaxed);
-        self.state_feature_assemble_frontier_ns
+        self.feature_assemble_frontier_ns
             .fetch_add(worker_profile.assemble_frontier_ns, Ordering::Relaxed);
-        self.state_feature_assemble_neighbor_ns
+        self.feature_assemble_neighbor_ns
             .fetch_add(worker_profile.assemble_neighbor_ns, Ordering::Relaxed);
-        self.state_feature_assemble_pair_ns
+        self.feature_assemble_pair_ns
             .fetch_add(worker_profile.assemble_pair_ns, Ordering::Relaxed);
-        self.state_feature_assemble_pair_flags_ns
+        self.feature_assemble_pair_flags_ns
             .fetch_add(worker_profile.assemble_pair_flags_ns, Ordering::Relaxed);
-        self.state_feature_assemble_output_ns
+        self.feature_assemble_output_ns
             .fetch_add(worker_profile.assemble_output_ns, Ordering::Relaxed);
-        self.state_feature_profile_calls
-            .fetch_add(1, Ordering::Relaxed);
+        self.feature_profile_calls.fetch_add(1, Ordering::Relaxed);
         Ok((
             pyarray3_from_flat_vec(
                 py,
                 buffers.inventory,
                 environment_count,
                 candidate_count,
-                inventory_count * usize::from(self.state_features.inventory),
+                inventory_count * usize::from(self.features.inventory),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.room_x,
                 environment_count,
                 candidate_count,
-                room_count * usize::from(self.state_features.room_position),
+                room_count * usize::from(self.features.room_position),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.room_y,
                 environment_count,
                 candidate_count,
-                room_count * usize::from(self.state_features.room_position),
+                room_count * usize::from(self.features.room_position),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.room_placed,
                 environment_count,
                 candidate_count,
-                room_count * usize::from(self.state_features.room_position),
+                room_count * usize::from(self.features.room_position),
             )?,
             pyarray4_from_flat_vec(
                 py,
@@ -2371,7 +2352,7 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 frontier_count,
-                STATE_FEATURE_FRONTIER_WIDTH,
+                FEATURE_FRONTIER_WIDTH,
             )?,
             pyarray4_from_flat_vec(
                 py,
@@ -2380,7 +2361,7 @@ impl EnvironmentGroup {
                 candidate_count,
                 frontier_count,
                 (self.frontier_window_size * self.frontier_window_size).div_ceil(8)
-                    * usize::from(self.state_features.frontier_occupancy),
+                    * usize::from(self.features.frontier_occupancy),
             )?,
             pyarray4_from_flat_vec(
                 py,
@@ -2388,7 +2369,7 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 frontier_count,
-                self.frontier_neighbor_count * usize::from(self.state_features.frontier_neighbor),
+                self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor),
             )?,
             pyarray4_from_flat_vec(
                 py,
@@ -2396,15 +2377,14 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 frontier_count,
-                self.frontier_neighbor_count
-                    * usize::from(self.state_features.frontier_neighbor_flags),
+                self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor_flags),
             )?,
             pyarray3_from_flat_vec(
                 py,
                 buffers.connection_reachability,
                 environment_count,
                 candidate_count,
-                connection_count * usize::from(self.state_features.connection_reachability),
+                connection_count * usize::from(self.features.connection_reachability),
             )?,
             pyarray4_from_flat_vec(
                 py,
@@ -2412,14 +2392,13 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 frontier_count,
-                connection_count
-                    * usize::from(self.state_features.frontier_connection_reachability),
+                connection_count * usize::from(self.features.frontier_connection_reachability),
             )?,
         ))
     }
 
     #[allow(clippy::type_complexity)]
-    fn get_sparse_state_features_after_candidates<'py>(
+    fn get_sparse_features_after_candidates<'py>(
         &self,
         py: Python<'py>,
         room_idx: PyReadonlyArray2<'py, RoomIdx>,
@@ -2480,7 +2459,7 @@ impl EnvironmentGroup {
                 let input_start = (start - environment_start) * candidate_count;
                 let len = environment_count * candidate_count;
                 if let Err(err) =
-                    worker.send(WorkerCommand::GetStateFeatureFrontierCountAfterCandidates {
+                    worker.send(WorkerCommand::GetFeatureFrontierCountAfterCandidates {
                         environment_start: start - worker.start,
                         environment_count,
                         candidate_count,
@@ -2494,15 +2473,14 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
-        let frontier_count =
-            frontier_count * usize::from(self.state_features.has_frontier_features());
+        let frontier_count = frontier_count * usize::from(self.features.has_frontier_features());
         let sparse_row_count =
-            sparse_row_count * usize::from(self.state_features.has_frontier_features());
-        let mut buffers = SparseStateFeatureBuffers::new(
+            sparse_row_count * usize::from(self.features.has_frontier_features());
+        let mut buffers = SparseFeatureBuffers::new(
             &self.common_data,
-            &self.state_features,
+            &self.features,
             snapshot_count,
             sparse_row_count,
             self.frontier_neighbor_count,
@@ -2522,53 +2500,47 @@ impl EnvironmentGroup {
                 let snapshot_count = (end - start) * candidate_count;
                 let len = snapshot_count;
                 let worker_sparse_row_count = worker_sparse_row_counts[worker_idx]
-                    * usize::from(self.state_features.has_frontier_features());
-                if let Err(err) =
-                    worker.send(WorkerCommand::GetSparseStateFeaturesAfterCandidates {
-                        frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
-                        frontier_neighbor_count: self.frontier_neighbor_count,
-                        frontier_window_size: self.frontier_window_size,
-                        environment_start: start - worker.start,
-                        environment_count: end - start,
-                        candidate_count,
-                        room_idx: InputShard::from_slice(
-                            &room_idx[snapshot_start..snapshot_start + len],
-                        ),
-                        room_x: InputShard::from_slice(
-                            &room_x[snapshot_start..snapshot_start + len],
-                        ),
-                        room_y: InputShard::from_slice(
-                            &room_y[snapshot_start..snapshot_start + len],
-                        ),
-                        outputs: buffers.output_shard(
-                            snapshot_start,
-                            snapshot_count,
-                            sparse_row_start,
-                            worker_sparse_row_count,
-                            inventory_count,
-                            room_count,
-                            connection_count,
-                            frontier_count,
-                            self.frontier_neighbor_count,
-                            self.frontier_window_size,
-                            &self.state_features,
-                        ),
-                    })
-                {
+                    * usize::from(self.features.has_frontier_features());
+                if let Err(err) = worker.send(WorkerCommand::GetSparseFeaturesAfterCandidates {
+                    frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
+                    frontier_neighbor_count: self.frontier_neighbor_count,
+                    frontier_window_size: self.frontier_window_size,
+                    environment_start: start - worker.start,
+                    environment_count: end - start,
+                    candidate_count,
+                    room_idx: InputShard::from_slice(
+                        &room_idx[snapshot_start..snapshot_start + len],
+                    ),
+                    room_x: InputShard::from_slice(&room_x[snapshot_start..snapshot_start + len]),
+                    room_y: InputShard::from_slice(&room_y[snapshot_start..snapshot_start + len]),
+                    outputs: buffers.output_shard(
+                        snapshot_start,
+                        snapshot_count,
+                        sparse_row_start,
+                        worker_sparse_row_count,
+                        inventory_count,
+                        room_count,
+                        connection_count,
+                        frontier_count,
+                        self.frontier_neighbor_count,
+                        self.frontier_window_size,
+                        &self.features,
+                    ),
+                }) {
                     set_first_error(&mut first_error, err);
                     break;
                 }
                 sent_workers.push(worker_idx);
                 sparse_row_start += worker_sparse_row_count;
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
         if actual_sparse_row_count != sparse_row_count {
             return Err(PyRuntimeError::new_err(format!(
-                "sparse state feature row count changed between passes: expected {sparse_row_count}, got {actual_sparse_row_count}"
+                "sparse feature row count changed between passes: expected {sparse_row_count}, got {actual_sparse_row_count}"
             )));
         }
-        self.record_state_feature_profile(worker_start, &worker_profile);
+        self.record_feature_profile(worker_start, &worker_profile);
         Ok((
             (
                 pyarray3_from_flat_vec(
@@ -2576,69 +2548,67 @@ impl EnvironmentGroup {
                     buffers.fixed.inventory,
                     environment_count,
                     candidate_count,
-                    inventory_count * usize::from(self.state_features.inventory),
+                    inventory_count * usize::from(self.features.inventory),
                 )?,
                 pyarray3_from_flat_vec(
                     py,
                     buffers.fixed.room_x,
                     environment_count,
                     candidate_count,
-                    room_count * usize::from(self.state_features.room_position),
+                    room_count * usize::from(self.features.room_position),
                 )?,
                 pyarray3_from_flat_vec(
                     py,
                     buffers.fixed.room_y,
                     environment_count,
                     candidate_count,
-                    room_count * usize::from(self.state_features.room_position),
+                    room_count * usize::from(self.features.room_position),
                 )?,
                 pyarray3_from_flat_vec(
                     py,
                     buffers.fixed.room_placed,
                     environment_count,
                     candidate_count,
-                    room_count * usize::from(self.state_features.room_position),
+                    room_count * usize::from(self.features.room_position),
                 )?,
                 pyarray2_from_flat_vec(
                     py,
                     buffers.sparse.frontier,
                     sparse_row_count,
-                    STATE_FEATURE_FRONTIER_WIDTH,
+                    FEATURE_FRONTIER_WIDTH,
                 )?,
                 pyarray2_from_flat_vec(
                     py,
                     buffers.sparse.frontier_occupancy,
                     sparse_row_count,
                     (self.frontier_window_size * self.frontier_window_size).div_ceil(8)
-                        * usize::from(self.state_features.frontier_occupancy),
+                        * usize::from(self.features.frontier_occupancy),
                 )?,
                 pyarray2_from_flat_vec(
                     py,
                     buffers.sparse.frontier_neighbor,
                     sparse_row_count,
-                    self.frontier_neighbor_count
-                        * usize::from(self.state_features.frontier_neighbor),
+                    self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor),
                 )?,
                 pyarray2_from_flat_vec(
                     py,
                     buffers.sparse.frontier_neighbor_pair,
                     sparse_row_count,
                     self.frontier_neighbor_count
-                        * usize::from(self.state_features.frontier_neighbor_flags),
+                        * usize::from(self.features.frontier_neighbor_flags),
                 )?,
                 pyarray3_from_flat_vec(
                     py,
                     buffers.fixed.connection_reachability,
                     environment_count,
                     candidate_count,
-                    connection_count * usize::from(self.state_features.connection_reachability),
+                    connection_count * usize::from(self.features.connection_reachability),
                 )?,
                 pyarray2_from_flat_vec(
                     py,
                     buffers.sparse.frontier_connection_reachability,
                     sparse_row_count,
-                    connection_count
-                        * usize::from(self.state_features.frontier_connection_reachability),
+                    connection_count * usize::from(self.features.frontier_connection_reachability),
                 )?,
                 buffers.dense_row_idx.into_pyarray(py),
             ),
@@ -2646,7 +2616,7 @@ impl EnvironmentGroup {
         ))
     }
 
-    fn get_sparse_state_feature_requirements_after_candidates<'py>(
+    fn get_sparse_feature_requirements_after_candidates<'py>(
         &self,
         py: Python<'py>,
         room_idx: PyReadonlyArray2<'py, RoomIdx>,
@@ -2687,7 +2657,7 @@ impl EnvironmentGroup {
                 let input_start = (start - environment_start) * candidate_count;
                 let len = environment_count * candidate_count;
                 if let Err(err) =
-                    worker.send(WorkerCommand::GetStateFeatureFrontierCountAfterCandidates {
+                    worker.send(WorkerCommand::GetFeatureFrontierCountAfterCandidates {
                         environment_start: start - worker.start,
                         environment_count,
                         candidate_count,
@@ -2701,20 +2671,20 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
         Ok((
-            frontier_count * usize::from(self.state_features.has_frontier_features()),
-            sparse_row_count * usize::from(self.state_features.has_frontier_features()),
+            frontier_count * usize::from(self.features.has_frontier_features()),
+            sparse_row_count * usize::from(self.features.has_frontier_features()),
             worker_sparse_row_counts
                 .into_iter()
-                .map(|count| count * usize::from(self.state_features.has_frontier_features()))
+                .map(|count| count * usize::from(self.features.has_frontier_features()))
                 .collect(),
         ))
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn get_sparse_state_features_after_candidates_into<'py>(
+    fn get_sparse_features_after_candidates_into<'py>(
         &self,
         py: Python<'py>,
         room_idx: PyReadonlyArray2<'py, RoomIdx>,
@@ -2761,19 +2731,19 @@ impl EnvironmentGroup {
         let inventory_count = self.common_data.connection_variant_rooms.len();
         let room_count = self.common_data.room.len();
         let connection_count = self.common_data.room_connection.len();
-        let inventory_width = inventory_count * usize::from(self.state_features.inventory);
-        let room_width = room_count * usize::from(self.state_features.room_position);
+        let inventory_width = inventory_count * usize::from(self.features.inventory);
+        let room_width = room_count * usize::from(self.features.room_position);
         let frontier_occupancy_width = (self.frontier_window_size * self.frontier_window_size)
             .div_ceil(8)
-            * usize::from(self.state_features.frontier_occupancy);
+            * usize::from(self.features.frontier_occupancy);
         let frontier_neighbor_width =
-            self.frontier_neighbor_count * usize::from(self.state_features.frontier_neighbor);
+            self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor);
         let frontier_neighbor_pair_width =
-            self.frontier_neighbor_count * usize::from(self.state_features.frontier_neighbor_flags);
+            self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor_flags);
         let connection_reachability_width =
-            connection_count * usize::from(self.state_features.connection_reachability);
+            connection_count * usize::from(self.features.connection_reachability);
         let frontier_connection_width =
-            connection_count * usize::from(self.state_features.frontier_connection_reachability);
+            connection_count * usize::from(self.features.frontier_connection_reachability);
 
         let inventory_shape = inventory.as_array().shape().to_vec();
         let room_x_shape = out_room_x.as_array().shape().to_vec();
@@ -2800,14 +2770,14 @@ impl EnvironmentGroup {
             || dense_row_idx_shape[0] < sparse_row_count
         {
             return Err(PyValueError::new_err(
-                "sparse state feature output buffer is too small",
+                "sparse feature output buffer is too small",
             ));
         }
         check_dim("inventory", inventory_shape[1], inventory_width)?;
         check_dim("room_x", room_x_shape[1], room_width)?;
         check_dim("room_y", room_y_shape[1], room_width)?;
         check_dim("room_placed", room_placed_shape[1], room_width)?;
-        check_dim("frontier", frontier_shape[1], STATE_FEATURE_FRONTIER_WIDTH)?;
+        check_dim("frontier", frontier_shape[1], FEATURE_FRONTIER_WIDTH)?;
         check_dim(
             "frontier_occupancy",
             frontier_occupancy_shape[1],
@@ -2891,153 +2861,135 @@ impl EnvironmentGroup {
                 let snapshot_count = (end - start) * candidate_count;
                 let len = snapshot_count;
                 let worker_sparse_row_count = worker_sparse_row_counts[worker_idx];
-                if let Err(err) =
-                    worker.send(WorkerCommand::GetSparseStateFeaturesAfterCandidates {
-                        frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
-                        frontier_neighbor_count: self.frontier_neighbor_count,
-                        frontier_window_size: self.frontier_window_size,
-                        environment_start: start - worker.start,
-                        environment_count: end - start,
-                        candidate_count,
-                        room_idx: InputShard::from_slice(
-                            &room_idx[snapshot_start..snapshot_start + len],
-                        ),
-                        room_x: InputShard::from_slice(
-                            &room_x[snapshot_start..snapshot_start + len],
-                        ),
-                        room_y: InputShard::from_slice(
-                            &room_y[snapshot_start..snapshot_start + len],
-                        ),
-                        outputs: SparseStateFeatureOutputShards {
-                            fixed: StateFeatureOutputShards {
-                                inventory: OutputShard::from_slice(
-                                    &mut inventory[snapshot_start * inventory_width
-                                        ..(snapshot_start + snapshot_count) * inventory_width],
-                                ),
-                                room_x: OutputShard::from_slice(
-                                    &mut out_room_x[snapshot_start * room_width
-                                        ..(snapshot_start + snapshot_count) * room_width],
-                                ),
-                                room_y: OutputShard::from_slice(
-                                    &mut out_room_y[snapshot_start * room_width
-                                        ..(snapshot_start + snapshot_count) * room_width],
-                                ),
-                                room_placed: OutputShard::from_slice(
-                                    &mut room_placed[snapshot_start * room_width
-                                        ..(snapshot_start + snapshot_count) * room_width],
-                                ),
-                                frontier: OutputShard::empty(),
-                                frontier_occupancy: OutputShard::empty(),
-                                frontier_neighbor: OutputShard::empty(),
-                                frontier_neighbor_pair: OutputShard::empty(),
-                                connection_reachability: OutputShard::from_slice(
-                                    &mut connection_reachability[snapshot_start
-                                        * connection_reachability_width
-                                        ..(snapshot_start + snapshot_count)
-                                            * connection_reachability_width],
-                                ),
-                                frontier_connection_reachability: OutputShard::empty(),
-                                inventory_count: inventory_width,
-                                room_count: room_width,
-                                connection_count: connection_reachability_width,
-                                frontier_count: 0,
-                                frontier_neighbor_count: self.frontier_neighbor_count,
-                                frontier_window_size: self.frontier_window_size,
-                            },
-                            sparse: StateFeatureOutputShards {
-                                inventory: OutputShard::empty(),
-                                room_x: OutputShard::empty(),
-                                room_y: OutputShard::empty(),
-                                room_placed: OutputShard::empty(),
-                                frontier: OutputShard::from_slice(
-                                    &mut frontier[sparse_row_start * STATE_FEATURE_FRONTIER_WIDTH
-                                        ..(sparse_row_start + worker_sparse_row_count)
-                                            * STATE_FEATURE_FRONTIER_WIDTH],
-                                ),
-                                frontier_occupancy: OutputShard::from_slice(
-                                    &mut frontier_occupancy[sparse_row_start
-                                        * frontier_occupancy_width
-                                        ..(sparse_row_start + worker_sparse_row_count)
-                                            * frontier_occupancy_width],
-                                ),
-                                frontier_neighbor: OutputShard::from_slice(
-                                    &mut frontier_neighbor[sparse_row_start
-                                        * frontier_neighbor_width
-                                        ..(sparse_row_start + worker_sparse_row_count)
-                                            * frontier_neighbor_width],
-                                ),
-                                frontier_neighbor_pair: OutputShard::from_slice(
-                                    &mut frontier_neighbor_pair[sparse_row_start
-                                        * frontier_neighbor_pair_width
-                                        ..(sparse_row_start + worker_sparse_row_count)
-                                            * frontier_neighbor_pair_width],
-                                ),
-                                connection_reachability: OutputShard::empty(),
-                                frontier_connection_reachability: OutputShard::from_slice(
-                                    &mut frontier_connection_reachability[sparse_row_start
-                                        * frontier_connection_width
-                                        ..(sparse_row_start + worker_sparse_row_count)
-                                            * frontier_connection_width],
-                                ),
-                                inventory_count: 0,
-                                room_count: 0,
-                                connection_count: frontier_connection_width,
-                                frontier_count: 1,
-                                frontier_neighbor_count: self.frontier_neighbor_count,
-                                frontier_window_size: self.frontier_window_size,
-                            },
-                            dense_row_idx: OutputShard::from_slice(
-                                &mut dense_row_idx
-                                    [sparse_row_start..sparse_row_start + worker_sparse_row_count],
+                if let Err(err) = worker.send(WorkerCommand::GetSparseFeaturesAfterCandidates {
+                    frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
+                    frontier_neighbor_count: self.frontier_neighbor_count,
+                    frontier_window_size: self.frontier_window_size,
+                    environment_start: start - worker.start,
+                    environment_count: end - start,
+                    candidate_count,
+                    room_idx: InputShard::from_slice(
+                        &room_idx[snapshot_start..snapshot_start + len],
+                    ),
+                    room_x: InputShard::from_slice(&room_x[snapshot_start..snapshot_start + len]),
+                    room_y: InputShard::from_slice(&room_y[snapshot_start..snapshot_start + len]),
+                    outputs: SparseFeatureOutputShards {
+                        fixed: FeatureOutputShards {
+                            inventory: OutputShard::from_slice(
+                                &mut inventory[snapshot_start * inventory_width
+                                    ..(snapshot_start + snapshot_count) * inventory_width],
                             ),
-                            snapshot_start,
-                            dense_frontier_count: frontier_count,
+                            room_x: OutputShard::from_slice(
+                                &mut out_room_x[snapshot_start * room_width
+                                    ..(snapshot_start + snapshot_count) * room_width],
+                            ),
+                            room_y: OutputShard::from_slice(
+                                &mut out_room_y[snapshot_start * room_width
+                                    ..(snapshot_start + snapshot_count) * room_width],
+                            ),
+                            room_placed: OutputShard::from_slice(
+                                &mut room_placed[snapshot_start * room_width
+                                    ..(snapshot_start + snapshot_count) * room_width],
+                            ),
+                            frontier: OutputShard::empty(),
+                            frontier_occupancy: OutputShard::empty(),
+                            frontier_neighbor: OutputShard::empty(),
+                            frontier_neighbor_pair: OutputShard::empty(),
+                            connection_reachability: OutputShard::from_slice(
+                                &mut connection_reachability[snapshot_start
+                                    * connection_reachability_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * connection_reachability_width],
+                            ),
+                            frontier_connection_reachability: OutputShard::empty(),
+                            inventory_count: inventory_width,
+                            room_count: room_width,
+                            connection_count: connection_reachability_width,
+                            frontier_count: 0,
+                            frontier_neighbor_count: self.frontier_neighbor_count,
+                            frontier_window_size: self.frontier_window_size,
                         },
-                    })
-                {
+                        sparse: FeatureOutputShards {
+                            inventory: OutputShard::empty(),
+                            room_x: OutputShard::empty(),
+                            room_y: OutputShard::empty(),
+                            room_placed: OutputShard::empty(),
+                            frontier: OutputShard::from_slice(
+                                &mut frontier[sparse_row_start * FEATURE_FRONTIER_WIDTH
+                                    ..(sparse_row_start + worker_sparse_row_count)
+                                        * FEATURE_FRONTIER_WIDTH],
+                            ),
+                            frontier_occupancy: OutputShard::from_slice(
+                                &mut frontier_occupancy[sparse_row_start * frontier_occupancy_width
+                                    ..(sparse_row_start + worker_sparse_row_count)
+                                        * frontier_occupancy_width],
+                            ),
+                            frontier_neighbor: OutputShard::from_slice(
+                                &mut frontier_neighbor[sparse_row_start * frontier_neighbor_width
+                                    ..(sparse_row_start + worker_sparse_row_count)
+                                        * frontier_neighbor_width],
+                            ),
+                            frontier_neighbor_pair: OutputShard::from_slice(
+                                &mut frontier_neighbor_pair[sparse_row_start
+                                    * frontier_neighbor_pair_width
+                                    ..(sparse_row_start + worker_sparse_row_count)
+                                        * frontier_neighbor_pair_width],
+                            ),
+                            connection_reachability: OutputShard::empty(),
+                            frontier_connection_reachability: OutputShard::from_slice(
+                                &mut frontier_connection_reachability[sparse_row_start
+                                    * frontier_connection_width
+                                    ..(sparse_row_start + worker_sparse_row_count)
+                                        * frontier_connection_width],
+                            ),
+                            inventory_count: 0,
+                            room_count: 0,
+                            connection_count: frontier_connection_width,
+                            frontier_count: 1,
+                            frontier_neighbor_count: self.frontier_neighbor_count,
+                            frontier_window_size: self.frontier_window_size,
+                        },
+                        dense_row_idx: OutputShard::from_slice(
+                            &mut dense_row_idx
+                                [sparse_row_start..sparse_row_start + worker_sparse_row_count],
+                        ),
+                        snapshot_start,
+                        dense_frontier_count: frontier_count,
+                    },
+                }) {
                     set_first_error(&mut first_error, err);
                     break;
                 }
                 sent_workers.push(worker_idx);
                 sparse_row_start += worker_sparse_row_count;
             }
-            collect_state_feature_profiles(&self.workers, sent_workers, first_error)
+            collect_feature_profiles(&self.workers, sent_workers, first_error)
         })?;
         if actual_sparse_row_count != sparse_row_count {
             return Err(PyRuntimeError::new_err(format!(
-                "sparse state feature row count changed between passes: expected {sparse_row_count}, got {actual_sparse_row_count}"
+                "sparse feature row count changed between passes: expected {sparse_row_count}, got {actual_sparse_row_count}"
             )));
         }
-        self.record_state_feature_profile(worker_start, &worker_profile);
+        self.record_feature_profile(worker_start, &worker_profile);
         Ok(())
     }
 
-    fn take_state_feature_profile(&self) -> Vec<f64> {
+    fn take_feature_profile(&self) -> Vec<f64> {
         vec![
-            self.state_feature_worker_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
-            self.state_feature_pack_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
-            self.state_feature_profile_calls.swap(0, Ordering::Relaxed) as f64,
-            self.state_feature_clone_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
-            self.state_feature_step_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
-            self.state_feature_assemble_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
-            self.state_feature_assemble_setup_ns
+            self.feature_worker_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_pack_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_profile_calls.swap(0, Ordering::Relaxed) as f64,
+            self.feature_clone_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_step_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_assemble_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_assemble_setup_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_assemble_frontier_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_assemble_neighbor_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_assemble_pair_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
+            self.feature_assemble_pair_flags_ns
                 .swap(0, Ordering::Relaxed) as f64
                 / 1_000_000_000.0,
-            self.state_feature_assemble_frontier_ns
-                .swap(0, Ordering::Relaxed) as f64
-                / 1_000_000_000.0,
-            self.state_feature_assemble_neighbor_ns
-                .swap(0, Ordering::Relaxed) as f64
-                / 1_000_000_000.0,
-            self.state_feature_assemble_pair_ns
-                .swap(0, Ordering::Relaxed) as f64
-                / 1_000_000_000.0,
-            self.state_feature_assemble_pair_flags_ns
-                .swap(0, Ordering::Relaxed) as f64
-                / 1_000_000_000.0,
-            self.state_feature_assemble_output_ns
-                .swap(0, Ordering::Relaxed) as f64
-                / 1_000_000_000.0,
+            self.feature_assemble_output_ns.swap(0, Ordering::Relaxed) as f64 / 1_000_000_000.0,
         ]
     }
 }
