@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 # Python wrappers around the Rust map generation engine, includes (zero-copy) conversions
 # between numpy and torch tensors.
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 import torch
 import json
 
 import map_gen
+
+if TYPE_CHECKING:
+    from train_config import StateFeatureConfig
 
 @dataclass
 class GenerateConfig:
@@ -140,9 +145,9 @@ class Engine:
     engine: map_gen.Engine
     rooms: list[dict]
 
-    def __init__(self, rooms: list[dict], state_features: dict[str, bool]):
+    def __init__(self, rooms: list[dict], state_features: StateFeatureConfig):
         self.state_features = state_features
-        self.engine = map_gen.Engine(json.dumps(rooms), json.dumps(self.state_features))
+        self.engine = map_gen.Engine(json.dumps(rooms), state_features.model_dump_json())
         self.rooms = rooms
 
     def create_environment_group(

@@ -941,7 +941,7 @@ def create_models(config: Config, rooms: list[dict], engine: Engine, device: tor
     if config.model.type == "frontier_state":
         model_kwargs = common_model_kwargs | {
             "frontier_window_size": config.generation.frontier_window_size,
-            "state_features": config.state_features.model_dump(),
+            "state_features": config.state_features,
         }
     else:
         model_kwargs = common_model_kwargs | {
@@ -992,7 +992,7 @@ def build_session(args: Args) -> TrainingSession:
         ", ".join(str(generation_device) for generation_device in generation_devices),
     )
 
-    engine = Engine(rooms, config.state_features.model_dump())
+    engine = Engine(rooms, config.state_features)
     gen_envs, train_batch_envs = create_environment_groups(config, engine, generation_devices)
     main_model, ema_model, generation_models = create_models(
         config,

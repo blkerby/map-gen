@@ -297,25 +297,25 @@ class PinnedSparseStateFeatureSlot:
         state_features = env.engine.state_features
         inventory_count, max_frontier_count, room_count = env.engine.get_state_feature_sizes()
         _, connection_count = env.engine.get_output_sizes()
-        self.inventory_width = inventory_count * int(state_features.get("inventory", False))
-        self.room_width = room_count * int(state_features.get("room_position", False))
+        self.inventory_width = inventory_count * int(state_features.inventory)
+        self.room_width = room_count * int(state_features.room_position)
         self.frontier_count_capacity = max_frontier_count
         self.frontier_occupancy_width = (
             (env.frontier_window_size * env.frontier_window_size + 7) // 8
-        ) * int(state_features.get("frontier_occupancy", False))
+        ) * int(state_features.frontier_occupancy)
         self.frontier_neighbor_width = (
-            env.frontier_neighbor_count * int(state_features.get("frontier_neighbor", False))
+            env.frontier_neighbor_count * int(state_features.frontier_neighbor)
         )
         self.frontier_neighbor_pair_width = (
             env.frontier_neighbor_count
-            * int(state_features.get("frontier_neighbor_flags", False))
+            * int(state_features.frontier_neighbor_flags)
         )
         self.connection_reachability_width = (
-            connection_count * int(state_features.get("connection_reachability", False))
+            connection_count * int(state_features.connection_reachability)
         )
         self.frontier_connection_reachability_width = (
             connection_count
-            * int(state_features.get("frontier_connection_reachability", False))
+            * int(state_features.frontier_connection_reachability)
         )
         self.pin_memory = pin_memory
         self.snapshot_capacity = 0
