@@ -478,16 +478,22 @@ class FrontierStateModel(torch.nn.Module):
         y = y.to(torch.int64) + offset
         return embedding_x[x] + embedding_y[y]
 
-    def _pair_features(self, features):
+    def _pair_features(self, features, dtype):
         values = []
         if self.state_features.get("frontier_neighbor_flags", False):
             flags = features.frontier_neighbor_pair
             values.append(torch.stack([
-                (flags & 1 != 0).to(torch.float32),
-                (flags & 2 != 0).to(torch.float32),
-                (flags & 4 != 0).to(torch.float32),
+                (flags & 1 != 0).to(dtype),
+                (flags & 2 != 0).to(dtype),
+                (flags & 4 != 0).to(dtype),
             ], dim=-1))
         return torch.cat(values, dim=-1) if values else None
+
+    def _feature_dtype(self, device):
+        device_type = device.type
+        if torch.is_autocast_enabled(device_type):
+            return torch.get_autocast_dtype(device_type)
+        return next(self.parameters()).dtype
 
     def _relative_position_features(self, features):
         if self.frontier_relative_pos_embedding_x is None:
@@ -520,22 +526,23 @@ class FrontierStateModel(torch.nn.Module):
         node_mask = node[:, :, 0] != 0
         # numeric: [b, f, numeric_width]
         numeric = []
+        dtype = self._feature_dtype(node.device)
         if self.state_features.get("frontier_occupancy", False):
             numeric.append(
                 features.frontier_occupancy.unsqueeze(-1)
                 .bitwise_and(self.frontier_occupancy_bits)
                 .ne(0)
                 .flatten(-2)[..., :self.frontier_window_area]
-                .to(torch.float32)
+                .to(dtype)
             )
         if self.state_features.get("frontier_connection_reachability", False):
             flags = features.frontier_connection_reachability
             numeric.append(torch.stack([
-                (flags & 1 != 0).to(torch.float32),
-                (flags & 2 != 0).to(torch.float32),
+                (flags & 1 != 0).to(dtype),
+                (flags & 2 != 0).to(dtype),
             ], dim=-1).flatten(-2))
         # X: [b, f, e]
-        X = node.new_zeros([node.shape[0], node.shape[1], self.embedding_width], dtype=torch.float32)
+        X = node.new_zeros([node.shape[0], node.shape[1], self.embedding_width], dtype=dtype)
         if self.node_numeric is not None:
             numeric = [value.unsqueeze(-1) if value.ndim == 2 else value for value in numeric]
             X = X + self.node_numeric(torch.cat(numeric, dim=-1))
@@ -563,7 +570,7 @@ class FrontierStateModel(torch.nn.Module):
             mean_pool = max_pool = X.new_zeros([X.shape[0], X.shape[2]])
         else:
             # pair: [b, f, k, pair_width], neighbor: [b, f, k], pair_mask: [b, f, k, 1]
-            pair = self._pair_features(features)
+            pair = self._pair_features(features, dtype)
             relative_position = self._relative_position_features(features)
             neighbor = features.frontier_neighbor.clamp_min(0).to(torch.int64)
             pair_mask = (features.frontier_neighbor >= 0).unsqueeze(-1)
@@ -597,14 +604,14 @@ class FrontierStateModel(torch.nn.Module):
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
         # mean_pool, max_pool, global_state: [b, e]
         global_inputs = []
-        if self.include_inventory is not None:
+        if self.include_inventory:
             # global_inputs.append(torch.matmul(features.inventory.to(torch.float32), self.inventory_embedding))
             global_inputs.append(features.inventory.to(X.dtype))
         if self.state_features.get("frontier_mask", False):
             global_inputs.extend([mean_pool, max_pool])
         if self.connection_reachability_embedding is not None:
             global_inputs.append(self.connection_reachability_embedding(
-                features.connection_reachability.to(torch.float32)
+                features.connection_reachability.to(X.dtype)
             ))
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
