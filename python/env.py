@@ -268,6 +268,13 @@ class EnvironmentGroup:
             actions.room_y.contiguous().cpu().numpy(),
         )
 
+    def step_known(self, actions: Actions):
+        self.env.step_known(
+            actions.room_idx.contiguous().cpu().numpy(),
+            actions.room_x.contiguous().cpu().numpy(),
+            actions.room_y.contiguous().cpu().numpy(),
+        )
+
     def replay(self, actions: Actions):
         self.env.replay(
             actions.room_idx.contiguous().cpu().numpy(),

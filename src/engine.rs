@@ -16,7 +16,80 @@ use std::cmp::{max, min};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+const PROFILE_METRIC_COUNT: usize = 22;
+const PROFILE_METRIC_NAMES: [&str; PROFILE_METRIC_COUNT] = [
+    "worker.clear",
+    "worker.finish",
+    "worker.step",
+    "worker.replay",
+    "worker.get_candidates",
+    "worker.get_candidates_with_outcomes",
+    "worker.get_actions",
+    "worker.get_outcomes",
+    "worker.get_door_match_counts",
+    "worker.get_features",
+    "worker.get_features_after_candidates",
+    "worker.get_sparse_features_after_candidates",
+    "worker.get_feature_frontier_count_after_candidates",
+    "worker.pack_features",
+    "env.step.push_action",
+    "env.step.mark_room_used",
+    "env.step.components_edges",
+    "env.step.occupancy",
+    "env.step.match_existing_frontiers",
+    "env.step.build_new_frontier_candidates",
+    "env.step.filter_existing_frontiers",
+    "worker.step_known",
+];
+
+static PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
+static PROFILE_COUNTS: [AtomicU64; PROFILE_METRIC_COUNT] =
+    [const { AtomicU64::new(0) }; PROFILE_METRIC_COUNT];
+static PROFILE_NANOS: [AtomicU64; PROFILE_METRIC_COUNT] =
+    [const { AtomicU64::new(0) }; PROFILE_METRIC_COUNT];
+
+pub(crate) fn profile_enabled() -> bool {
+    PROFILE_ENABLED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn record_profile_metric(metric_idx: usize, duration: Duration) {
+    if PROFILE_ENABLED.load(Ordering::Relaxed) {
+        PROFILE_COUNTS[metric_idx].fetch_add(1, Ordering::Relaxed);
+        PROFILE_NANOS[metric_idx].fetch_add(
+            duration.as_nanos().min(u128::from(u64::MAX)) as u64,
+            Ordering::Relaxed,
+        );
+    }
+}
+
+pub fn set_profile_enabled(enabled: bool) {
+    PROFILE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn reset_profile() {
+    for metric_idx in 0..PROFILE_METRIC_COUNT {
+        PROFILE_COUNTS[metric_idx].store(0, Ordering::Relaxed);
+        PROFILE_NANOS[metric_idx].store(0, Ordering::Relaxed);
+    }
+}
+
+pub fn profile_report() -> Vec<(String, u64, u64)> {
+    PROFILE_METRIC_NAMES
+        .iter()
+        .enumerate()
+        .map(|(metric_idx, name)| {
+            (
+                (*name).to_string(),
+                PROFILE_COUNTS[metric_idx].load(Ordering::Relaxed),
+                PROFILE_NANOS[metric_idx].load(Ordering::Relaxed),
+            )
+        })
+        .collect()
+}
 
 fn pyarray2_from_flat_vec<'py, T: Element>(
     py: Python<'py>,
@@ -120,6 +193,11 @@ enum WorkerCommand {
         room_x: InputShard<Coord>,
         room_y: InputShard<Coord>,
     },
+    StepKnown {
+        room_idx: InputShard<RoomIdx>,
+        room_x: InputShard<Coord>,
+        room_y: InputShard<Coord>,
+    },
     Replay {
         action_count: usize,
         room_idx: InputShard<RoomIdx>,
@@ -203,6 +281,29 @@ enum WorkerCommand {
     Shutdown,
 }
 
+impl WorkerCommand {
+    fn profile_metric_idx(&self) -> Option<usize> {
+        match self {
+            WorkerCommand::Clear => Some(0),
+            WorkerCommand::Finish => Some(1),
+            WorkerCommand::Step { .. } => Some(2),
+            WorkerCommand::Replay { .. } => Some(3),
+            WorkerCommand::GetCandidates { .. } => Some(4),
+            WorkerCommand::GetCandidatesWithOutcomes { .. } => Some(5),
+            WorkerCommand::GetActions { .. } => Some(6),
+            WorkerCommand::GetOutcomes { .. } => Some(7),
+            WorkerCommand::GetDoorMatchCounts { .. } => Some(8),
+            WorkerCommand::GetFeatures { .. } => Some(9),
+            WorkerCommand::GetFeaturesAfterCandidates { .. } => Some(10),
+            WorkerCommand::GetSparseFeaturesAfterCandidates { .. } => Some(11),
+            WorkerCommand::GetFeatureFrontierCountAfterCandidates { .. } => Some(12),
+            WorkerCommand::PackFeatures { .. } => Some(13),
+            WorkerCommand::StepKnown { .. } => Some(21),
+            WorkerCommand::Shutdown => None,
+        }
+    }
+}
+
 // Feature preparation reports only metadata needed to allocate output buffers. Bulk data is
 // written through shared memory, and other commands return "done" when they finish.
 enum WorkerResponse {
@@ -216,6 +317,12 @@ struct WorkerHandle {
     command_tx: channel::Sender<WorkerCommand>,
     response_rx: channel::Receiver<WorkerResponse>,
     join_handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Clone, Copy)]
+enum StepCommandKind {
+    Step,
+    StepKnown,
 }
 
 impl WorkerHandle {
@@ -267,6 +374,12 @@ fn worker_loop(
 ) {
     let mut pending_features = Vec::new();
     while let Ok(command) = command_rx.recv() {
+        let profile_metric_idx = command.profile_metric_idx();
+        let profile_start = if PROFILE_ENABLED.load(Ordering::Relaxed) {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let response = match command {
             WorkerCommand::Clear => {
                 for env in &mut environments {
@@ -296,6 +409,32 @@ fn worker_loop(
 
                 for (env_idx, env) in environments.iter_mut().enumerate() {
                     env.step(
+                        Action {
+                            room_idx: room_idx[env_idx],
+                            x: room_x[env_idx],
+                            y: room_y[env_idx],
+                        },
+                        &common_data,
+                    );
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::StepKnown {
+                room_idx,
+                room_x,
+                room_y,
+            } => {
+                // SAFETY: The main thread guarantees that for the duration of this command,
+                // the input slices remain valid and that no other thread mutates them.
+                let room_idx = unsafe { room_idx.into_slice() };
+                let room_x = unsafe { room_x.into_slice() };
+                let room_y = unsafe { room_y.into_slice() };
+                debug_assert_eq!(room_idx.len(), environments.len());
+                debug_assert_eq!(room_x.len(), environments.len());
+                debug_assert_eq!(room_y.len(), environments.len());
+
+                for (env_idx, env) in environments.iter_mut().enumerate() {
+                    env.step_known(
                         Action {
                             room_idx: room_idx[env_idx],
                             x: room_x[env_idx],
@@ -675,6 +814,9 @@ fn worker_loop(
             }
             WorkerCommand::Shutdown => break,
         };
+        if let (Some(metric_idx), Some(start)) = (profile_metric_idx, profile_start) {
+            record_profile_metric(metric_idx, start.elapsed());
+        }
 
         if response_tx.send(response).is_err() {
             break;
@@ -1487,6 +1629,73 @@ impl EnvironmentGroup {
             action_count: 0,
         })
     }
+
+    fn step_with_kind<'py>(
+        &mut self,
+        py: Python<'py>,
+        room_idx: PyReadonlyArray1<'py, RoomIdx>,
+        room_x: PyReadonlyArray1<'py, Coord>,
+        room_y: PyReadonlyArray1<'py, Coord>,
+        kind: StepCommandKind,
+    ) -> PyResult<()> {
+        let room_idx = room_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_idx must be a contiguous 1D numpy array"))?;
+        let room_x = room_x
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_x must be a contiguous 1D numpy array"))?;
+        let room_y = room_y
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_y must be a contiguous 1D numpy array"))?;
+
+        if room_idx.len() != room_x.len() || room_idx.len() != room_y.len() {
+            return Err(PyValueError::new_err(format!(
+                "room_idx, room_x, and room_y must have the same length; got {}, {}, and {}",
+                room_idx.len(),
+                room_x.len(),
+                room_y.len()
+            )));
+        }
+
+        if room_idx.len() != self.num_environments {
+            return Err(PyValueError::new_err(format!(
+                "action arrays must have length num_environments {}; got {}",
+                self.num_environments,
+                room_idx.len(),
+            )));
+        }
+
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let action_start = worker.start;
+                let action_end = worker.end();
+                let command = match kind {
+                    StepCommandKind::Step => WorkerCommand::Step {
+                        room_idx: InputShard::from_slice(&room_idx[action_start..action_end]),
+                        room_x: InputShard::from_slice(&room_x[action_start..action_end]),
+                        room_y: InputShard::from_slice(&room_y[action_start..action_end]),
+                    },
+                    StepCommandKind::StepKnown => WorkerCommand::StepKnown {
+                        room_idx: InputShard::from_slice(&room_idx[action_start..action_end]),
+                        room_x: InputShard::from_slice(&room_x[action_start..action_end]),
+                        room_y: InputShard::from_slice(&room_y[action_start..action_end]),
+                    },
+                };
+                if let Err(err) = worker.send(command) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
+
+        self.action_count += 1;
+        Ok(())
+    }
 }
 
 #[pymethods]
@@ -1577,55 +1786,17 @@ impl EnvironmentGroup {
         room_x: PyReadonlyArray1<'py, Coord>,
         room_y: PyReadonlyArray1<'py, Coord>,
     ) -> PyResult<()> {
-        let room_idx = room_idx
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("room_idx must be a contiguous 1D numpy array"))?;
-        let room_x = room_x
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("room_x must be a contiguous 1D numpy array"))?;
-        let room_y = room_y
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("room_y must be a contiguous 1D numpy array"))?;
+        self.step_with_kind(py, room_idx, room_x, room_y, StepCommandKind::Step)
+    }
 
-        if room_idx.len() != room_x.len() || room_idx.len() != room_y.len() {
-            return Err(PyValueError::new_err(format!(
-                "room_idx, room_x, and room_y must have the same length; got {}, {}, and {}",
-                room_idx.len(),
-                room_x.len(),
-                room_y.len()
-            )));
-        }
-
-        if room_idx.len() != self.num_environments {
-            return Err(PyValueError::new_err(format!(
-                "action arrays must have length num_environments {}; got {}",
-                self.num_environments,
-                room_idx.len(),
-            )));
-        }
-
-        py.detach(|| {
-            let mut sent_workers = Vec::with_capacity(self.workers.len());
-            let mut first_error = None;
-            for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let action_start = worker.start;
-                let action_end = worker.end();
-                if let Err(err) = worker.send(WorkerCommand::Step {
-                    room_idx: InputShard::from_slice(&room_idx[action_start..action_end]),
-                    room_x: InputShard::from_slice(&room_x[action_start..action_end]),
-                    room_y: InputShard::from_slice(&room_y[action_start..action_end]),
-                }) {
-                    set_first_error(&mut first_error, err);
-                    break;
-                }
-                sent_workers.push(worker_idx);
-            }
-
-            wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })?;
-
-        self.action_count += 1;
-        Ok(())
+    fn step_known<'py>(
+        &mut self,
+        py: Python<'py>,
+        room_idx: PyReadonlyArray1<'py, RoomIdx>,
+        room_x: PyReadonlyArray1<'py, Coord>,
+        room_y: PyReadonlyArray1<'py, Coord>,
+    ) -> PyResult<()> {
+        self.step_with_kind(py, room_idx, room_x, room_y, StepCommandKind::StepKnown)
     }
 
     fn replay<'py>(

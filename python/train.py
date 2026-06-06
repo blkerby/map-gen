@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 import safetensors.torch
 import torch
+import map_gen
 from aim import Run
 from safetensors import safe_open
 
@@ -32,6 +33,10 @@ class Args:
     verify_outcome_consistency: bool
     device: str
     load_checkpoint: Path | None
+    profile: bool
+
+
+type RustProfileReport = list[tuple[str, int, int]]
 
 
 @dataclass
@@ -199,6 +204,7 @@ class GenerationProcessState:
     device: torch.device
     envs: list
     model: torch.nn.Module
+    profile: bool
 
 
 GENERATION_PROCESS_STATE: GenerationProcessState | None = None
@@ -209,6 +215,7 @@ def initialize_generation_process(
     rooms_json: str,
     device_text: str,
     device_index: int,
+    profile: bool,
 ) -> None:
     global GENERATION_PROCESS_STATE
     config = Config.model_validate_json(config_json)
@@ -228,17 +235,20 @@ def initialize_generation_process(
     model.eval()
     if config.model.compile:
         model = torch.compile(model, dynamic=True)
-    GENERATION_PROCESS_STATE = GenerationProcessState(config, len(rooms), device, envs, model)
+    map_gen.set_profile_enabled(profile)
+    GENERATION_PROCESS_STATE = GenerationProcessState(config, len(rooms), device, envs, model, profile)
 
 
 def run_generation_process_task(
     model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
-) -> tuple[EpisodeData, Outcomes, DoorMatchCounts]:
+) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, RustProfileReport]:
     if GENERATION_PROCESS_STATE is None:
         raise RuntimeError("generation process was not initialized")
     state = GENERATION_PROCESS_STATE
+    if state.profile:
+        map_gen.reset_profile()
     state.model.load_state_dict(model_state)
     generation_config = Config.model_validate_json(generation_config_json)
     gen_configs = [
@@ -263,11 +273,25 @@ def run_generation_process_task(
         state.device,
         verify_outcome_consistency=verify_outcome_consistency,
     )
+    profile_report = map_gen.profile_report() if state.profile else []
     return (
         episode_data.to(torch.device("cpu")),
         outcomes.to(torch.device("cpu")),
         door_match_counts.to(torch.device("cpu")),
+        profile_report,
     )
+
+
+def merge_profile_reports(reports: list[RustProfileReport]) -> RustProfileReport:
+    merged = {}
+    for report in reports:
+        for name, count, nanos in report:
+            merged_count, merged_nanos = merged.get(name, (0, 0))
+            merged[name] = (merged_count + count, merged_nanos + nanos)
+    return [
+        (name, count, nanos)
+        for name, (count, nanos) in merged.items()
+    ]
 
 
 @dataclass
@@ -467,7 +491,7 @@ class TrainingSession:
         env.clear()
         feature_batches = []
         for step in range(self.episode_length):
-            env.step(Actions(
+            env.step_known(Actions(
                 train_actions_cpu.room_idx[:, step],
                 train_actions_cpu.room_x[:, step],
                 train_actions_cpu.room_y[:, step],
@@ -584,10 +608,11 @@ class TrainingSession:
         self.main_optimizer.step()
         self.update_ema_model()
 
-    def generate_round(self) -> tuple[EpisodeData, Outcomes, DoorMatchCounts]:
+    def generate_round(self) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, RustProfileReport]:
         episode_data_iterations = []
         outcome_iterations = []
         door_match_count_iterations = []
+        profile_reports = []
         model_state = {
             name: as_checkpoint_tensor(value)
             for name, value in self.ema_model.state_dict().items()
@@ -612,10 +637,12 @@ class TrainingSession:
                 iteration_episode_data,
                 iteration_outcomes,
                 iteration_door_match_counts,
+                iteration_profile_report,
             ) in shard_results:
                 episode_data_iterations.append(iteration_episode_data.to(self.device))
                 outcome_iterations.append(iteration_outcomes.to(self.device))
                 door_match_count_iterations.append(iteration_door_match_counts.to(self.device))
+                profile_reports.append(iteration_profile_report)
 
         return (
             EpisodeData(
@@ -653,6 +680,7 @@ class TrainingSession:
                     dim=0,
                 ),
             ),
+            merge_profile_reports(profile_reports),
         )
 
     def train_round(
@@ -792,12 +820,39 @@ class TrainingSession:
         #     ),
         # )
 
+    def log_profile_report(self, report: RustProfileReport, round_idx: int) -> None:
+        rows = [
+            (name, count, nanos)
+            for name, count, nanos in report
+            if count > 0 or nanos > 0
+        ]
+        if not rows:
+            logging.info("round %s Rust profile: no samples recorded", round_idx)
+            return
+
+        total_nanos = sum(nanos for _, _, nanos in rows)
+        logging.info("round %s Rust profile, summed worker CPU time:", round_idx)
+        for name, count, nanos in sorted(rows, key=lambda row: row[2], reverse=True):
+            total_ms = nanos / 1_000_000.0
+            avg_us = nanos / count / 1_000.0 if count > 0 else 0.0
+            pct = nanos / total_nanos * 100.0 if total_nanos > 0 else 0.0
+            logging.info(
+                "  %-55s %10.3f ms %6.2f%% %8s calls %10.3f us/call",
+                name,
+                total_ms,
+                pct,
+                count,
+                avg_us,
+            )
+
     def run(self) -> None:
         try:
             total_episodes = self.config.knot_episodes[-1]
             start_round = self.num_episodes // self.episodes_per_round
             for round_idx in range(start_round, total_episodes // self.episodes_per_round):
-                episode_data, gen_outcomes, door_match_counts = self.generate_round()
+                if self.args.profile:
+                    map_gen.reset_profile()
+                episode_data, gen_outcomes, door_match_counts, generation_profile = self.generate_round()
                 self.num_episodes += self.episodes_per_round
                 step_config = instantiate_scheduleable_config(self.config, self.num_episodes)
                 avg_loss = self.train_round(episode_data, gen_outcomes, step_config)
@@ -811,6 +866,12 @@ class TrainingSession:
                     round_idx,
                     step_config,
                 )
+                if self.args.profile:
+                    parent_profile = map_gen.profile_report()
+                    self.log_profile_report(
+                        merge_profile_reports([parent_profile, generation_profile]),
+                        round_idx,
+                    )
                 completed_round = round_idx + 1
                 if completed_round % self.config.checkpoint_period == 0:
                     self.save_checkpoint(self.checkpoint_path(completed_round))
@@ -846,12 +907,18 @@ def parse_args() -> Args:
         type=Path,
         help="resume mutable training state from a safetensors checkpoint",
     )
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="log per-round Rust engine command timing",
+    )
     namespace = parser.parse_args()
     return Args(
         config=namespace.config,
         verify_outcome_consistency=namespace.verify_outcome_consistency,
         device=namespace.device,
         load_checkpoint=namespace.load_checkpoint,
+        profile=namespace.profile,
     )
 
 
@@ -941,6 +1008,8 @@ def setup_logging(config: Config, args: Args) -> str:
         logging.info("Outcome consistency verification enabled.")
     if args.load_checkpoint is not None:
         logging.info("Loading checkpoint from %s", args.load_checkpoint)
+    if args.profile:
+        logging.info("Rust engine profiling enabled.")
     return run_path
 
 
@@ -987,6 +1056,7 @@ def create_generation_process_executors(
     config: Config,
     rooms: list[dict],
     generation_devices: list[torch.device],
+    profile: bool,
 ) -> list[ProcessPoolExecutor]:
     logging.info(
         "Using %s generation process(es), one per generation device.",
@@ -1000,7 +1070,7 @@ def create_generation_process_executors(
             max_workers=1,
             mp_context=context,
             initializer=initialize_generation_process,
-            initargs=(config_json, rooms_json, str(generation_device), device_index),
+            initargs=(config_json, rooms_json, str(generation_device), device_index, profile),
         )
         for device_index, generation_device in enumerate(generation_devices)
     ]
@@ -1009,6 +1079,7 @@ def create_generation_process_executors(
 def build_session(args: Args) -> TrainingSession:
     config = Config.model_validate_json(args.config.read_text())
     validate_config(config)
+    map_gen.set_profile_enabled(args.profile)
     round_episode_count = episodes_per_round(config)
     run_path = setup_logging(config, args)
     rooms = json.loads(config.room_set.read_text())
@@ -1040,6 +1111,7 @@ def build_session(args: Args) -> TrainingSession:
         config,
         rooms,
         generation_devices,
+        args.profile,
     )
     initial_config = instantiate_scheduleable_config(config, 0)
     main_optimizer = torch.optim.Adam(

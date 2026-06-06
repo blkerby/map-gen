@@ -6,16 +6,41 @@ use rand::prelude::*;
 use serde::Deserialize;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::time::Instant;
 
 use crate::common::{
     Action, CommonData, ConnectionVariantIdx, Coord, DirDoorIdx, Direction, DoorKind, DoorLocation,
     DoorValidOutcome, GeometryData, GeometryIdx, NUM_DIRS, PartIdx, RoomIdx, RoomPartIdx,
     get_behind_door_position,
 };
+use crate::engine::{profile_enabled, record_profile_metric};
 use crate::scc_dag::SccDag;
 
 const NO_COMPONENT: usize = usize::MAX;
 pub const FEATURE_FRONTIER_WIDTH: usize = 5;
+const PROFILE_STEP_PUSH_ACTION: usize = 14;
+const PROFILE_STEP_MARK_ROOM_USED: usize = 15;
+const PROFILE_STEP_COMPONENTS_EDGES: usize = 16;
+const PROFILE_STEP_OCCUPANCY: usize = 17;
+const PROFILE_STEP_MATCH_EXISTING_FRONTIERS: usize = 18;
+const PROFILE_STEP_BUILD_NEW_FRONTIER_CANDIDATES: usize = 19;
+const PROFILE_STEP_FILTER_EXISTING_FRONTIERS: usize = 20;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CandidateUpdate {
+    Build,
+    Skip,
+}
+
+fn profile_start() -> Option<Instant> {
+    profile_enabled().then(Instant::now)
+}
+
+fn profile_end(metric_idx: usize, start: Option<Instant>) {
+    if let Some(start) = start {
+        record_profile_metric(metric_idx, start.elapsed());
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct FrontierEdge {
@@ -472,7 +497,11 @@ impl Environment {
     }
 
     pub fn step(&mut self, action: Action, common: &CommonData) {
-        self.step_impl(action, common, true);
+        self.step_impl(action, common, CandidateUpdate::Build);
+    }
+
+    pub fn step_known(&mut self, action: Action, common: &CommonData) {
+        self.step_impl(action, common, CandidateUpdate::Skip);
     }
 
     fn step_for_features(&mut self, action: Action, common: &CommonData) {
@@ -531,9 +560,11 @@ impl Environment {
         &mut self,
         action: Action,
         common: &CommonData,
-        update_outcomes_and_occupancy: bool,
+        candidate_update: CandidateUpdate,
     ) {
+        let profile = profile_start();
         self.actions.push(action);
+        profile_end(PROFILE_STEP_PUSH_ACTION, profile);
         if self.finished {
             return;
         }
@@ -546,34 +577,39 @@ impl Environment {
         let action_geometry_idx = room.geometry_idx;
         let connection_variant_idx = room.connection_variant_idx;
         assert!(!self.room_used[action.room_idx as usize]);
+        let profile = profile_start();
         self.room_used.set(action.room_idx as usize, true);
         self.room_x[action.room_idx as usize] = action.x;
         self.room_y[action.room_idx as usize] = action.y;
         self.geometry_unused_count[action_geometry_idx as usize] -= 1;
         self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
+        profile_end(PROFILE_STEP_MARK_ROOM_USED, profile);
+
+        let profile = profile_start();
         self.add_room_components_and_edges(action, common);
-        if update_outcomes_and_occupancy {
-            for &(dx, dy) in &common.geometry[action_geometry_idx as usize].occupied_tiles {
-                let x = action.x + dx;
-                let y = action.y + dy;
-                if x >= 0 && y >= 0 && x < self.map_size.0 && y < self.map_size.1 {
-                    self.occupancy[y as usize * self.map_size.0 as usize + x as usize] = 1;
-                }
+        profile_end(PROFILE_STEP_COMPONENTS_EDGES, profile);
+
+        let profile = profile_start();
+        for &(dx, dy) in &common.geometry[action_geometry_idx as usize].occupied_tiles {
+            let x = action.x + dx;
+            let y = action.y + dy;
+            if x >= 0 && y >= 0 && x < self.map_size.0 && y < self.map_size.1 {
+                self.occupancy[y as usize * self.map_size.0 as usize + x as usize] = 1;
             }
         }
+        profile_end(PROFILE_STEP_OCCUPANCY, profile);
 
         // Remove the frontiers that the new room connects to (if any),
         // and update the frontier with the new unconnected doors of the new room.
         for door in room.doors.iter() {
             let door_loc = DoorLocation::new(door, action.x, action.y);
             if let Some(frontier) = self.frontier.remove(&door_loc) {
+                let profile = profile_start();
                 // This frontier is now connected, so remove it and mark the doors as connected:
                 let i1 = door.dir_door_idx;
                 let i2 = frontier.dir_door_idx;
-                if update_outcomes_and_occupancy {
-                    self.door_matches[door.direction as usize][i1 as usize] = i2;
-                    self.door_matches[door.direction.opposite() as usize][i2 as usize] = i1;
-                }
+                self.door_matches[door.direction as usize][i1 as usize] = i2;
+                self.door_matches[door.direction.opposite() as usize][i2 as usize] = i1;
                 let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
                 let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
                     .room_part_idx;
@@ -585,52 +621,60 @@ impl Environment {
                     self.room_part_component[p2 as usize],
                     self.room_part_component[p1 as usize],
                 );
+                profile_end(PROFILE_STEP_MATCH_EXISTING_FRONTIERS, profile);
             } else {
                 // This door is not connected to any existing frontier, so it becomes a new frontier.
                 // Check all doors with the given orientation, to list which ones could connect here.
-                let (x1, y1) =
-                    get_behind_door_position(door.direction, action.x + door.x, action.y + door.y);
                 let mut candidates = vec![];
-                'door: for opp_door in
-                    common.geometry_dir_door[door.direction.opposite() as usize].iter()
-                {
-                    if self.geometry_unused_count[opp_door.geometry_idx as usize] == 0 {
-                        // A geometry with no unused room representatives cannot be used again.
-                        continue;
-                    }
-                    let room_x = x1 - opp_door.x;
-                    let room_y = y1 - opp_door.y;
-                    let geometry = &common.geometry[opp_door.geometry_idx as usize];
-                    if room_x < -geometry.min_x
-                        || room_x > self.map_size.0 - 1 - geometry.max_x
-                        || room_y < -geometry.min_y
-                        || room_y > self.map_size.1 - 1 - geometry.max_y
+                if candidate_update == CandidateUpdate::Build {
+                    let profile = profile_start();
+                    let (x1, y1) = get_behind_door_position(
+                        door.direction,
+                        action.x + door.x,
+                        action.y + door.y,
+                    );
+                    'door: for opp_door in
+                        common.geometry_dir_door[door.direction.opposite() as usize].iter()
                     {
-                        // The room cannot be placed at this position due to map boundaries.
-                        continue;
-                    }
-
-                    for a in &self.actions {
-                        let placed_geometry_idx = common.room[a.room_idx as usize].geometry_idx;
-                        if common.has_geometry_intersection(
-                            placed_geometry_idx,
-                            a.x,
-                            a.y,
-                            opp_door.geometry_idx,
-                            room_x,
-                            room_y,
-                        ) {
-                            continue 'door;
+                        if self.geometry_unused_count[opp_door.geometry_idx as usize] == 0 {
+                            // A geometry with no unused room representatives cannot be used again.
+                            continue;
                         }
-                    }
+                        let room_x = x1 - opp_door.x;
+                        let room_y = y1 - opp_door.y;
+                        let geometry = &common.geometry[opp_door.geometry_idx as usize];
+                        if room_x < -geometry.min_x
+                            || room_x > self.map_size.0 - 1 - geometry.max_x
+                            || room_y < -geometry.min_y
+                            || room_y > self.map_size.1 - 1 - geometry.max_y
+                        {
+                            // The room cannot be placed at this position due to map boundaries.
+                            continue;
+                        }
 
-                    // The geometry had no intersections with existing rooms, so it is a valid candidate at this frontier.
-                    let candidate = GeometryAction {
-                        geometry_idx: opp_door.geometry_idx,
-                        x: room_x,
-                        y: room_y,
-                    };
-                    candidates.push(candidate);
+                        for a in &self.actions {
+                            let placed_geometry_idx = common.room[a.room_idx as usize].geometry_idx;
+                            if common.has_geometry_intersection(
+                                placed_geometry_idx,
+                                a.x,
+                                a.y,
+                                opp_door.geometry_idx,
+                                room_x,
+                                room_y,
+                            ) {
+                                continue 'door;
+                            }
+                        }
+
+                        // The geometry had no intersections with existing rooms, so it is a valid candidate at this frontier.
+                        let candidate = GeometryAction {
+                            geometry_idx: opp_door.geometry_idx,
+                            x: room_x,
+                            y: room_y,
+                        };
+                        candidates.push(candidate);
+                    }
+                    profile_end(PROFILE_STEP_BUILD_NEW_FRONTIER_CANDIDATES, profile);
                 }
                 let frontier = Frontier {
                     dir_door_idx: door.dir_door_idx,
@@ -644,26 +688,30 @@ impl Environment {
         }
 
         // Filter existing frontiers to remove geometries blocked by the new room or with no unused representatives.
-        let geometry_unused_count = &self.geometry_unused_count;
-        for frontier in self.frontier.values_mut() {
-            frontier.candidates.retain(|cand| {
-                geometry_unused_count[cand.geometry_idx as usize] > 0
-                    && !common.has_geometry_intersection(
-                        action_geometry_idx,
-                        action.x,
-                        action.y,
-                        cand.geometry_idx,
-                        cand.x,
-                        cand.y,
-                    )
-            });
+        if candidate_update == CandidateUpdate::Build {
+            let profile = profile_start();
+            let geometry_unused_count = &self.geometry_unused_count;
+            for frontier in self.frontier.values_mut() {
+                frontier.candidates.retain(|cand| {
+                    geometry_unused_count[cand.geometry_idx as usize] > 0
+                        && !common.has_geometry_intersection(
+                            action_geometry_idx,
+                            action.x,
+                            action.y,
+                            cand.geometry_idx,
+                            cand.x,
+                            cand.y,
+                        )
+                });
+            }
+            profile_end(PROFILE_STEP_FILTER_EXISTING_FRONTIERS, profile);
         }
     }
 
     pub fn replay(&mut self, actions: &[Action], common: &CommonData) {
         self.clear(common);
         for &action in actions {
-            self.step(action, common);
+            self.step_known(action, common);
         }
         self.finish();
     }
@@ -1282,31 +1330,39 @@ impl Environment {
             }
         }
 
-        let (frontier_merged_scc_dag, frontier_merged_component_remap) =
-            self.scc_dag_with_merged_frontiers();
+        let frontier_reachability = if self.finished {
+            None
+        } else {
+            Some(self.scc_dag_with_merged_frontiers())
+        };
         let mut connections_valid = Vec::with_capacity(common.room_connection.len());
         for connection in &common.room_connection {
-            let mut outcome = if self.room_used[connection.room_idx as usize] {
+            let outcome = if self.room_used[connection.room_idx as usize] {
                 let from_component =
                     self.room_part_component(common, connection.room_idx, connection.from_part);
                 let to_component =
                     self.room_part_component(common, connection.room_idx, connection.to_part);
                 if self.scc_dag.can_reach(from_component, to_component) {
                     DoorValidOutcome::Valid
-                } else if frontier_merged_scc_dag.can_reach(
-                    frontier_merged_component_remap[from_component],
-                    frontier_merged_component_remap[to_component],
-                ) {
-                    DoorValidOutcome::Unknown
+                } else if let Some((frontier_merged_scc_dag, frontier_merged_component_remap)) =
+                    &frontier_reachability
+                {
+                    if frontier_merged_scc_dag.can_reach(
+                        frontier_merged_component_remap[from_component],
+                        frontier_merged_component_remap[to_component],
+                    ) {
+                        DoorValidOutcome::Unknown
+                    } else {
+                        DoorValidOutcome::Invalid
+                    }
                 } else {
                     DoorValidOutcome::Invalid
                 }
+            } else if self.finished {
+                DoorValidOutcome::Invalid
             } else {
                 DoorValidOutcome::Unknown
             };
-            if self.finished && outcome != DoorValidOutcome::Valid {
-                outcome = DoorValidOutcome::Invalid;
-            }
             connections_valid.push(outcome);
         }
 
@@ -1984,6 +2040,111 @@ mod tests {
             simulated,
             env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
         );
+    }
+
+    #[test]
+    fn features_do_not_depend_on_frontier_candidate_lists() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": [[0, 1], [1, 2], [2, 0]]
+            },
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let config = FeatureConfig::all();
+        let actions = [
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+            },
+            Action {
+                room_idx: 1,
+                x: 1,
+                y: 0,
+            },
+        ];
+        let mut full_env = Environment::new(&common, (4, 4), 0);
+        let mut known_env = Environment::new(&common, (4, 4), 0);
+
+        for action in actions {
+            full_env.step(action, &common);
+            known_env.step_known(action, &common);
+            assert_eq!(
+                full_env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4),
+                known_env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+            );
+        }
+    }
+
+    #[test]
+    fn finished_outcomes_do_not_depend_on_frontier_candidate_lists() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": [[0, 1], [1, 2], [2, 0]]
+            },
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let actions = [
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+            },
+            Action {
+                room_idx: 1,
+                x: 1,
+                y: 0,
+            },
+        ];
+        let mut full_env = Environment::new(&common, (4, 4), 0);
+        let mut replay_env = Environment::new(&common, (4, 4), 0);
+
+        for action in actions {
+            full_env.step(action, &common);
+        }
+        full_env.finish();
+        replay_env.replay(&actions, &common);
+
+        let full_outcomes = full_env.outcomes(&common);
+        let replay_outcomes = replay_env.outcomes(&common);
+        assert!(full_outcomes.door_valid == replay_outcomes.door_valid);
+        assert!(full_outcomes.connections_valid == replay_outcomes.connections_valid);
     }
 
     #[test]
