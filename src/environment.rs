@@ -58,6 +58,7 @@ pub struct Outcomes {
 #[serde(deny_unknown_fields)]
 pub struct FeatureConfig {
     pub inventory: bool,
+    pub temperature: bool,
     pub room_position: bool,
     pub frontier_mask: bool,
     pub frontier_position: bool,
@@ -74,6 +75,7 @@ pub struct FeatureConfig {
 impl FeatureConfig {
     pub fn is_empty(&self) -> bool {
         !self.inventory
+            && !self.temperature
             && !self.room_position
             && !self.connection_reachability
             && !self.has_frontier_features()
@@ -106,6 +108,7 @@ impl FeatureConfig {
     pub fn all() -> Self {
         Self {
             inventory: true,
+            temperature: true,
             room_position: true,
             frontier_mask: true,
             frontier_position: true,
@@ -124,6 +127,7 @@ impl FeatureConfig {
     pub fn all_disabled() -> Self {
         Self {
             inventory: false,
+            temperature: false,
             room_position: false,
             frontier_mask: false,
             frontier_position: false,

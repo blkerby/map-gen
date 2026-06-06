@@ -380,6 +380,7 @@ class TrainingSession:
                     env.get_features(
                         torch.device("cpu"),
                         log_temperature,
+                        self.config.features.temperature,
                         0,
                         train_actions.room_idx.shape[0],
                     )

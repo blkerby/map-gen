@@ -1240,6 +1240,7 @@ impl SparseFeatureBuffers {
     ) -> Self {
         let sparse_features = FeatureConfig {
             inventory: false,
+            temperature: false,
             room_position: false,
             connection_reachability: false,
             ..*features
@@ -1282,6 +1283,7 @@ impl SparseFeatureBuffers {
     ) -> SparseFeatureOutputShards {
         let sparse_features = FeatureConfig {
             inventory: false,
+            temperature: false,
             room_position: false,
             connection_reachability: false,
             ..*features

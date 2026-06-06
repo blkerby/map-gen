@@ -121,6 +121,7 @@ def extract_candidate_features(
     env: EnvironmentGroup,
     candidates: Actions,
     log_temperature: torch.Tensor,
+    include_temperature: bool,
     sparse_frontiers: bool = False,
     feature_slot: PinnedSparseFeatureSlot | None = None,
 ):
@@ -161,15 +162,16 @@ def extract_candidate_features(
             candidates.room_idx.shape[0],
             candidates.room_idx.shape[1],
             log_temperature,
+            include_temperature,
             sparse_row_count,
             frontier_count,
         ).flatten_candidates()
     if sparse_frontiers:
         return env.get_sparse_features_after_candidates(
-            candidates, torch.device("cpu"), log_temperature, 0
+            candidates, torch.device("cpu"), log_temperature, include_temperature, 0
         ).flatten_candidates()
     return env.get_features_after_candidates(
-        candidates, torch.device("cpu"), log_temperature, 0
+        candidates, torch.device("cpu"), log_temperature, include_temperature, 0
     ).flatten_candidates()
 
 
@@ -346,10 +348,15 @@ class PinnedSparseFeatureSlot:
         environment_count: int,
         candidate_count: int,
         log_temperature: torch.Tensor,
+        include_temperature: bool,
         sparse_row_count: int,
         frontier_count: int,
     ) -> SparseFeatures:
         snapshot_count = environment_count * candidate_count
+        if not include_temperature:
+            log_temperature = log_temperature.new_empty(
+                [environment_count, candidate_count, 0]
+            )
         return SparseFeatures(
             self.inventory[:snapshot_count].view(
                 environment_count, candidate_count, self.inventory_width
@@ -530,6 +537,7 @@ def start_generation_step(
                         group.env,
                         candidates,
                         candidate_log_temperature,
+                        group.env.engine.features.temperature,
                         sparse_frontiers,
                         group.feature_slot,
                     ),

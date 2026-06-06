@@ -322,11 +322,15 @@ class EnvironmentGroup:
         values,
         device: torch.device,
         log_temperature: torch.Tensor,
+        include_temperature: bool,
     ) -> Features:
         tensors = [torch.from_numpy(value).to(device) for value in values]
+        log_temperature = log_temperature.to(device)
+        if not include_temperature:
+            log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
         return Features(
             *tensors[:4],
-            log_temperature.to(device),
+            log_temperature,
             *tensors[4:],
         )
 
@@ -334,6 +338,7 @@ class EnvironmentGroup:
         self,
         device: torch.device,
         log_temperature: torch.Tensor,
+        include_temperature: bool,
         environment_start: int = 0,
         environment_count: Optional[int] = None,
     ) -> Features:
@@ -341,6 +346,7 @@ class EnvironmentGroup:
             self.env.get_features(environment_start, environment_count),
             device,
             log_temperature,
+            include_temperature,
         )
 
     def get_features_after_candidates(
@@ -348,6 +354,7 @@ class EnvironmentGroup:
         actions: Actions,
         device: torch.device,
         log_temperature: torch.Tensor,
+        include_temperature: bool,
         environment_start: int = 0,
     ) -> Features:
         values = self.env.get_features_after_candidates(
@@ -356,13 +363,14 @@ class EnvironmentGroup:
             actions.room_y.contiguous().cpu().numpy(),
             environment_start,
         )
-        return self._features(values, device, log_temperature)
+        return self._features(values, device, log_temperature, include_temperature)
 
     def get_sparse_features_after_candidates(
         self,
         actions: Actions,
         device: torch.device,
         log_temperature: torch.Tensor,
+        include_temperature: bool,
         environment_start: int = 0,
     ) -> SparseFeatures:
         values, frontier_count = self.env.get_sparse_features_after_candidates(
@@ -373,7 +381,11 @@ class EnvironmentGroup:
         )
         return SparseFeatures(
             *(torch.from_numpy(value).to(device) for value in values[:4]),
-            log_temperature.to(device),
+            log_temperature.to(device) if include_temperature else log_temperature.new_empty([
+                log_temperature.shape[0],
+                log_temperature.shape[1],
+                0,
+            ]).to(device),
             *(torch.from_numpy(value).to(device) for value in values[4:]),
             frontier_count,
         )

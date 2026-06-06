@@ -32,6 +32,7 @@
   },
   "features": {
     "inventory": true,
+    "temperature": true,
     "room_position": true,
     "frontier_mask": true,
     "frontier_position": true,
