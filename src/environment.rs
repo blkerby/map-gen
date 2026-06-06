@@ -59,6 +59,7 @@ pub struct Outcomes {
 pub struct FeatureConfig {
     pub inventory: bool,
     pub temperature: bool,
+    pub action_candidates: bool,
     pub room_position: bool,
     pub frontier_mask: bool,
     pub frontier_position: bool,
@@ -76,6 +77,7 @@ impl FeatureConfig {
     pub fn is_empty(&self) -> bool {
         !self.inventory
             && !self.temperature
+            && !self.action_candidates
             && !self.room_position
             && !self.connection_reachability
             && !self.has_frontier_features()
@@ -109,6 +111,7 @@ impl FeatureConfig {
         Self {
             inventory: true,
             temperature: true,
+            action_candidates: true,
             room_position: true,
             frontier_mask: true,
             frontier_position: true,
@@ -128,6 +131,7 @@ impl FeatureConfig {
         Self {
             inventory: false,
             temperature: false,
+            action_candidates: false,
             room_position: false,
             frontier_mask: false,
             frontier_position: false,

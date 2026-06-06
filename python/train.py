@@ -367,6 +367,9 @@ class TrainingSession:
         train_actions = train_episode_data.actions
         train_actions_cpu = train_actions.to(torch.device("cpu"))
         log_temperature = torch.log(train_episode_data.temperature).to(torch.device("cpu"))
+        log_action_candidates = torch.log(train_episode_data.action_candidates).to(
+            torch.device("cpu")
+        )
         env.clear()
         feature_batches = []
         for step in range(self.episode_length):
@@ -381,6 +384,8 @@ class TrainingSession:
                         torch.device("cpu"),
                         log_temperature,
                         self.config.features.temperature,
+                        log_action_candidates,
+                        self.config.features.action_candidates,
                         0,
                         train_actions.room_idx.shape[0],
                     )
@@ -554,6 +559,9 @@ class TrainingSession:
                 ),
                 temperature=torch.cat([
                     episode_data.temperature for episode_data in episode_data_iterations
+                ]),
+                action_candidates=torch.cat([
+                    episode_data.action_candidates for episode_data in episode_data_iterations
                 ]),
             ),
             Outcomes(
@@ -915,8 +923,8 @@ def create_models(config: Config, rooms: list[dict], engine: Engine, device: tor
         ],
     ]
     if config.model.compile:
-        main_model = torch.compile(main_model)
-        generation_models = [torch.compile(model) for model in generation_models]
+        main_model = torch.compile(main_model, dynamic=True)
+        generation_models = [torch.compile(model, dynamic=True) for model in generation_models]
         ema_model = generation_models[0]
 
     return main_model, ema_model, generation_models

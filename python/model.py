@@ -153,14 +153,18 @@ class FrontierModel(torch.nn.Module):
                 torch.nn.Linear(hidden_width, embedding_width, bias=False),
             ) for _ in range(num_layers if use_neighbors else 0)
         ])
-        global_width = output_metadata.num_room_connection_variants * self.features.inventory + \
-            embedding_width * (
+        global_width = (
+            output_metadata.num_room_connection_variants * self.features.inventory
+            + embedding_width * (
                 2 * self.features.frontier_mask
                 + (
                     self.features.connection_reachability
                     and self.num_connection_outputs > 0
                 )
-            ) + int(self.features.temperature)
+            )
+            + int(self.features.temperature)
+            + int(self.features.action_candidates)
+        )
         self.global_mlp = torch.nn.Sequential(
             torch.nn.Linear(global_width, hidden_width, bias=False),
             torch.nn.GELU(),
@@ -342,6 +346,8 @@ class FrontierModel(torch.nn.Module):
             ))
         if self.features.temperature:
             global_inputs.append(features.log_temperature.to(X.dtype).unsqueeze(-1))
+        if self.features.action_candidates:
+            global_inputs.append(features.log_action_candidates.to(X.dtype).unsqueeze(-1))
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None

@@ -1241,6 +1241,7 @@ impl SparseFeatureBuffers {
         let sparse_features = FeatureConfig {
             inventory: false,
             temperature: false,
+            action_candidates: false,
             room_position: false,
             connection_reachability: false,
             ..*features
@@ -1284,6 +1285,7 @@ impl SparseFeatureBuffers {
         let sparse_features = FeatureConfig {
             inventory: false,
             temperature: false,
+            action_candidates: false,
             room_position: false,
             connection_reachability: false,
             ..*features

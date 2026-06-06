@@ -16,6 +16,7 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import logging
+import math
 import threading
 import torch
 
@@ -122,6 +123,8 @@ def extract_candidate_features(
     candidates: Actions,
     log_temperature: torch.Tensor,
     include_temperature: bool,
+    log_action_candidates: torch.Tensor,
+    include_action_candidates: bool,
     sparse_frontiers: bool = False,
     feature_slot: PinnedSparseFeatureSlot | None = None,
 ):
@@ -163,15 +166,29 @@ def extract_candidate_features(
             candidates.room_idx.shape[1],
             log_temperature,
             include_temperature,
+            log_action_candidates,
+            include_action_candidates,
             sparse_row_count,
             frontier_count,
         ).flatten_candidates()
     if sparse_frontiers:
         return env.get_sparse_features_after_candidates(
-            candidates, torch.device("cpu"), log_temperature, include_temperature, 0
+            candidates,
+            torch.device("cpu"),
+            log_temperature,
+            include_temperature,
+            log_action_candidates,
+            include_action_candidates,
+            0,
         ).flatten_candidates()
     return env.get_features_after_candidates(
-        candidates, torch.device("cpu"), log_temperature, include_temperature, 0
+        candidates,
+        torch.device("cpu"),
+        log_temperature,
+        include_temperature,
+        log_action_candidates,
+        include_action_candidates,
+        0,
     ).flatten_candidates()
 
 
@@ -205,6 +222,9 @@ def transfer_features_sync(
     room_y = features.room_y.to(device, non_blocking=non_blocking)
     room_placed = features.room_placed.to(device, non_blocking=non_blocking)
     log_temperature = features.log_temperature.to(device, non_blocking=non_blocking)
+    log_action_candidates = features.log_action_candidates.to(
+        device, non_blocking=non_blocking
+    )
     connection_reachability = features.connection_reachability.to(
         device, non_blocking=non_blocking
     )
@@ -214,6 +234,7 @@ def transfer_features_sync(
         room_y,
         room_placed,
         log_temperature,
+        log_action_candidates,
         densify_sparse_feature(
             features.frontier, 0, dense_shape, dense_row_idx, device, non_blocking
         ),
@@ -349,12 +370,18 @@ class PinnedSparseFeatureSlot:
         candidate_count: int,
         log_temperature: torch.Tensor,
         include_temperature: bool,
+        log_action_candidates: torch.Tensor,
+        include_action_candidates: bool,
         sparse_row_count: int,
         frontier_count: int,
     ) -> SparseFeatures:
         snapshot_count = environment_count * candidate_count
         if not include_temperature:
             log_temperature = log_temperature.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+        if not include_action_candidates:
+            log_action_candidates = log_action_candidates.new_empty(
                 [environment_count, candidate_count, 0]
             )
         return SparseFeatures(
@@ -367,6 +394,7 @@ class PinnedSparseFeatureSlot:
                 environment_count, candidate_count, self.room_width
             ),
             log_temperature,
+            log_action_candidates,
             self.frontier[:sparse_row_count],
             self.frontier_occupancy[:sparse_row_count],
             self.frontier_neighbor[:sparse_row_count],
@@ -527,6 +555,12 @@ def start_generation_step(
             candidate_log_temperature = torch.log(group.config.temperature).to(
                 torch.device("cpu")
             ).unsqueeze(1).expand(candidates.room_idx.shape).contiguous()
+            candidate_log_action_candidates = torch.full(
+                candidates.room_idx.shape,
+                math.log(group.config.max_candidates),
+                dtype=torch.float32,
+                device=torch.device("cpu"),
+            )
             pending.append(
                 PendingGenerationStep(
                     group,
@@ -538,6 +572,8 @@ def start_generation_step(
                         candidates,
                         candidate_log_temperature,
                         group.env.engine.features.temperature,
+                        candidate_log_action_candidates,
+                        group.env.engine.features.action_candidates,
                         sparse_frontiers,
                         group.feature_slot,
                     ),
@@ -573,6 +609,9 @@ def merge_generation_results(
                 )
             ),
             temperature=torch.cat([episode_data.temperature for episode_data, _, _ in results]),
+            action_candidates=torch.cat([
+                episode_data.action_candidates for episode_data, _, _ in results
+            ]),
         ),
         Outcomes(
             *(
@@ -672,7 +711,15 @@ def run_generation_groups(
             if verify_outcome_consistency:
                 merge_verified_outcomes(group.known_outcomes, outcomes, "finish")
             results.append((
-                EpisodeData(actions, group.config.temperature),
+                EpisodeData(
+                    actions,
+                    group.config.temperature,
+                    torch.full_like(
+                        group.config.temperature,
+                        group.config.max_candidates,
+                        dtype=torch.float32,
+                    ),
+                ),
                 outcomes,
                 door_match_counts,
             ))

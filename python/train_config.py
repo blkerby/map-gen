@@ -50,6 +50,7 @@ class GenerationConfig(StrictBaseModel):
 class FeatureConfig(StrictBaseModel):
     inventory: bool
     temperature: bool
+    action_candidates: bool
     room_position: bool
     frontier_mask: bool
     frontier_position: bool

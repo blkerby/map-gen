@@ -17,6 +17,7 @@ class ExperienceStorage:
         next_file_number = self.num_files
         assert episode_data.actions.room_idx.shape[0] == self.episodes_per_file
         assert episode_data.temperature.shape[0] == self.episodes_per_file
+        assert episode_data.action_candidates.shape[0] == self.episodes_per_file
         file_path = os.path.join(self.data_path, "{}.safetensors".format(next_file_number))
         safetensors.torch.save_file(
             {
@@ -24,6 +25,7 @@ class ExperienceStorage:
                 "room_x": episode_data.actions.room_x,
                 "room_y": episode_data.actions.room_y,
                 "temperature": episode_data.temperature,
+                "action_candidates": episode_data.action_candidates,
             },
             file_path,
         )
@@ -41,6 +43,7 @@ class ExperienceStorage:
                     room_y=tensors["room_y"],
                 ),
                 temperature=tensors["temperature"],
+                action_candidates=tensors["action_candidates"],
             )
             ind = torch.randperm(data.actions.room_idx.shape[0])[:episodes_per_file]
             data = EpisodeData(
@@ -50,6 +53,7 @@ class ExperienceStorage:
                     room_y=data.actions.room_y[ind],
                 ),
                 temperature=data.temperature[ind],
+                action_candidates=data.action_candidates[ind],
             )
             data_list.append(data)
 
@@ -60,6 +64,7 @@ class ExperienceStorage:
                 room_y=torch.cat([data.actions.room_y for data in data_list], dim=0),
             ),
             temperature=torch.cat([data.temperature for data in data_list], dim=0),
+            action_candidates=torch.cat([data.action_candidates for data in data_list], dim=0),
         )
 
     def sample(self, batch_size, episodes_per_file, hist_c) -> EpisodeData:
