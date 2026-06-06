@@ -101,6 +101,7 @@ class Features:
     room_x: torch.Tensor
     room_y: torch.Tensor
     room_placed: torch.Tensor
+    log_temperature: torch.Tensor
     frontier: torch.Tensor
     frontier_occupancy: torch.Tensor
     frontier_neighbor: torch.Tensor
@@ -124,6 +125,7 @@ class SparseFeatures:
     room_x: torch.Tensor
     room_y: torch.Tensor
     room_placed: torch.Tensor
+    log_temperature: torch.Tensor
     frontier: torch.Tensor
     frontier_occupancy: torch.Tensor
     frontier_neighbor: torch.Tensor
@@ -139,6 +141,7 @@ class SparseFeatures:
             self.room_x.flatten(0, 1),
             self.room_y.flatten(0, 1),
             self.room_placed.flatten(0, 1),
+            self.log_temperature.flatten(0, 1),
             self.frontier,
             self.frontier_occupancy,
             self.frontier_neighbor,
@@ -315,18 +318,37 @@ class EnvironmentGroup:
         )
 
     @staticmethod
-    def _features(values, device: torch.device) -> Features:
-        return Features(*(torch.from_numpy(value).to(device) for value in values))
+    def _features(
+        values,
+        device: torch.device,
+        log_temperature: torch.Tensor,
+    ) -> Features:
+        tensors = [torch.from_numpy(value).to(device) for value in values]
+        return Features(
+            *tensors[:4],
+            log_temperature.to(device),
+            *tensors[4:],
+        )
 
     def get_features(
-        self, device: torch.device, environment_start: int = 0, environment_count: Optional[int] = None
+        self,
+        device: torch.device,
+        log_temperature: torch.Tensor,
+        environment_start: int = 0,
+        environment_count: Optional[int] = None,
     ) -> Features:
         return self._features(
-            self.env.get_features(environment_start, environment_count), device
+            self.env.get_features(environment_start, environment_count),
+            device,
+            log_temperature,
         )
 
     def get_features_after_candidates(
-        self, actions: Actions, device: torch.device, environment_start: int = 0
+        self,
+        actions: Actions,
+        device: torch.device,
+        log_temperature: torch.Tensor,
+        environment_start: int = 0,
     ) -> Features:
         values = self.env.get_features_after_candidates(
             actions.room_idx.contiguous().cpu().numpy(),
@@ -334,10 +356,14 @@ class EnvironmentGroup:
             actions.room_y.contiguous().cpu().numpy(),
             environment_start,
         )
-        return self._features(values, device)
+        return self._features(values, device, log_temperature)
 
     def get_sparse_features_after_candidates(
-        self, actions: Actions, device: torch.device, environment_start: int = 0
+        self,
+        actions: Actions,
+        device: torch.device,
+        log_temperature: torch.Tensor,
+        environment_start: int = 0,
     ) -> SparseFeatures:
         values, frontier_count = self.env.get_sparse_features_after_candidates(
             actions.room_idx.contiguous().cpu().numpy(),
@@ -346,7 +372,9 @@ class EnvironmentGroup:
             environment_start,
         )
         return SparseFeatures(
-            *(torch.from_numpy(value).to(device) for value in values),
+            *(torch.from_numpy(value).to(device) for value in values[:4]),
+            log_temperature.to(device),
+            *(torch.from_numpy(value).to(device) for value in values[4:]),
             frontier_count,
         )
 

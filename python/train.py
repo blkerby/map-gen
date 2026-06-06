@@ -358,9 +358,15 @@ class TrainingSession:
                 task_idx += 1
         return tasks
 
-    def prepare_feature_batches(self, train_actions: Actions, env) -> tuple[int, list[Features]]:
+    def prepare_feature_batches(
+        self,
+        train_episode_data: EpisodeData,
+        env,
+    ) -> tuple[int, list[Features]]:
         offset = torch.randint(0, self.config.train.sample_period, [1]).item()
+        train_actions = train_episode_data.actions
         train_actions_cpu = train_actions.to(torch.device("cpu"))
+        log_temperature = torch.log(train_episode_data.temperature).to(torch.device("cpu"))
         env.clear()
         feature_batches = []
         for step in range(self.episode_length):
@@ -373,6 +379,7 @@ class TrainingSession:
                 feature_batches.append(
                     env.get_features(
                         torch.device("cpu"),
+                        log_temperature,
                         0,
                         train_actions.room_idx.shape[0],
                     )
@@ -386,9 +393,8 @@ class TrainingSession:
         train_outcomes: Outcomes,
         env,
     ) -> PreparedTrainBatch:
-        train_actions = train_episode_data.actions
         prefix_count, feature_batches = self.prepare_feature_batches(
-            train_actions,
+            train_episode_data,
             env,
         )
         return PreparedTrainBatch(

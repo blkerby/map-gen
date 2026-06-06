@@ -120,6 +120,7 @@ def merge_known_outcome(
 def extract_candidate_features(
     env: EnvironmentGroup,
     candidates: Actions,
+    log_temperature: torch.Tensor,
     sparse_frontiers: bool = False,
     feature_slot: PinnedSparseFeatureSlot | None = None,
 ):
@@ -159,15 +160,16 @@ def extract_candidate_features(
         return feature_slot.features(
             candidates.room_idx.shape[0],
             candidates.room_idx.shape[1],
+            log_temperature,
             sparse_row_count,
             frontier_count,
         ).flatten_candidates()
     if sparse_frontiers:
         return env.get_sparse_features_after_candidates(
-            candidates, torch.device("cpu"), 0
+            candidates, torch.device("cpu"), log_temperature, 0
         ).flatten_candidates()
     return env.get_features_after_candidates(
-        candidates, torch.device("cpu"), 0
+        candidates, torch.device("cpu"), log_temperature, 0
     ).flatten_candidates()
 
 
@@ -200,6 +202,7 @@ def transfer_features_sync(
     room_x = features.room_x.to(device, non_blocking=non_blocking)
     room_y = features.room_y.to(device, non_blocking=non_blocking)
     room_placed = features.room_placed.to(device, non_blocking=non_blocking)
+    log_temperature = features.log_temperature.to(device, non_blocking=non_blocking)
     connection_reachability = features.connection_reachability.to(
         device, non_blocking=non_blocking
     )
@@ -208,6 +211,7 @@ def transfer_features_sync(
         room_x,
         room_y,
         room_placed,
+        log_temperature,
         densify_sparse_feature(
             features.frontier, 0, dense_shape, dense_row_idx, device, non_blocking
         ),
@@ -341,6 +345,7 @@ class PinnedSparseFeatureSlot:
         self,
         environment_count: int,
         candidate_count: int,
+        log_temperature: torch.Tensor,
         sparse_row_count: int,
         frontier_count: int,
     ) -> SparseFeatures:
@@ -354,6 +359,7 @@ class PinnedSparseFeatureSlot:
             self.room_placed[:snapshot_count].view(
                 environment_count, candidate_count, self.room_width
             ),
+            log_temperature,
             self.frontier[:sparse_row_count],
             self.frontier_occupancy[:sparse_row_count],
             self.frontier_neighbor[:sparse_row_count],
@@ -511,6 +517,9 @@ def start_generation_step(
     while group.step < group.config.episode_length:
         candidates, outcomes = get_generation_candidates(group, device)
         if candidates.room_idx.shape[1] != 1:
+            candidate_log_temperature = torch.log(group.config.temperature).to(
+                torch.device("cpu")
+            ).unsqueeze(1).expand(candidates.room_idx.shape).contiguous()
             pending.append(
                 PendingGenerationStep(
                     group,
@@ -520,6 +529,7 @@ def start_generation_step(
                         extract_candidate_features,
                         group.env,
                         candidates,
+                        candidate_log_temperature,
                         sparse_frontiers,
                         group.feature_slot,
                     ),

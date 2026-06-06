@@ -160,7 +160,7 @@ class FrontierModel(torch.nn.Module):
                     self.features.connection_reachability
                     and self.num_connection_outputs > 0
                 )
-            )
+            ) + 1
         self.global_mlp = torch.nn.Sequential(
             torch.nn.Linear(global_width, hidden_width, bias=False),
             torch.nn.GELU(),
@@ -340,6 +340,7 @@ class FrontierModel(torch.nn.Module):
             global_inputs.append(self.connection_reachability_embedding(
                 features.connection_reachability.to(X.dtype)
             ))
+        global_inputs.append(features.log_temperature.to(X.dtype).unsqueeze(-1))
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None
