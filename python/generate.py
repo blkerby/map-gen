@@ -54,6 +54,27 @@ def outcome_reward(model_logprobs: torch.Tensor, known_invalid: torch.Tensor) ->
     return torch.where(known_invalid < 0, model_logprobs, known_reward)
 
 
+def balance_reward(
+    balance_score: torch.Tensor,
+    door_invalid: torch.Tensor,
+    known_invalid: torch.Tensor,
+) -> torch.Tensor:
+    if known_invalid.ndim == balance_score.ndim - 1:
+        known_invalid = known_invalid.unsqueeze(1)
+    match_probability = torch.sigmoid(-door_invalid)
+    known_match_probability = torch.where(
+        known_invalid == 0,
+        torch.ones_like(match_probability),
+        torch.zeros_like(match_probability),
+    )
+    match_probability = torch.where(
+        known_invalid < 0,
+        match_probability,
+        known_match_probability,
+    )
+    return -balance_score * match_probability
+
+
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
 def compute_expected_reward(preds, outcomes, config: GenerateConfig):
@@ -61,7 +82,16 @@ def compute_expected_reward(preds, outcomes, config: GenerateConfig):
     connection_logprobs = torch.nn.functional.logsigmoid(-preds.connection_invalid)
     door_logprobs = outcome_reward(door_logprobs, outcomes.door_invalid)
     connection_logprobs = outcome_reward(connection_logprobs, outcomes.connection_invalid)
-    return torch.sum(door_logprobs, dim=2) + torch.sum(connection_logprobs, dim=2)
+    balance_scores = balance_reward(
+        preds.balance_score,
+        preds.door_invalid,
+        outcomes.door_invalid,
+    )
+    return (
+        config.reward_door * torch.sum(door_logprobs, dim=2)
+        + config.reward_connection * torch.sum(connection_logprobs, dim=2)
+        + config.reward_balance * torch.sum(balance_scores, dim=2)
+    )
 
 
 def select_outcomes(outcomes: Outcomes, index: torch.Tensor) -> Outcomes:
