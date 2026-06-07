@@ -27,7 +27,7 @@ from loss import (
     compute_balance_door_match_ss,
     compute_balance_loss,
     compute_balance_score_targets,
-    compute_loss,
+    compute_loss_breakdown,
 )
 from model import BalanceModel, FrontierModel
 from train_config import Config, episodes_per_round, instantiate_scheduleable_config, validate_config
@@ -60,6 +60,14 @@ class PreparedTrainBatch:
     door_matches: DoorMatches
     prefix_count: int
     feature_batches: list[Features]
+
+
+@dataclass
+class MainLossBreakdown:
+    total: float
+    door: float
+    connection: float
+    balance: float
 
 
 class Prefetcher:
@@ -626,16 +634,16 @@ class TrainingSession:
         self,
         prepared_batch: PreparedTrainBatch,
         loss_scale: float,
-    ) -> tuple[float, float]:
+    ) -> tuple[MainLossBreakdown, float]:
         loss = self.train_feature_batch_backward(prepared_batch, loss_scale)
         balance_loss = self.train_balance_batch_backward(prepared_batch, loss_scale)
 
-        if not torch.isfinite(loss):
-            raise RuntimeError(f"non-finite loss before backward: {loss.item()}")
+        if not math.isfinite(loss.total):
+            raise RuntimeError(f"non-finite loss before backward: {loss.total}")
         if not torch.isfinite(balance_loss):
             raise RuntimeError(f"non-finite balance loss before backward: {balance_loss.item()}")
 
-        return loss.item(), balance_loss.item()
+        return loss, balance_loss.item()
 
     def train_balance_batch_backward(
         self,
@@ -652,7 +660,7 @@ class TrainingSession:
         self,
         prepared_batch: PreparedTrainBatch,
         loss_scale: float,
-    ) -> torch.Tensor:
+    ) -> MainLossBreakdown:
         if prepared_batch.prefix_count == 0:
             raise RuntimeError("feature training batch has no sampled prefixes")
 
@@ -674,7 +682,7 @@ class TrainingSession:
             dtype=torch.bool,
             device=self.device,
         )
-        total_loss = 0.0
+        total_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0)
         prefix_weight = 1.0 / prepared_batch.prefix_count
 
         for features in prepared_batch.feature_batches:
@@ -685,7 +693,7 @@ class TrainingSession:
                 enabled=self.device.type == "cuda" and self.config.model.autocast,
             ):
                 preds = self.main_model(features)
-            prefix_loss = compute_loss(
+            prefix_loss = compute_loss_breakdown(
                 preds,
                 repeated_outcomes,
                 mask,
@@ -693,9 +701,12 @@ class TrainingSession:
                 repeated_balance_score_mask,
                 self.loss_config,
             )
-            (prefix_loss * prefix_weight * loss_scale).backward()
-            total_loss += prefix_loss.item() * prefix_weight
-        return torch.tensor(total_loss, device=self.device)
+            (prefix_loss.total * prefix_weight * loss_scale).backward()
+            total_loss.total += prefix_loss.total.item() * prefix_weight
+            total_loss.door += prefix_loss.door.item() * prefix_weight
+            total_loss.connection += prefix_loss.connection.item() * prefix_weight
+            total_loss.balance += prefix_loss.balance.item() * prefix_weight
+        return total_loss
 
     def train_optimizer_step(self) -> None:
         grad_norm = torch.nn.utils.clip_grad_norm_(self.main_model.parameters(), max_norm=1.0)
@@ -791,29 +802,32 @@ class TrainingSession:
         episode_data: EpisodeData,
         gen_outcomes: Outcomes,
         step_config: Config,
-    ) -> tuple[float, float]:
+    ) -> tuple[MainLossBreakdown, float]:
         self.main_optimizer.param_groups[0]["lr"] = step_config.optimizer.lr
         self.balance_optimizer.param_groups[0]["lr"] = step_config.balance_optimizer.lr
 
-        total_loss = 0.0
+        total_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0)
         total_balance_loss = 0.0
         train_batch_count = 0
 
         def prepare_train_task(task: TrainBatchTask) -> PreparedTrainBatch:
             return self.prepare_train_batch_task(task, episode_data, gen_outcomes)
 
-        def train_prepared_batch_group(prepared_batches: list[PreparedTrainBatch]) -> tuple[float, float, int]:
+        def train_prepared_batch_group(prepared_batches: list[PreparedTrainBatch]) -> tuple[MainLossBreakdown, float, int]:
             self.main_model.zero_grad()
             self.balance_model.zero_grad()
             loss_scale = 1.0 / len(prepared_batches)
-            group_loss = 0.0
+            group_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0)
             group_balance_loss = 0.0
             for prepared_batch in prepared_batches:
                 batch_loss, batch_balance_loss = self.train_batch_backward(
                     prepared_batch,
                     loss_scale,
                 )
-                group_loss += batch_loss
+                group_loss.total += batch_loss.total
+                group_loss.door += batch_loss.door
+                group_loss.connection += batch_loss.connection
+                group_loss.balance += batch_loss.balance
                 group_balance_loss += batch_balance_loss
             self.train_optimizer_step()
             return group_loss, group_balance_loss, len(prepared_batches)
@@ -826,25 +840,39 @@ class TrainingSession:
             prepared_batch_group.append(prepared_batch)
             if len(prepared_batch_group) == self.config.train.gradient_accumulation_steps:
                 group_loss, group_balance_loss, group_count = train_prepared_batch_group(prepared_batch_group)
-                total_loss += group_loss
+                total_loss.total += group_loss.total
+                total_loss.door += group_loss.door
+                total_loss.connection += group_loss.connection
+                total_loss.balance += group_loss.balance
                 total_balance_loss += group_balance_loss
                 train_batch_count += group_count
                 prepared_batch_group = []
         if prepared_batch_group:
             group_loss, group_balance_loss, group_count = train_prepared_batch_group(prepared_batch_group)
-            total_loss += group_loss
+            total_loss.total += group_loss.total
+            total_loss.door += group_loss.door
+            total_loss.connection += group_loss.connection
+            total_loss.balance += group_loss.balance
             total_balance_loss += group_balance_loss
             train_batch_count += group_count
 
         if train_batch_count == 0:
-            return 0.0, 0.0
-        return total_loss / train_batch_count, total_balance_loss / train_batch_count
+            return MainLossBreakdown(0.0, 0.0, 0.0, 0.0), 0.0
+        return (
+            MainLossBreakdown(
+                total_loss.total / train_batch_count,
+                total_loss.door / train_batch_count,
+                total_loss.connection / train_batch_count,
+                total_loss.balance / train_batch_count,
+            ),
+            total_balance_loss / train_batch_count,
+        )
 
     def log_outcomes(
         self,
         outcomes: Outcomes,
         door_match_counts: DoorMatchCounts,
-        loss: float,
+        loss: MainLossBreakdown,
         balance_loss: float,
         round_idx: int,
         step_config: Config,
@@ -897,7 +925,10 @@ class TrainingSession:
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
 
         metrics = {
-            "loss": loss,
+            "loss": loss.total,
+            "door_loss": loss.door,
+            "connection_loss": loss.connection,
+            "main_balance_loss": loss.balance,
             "balance_loss": balance_loss,
             "success_rate": success_rate,
             "success_door": success_door,
@@ -929,11 +960,15 @@ class TrainingSession:
 
         schedule_progress = min(self.num_episodes / self.config.knot_episodes[-1], 1.0)
         logging.info(
-            "round %s, loss %.4f, succ %.4f, total %.2f (min %s), door %.2f (min %s), "
+            "round %s, loss %.4f (door %.4f, conn %.4f, main_bal %.4f), "
+            "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), ss %.4f, bal_loss %.4f, "
             "bal_ss %.4f, frac %.4f",
             round_idx,
-            loss,
+            loss.total,
+            loss.door,
+            loss.connection,
+            loss.balance,
             scalar(success_rate),
             scalar(avg_invalid),
             scalar(min_invalid),

@@ -13,6 +13,14 @@ class LossConfig:
     balance_weight: float
 
 
+@dataclass
+class LossBreakdown:
+    total: torch.Tensor
+    door: torch.Tensor
+    connection: torch.Tensor
+    balance: torch.Tensor
+
+
 def masked_binary_cross_entropy_loss(preds: torch.Tensor, outcomes: torch.Tensor, mask: torch.Tensor, weight: float) -> torch.Tensor:
     mask = (mask & (outcomes >= 0)).to(preds.dtype)
     binary_loss = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -31,14 +39,14 @@ def masked_mean_squared_error_loss(
     return weight * torch.sum(squared_error * mask), weight * torch.sum(mask)
 
 
-def compute_loss(
+def compute_loss_breakdown(
     preds: Predictions,
     outcomes: Outcomes,
     mask: torch.Tensor,
     balance_score_targets: torch.Tensor,
     balance_score_mask: torch.Tensor,
     config: LossConfig,
-) -> torch.Tensor:
+) -> LossBreakdown:
     door_loss, door_wt = masked_binary_cross_entropy_loss(
         preds.door_invalid, outcomes.door_invalid, mask, config.door_weight)
     conn_loss, conn_wt = masked_binary_cross_entropy_loss(
@@ -52,7 +60,12 @@ def compute_loss(
     mean_loss = (door_loss + conn_loss + balance_loss) / (
         door_wt + conn_wt + balance_wt + 1e-15
     )
-    return mean_loss
+    return LossBreakdown(
+        total=mean_loss,
+        door=door_loss / (door_wt + 1e-15),
+        connection=conn_loss / (conn_wt + 1e-15),
+        balance=balance_loss / (balance_wt + 1e-15),
+    )
 
 
 def direction_balance_loss(logits: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
