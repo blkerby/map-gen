@@ -212,6 +212,7 @@ enum WorkerCommand {
         pre_connections_valid: OutputShard<i8>,
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
+        door_match: OutputShard<i16>,
     },
     GetActions {
         action_count: usize,
@@ -237,6 +238,7 @@ enum WorkerCommand {
         connection_outcome_count: usize,
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
+        door_match: OutputShard<i16>,
     },
     GetDoorMatchCounts {
         horizontal_counts: OutputShard<u64>,
@@ -481,6 +483,7 @@ fn worker_loop(
                 pre_connections_valid,
                 door_valid,
                 connections_valid,
+                door_match,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the output slices remain valid and that no other thread accesses them.
@@ -491,6 +494,7 @@ fn worker_loop(
                 let pre_connections_valid = unsafe { pre_connections_valid.into_mut_slice() };
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
+                let door_match = unsafe { door_match.into_mut_slice() };
                 debug_assert_eq!(room_idx.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_x.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_y.len(), environments.len() * max_candidates);
@@ -510,25 +514,34 @@ fn worker_loop(
                     connections_valid.len(),
                     environments.len() * max_candidates * connection_outcome_count
                 );
+                debug_assert_eq!(
+                    door_match.len(),
+                    environments.len() * max_candidates * door_outcome_count
+                );
 
                 let mut consistency_error = None;
                 pending_features.clear();
                 for (env_idx, env) in environments.iter_mut().enumerate() {
-                    let (pre_candidate_outcomes, candidates, outcomes, mut candidate_features) =
-                        match env.get_filtered_candidates_with_outcomes(
-                            &common_data,
-                            max_candidates,
-                            &features,
-                            frontier_neighbor_algorithm,
-                            frontier_neighbor_count,
-                            frontier_window_size,
-                        ) {
-                            Ok(result) => result,
-                            Err(err) => {
-                                consistency_error = Some(err);
-                                break;
-                            }
-                        };
+                    let (
+                        pre_candidate_outcomes,
+                        candidates,
+                        outcomes,
+                        door_matches,
+                        mut candidate_features,
+                    ) = match env.get_filtered_candidates_with_outcomes(
+                        &common_data,
+                        max_candidates,
+                        &features,
+                        frontier_neighbor_algorithm,
+                        frontier_neighbor_count,
+                        frontier_window_size,
+                    ) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            consistency_error = Some(err);
+                            break;
+                        }
+                    };
                     let pre_door_start = env_idx * door_outcome_count;
                     for (outcome_idx, outcome) in
                         pre_candidate_outcomes.door_valid.iter().enumerate()
@@ -553,6 +566,11 @@ fn worker_loop(
                     } else {
                         None
                     };
+                    let dummy_door_match = if candidates.len() < max_candidates {
+                        Some(vec![-1; door_outcome_count])
+                    } else {
+                        None
+                    };
                     let dummy_candidate = Action {
                         room_idx: common_data.room.len() as RoomIdx,
                         x: 0,
@@ -570,6 +588,10 @@ fn worker_loop(
                             .get(candidate_idx)
                             .or(dummy_outcome.as_ref())
                             .expect("dummy outcome must exist for padded candidates");
+                        let match_values = door_matches
+                            .get(candidate_idx)
+                            .or(dummy_door_match.as_ref())
+                            .expect("dummy door match must exist for padded candidates");
                         if candidate_idx >= candidate_features.len() {
                             candidate_features.push(env.features_after_candidate(
                                 &common_data,
@@ -595,6 +617,12 @@ fn worker_loop(
                             .zip(&outcome.connections_valid)
                         {
                             *dst = outcome as i8;
+                        }
+                        for (dst, &value) in door_match[door_start..door_end]
+                            .iter_mut()
+                            .zip(match_values)
+                        {
+                            *dst = value;
                         }
                     }
                     pending_features.append(&mut candidate_features);
@@ -705,6 +733,7 @@ fn worker_loop(
                 connection_outcome_count,
                 door_valid,
                 connections_valid,
+                door_match,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the input and output slices remain valid and that no other thread mutates
@@ -714,6 +743,7 @@ fn worker_loop(
                 let room_y = unsafe { room_y.into_slice() };
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
+                let door_match = unsafe { door_match.into_mut_slice() };
                 debug_assert_eq!(room_idx.len(), environment_count * candidate_count);
                 debug_assert_eq!(room_x.len(), environment_count * candidate_count);
                 debug_assert_eq!(room_y.len(), environment_count * candidate_count);
@@ -725,6 +755,10 @@ fn worker_loop(
                     connections_valid.len(),
                     environment_count * candidate_count * connection_outcome_count
                 );
+                debug_assert_eq!(
+                    door_match.len(),
+                    environment_count * candidate_count * door_outcome_count
+                );
 
                 for (env_idx, env) in environments
                     .iter_mut()
@@ -734,7 +768,7 @@ fn worker_loop(
                 {
                     for candidate_idx in 0..candidate_count {
                         let input_idx = env_idx * candidate_count + candidate_idx;
-                        let outcomes = env.outcomes_after_candidate(
+                        let (outcomes, match_values) = env.outcomes_after_candidate(
                             &common_data,
                             Action {
                                 room_idx: room_idx[input_idx],
@@ -747,6 +781,7 @@ fn worker_loop(
                             outcomes.connections_valid.len(),
                             connection_outcome_count
                         );
+                        debug_assert_eq!(match_values.len(), door_outcome_count);
                         let door_start = input_idx * door_outcome_count;
                         for (outcome_idx, outcome) in outcomes.door_valid.iter().enumerate() {
                             door_valid[door_start + outcome_idx] = match outcome {
@@ -754,6 +789,9 @@ fn worker_loop(
                                 DoorValidOutcome::Valid => 0,
                                 DoorValidOutcome::Invalid => 1,
                             };
+                        }
+                        for (outcome_idx, &value) in match_values.iter().enumerate() {
+                            door_match[door_start + outcome_idx] = value;
                         }
                         let connection_start = input_idx * connection_outcome_count;
                         for (outcome_idx, outcome) in outcomes.connections_valid.iter().enumerate()
@@ -1981,6 +2019,7 @@ impl EnvironmentGroup {
         Bound<'py, PyArray2<i8>>,
         Bound<'py, PyArray3<i8>>,
         Bound<'py, PyArray3<i8>>,
+        Bound<'py, PyArray3<i16>>,
         usize,
         usize,
         Vec<usize>,
@@ -1994,6 +2033,7 @@ impl EnvironmentGroup {
         let pre_connection_output_len = self.num_environments * connection_outcome_count;
         let door_output_len = output_len * door_outcome_count;
         let connection_output_len = output_len * connection_outcome_count;
+        let door_match_output_len = output_len * door_outcome_count;
         let dummy_candidate = Action {
             room_idx: self.common_data.room.len() as RoomIdx, // an invalid room index to indicate no-op
             x: 0,
@@ -2008,6 +2048,7 @@ impl EnvironmentGroup {
             vec![DoorValidOutcome::Unknown as i8; pre_connection_output_len];
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
+        let mut door_match = vec![-1; door_match_output_len];
 
         let (frontier_count, sparse_row_count, worker_sparse_row_counts) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -2024,6 +2065,8 @@ impl EnvironmentGroup {
                 let door_output_end = output_end * door_outcome_count;
                 let connection_output_start = output_start * connection_outcome_count;
                 let connection_output_end = output_end * connection_outcome_count;
+                let door_match_output_start = output_start * door_outcome_count;
+                let door_match_output_end = output_end * door_outcome_count;
 
                 if let Err(err) = worker.send(WorkerCommand::GetCandidatesWithOutcomes {
                     max_candidates,
@@ -2047,6 +2090,9 @@ impl EnvironmentGroup {
                     ),
                     connections_valid: OutputShard::from_slice(
                         &mut connections_valid[connection_output_start..connection_output_end],
+                    ),
+                    door_match: OutputShard::from_slice(
+                        &mut door_match[door_match_output_start..door_match_output_end],
                     ),
                 }) {
                     set_first_error(&mut first_error, err);
@@ -2094,6 +2140,13 @@ impl EnvironmentGroup {
                 self.num_environments,
                 max_candidates,
                 connection_outcome_count,
+            )?,
+            pyarray3_from_flat_vec(
+                py,
+                door_match,
+                self.num_environments,
+                max_candidates,
+                door_outcome_count,
             )?,
             frontier_count,
             sparse_row_count,
@@ -2160,7 +2213,11 @@ impl EnvironmentGroup {
         room_x: PyReadonlyArray2<'py, Coord>,
         room_y: PyReadonlyArray2<'py, Coord>,
         environment_start: usize,
-    ) -> PyResult<(Bound<'py, PyArray3<i8>>, Bound<'py, PyArray3<i8>>)> {
+    ) -> PyResult<(
+        Bound<'py, PyArray3<i8>>,
+        Bound<'py, PyArray3<i8>>,
+        Bound<'py, PyArray3<i16>>,
+    )> {
         let shape = room_idx.as_array().shape().to_vec();
         if room_x.as_array().shape() != shape
             || room_y.as_array().shape() != shape
@@ -2184,8 +2241,10 @@ impl EnvironmentGroup {
         let (door_outcome_count, connection_outcome_count) = output_sizes(&self.common_data);
         let door_output_len = environment_count * candidate_count * door_outcome_count;
         let connection_output_len = environment_count * candidate_count * connection_outcome_count;
+        let door_match_output_len = environment_count * candidate_count * door_outcome_count;
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
+        let mut door_match = vec![-1; door_match_output_len];
 
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -2204,6 +2263,9 @@ impl EnvironmentGroup {
                 let connection_output_start = input_start * connection_outcome_count;
                 let connection_output_end =
                     connection_output_start + input_len * connection_outcome_count;
+                let door_match_output_start = input_start * door_outcome_count;
+                let door_match_output_end =
+                    door_match_output_start + input_len * door_outcome_count;
                 if let Err(err) = worker.send(WorkerCommand::GetOutcomesAfterCandidates {
                     environment_start: start - worker.start,
                     environment_count,
@@ -2220,6 +2282,9 @@ impl EnvironmentGroup {
                     ),
                     connections_valid: OutputShard::from_slice(
                         &mut connections_valid[connection_output_start..connection_output_end],
+                    ),
+                    door_match: OutputShard::from_slice(
+                        &mut door_match[door_match_output_start..door_match_output_end],
                     ),
                 }) {
                     set_first_error(&mut first_error, err);
@@ -2245,6 +2310,13 @@ impl EnvironmentGroup {
                 environment_count,
                 candidate_count,
                 connection_outcome_count,
+            )?,
+            pyarray3_from_flat_vec(
+                py,
+                door_match,
+                environment_count,
+                candidate_count,
+                door_outcome_count,
             )?,
         ))
     }

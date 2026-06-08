@@ -99,7 +99,9 @@ class FrontierModel(torch.nn.Module):
         map_y,
         embedding_width,
         hidden_width,
+        door_match_embedding_width,
         num_layers,
+        door_counts,
         frontier_window_size,
         features: FeatureConfig,
     ):
@@ -109,16 +111,17 @@ class FrontierModel(torch.nn.Module):
         self.map_x = map_x
         self.map_y = map_y
         self.embedding_width = embedding_width
+        self.left_count, self.right_count, self.up_count, self.down_count = door_counts
+        if self.features.lookahead_outcomes and door_match_embedding_width <= 0:
+            raise ValueError("door_match_embedding_width must be greater than zero")
         door_output_size, connection_output_size = output_metadata.get_output_sizes()
         self.output_sizes = (
             door_output_size,
             connection_output_size,
             door_output_size,
         )
-        lookahead_outcome_width = (
-            2 * (door_output_size + connection_output_size)
-            * int(self.features.lookahead_outcomes)
-        )
+        if sum(door_counts) != door_output_size:
+            raise ValueError("door_counts must sum to the door output size")
         self.num_connection_outputs = len(output_metadata.connection)
         self.include_inventory = self.features.inventory
         # self.inventory_embedding = torch.nn.Parameter(
@@ -184,18 +187,37 @@ class FrontierModel(torch.nn.Module):
             )
             + int(self.features.temperature)
             + int(self.features.action_candidates)
+            + (
+                door_match_embedding_width
+                + 2 * connection_output_size
+            ) * int(self.features.lookahead_outcomes)
         )
         self.global_mlp = torch.nn.Sequential(
             torch.nn.Linear(global_width, hidden_width, bias=False),
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, embedding_width, bias=False),
         ) if global_width > 0 else None
-        self.lookahead_outcome_projection = (
-            torch.nn.Linear(lookahead_outcome_width, embedding_width, bias=False)
-            if lookahead_outcome_width > 0 else None
+        self.door_match_embedding_width = door_match_embedding_width
+        self.left_door_match_embedding = self._door_match_embedding(
+            self.left_count,
+            self.right_count,
+            door_match_embedding_width,
         )
-        if self.lookahead_outcome_projection is not None:
-            torch.nn.init.zeros_(self.lookahead_outcome_projection.weight)
+        self.right_door_match_embedding = self._door_match_embedding(
+            self.right_count,
+            self.left_count,
+            door_match_embedding_width,
+        )
+        self.up_door_match_embedding = self._door_match_embedding(
+            self.up_count,
+            self.down_count,
+            door_match_embedding_width,
+        )
+        self.down_door_match_embedding = self._door_match_embedding(
+            self.down_count,
+            self.up_count,
+            door_match_embedding_width,
+        )
         self.connection_reachability_embedding = (
             torch.nn.Linear(self.num_connection_outputs, embedding_width, bias=False)
             if self.features.connection_reachability
@@ -232,6 +254,18 @@ class FrontierModel(torch.nn.Module):
         self.balance_score_output = FactorizedOutcomeHead(
             output_metadata.door, output_metadata.num_door_variants, embedding_width)
 
+    def _door_match_embedding(
+        self,
+        source_count: int,
+        partner_count: int,
+        width: int,
+    ) -> torch.nn.Parameter | None:
+        if not self.features.lookahead_outcomes:
+            return None
+        return torch.nn.Parameter(
+            torch.randn([source_count, partner_count + 1, width]) / math.sqrt(width)
+        )
+
     def _position_embedding(self, x, y, embedding_x, embedding_y, offset=0):
         x = x.to(torch.int64) + offset
         y = y.to(torch.int64) + offset
@@ -254,17 +288,44 @@ class FrontierModel(torch.nn.Module):
             return torch.get_autocast_dtype(device_type)
         return next(self.parameters()).dtype
 
+    def _direction_door_match_features(
+        self,
+        matches: torch.Tensor,
+        embedding: torch.nn.Parameter | None,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if embedding is None or matches.shape[-1] == 0:
+            return matches.new_zeros(
+                [matches.shape[0], self.door_match_embedding_width],
+                dtype=dtype,
+            )
+        known = matches >= 0
+        safe_matches = matches.clamp(min=0).to(torch.int64)
+        source_idx = torch.arange(
+            embedding.shape[0],
+            dtype=torch.int64,
+            device=matches.device,
+        ).unsqueeze(0)
+        values = embedding.to(dtype)[source_idx, safe_matches]
+        return torch.sum(values * known.unsqueeze(-1), dim=1)
+
     def _lookahead_outcome_features(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
-        return torch.cat([
-            torch.stack([
-                (features.lookahead_door_invalid == 0).to(dtype),
-                (features.lookahead_door_invalid == 1).to(dtype),
-            ], dim=-1).flatten(1),
-            torch.stack([
-                (features.lookahead_connection_invalid == 0).to(dtype),
-                (features.lookahead_connection_invalid == 1).to(dtype),
-            ], dim=-1).flatten(1),
-        ], dim=-1)
+        left, right, up, down = torch.split(
+            features.lookahead_door_match,
+            [self.left_count, self.right_count, self.up_count, self.down_count],
+            dim=-1,
+        )
+        door_match_features = (
+            self._direction_door_match_features(left, self.left_door_match_embedding, dtype)
+            + self._direction_door_match_features(right, self.right_door_match_embedding, dtype)
+            + self._direction_door_match_features(up, self.up_door_match_embedding, dtype)
+            + self._direction_door_match_features(down, self.down_door_match_embedding, dtype)
+        )
+        connection_features = torch.stack([
+            (features.lookahead_connection_invalid == 0).to(dtype),
+            (features.lookahead_connection_invalid == 1).to(dtype),
+        ], dim=-1).flatten(1)
+        return torch.cat([door_match_features, connection_features], dim=-1)
 
     def _relative_position_features(self, features):
         if self.frontier_relative_pos_embedding_x is None:
@@ -388,15 +449,13 @@ class FrontierModel(torch.nn.Module):
             global_inputs.append(features.log_temperature.to(X.dtype).unsqueeze(-1))
         if self.features.action_candidates:
             global_inputs.append(features.log_action_candidates.to(X.dtype).unsqueeze(-1))
+        if self.features.lookahead_outcomes:
+            global_inputs.append(self._lookahead_outcome_features(features, X.dtype))
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None
             else X.new_zeros([X.shape[0], self.embedding_width])
         )
-        if self.lookahead_outcome_projection is not None:
-            global_state = global_state + self.lookahead_outcome_projection(
-                self._lookahead_outcome_features(features, X.dtype)
-            )
         if self.features.room_position:
             room_x = (features.room_x.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_y = (features.room_y.to(torch.int64) + COORD_OFFSET).unsqueeze(1)

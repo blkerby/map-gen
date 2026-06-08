@@ -183,7 +183,14 @@ def frontier_model_kwargs(
         "map_y": config.map_size[1],
         "embedding_width": config.model.embedding_width,
         "hidden_width": config.model.hidden_width,
+        "door_match_embedding_width": config.model.door_match_embedding_width,
         "num_layers": config.model.num_layers,
+        "door_counts": (
+            count_room_doors_by_direction(rooms, "left"),
+            count_room_doors_by_direction(rooms, "right"),
+            count_room_doors_by_direction(rooms, "up"),
+            count_room_doors_by_direction(rooms, "down"),
+        ),
         "frontier_window_size": config.generation.frontier_window_size,
         "features": config.features,
     }
@@ -527,6 +534,7 @@ class TrainingSession:
             Outcomes(
                 door_invalid=outcomes.door_invalid[start:end],
                 connection_invalid=outcomes.connection_invalid[start:end],
+                door_match=outcomes.door_match[start:end],
             ),
         )
 
@@ -602,6 +610,11 @@ class TrainingSession:
                         torch.full_like(lookahead_outcomes.connection_invalid, -1),
                         lookahead_outcomes.connection_invalid,
                     ),
+                    torch.where(
+                        dummy_action[:, None, None],
+                        torch.full_like(lookahead_outcomes.door_match, -1),
+                        lookahead_outcomes.door_match,
+                    ),
                 )
             if self.config.features.lookahead_outcomes:
                 env.step(next_actions)
@@ -618,6 +631,7 @@ class TrainingSession:
                         Outcomes(
                             lookahead_outcomes.door_invalid.squeeze(1),
                             lookahead_outcomes.connection_invalid.squeeze(1),
+                            lookahead_outcomes.door_match.squeeze(1),
                         ),
                         self.config.features.lookahead_outcomes,
                         0,
@@ -723,6 +737,7 @@ class TrainingSession:
         repeated_outcomes = Outcomes(
             door_invalid=train_outcomes.door_invalid.unsqueeze(1),
             connection_invalid=train_outcomes.connection_invalid.unsqueeze(1),
+            door_match=train_outcomes.door_match.unsqueeze(1),
         )
         with torch.no_grad():
             balance_preds = self.balance_model(torch.log(prepared_batch.episode_data.temperature))
@@ -845,6 +860,7 @@ class TrainingSession:
                 connection_invalid=torch.cat(
                     [outcomes.connection_invalid for outcomes in outcome_iterations]
                 ),
+                door_match=torch.cat([outcomes.door_match for outcomes in outcome_iterations]),
             ),
             DoorMatchCounts(
                 horizontal=torch.sum(

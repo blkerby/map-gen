@@ -209,6 +209,9 @@ def transfer_features_sync(
     lookahead_door_invalid = features.lookahead_door_invalid.to(
         device, non_blocking=non_blocking
     )
+    lookahead_door_match = features.lookahead_door_match.to(
+        device, non_blocking=non_blocking
+    )
     lookahead_connection_invalid = features.lookahead_connection_invalid.to(
         device, non_blocking=non_blocking
     )
@@ -223,6 +226,7 @@ def transfer_features_sync(
         log_temperature,
         log_action_candidates,
         lookahead_door_invalid,
+        lookahead_door_match,
         lookahead_connection_invalid,
         densify_sparse_feature(
             features.frontier, 0, dense_shape, dense_row_idx, device, non_blocking
@@ -376,9 +380,13 @@ class PinnedSparseFeatureSlot:
                 [environment_count, candidate_count, 0]
             )
         lookahead_door_invalid = lookahead_outcomes.door_invalid
+        lookahead_door_match = lookahead_outcomes.door_match
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid
         if not include_lookahead_outcomes:
             lookahead_door_invalid = lookahead_door_invalid.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_door_match = lookahead_door_match.new_empty(
                 [environment_count, candidate_count, 0]
             )
             lookahead_connection_invalid = lookahead_connection_invalid.new_empty(
@@ -396,6 +404,7 @@ class PinnedSparseFeatureSlot:
             log_temperature,
             log_action_candidates,
             lookahead_door_invalid,
+            lookahead_door_match,
             lookahead_connection_invalid,
             self.frontier[:sparse_row_count],
             self.frontier_occupancy[:sparse_row_count],

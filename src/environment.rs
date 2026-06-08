@@ -90,7 +90,7 @@ fn introduces_invalid_outcome(before: &Outcomes, after: &Outcomes) -> bool {
 }
 
 enum CandidateOutcome {
-    Clean(Outcomes, Features),
+    Clean(Outcomes, Vec<i16>, Features),
     Rejected,
 }
 
@@ -930,7 +930,16 @@ impl Environment {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-    ) -> Result<(Outcomes, Vec<Action>, Vec<Outcomes>, Vec<Features>), String> {
+    ) -> Result<
+        (
+            Outcomes,
+            Vec<Action>,
+            Vec<Outcomes>,
+            Vec<Vec<i16>>,
+            Vec<Features>,
+        ),
+        String,
+    > {
         let pre_candidate_outcomes = self.outcomes(common);
         let mut candidates = self.get_all_candidates(common);
         candidates.shuffle(&mut self.rng);
@@ -948,8 +957,8 @@ impl Environment {
                 frontier_window_size,
             )? {
                 CandidateOutcome::Rejected => rejected.push(candidate),
-                CandidateOutcome::Clean(post_candidate_outcomes, features) => {
-                    clean.push((candidate, post_candidate_outcomes, features));
+                CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
+                    clean.push((candidate, post_candidate_outcomes, door_match, features));
                     if clean.len() == max_candidates {
                         break;
                     }
@@ -962,7 +971,7 @@ impl Environment {
                 .into_iter()
                 .take(max_candidates)
                 .map(|candidate| {
-                    let (post_candidate_outcomes, features) = self
+                    let (post_candidate_outcomes, door_match, features) = self
                         .outcomes_and_features_after_candidate(
                             common,
                             candidate,
@@ -971,7 +980,7 @@ impl Environment {
                             frontier_neighbor_count,
                             frontier_window_size,
                         );
-                    (candidate, post_candidate_outcomes, features)
+                    (candidate, post_candidate_outcomes, door_match, features)
                 })
                 .collect()
         } else {
@@ -980,16 +989,19 @@ impl Environment {
         candidates_with_outcomes.truncate(max_candidates);
         let mut candidates = Vec::with_capacity(candidates_with_outcomes.len());
         let mut post_candidate_outcomes = Vec::with_capacity(candidates_with_outcomes.len());
+        let mut door_matches = Vec::with_capacity(candidates_with_outcomes.len());
         let mut features = Vec::with_capacity(candidates_with_outcomes.len());
-        for (candidate, outcomes, candidate_features) in candidates_with_outcomes {
+        for (candidate, outcomes, door_match, candidate_features) in candidates_with_outcomes {
             candidates.push(candidate);
             post_candidate_outcomes.push(outcomes);
+            door_matches.push(door_match);
             features.push(candidate_features);
         }
         Ok((
             pre_candidate_outcomes,
             candidates,
             post_candidate_outcomes,
+            door_matches,
             features,
         ))
     }
@@ -1054,14 +1066,13 @@ impl Environment {
             frontier_neighbor_count,
             frontier_window_size,
         );
+        let outcomes = Outcomes {
+            door_valid: door_valid.clone(),
+            connections_valid: connections_valid.clone(),
+        };
+        let door_match = self.door_match_feature(common, &outcomes);
         self.restore_lookahead_candidate(snapshot);
-        Ok(CandidateOutcome::Clean(
-            Outcomes {
-                door_valid,
-                connections_valid,
-            },
-            features,
-        ))
+        Ok(CandidateOutcome::Clean(outcomes, door_match, features))
     }
 
     fn outcomes_and_features_after_candidate(
@@ -1072,9 +1083,10 @@ impl Environment {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-    ) -> (Outcomes, Features) {
+    ) -> (Outcomes, Vec<i16>, Features) {
         let snapshot = self.apply_lookahead_candidate(candidate, common);
         let outcomes = self.outcomes(common);
+        let door_match = self.door_match_feature(common, &outcomes);
         let features = self.features_for_applied_candidate(
             common,
             candidate,
@@ -1084,14 +1096,43 @@ impl Environment {
             frontier_window_size,
         );
         self.restore_lookahead_candidate(snapshot);
-        (outcomes, features)
+        (outcomes, door_match, features)
     }
 
-    pub fn outcomes_after_candidate(&mut self, common: &CommonData, candidate: Action) -> Outcomes {
+    pub fn outcomes_after_candidate(
+        &mut self,
+        common: &CommonData,
+        candidate: Action,
+    ) -> (Outcomes, Vec<i16>) {
         let snapshot = self.apply_lookahead_candidate(candidate, common);
         let outcomes = self.outcomes(common);
+        let door_match = self.door_match_feature(common, &outcomes);
         self.restore_lookahead_candidate(snapshot);
-        outcomes
+        (outcomes, door_match)
+    }
+
+    fn door_match_feature(&self, common: &CommonData, outcomes: &Outcomes) -> Vec<i16> {
+        let mut result = Vec::with_capacity(outcomes.door_valid.len());
+        let mut outcome_idx = 0;
+        for dir in 0..NUM_DIRS {
+            let opposite_dir = match dir {
+                0 => Direction::Right as usize,
+                1 => Direction::Left as usize,
+                2 => Direction::Down as usize,
+                3 => Direction::Up as usize,
+                _ => unreachable!(),
+            };
+            let invalid_sentinel = common.room_dir_door[opposite_dir].len() as i16;
+            for door_idx in 0..common.room_dir_door[dir].len() {
+                result.push(match outcomes.door_valid[outcome_idx] {
+                    DoorValidOutcome::Unknown => -1,
+                    DoorValidOutcome::Valid => self.door_matches[dir][door_idx] as i16,
+                    DoorValidOutcome::Invalid => invalid_sentinel,
+                });
+                outcome_idx += 1;
+            }
+        }
+        result
     }
 
     fn features_for_applied_candidate(

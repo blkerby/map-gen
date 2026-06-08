@@ -24,6 +24,7 @@ class ModelConfig(StrictBaseModel):
     generation_autocast: bool
     embedding_width: int
     hidden_width: int
+    door_match_embedding_width: int
     num_layers: int
 
 

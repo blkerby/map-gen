@@ -80,11 +80,16 @@ class Outcomes:
     door_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (connection has return path), 1 = invalid (connection does not have return path)
     connection_invalid: torch.Tensor
+    # -1 = unknown; for a valid door this is its matched partner's index within
+    # the opposite direction; for an invalid door this is the opposite direction
+    # door count sentinel.
+    door_match: torch.Tensor
 
     def to(self, device: torch.device) -> "Outcomes":
         return Outcomes(
             self.door_invalid.to(device),
             self.connection_invalid.to(device),
+            self.door_match.to(device),
         )
 
 
@@ -130,6 +135,7 @@ class Features:
     log_temperature: torch.Tensor
     log_action_candidates: torch.Tensor
     lookahead_door_invalid: torch.Tensor
+    lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
     frontier: torch.Tensor
     frontier_occupancy: torch.Tensor
@@ -157,6 +163,7 @@ class SparseFeatures:
     log_temperature: torch.Tensor
     log_action_candidates: torch.Tensor
     lookahead_door_invalid: torch.Tensor
+    lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
     frontier: torch.Tensor
     frontier_occupancy: torch.Tensor
@@ -176,6 +183,7 @@ class SparseFeatures:
             self.log_temperature.flatten(0, 1),
             self.log_action_candidates.flatten(0, 1),
             self.lookahead_door_invalid.flatten(0, 1),
+            self.lookahead_door_match.flatten(0, 1),
             self.lookahead_connection_invalid.flatten(0, 1),
             self.frontier,
             self.frontier_occupancy,
@@ -323,6 +331,7 @@ class EnvironmentGroup:
             pre_connection_invalid,
             door_invalid,
             connection_invalid,
+            door_match,
             frontier_count,
             sparse_row_count,
             worker_sparse_row_counts,
@@ -338,10 +347,16 @@ class EnvironmentGroup:
             Outcomes(
                 door_invalid=torch.from_numpy(pre_door_invalid).to(device),
                 connection_invalid=torch.from_numpy(pre_connection_invalid).to(device),
+                door_match=torch.empty(
+                    [pre_door_invalid.shape[0], 0],
+                    dtype=torch.int16,
+                    device=device,
+                ),
             ),
             Outcomes(
                 door_invalid=torch.from_numpy(door_invalid).to(device),
                 connection_invalid=torch.from_numpy(connection_invalid).to(device),
+                door_match=torch.from_numpy(door_match).to(device),
             ),
             SparseFeatureRequirements(
                 frontier_count,
@@ -355,6 +370,11 @@ class EnvironmentGroup:
         return Outcomes(
             door_invalid=torch.from_numpy(door_invalid).to(device),
             connection_invalid=torch.from_numpy(connection_invalid).to(device),
+            door_match=torch.empty(
+                [door_invalid.shape[0], 0],
+                dtype=torch.int16,
+                device=device,
+            ),
         )
 
     def get_outcomes_after_candidates(
@@ -363,7 +383,7 @@ class EnvironmentGroup:
         device: torch.device,
         environment_start: int = 0,
     ) -> Outcomes:
-        door_invalid, connection_invalid = self.env.get_outcomes_after_candidates(
+        door_invalid, connection_invalid, door_match = self.env.get_outcomes_after_candidates(
             actions.room_idx.contiguous().cpu().numpy(),
             actions.room_x.contiguous().cpu().numpy(),
             actions.room_y.contiguous().cpu().numpy(),
@@ -372,6 +392,7 @@ class EnvironmentGroup:
         return Outcomes(
             door_invalid=torch.from_numpy(door_invalid).to(device),
             connection_invalid=torch.from_numpy(connection_invalid).to(device),
+            door_match=torch.from_numpy(door_match).to(device),
         )
 
     def get_door_match_counts(self, device: torch.device) -> DoorMatchCounts:
@@ -412,10 +433,15 @@ class EnvironmentGroup:
                 0,
             ])
         lookahead_door_invalid = lookahead_outcomes.door_invalid.to(device)
+        lookahead_door_match = lookahead_outcomes.door_match.to(device)
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid.to(device)
         if not include_lookahead_outcomes:
             lookahead_door_invalid = lookahead_door_invalid.new_empty([
                 *lookahead_door_invalid.shape[:-1],
+                0,
+            ])
+            lookahead_door_match = lookahead_door_match.new_empty([
+                *lookahead_door_match.shape[:-1],
                 0,
             ])
             lookahead_connection_invalid = lookahead_connection_invalid.new_empty([
@@ -427,6 +453,7 @@ class EnvironmentGroup:
             log_temperature,
             log_action_candidates,
             lookahead_door_invalid,
+            lookahead_door_match,
             lookahead_connection_invalid,
             *tensors[4:],
         )
@@ -517,6 +544,12 @@ class EnvironmentGroup:
             if include_lookahead_outcomes
             else lookahead_outcomes.door_invalid.new_empty([
                 *lookahead_outcomes.door_invalid.shape[:-1],
+                0,
+            ]).to(device),
+            lookahead_outcomes.door_match.to(device)
+            if include_lookahead_outcomes
+            else lookahead_outcomes.door_match.new_empty([
+                *lookahead_outcomes.door_match.shape[:-1],
                 0,
             ]).to(device),
             lookahead_outcomes.connection_invalid.to(device)
