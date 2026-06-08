@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const PROFILE_METRIC_COUNT: usize = 22;
+const PROFILE_METRIC_COUNT: usize = 23;
 const PROFILE_METRIC_NAMES: [&str; PROFILE_METRIC_COUNT] = [
     "worker.clear",
     "worker.finish",
@@ -31,6 +31,7 @@ const PROFILE_METRIC_NAMES: [&str; PROFILE_METRIC_COUNT] = [
     "worker.get_outcomes",
     "worker.get_door_match_counts",
     "worker.get_door_matches",
+    "worker.get_door_match_updates",
     "worker.get_features",
     "worker.get_features_after_candidates",
     "worker.get_sparse_features_after_candidates",
@@ -240,6 +241,12 @@ enum WorkerCommand {
         up: OutputShard<i16>,
         down: OutputShard<i16>,
     },
+    GetDoorMatchUpdates {
+        update_count: usize,
+        direction: OutputShard<i8>,
+        source: OutputShard<i16>,
+        target: OutputShard<i16>,
+    },
     GetFeatures {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -297,11 +304,12 @@ impl WorkerCommand {
             WorkerCommand::GetOutcomes { .. } => Some(6),
             WorkerCommand::GetDoorMatchCounts { .. } => Some(7),
             WorkerCommand::GetDoorMatches { .. } => Some(8),
-            WorkerCommand::GetFeatures { .. } => Some(9),
-            WorkerCommand::GetFeaturesAfterCandidates { .. } => Some(10),
-            WorkerCommand::GetSparseFeaturesAfterCandidates { .. } => Some(11),
-            WorkerCommand::GetFeatureFrontierCountAfterCandidates { .. } => Some(12),
-            WorkerCommand::PackFeatures { .. } => Some(13),
+            WorkerCommand::GetDoorMatchUpdates { .. } => Some(9),
+            WorkerCommand::GetFeatures { .. } => Some(10),
+            WorkerCommand::GetFeaturesAfterCandidates { .. } => Some(11),
+            WorkerCommand::GetSparseFeaturesAfterCandidates { .. } => Some(12),
+            WorkerCommand::GetFeatureFrontierCountAfterCandidates { .. } => Some(13),
+            WorkerCommand::PackFeatures { .. } => Some(14),
             WorkerCommand::StepKnown { .. } => Some(20),
             WorkerCommand::Shutdown => None,
         }
@@ -662,6 +670,33 @@ fn worker_loop(
                         &mut right[right_start..right_start + right_count],
                         &mut up[up_start..up_start + up_count],
                         &mut down[down_start..down_start + down_count],
+                    );
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::GetDoorMatchUpdates {
+                update_count,
+                direction,
+                source,
+                target,
+            } => {
+                // SAFETY: The main thread guarantees that for the duration of this command,
+                // the output slices remain valid and that no other thread accesses them.
+                let direction = unsafe { direction.into_mut_slice() };
+                let source = unsafe { source.into_mut_slice() };
+                let target = unsafe { target.into_mut_slice() };
+                debug_assert_eq!(direction.len(), environments.len() * update_count);
+                debug_assert_eq!(source.len(), environments.len() * update_count);
+                debug_assert_eq!(target.len(), environments.len() * update_count);
+
+                for (env_idx, env) in environments.iter().enumerate() {
+                    let start = env_idx * update_count;
+                    let end = start + update_count;
+                    env.write_last_door_match_updates(
+                        &common_data,
+                        &mut direction[start..end],
+                        &mut source[start..end],
+                        &mut target[start..end],
                     );
                 }
                 WorkerResponse::Done
@@ -2112,6 +2147,54 @@ impl EnvironmentGroup {
             pyarray2_from_flat_vec(py, right, self.num_environments, right_count)?,
             pyarray2_from_flat_vec(py, up, self.num_environments, up_count)?,
             pyarray2_from_flat_vec(py, down, self.num_environments, down_count)?,
+        ))
+    }
+
+    fn get_door_match_updates<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<i8>>,
+        Bound<'py, PyArray2<i16>>,
+        Bound<'py, PyArray2<i16>>,
+    )> {
+        let update_count = 2 * self
+            .common_data
+            .room
+            .iter()
+            .map(|room| room.doors.len())
+            .max()
+            .unwrap_or(0);
+        let output_len = self.num_environments * update_count;
+        let mut direction = vec![-1; output_len];
+        let mut source = vec![-1; output_len];
+        let mut target = vec![-1; output_len];
+
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let start = worker.start * update_count;
+                let end = start + worker.len * update_count;
+                if let Err(err) = worker.send(WorkerCommand::GetDoorMatchUpdates {
+                    update_count,
+                    direction: OutputShard::from_slice(&mut direction[start..end]),
+                    source: OutputShard::from_slice(&mut source[start..end]),
+                    target: OutputShard::from_slice(&mut target[start..end]),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
+
+        Ok((
+            pyarray2_from_flat_vec(py, direction, self.num_environments, update_count)?,
+            pyarray2_from_flat_vec(py, source, self.num_environments, update_count)?,
+            pyarray2_from_flat_vec(py, target, self.num_environments, update_count)?,
         ))
     }
 

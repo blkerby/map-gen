@@ -12,7 +12,7 @@ from env import (
     Features,
 )
 from model import BalancePredictions, Predictions
-from loss import compute_balance_score_target_logits
+from loss import compute_balance_score_logit_tables
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -458,7 +458,9 @@ class PinnedSparseFeatureSlot:
 class GenerationGroup:
     env: EnvironmentGroup
     config: GenerateConfig
-    balance_predictions: BalancePredictions
+    balance_score_tables: BalancePredictions
+    known_balance_score: torch.Tensor
+    known_balance_score_mask: torch.Tensor
     known_outcomes: Outcomes | None
     step: int
     feature_slot: PinnedSparseFeatureSlot | None
@@ -469,17 +471,44 @@ class PendingGenerationStep:
     group: GenerationGroup
     candidates: Actions
     outcomes: Outcomes
-    known_balance_score: torch.Tensor
-    known_balance_score_mask: torch.Tensor
     future: Future[Features | SparseFeatures]
 
 
-def get_known_balance_scores(
+def update_known_balance_scores(
     group: GenerationGroup,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    door_matches = group.env.get_door_matches(device)
-    return compute_balance_score_target_logits(group.balance_predictions, door_matches)
+) -> None:
+    updates = group.env.get_door_match_updates(device)
+    env_idx = torch.arange(updates.direction.shape[0], device=device).unsqueeze(1).expand_as(
+        updates.direction
+    )
+    direction_offsets = [
+        0,
+        group.balance_score_tables.left.shape[1],
+        group.balance_score_tables.left.shape[1] + group.balance_score_tables.right.shape[1],
+        (
+            group.balance_score_tables.left.shape[1]
+            + group.balance_score_tables.right.shape[1]
+            + group.balance_score_tables.up.shape[1]
+        ),
+    ]
+    tables = [
+        group.balance_score_tables.left,
+        group.balance_score_tables.right,
+        group.balance_score_tables.up,
+        group.balance_score_tables.down,
+    ]
+
+    for direction, offset, table in zip(range(4), direction_offsets, tables):
+        update_mask = updates.direction == direction
+        if not torch.any(update_mask):
+            continue
+        source = torch.clamp(updates.source, min=0)
+        target = torch.clamp(updates.target, min=0)
+        score = table[env_idx, source, target]
+        column = offset + source
+        group.known_balance_score[env_idx[update_mask], column[update_mask]] = score[update_mask]
+        group.known_balance_score_mask[env_idx[update_mask], column[update_mask]] = True
 
 
 def create_generation_environment_groups(
@@ -560,8 +589,8 @@ def select_candidate_actions(
                 preds.balance_score.view(environment_count, candidate_count, -1),
             ),
             outcomes,
-            known_balance_score,
-            known_balance_score_mask,
+            group.known_balance_score,
+            group.known_balance_score_mask,
             group.config,
         )
         # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
@@ -593,8 +622,9 @@ def verify_and_step(
             group.known_outcomes,
             select_outcomes(outcomes, action_index),
             f"lookahead step {step}",
-        )
+    )
     group.env.step(selected_actions)
+    update_known_balance_scores(group, device)
     if verify_outcome_consistency:
         group.known_outcomes = merge_verified_outcomes(
             group.known_outcomes,
@@ -614,7 +644,6 @@ def start_generation_step(
     while group.step < group.config.episode_length:
         candidates, outcomes = get_generation_candidates(group, device)
         if candidates.room_idx.shape[1] != 1:
-            known_balance_score, known_balance_score_mask = get_known_balance_scores(group, device)
             candidate_log_temperature = torch.log(group.config.temperature).to(
                 torch.device("cpu")
             ).unsqueeze(1).expand(candidates.room_idx.shape).contiguous()
@@ -629,8 +658,6 @@ def start_generation_step(
                     group,
                     candidates,
                     outcomes,
-                    known_balance_score,
-                    known_balance_score_mask,
                     executor.submit(
                         extract_candidate_features,
                         group.env,
@@ -714,7 +741,33 @@ def run_generation_groups(
         GenerationGroup(
             env,
             config,
-            group_balance_predictions,
+            compute_balance_score_logit_tables(group_balance_predictions),
+            torch.zeros(
+                [
+                    env.num_envs,
+                    (
+                        group_balance_predictions.left.shape[1]
+                        + group_balance_predictions.right.shape[1]
+                        + group_balance_predictions.up.shape[1]
+                        + group_balance_predictions.down.shape[1]
+                    ),
+                ],
+                dtype=torch.float32,
+                device=device,
+            ),
+            torch.zeros(
+                [
+                    env.num_envs,
+                    (
+                        group_balance_predictions.left.shape[1]
+                        + group_balance_predictions.right.shape[1]
+                        + group_balance_predictions.up.shape[1]
+                        + group_balance_predictions.down.shape[1]
+                    ),
+                ],
+                dtype=torch.bool,
+                device=device,
+            ),
             None,
             0,
             PinnedSparseFeatureSlot(env, pin_memory=True)
@@ -744,8 +797,8 @@ def run_generation_groups(
                     model,
                     step.candidates,
                     step.outcomes,
-                    step.known_balance_score,
-                    step.known_balance_score_mask,
+                    step.group.known_balance_score,
+                    step.group.known_balance_score_mask,
                     features,
                     device,
                     gpu_lock,

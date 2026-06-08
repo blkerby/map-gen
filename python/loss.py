@@ -129,25 +129,32 @@ def direction_balance_score_target_logits(
     if logits.shape[-1] == 0:
         return logits.new_empty(targets.shape, dtype=torch.float32), mask
     safe_targets = torch.clamp(targets, min=0).to(torch.int64)
-    logits = logits.to(torch.float32)
-    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-    target_log_probs = torch.gather(
-        log_probs,
+    target_logits = torch.gather(
+        direction_balance_score_logit_table(logits),
         -1,
         safe_targets.unsqueeze(-1),
     ).squeeze(-1)
-    non_target_logits = logits.masked_fill(
-        torch.nn.functional.one_hot(safe_targets, logits.shape[-1]).to(torch.bool),
-        -torch.inf,
-    )
-    log_total = torch.logsumexp(logits, dim=-1)
-    non_target_log_probs = torch.logsumexp(non_target_logits, dim=-1) - log_total
-    target_logits = torch.clamp(
-        target_log_probs - non_target_log_probs,
+    return target_logits.detach(), mask
+
+
+def direction_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
+    logits = logits.to(torch.float32)
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    non_target_log_probs = torch.log(-torch.expm1(log_probs))
+    return torch.clamp(
+        log_probs - non_target_log_probs,
         min=-BALANCE_TARGET_LOG_ODDS_LIMIT,
         max=BALANCE_TARGET_LOG_ODDS_LIMIT,
     )
-    return target_logits.detach(), mask
+
+
+def compute_balance_score_logit_tables(preds: BalancePredictions) -> BalancePredictions:
+    return BalancePredictions(
+        direction_balance_score_logit_table(preds.left).detach(),
+        direction_balance_score_logit_table(preds.right).detach(),
+        direction_balance_score_logit_table(preds.up).detach(),
+        direction_balance_score_logit_table(preds.down).detach(),
+    )
 
 
 def compute_balance_score_target_logits(
