@@ -212,6 +212,8 @@ enum WorkerCommand {
         room_y: OutputShard<Coord>,
         door_outcome_count: usize,
         connection_outcome_count: usize,
+        pre_door_valid: OutputShard<i8>,
+        pre_connections_valid: OutputShard<i8>,
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
     },
@@ -487,6 +489,8 @@ fn worker_loop(
                 room_y,
                 door_outcome_count,
                 connection_outcome_count,
+                pre_door_valid,
+                pre_connections_valid,
                 door_valid,
                 connections_valid,
             } => {
@@ -495,11 +499,21 @@ fn worker_loop(
                 let room_idx = unsafe { room_idx.into_mut_slice() };
                 let room_x = unsafe { room_x.into_mut_slice() };
                 let room_y = unsafe { room_y.into_mut_slice() };
+                let pre_door_valid = unsafe { pre_door_valid.into_mut_slice() };
+                let pre_connections_valid = unsafe { pre_connections_valid.into_mut_slice() };
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 debug_assert_eq!(room_idx.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_x.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_y.len(), environments.len() * max_candidates);
+                debug_assert_eq!(
+                    pre_door_valid.len(),
+                    environments.len() * door_outcome_count
+                );
+                debug_assert_eq!(
+                    pre_connections_valid.len(),
+                    environments.len() * connection_outcome_count
+                );
                 debug_assert_eq!(
                     door_valid.len(),
                     environments.len() * max_candidates * door_outcome_count
@@ -511,7 +525,7 @@ fn worker_loop(
 
                 let mut consistency_error = None;
                 for (env_idx, env) in environments.iter_mut().enumerate() {
-                    let (candidates, outcomes) = match env
+                    let (pre_candidate_outcomes, candidates, outcomes) = match env
                         .get_filtered_candidates_with_outcomes(&common_data, max_candidates)
                     {
                         Ok(result) => result,
@@ -520,6 +534,18 @@ fn worker_loop(
                             break;
                         }
                     };
+                    let pre_door_start = env_idx * door_outcome_count;
+                    for (outcome_idx, outcome) in
+                        pre_candidate_outcomes.door_valid.iter().enumerate()
+                    {
+                        pre_door_valid[pre_door_start + outcome_idx] = *outcome as i8;
+                    }
+                    let pre_connection_start = env_idx * connection_outcome_count;
+                    for (outcome_idx, outcome) in
+                        pre_candidate_outcomes.connections_valid.iter().enumerate()
+                    {
+                        pre_connections_valid[pre_connection_start + outcome_idx] = *outcome as i8;
+                    }
                     let row_start = env_idx * max_candidates;
                     let dummy_outcome = if candidates.len() < max_candidates {
                         Some(Outcomes {
@@ -1903,6 +1929,8 @@ impl EnvironmentGroup {
         Bound<'py, PyArray2<RoomIdx>>,
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
+        Bound<'py, PyArray2<i8>>,
+        Bound<'py, PyArray2<i8>>,
         Bound<'py, PyArray3<i8>>,
         Bound<'py, PyArray3<i8>>,
     )> {
@@ -1911,6 +1939,8 @@ impl EnvironmentGroup {
         }
         let (door_outcome_count, connection_outcome_count) = output_sizes(&self.common_data);
         let output_len = self.num_environments * max_candidates;
+        let pre_door_output_len = self.num_environments * door_outcome_count;
+        let pre_connection_output_len = self.num_environments * connection_outcome_count;
         let door_output_len = output_len * door_outcome_count;
         let connection_output_len = output_len * connection_outcome_count;
         let dummy_candidate = Action {
@@ -1922,6 +1952,9 @@ impl EnvironmentGroup {
         let mut room_idx = vec![dummy_candidate.room_idx; output_len];
         let mut room_x = vec![dummy_candidate.x; output_len];
         let mut room_y = vec![dummy_candidate.y; output_len];
+        let mut pre_door_valid = vec![DoorValidOutcome::Unknown as i8; pre_door_output_len];
+        let mut pre_connections_valid =
+            vec![DoorValidOutcome::Unknown as i8; pre_connection_output_len];
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
 
@@ -1931,6 +1964,11 @@ impl EnvironmentGroup {
             for (worker_idx, worker) in self.workers.iter().enumerate() {
                 let output_start = worker.start * max_candidates;
                 let output_end = output_start + worker.len * max_candidates;
+                let pre_door_output_start = worker.start * door_outcome_count;
+                let pre_door_output_end = pre_door_output_start + worker.len * door_outcome_count;
+                let pre_connection_output_start = worker.start * connection_outcome_count;
+                let pre_connection_output_end =
+                    pre_connection_output_start + worker.len * connection_outcome_count;
                 let door_output_start = output_start * door_outcome_count;
                 let door_output_end = output_end * door_outcome_count;
                 let connection_output_start = output_start * connection_outcome_count;
@@ -1943,6 +1981,13 @@ impl EnvironmentGroup {
                     room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
                     door_outcome_count,
                     connection_outcome_count,
+                    pre_door_valid: OutputShard::from_slice(
+                        &mut pre_door_valid[pre_door_output_start..pre_door_output_end],
+                    ),
+                    pre_connections_valid: OutputShard::from_slice(
+                        &mut pre_connections_valid
+                            [pre_connection_output_start..pre_connection_output_end],
+                    ),
                     door_valid: OutputShard::from_slice(
                         &mut door_valid[door_output_start..door_output_end],
                     ),
@@ -1963,6 +2008,18 @@ impl EnvironmentGroup {
             pyarray2_from_flat_vec(py, room_idx, self.num_environments, max_candidates)?,
             pyarray2_from_flat_vec(py, room_x, self.num_environments, max_candidates)?,
             pyarray2_from_flat_vec(py, room_y, self.num_environments, max_candidates)?,
+            pyarray2_from_flat_vec(
+                py,
+                pre_door_valid,
+                self.num_environments,
+                door_outcome_count,
+            )?,
+            pyarray2_from_flat_vec(
+                py,
+                pre_connections_valid,
+                self.num_environments,
+                connection_outcome_count,
+            )?,
             pyarray3_from_flat_vec(
                 py,
                 door_valid,

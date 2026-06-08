@@ -887,10 +887,11 @@ impl Environment {
         &mut self,
         common: &CommonData,
         max_candidates: usize,
-    ) -> Result<(Vec<Action>, Vec<Outcomes>), String> {
+    ) -> Result<(Outcomes, Vec<Action>, Vec<Outcomes>), String> {
         let pre_candidate_outcomes = self.outcomes(common);
-        let candidates = self.get_all_candidates(common);
-        let mut clean = Vec::with_capacity(candidates.len());
+        let mut candidates = self.get_all_candidates(common);
+        candidates.shuffle(&mut self.rng);
+        let mut clean = Vec::with_capacity(max_candidates.min(candidates.len()));
         let mut rejected = Vec::new();
 
         for candidate in candidates {
@@ -911,6 +912,9 @@ impl Environment {
                 rejected.push((candidate, post_candidate_outcomes));
             } else {
                 clean.push((candidate, post_candidate_outcomes));
+                if clean.len() == max_candidates {
+                    break;
+                }
             }
         }
 
@@ -919,9 +923,9 @@ impl Environment {
         } else {
             clean
         };
-        candidates_with_outcomes.shuffle(&mut self.rng);
         candidates_with_outcomes.truncate(max_candidates);
-        Ok(candidates_with_outcomes.into_iter().unzip())
+        let (candidates, post_candidate_outcomes) = candidates_with_outcomes.into_iter().unzip();
+        Ok((pre_candidate_outcomes, candidates, post_candidate_outcomes))
     }
 
     pub fn outcomes_after_candidate(&self, common: &CommonData, candidate: Action) -> Outcomes {

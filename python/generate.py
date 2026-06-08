@@ -449,10 +449,9 @@ def get_generation_candidates(
     device: torch.device,
 ) -> CandidateBatch:
     if group.config.lookahead_outcomes:
-        candidates, post_candidate_outcomes = group.env.get_candidates_with_outcomes(
+        candidates, reward_outcomes, post_candidate_outcomes = group.env.get_candidates_with_outcomes(
             group.config.max_candidates, device
         )
-        reward_outcomes = group.env.get_outcomes(device, verify_consistency=False)
         return CandidateBatch(candidates, reward_outcomes, post_candidate_outcomes)
     candidates = group.env.get_candidates(group.config.max_candidates, device)
     reward_outcomes = group.env.get_outcomes(device, verify_consistency=False)

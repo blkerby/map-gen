@@ -310,8 +310,16 @@ class EnvironmentGroup:
 
     def get_candidates_with_outcomes(
         self, max_candidates: int, device: torch.device
-    ) -> tuple[Actions, Outcomes]:
-        room_idx, room_x, room_y, door_invalid, connection_invalid = (
+    ) -> tuple[Actions, Outcomes, Outcomes]:
+        (
+            room_idx,
+            room_x,
+            room_y,
+            pre_door_invalid,
+            pre_connection_invalid,
+            door_invalid,
+            connection_invalid,
+        ) = (
             self.env.get_candidates_with_outcomes(max_candidates)
         )
         return (
@@ -319,6 +327,10 @@ class EnvironmentGroup:
                 room_idx=torch.from_numpy(room_idx).to(device),
                 room_x=torch.from_numpy(room_x).to(device),
                 room_y=torch.from_numpy(room_y).to(device),
+            ),
+            Outcomes(
+                door_invalid=torch.from_numpy(pre_door_invalid).to(device),
+                connection_invalid=torch.from_numpy(pre_connection_invalid).to(device),
             ),
             Outcomes(
                 door_invalid=torch.from_numpy(door_invalid).to(device),
