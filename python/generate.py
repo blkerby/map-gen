@@ -11,7 +11,8 @@ from env import (
     SparseFeatures,
     Features,
 )
-from model import Predictions
+from model import BalancePredictions, Predictions
+from loss import compute_balance_score_target_logits
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -58,9 +59,14 @@ def balance_reward(
     balance_score: torch.Tensor,
     door_invalid: torch.Tensor,
     known_invalid: torch.Tensor,
+    known_balance_score: torch.Tensor,
+    known_balance_score_mask: torch.Tensor,
 ) -> torch.Tensor:
     if known_invalid.ndim == balance_score.ndim - 1:
         known_invalid = known_invalid.unsqueeze(1)
+    if known_balance_score.ndim == balance_score.ndim - 1:
+        known_balance_score = known_balance_score.unsqueeze(1)
+        known_balance_score_mask = known_balance_score_mask.unsqueeze(1)
     match_probability = torch.sigmoid(-door_invalid)
     known_match_probability = torch.where(
         known_invalid == 0,
@@ -72,14 +78,20 @@ def balance_reward(
         match_probability,
         known_match_probability,
     )
-    # balance_prob = torch.sigmoid(balance_score)
-    # return -balance_prob * match_probability
-    return -balance_score * match_probability
+    model_reward = -balance_score * match_probability
+    known_reward = -known_balance_score
+    return torch.where(known_balance_score_mask, known_reward, model_reward)
 
 
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
-def compute_expected_reward(preds, outcomes, config: GenerateConfig):
+def compute_expected_reward(
+    preds,
+    outcomes,
+    known_balance_score: torch.Tensor,
+    known_balance_score_mask: torch.Tensor,
+    config: GenerateConfig,
+):
     door_logprobs = torch.nn.functional.logsigmoid(-preds.door_invalid)
     connection_logprobs = torch.nn.functional.logsigmoid(-preds.connection_invalid)
     door_logprobs = outcome_reward(door_logprobs, outcomes.door_invalid)
@@ -88,6 +100,8 @@ def compute_expected_reward(preds, outcomes, config: GenerateConfig):
         preds.balance_score,
         preds.door_invalid,
         outcomes.door_invalid,
+        known_balance_score,
+        known_balance_score_mask,
     )
     return (
         config.reward_door * torch.sum(door_logprobs, dim=2)
@@ -444,6 +458,7 @@ class PinnedSparseFeatureSlot:
 class GenerationGroup:
     env: EnvironmentGroup
     config: GenerateConfig
+    balance_predictions: BalancePredictions
     known_outcomes: Outcomes | None
     step: int
     feature_slot: PinnedSparseFeatureSlot | None
@@ -454,7 +469,17 @@ class PendingGenerationStep:
     group: GenerationGroup
     candidates: Actions
     outcomes: Outcomes
+    known_balance_score: torch.Tensor
+    known_balance_score_mask: torch.Tensor
     future: Future[Features | SparseFeatures]
+
+
+def get_known_balance_scores(
+    group: GenerationGroup,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    door_matches = group.env.get_door_matches(device)
+    return compute_balance_score_target_logits(group.balance_predictions, door_matches)
 
 
 def create_generation_environment_groups(
@@ -511,6 +536,8 @@ def select_candidate_actions(
     model,
     candidates: Actions,
     outcomes: Outcomes,
+    known_balance_score: torch.Tensor,
+    known_balance_score_mask: torch.Tensor,
     features: Features | SparseFeatures,
     device: torch.device,
     gpu_lock: threading.Lock,
@@ -533,6 +560,8 @@ def select_candidate_actions(
                 preds.balance_score.view(environment_count, candidate_count, -1),
             ),
             outcomes,
+            known_balance_score,
+            known_balance_score_mask,
             group.config,
         )
         # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
@@ -585,6 +614,7 @@ def start_generation_step(
     while group.step < group.config.episode_length:
         candidates, outcomes = get_generation_candidates(group, device)
         if candidates.room_idx.shape[1] != 1:
+            known_balance_score, known_balance_score_mask = get_known_balance_scores(group, device)
             candidate_log_temperature = torch.log(group.config.temperature).to(
                 torch.device("cpu")
             ).unsqueeze(1).expand(candidates.room_idx.shape).contiguous()
@@ -599,6 +629,8 @@ def start_generation_step(
                     group,
                     candidates,
                     outcomes,
+                    known_balance_score,
+                    known_balance_score_mask,
                     executor.submit(
                         extract_candidate_features,
                         group.env,
@@ -668,11 +700,12 @@ def run_generation_groups(
     envs: list[EnvironmentGroup],
     model,
     configs: list[GenerateConfig],
+    balance_predictions: list[BalancePredictions],
     device: torch.device,
     verify_outcome_consistency: bool = False,
 ) -> tuple[EpisodeData, Outcomes, DoorMatchCounts]:
-    if not envs or len(envs) != len(configs):
-        raise ValueError("generation groups require one config per environment group")
+    if not envs or len(envs) != len(configs) or len(envs) != len(balance_predictions):
+        raise ValueError("generation groups require one config and balance prediction per environment group")
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     gpu_lock = threading.Lock()
     num_rooms = len(envs[0].engine.rooms)
@@ -681,13 +714,14 @@ def run_generation_groups(
         GenerationGroup(
             env,
             config,
+            group_balance_predictions,
             None,
             0,
             PinnedSparseFeatureSlot(env, pin_memory=True)
             if device.type == "cuda"
             else None,
         )
-        for env, config in zip(envs, configs)
+        for env, config, group_balance_predictions in zip(envs, configs, balance_predictions)
     ]
     with ThreadPoolExecutor(max_workers=len(groups)) as executor:
         pending: deque[PendingGenerationStep] = deque()
@@ -710,6 +744,8 @@ def run_generation_groups(
                     model,
                     step.candidates,
                     step.outcomes,
+                    step.known_balance_score,
+                    step.known_balance_score_mask,
                     features,
                     device,
                     gpu_lock,
