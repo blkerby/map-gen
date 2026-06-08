@@ -11,8 +11,7 @@ from env import (
     SparseFeatures,
     Features,
 )
-from model import BalancePredictions, Predictions
-from loss import compute_balance_score_logit_tables
+from model import Predictions
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -59,14 +58,9 @@ def balance_reward(
     balance_score: torch.Tensor,
     door_invalid: torch.Tensor,
     known_invalid: torch.Tensor,
-    known_balance_score: torch.Tensor,
-    known_balance_score_mask: torch.Tensor,
 ) -> torch.Tensor:
     if known_invalid.ndim == balance_score.ndim - 1:
         known_invalid = known_invalid.unsqueeze(1)
-    if known_balance_score.ndim == balance_score.ndim - 1:
-        known_balance_score = known_balance_score.unsqueeze(1)
-        known_balance_score_mask = known_balance_score_mask.unsqueeze(1)
     match_probability = torch.sigmoid(-door_invalid)
     known_match_probability = torch.where(
         known_invalid == 0,
@@ -79,8 +73,8 @@ def balance_reward(
         known_match_probability,
     )
     model_reward = -balance_score * match_probability
-    known_reward = -known_balance_score
-    return torch.where(known_balance_score_mask, known_reward, model_reward)
+    known_reward = torch.zeros_like(model_reward)
+    return torch.where(known_invalid == 0, known_reward, model_reward)
 
 
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
@@ -88,8 +82,6 @@ def balance_reward(
 def compute_expected_reward(
     preds,
     outcomes,
-    known_balance_score: torch.Tensor,
-    known_balance_score_mask: torch.Tensor,
     config: GenerateConfig,
 ):
     door_logprobs = torch.nn.functional.logsigmoid(-preds.door_invalid)
@@ -100,8 +92,6 @@ def compute_expected_reward(
         preds.balance_score,
         preds.door_invalid,
         outcomes.door_invalid,
-        known_balance_score,
-        known_balance_score_mask,
     )
     return (
         config.reward_door * torch.sum(door_logprobs, dim=2)
@@ -458,9 +448,6 @@ class PinnedSparseFeatureSlot:
 class GenerationGroup:
     env: EnvironmentGroup
     config: GenerateConfig
-    balance_score_tables: BalancePredictions
-    known_balance_score: torch.Tensor
-    known_balance_score_mask: torch.Tensor
     known_outcomes: Outcomes | None
     step: int
     feature_slot: PinnedSparseFeatureSlot | None
@@ -472,43 +459,6 @@ class PendingGenerationStep:
     candidates: Actions
     outcomes: Outcomes
     future: Future[Features | SparseFeatures]
-
-
-def update_known_balance_scores(
-    group: GenerationGroup,
-    device: torch.device,
-) -> None:
-    updates = group.env.get_door_match_updates(device)
-    env_idx = torch.arange(updates.direction.shape[0], device=device).unsqueeze(1).expand_as(
-        updates.direction
-    )
-    direction_offsets = [
-        0,
-        group.balance_score_tables.left.shape[1],
-        group.balance_score_tables.left.shape[1] + group.balance_score_tables.right.shape[1],
-        (
-            group.balance_score_tables.left.shape[1]
-            + group.balance_score_tables.right.shape[1]
-            + group.balance_score_tables.up.shape[1]
-        ),
-    ]
-    tables = [
-        group.balance_score_tables.left,
-        group.balance_score_tables.right,
-        group.balance_score_tables.up,
-        group.balance_score_tables.down,
-    ]
-
-    for direction, offset, table in zip(range(4), direction_offsets, tables):
-        update_mask = updates.direction == direction
-        if not torch.any(update_mask):
-            continue
-        source = torch.clamp(updates.source, min=0)
-        target = torch.clamp(updates.target, min=0)
-        score = table[env_idx, source, target]
-        column = offset + source
-        group.known_balance_score[env_idx[update_mask], column[update_mask]] = score[update_mask]
-        group.known_balance_score_mask[env_idx[update_mask], column[update_mask]] = True
 
 
 def create_generation_environment_groups(
@@ -565,8 +515,6 @@ def select_candidate_actions(
     model,
     candidates: Actions,
     outcomes: Outcomes,
-    known_balance_score: torch.Tensor,
-    known_balance_score_mask: torch.Tensor,
     features: Features | SparseFeatures,
     device: torch.device,
     gpu_lock: threading.Lock,
@@ -589,8 +537,6 @@ def select_candidate_actions(
                 preds.balance_score.view(environment_count, candidate_count, -1),
             ),
             outcomes,
-            group.known_balance_score,
-            group.known_balance_score_mask,
             group.config,
         )
         # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
@@ -624,7 +570,6 @@ def verify_and_step(
             f"lookahead step {step}",
     )
     group.env.step(selected_actions)
-    update_known_balance_scores(group, device)
     if verify_outcome_consistency:
         group.known_outcomes = merge_verified_outcomes(
             group.known_outcomes,
@@ -727,12 +672,11 @@ def run_generation_groups(
     envs: list[EnvironmentGroup],
     model,
     configs: list[GenerateConfig],
-    balance_predictions: list[BalancePredictions],
     device: torch.device,
     verify_outcome_consistency: bool = False,
 ) -> tuple[EpisodeData, Outcomes, DoorMatchCounts]:
-    if not envs or len(envs) != len(configs) or len(envs) != len(balance_predictions):
-        raise ValueError("generation groups require one config and balance prediction per environment group")
+    if not envs or len(envs) != len(configs):
+        raise ValueError("generation groups require one config per environment group")
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     gpu_lock = threading.Lock()
     num_rooms = len(envs[0].engine.rooms)
@@ -741,40 +685,13 @@ def run_generation_groups(
         GenerationGroup(
             env,
             config,
-            compute_balance_score_logit_tables(group_balance_predictions),
-            torch.zeros(
-                [
-                    env.num_envs,
-                    (
-                        group_balance_predictions.left.shape[1]
-                        + group_balance_predictions.right.shape[1]
-                        + group_balance_predictions.up.shape[1]
-                        + group_balance_predictions.down.shape[1]
-                    ),
-                ],
-                dtype=torch.float32,
-                device=device,
-            ),
-            torch.zeros(
-                [
-                    env.num_envs,
-                    (
-                        group_balance_predictions.left.shape[1]
-                        + group_balance_predictions.right.shape[1]
-                        + group_balance_predictions.up.shape[1]
-                        + group_balance_predictions.down.shape[1]
-                    ),
-                ],
-                dtype=torch.bool,
-                device=device,
-            ),
             None,
             0,
             PinnedSparseFeatureSlot(env, pin_memory=True)
             if device.type == "cuda"
             else None,
         )
-        for env, config, group_balance_predictions in zip(envs, configs, balance_predictions)
+        for env, config in zip(envs, configs)
     ]
     with ThreadPoolExecutor(max_workers=len(groups)) as executor:
         pending: deque[PendingGenerationStep] = deque()
@@ -797,8 +714,6 @@ def run_generation_groups(
                     model,
                     step.candidates,
                     step.outcomes,
-                    step.group.known_balance_score,
-                    step.group.known_balance_score_mask,
                     features,
                     device,
                     gpu_lock,

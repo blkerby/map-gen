@@ -148,15 +148,6 @@ def direction_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
     )
 
 
-def compute_balance_score_logit_tables(preds: BalancePredictions) -> BalancePredictions:
-    return BalancePredictions(
-        direction_balance_score_logit_table(preds.left).detach(),
-        direction_balance_score_logit_table(preds.right).detach(),
-        direction_balance_score_logit_table(preds.up).detach(),
-        direction_balance_score_logit_table(preds.down).detach(),
-    )
-
-
 def compute_balance_score_target_logits(
     preds: BalancePredictions,
     door_matches: DoorMatches,

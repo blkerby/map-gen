@@ -268,7 +268,6 @@ class GenerationProcessState:
     device: torch.device
     envs: list
     model: torch.nn.Module
-    balance_model: torch.nn.Module
     profile: bool
 
 
@@ -298,9 +297,6 @@ def initialize_generation_process(
     model = FrontierModel(**frontier_model_kwargs(config, rooms, engine)).to(device)
     model.requires_grad_(False)
     model.eval()
-    balance_model = create_balance_model(config, rooms, device)
-    balance_model.requires_grad_(False)
-    balance_model.eval()
     if config.model.compile:
         model = torch.compile(model, dynamic=True)
     map_gen.set_profile_enabled(profile)
@@ -310,14 +306,12 @@ def initialize_generation_process(
         device,
         envs,
         model,
-        balance_model,
         profile,
     )
 
 
 def run_generation_process_task(
     model_state: dict[str, torch.Tensor],
-    balance_model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
 ) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, RustProfileReport]:
@@ -327,7 +321,6 @@ def run_generation_process_task(
     if state.profile:
         map_gen.reset_profile()
     state.model.load_state_dict(model_state)
-    state.balance_model.load_state_dict(balance_model_state)
     generation_config = Config.model_validate_json(generation_config_json)
     gen_configs = [
         create_generate_config(
@@ -338,16 +331,10 @@ def run_generation_process_task(
         )
         for env in state.envs
     ]
-    with torch.no_grad():
-        balance_predictions = [
-            state.balance_model(torch.log(gen_config.temperature))
-            for gen_config in gen_configs
-        ]
     episode_data, outcomes, door_match_counts = run_generation_groups(
         state.envs,
         state.model,
         gen_configs,
-        balance_predictions,
         state.device,
         verify_outcome_consistency=verify_outcome_consistency,
     )
@@ -775,10 +762,6 @@ class TrainingSession:
             name: as_checkpoint_tensor(value)
             for name, value in self.ema_model.state_dict().items()
         }
-        balance_model_state = {
-            name: as_checkpoint_tensor(value)
-            for name, value in self.balance_model.state_dict().items()
-        }
         for iteration in range(self.config.generation.num_iterations):
             generation_config = instantiate_scheduleable_config(
                 self.config,
@@ -788,7 +771,6 @@ class TrainingSession:
                 executor.submit(
                     run_generation_process_task,
                     model_state,
-                    balance_model_state,
                     generation_config.model_dump_json(),
                     self.args.verify_outcome_consistency,
                 )

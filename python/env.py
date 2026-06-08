@@ -116,16 +116,6 @@ class DoorMatches:
 
 
 @dataclass
-class DoorMatchUpdates:
-    direction: torch.Tensor
-    source: torch.Tensor
-    target: torch.Tensor
-
-    def to(self, device: torch.device) -> "DoorMatchUpdates":
-        return DoorMatchUpdates(*(value.to(device) for value in vars(self).values()))
-
-
-@dataclass
 class Features:
     inventory: torch.Tensor
     room_x: torch.Tensor
@@ -357,14 +347,6 @@ class EnvironmentGroup:
             right=torch.from_numpy(right).to(device=device, dtype=torch.int64),
             up=torch.from_numpy(up).to(device=device, dtype=torch.int64),
             down=torch.from_numpy(down).to(device=device, dtype=torch.int64),
-        )
-
-    def get_door_match_updates(self, device: torch.device) -> DoorMatchUpdates:
-        direction, source, target = self.env.get_door_match_updates()
-        return DoorMatchUpdates(
-            direction=torch.from_numpy(direction).to(device=device, dtype=torch.int64),
-            source=torch.from_numpy(source).to(device=device, dtype=torch.int64),
-            target=torch.from_numpy(target).to(device=device, dtype=torch.int64),
         )
 
     @staticmethod

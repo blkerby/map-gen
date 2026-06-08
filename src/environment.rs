@@ -1300,49 +1300,6 @@ impl Environment {
         write_direction_door_matches(&self.door_matches[Direction::Down as usize], down);
     }
 
-    pub fn write_last_door_match_updates(
-        &self,
-        common: &CommonData,
-        direction: &mut [i8],
-        source: &mut [i16],
-        target: &mut [i16],
-    ) {
-        direction.fill(-1);
-        source.fill(-1);
-        target.fill(-1);
-        let Some(action) = self.actions.last() else {
-            return;
-        };
-
-        let mut update_idx = 0;
-        for door in &common.room[action.room_idx as usize].doors {
-            let dir = door.direction;
-            let source_idx = door.dir_door_idx as usize;
-            let matched_idx = self.door_matches[dir as usize][source_idx];
-            if matched_idx == DirDoorIdx::MAX {
-                continue;
-            }
-            write_door_match_update(
-                direction,
-                source,
-                target,
-                &mut update_idx,
-                dir,
-                door.dir_door_idx,
-                matched_idx,
-            );
-            write_door_match_update(
-                direction,
-                source,
-                target,
-                &mut update_idx,
-                dir.opposite(),
-                matched_idx,
-                door.dir_door_idx,
-            );
-        }
-    }
-
     pub fn outcomes(&self, common: &CommonData) -> Outcomes {
         let mut door_valid = vec![];
         for dir in 0..NUM_DIRS {
@@ -1459,22 +1416,6 @@ fn write_direction_door_matches(matches: &[DirDoorIdx], output: &mut [i16]) {
             i16::from(door_idx)
         };
     }
-}
-
-fn write_door_match_update(
-    direction: &mut [i8],
-    source: &mut [i16],
-    target: &mut [i16],
-    update_idx: &mut usize,
-    dir: Direction,
-    source_idx: DirDoorIdx,
-    target_idx: DirDoorIdx,
-) {
-    debug_assert!(*update_idx < direction.len());
-    direction[*update_idx] = dir as i8;
-    source[*update_idx] = i16::from(source_idx);
-    target[*update_idx] = i16::from(target_idx);
-    *update_idx += 1;
 }
 
 #[cfg(test)]
