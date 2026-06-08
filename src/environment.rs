@@ -29,7 +29,18 @@ const PROFILE_STEP_FILTER_EXISTING_FRONTIERS: usize = 19;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CandidateUpdate {
     Build,
+    Lookahead,
     Skip,
+}
+
+impl CandidateUpdate {
+    fn builds_candidates(self) -> bool {
+        matches!(self, Self::Build | Self::Lookahead)
+    }
+
+    fn updates_occupancy(self) -> bool {
+        !matches!(self, Self::Lookahead)
+    }
 }
 
 fn profile_start() -> Option<Instant> {
@@ -549,6 +560,10 @@ impl Environment {
         self.step_impl(action, common, CandidateUpdate::Skip);
     }
 
+    fn step_for_lookahead(&mut self, action: Action, common: &CommonData) {
+        self.step_impl(action, common, CandidateUpdate::Lookahead);
+    }
+
     fn step_for_features(&mut self, action: Action, common: &CommonData) {
         if self.finished {
             return;
@@ -635,11 +650,13 @@ impl Environment {
         profile_end(PROFILE_STEP_COMPONENTS_EDGES, profile);
 
         let profile = profile_start();
-        for &(dx, dy) in &common.geometry[action_geometry_idx as usize].occupied_tiles {
-            let x = action.x + dx;
-            let y = action.y + dy;
-            if x >= 0 && y >= 0 && x < self.map_size.0 && y < self.map_size.1 {
-                self.occupancy[y as usize * self.map_size.0 as usize + x as usize] = 1;
+        if candidate_update.updates_occupancy() {
+            for &(dx, dy) in &common.geometry[action_geometry_idx as usize].occupied_tiles {
+                let x = action.x + dx;
+                let y = action.y + dy;
+                if x >= 0 && y >= 0 && x < self.map_size.0 && y < self.map_size.1 {
+                    self.occupancy[y as usize * self.map_size.0 as usize + x as usize] = 1;
+                }
             }
         }
         profile_end(PROFILE_STEP_OCCUPANCY, profile);
@@ -671,7 +688,7 @@ impl Environment {
                 // This door is not connected to any existing frontier, so it becomes a new frontier.
                 // Check all doors with the given orientation, to list which ones could connect here.
                 let mut candidates = vec![];
-                if candidate_update == CandidateUpdate::Build {
+                if candidate_update.builds_candidates() {
                     let profile = profile_start();
                     let (x1, y1) = get_behind_door_position(
                         door.direction,
@@ -733,7 +750,7 @@ impl Environment {
         }
 
         // Filter existing frontiers to remove geometries blocked by the new room or with no unused representatives.
-        if candidate_update == CandidateUpdate::Build {
+        if candidate_update.builds_candidates() {
             let profile = profile_start();
             let geometry_unused_count = &self.geometry_unused_count;
             for frontier in self.frontier.values_mut() {
@@ -936,7 +953,7 @@ impl Environment {
         candidate: Action,
     ) -> Result<CandidateOutcome, String> {
         let mut env = self.clone_for_lookahead();
-        env.step(candidate, common);
+        env.step_for_lookahead(candidate, common);
         let mut door_valid = Vec::with_capacity(pre_candidate_outcomes.door_valid.len());
         let mut outcome_idx = 0;
         for dir in 0..NUM_DIRS {
@@ -984,7 +1001,7 @@ impl Environment {
 
     pub fn outcomes_after_candidate(&self, common: &CommonData, candidate: Action) -> Outcomes {
         let mut env = self.clone_for_lookahead();
-        env.step(candidate, common);
+        env.step_for_lookahead(candidate, common);
         env.outcomes(common)
     }
 
@@ -1004,8 +1021,8 @@ impl Environment {
             connection_variant_unused_count: self.connection_variant_unused_count.clone(),
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
-            occupancy: self.occupancy.clone(),
-            known_outcomes: self.known_outcomes.clone(),
+            occupancy: Vec::new(),
+            known_outcomes: None,
         }
     }
 
