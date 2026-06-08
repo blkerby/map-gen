@@ -90,7 +90,7 @@ fn introduces_invalid_outcome(before: &Outcomes, after: &Outcomes) -> bool {
 }
 
 enum CandidateOutcome {
-    Clean(Outcomes),
+    Clean(Outcomes, Features),
     Rejected,
 }
 
@@ -927,7 +927,11 @@ impl Environment {
         &mut self,
         common: &CommonData,
         max_candidates: usize,
-    ) -> Result<(Outcomes, Vec<Action>, Vec<Outcomes>), String> {
+        config: &FeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+    ) -> Result<(Outcomes, Vec<Action>, Vec<Outcomes>, Vec<Features>), String> {
         let pre_candidate_outcomes = self.outcomes(common);
         let mut candidates = self.get_all_candidates(common);
         candidates.shuffle(&mut self.rng);
@@ -935,10 +939,18 @@ impl Environment {
         let mut rejected = Vec::new();
 
         for candidate in candidates {
-            match self.evaluate_candidate_outcome(common, &pre_candidate_outcomes, candidate)? {
+            match self.evaluate_candidate_outcome(
+                common,
+                &pre_candidate_outcomes,
+                candidate,
+                config,
+                frontier_neighbor_algorithm,
+                frontier_neighbor_count,
+                frontier_window_size,
+            )? {
                 CandidateOutcome::Rejected => rejected.push(candidate),
-                CandidateOutcome::Clean(post_candidate_outcomes) => {
-                    clean.push((candidate, post_candidate_outcomes));
+                CandidateOutcome::Clean(post_candidate_outcomes, features) => {
+                    clean.push((candidate, post_candidate_outcomes, features));
                     if clean.len() == max_candidates {
                         break;
                     }
@@ -951,16 +963,36 @@ impl Environment {
                 .into_iter()
                 .take(max_candidates)
                 .map(|candidate| {
-                    let post_candidate_outcomes = self.outcomes_after_candidate(common, candidate);
-                    (candidate, post_candidate_outcomes)
+                    let (post_candidate_outcomes, features) = self
+                        .outcomes_and_features_after_candidate(
+                            common,
+                            candidate,
+                            config,
+                            frontier_neighbor_algorithm,
+                            frontier_neighbor_count,
+                            frontier_window_size,
+                        );
+                    (candidate, post_candidate_outcomes, features)
                 })
                 .collect()
         } else {
             clean
         };
         candidates_with_outcomes.truncate(max_candidates);
-        let (candidates, post_candidate_outcomes) = candidates_with_outcomes.into_iter().unzip();
-        Ok((pre_candidate_outcomes, candidates, post_candidate_outcomes))
+        let mut candidates = Vec::with_capacity(candidates_with_outcomes.len());
+        let mut post_candidate_outcomes = Vec::with_capacity(candidates_with_outcomes.len());
+        let mut features = Vec::with_capacity(candidates_with_outcomes.len());
+        for (candidate, outcomes, candidate_features) in candidates_with_outcomes {
+            candidates.push(candidate);
+            post_candidate_outcomes.push(outcomes);
+            features.push(candidate_features);
+        }
+        Ok((
+            pre_candidate_outcomes,
+            candidates,
+            post_candidate_outcomes,
+            features,
+        ))
     }
 
     fn evaluate_candidate_outcome(
@@ -968,6 +1000,10 @@ impl Environment {
         common: &CommonData,
         pre_candidate_outcomes: &Outcomes,
         candidate: Action,
+        config: &FeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
     ) -> Result<CandidateOutcome, String> {
         let snapshot = self.apply_lookahead_candidate(candidate, common);
         let mut door_valid = Vec::with_capacity(pre_candidate_outcomes.door_valid.len());
@@ -1011,18 +1047,79 @@ impl Environment {
             }
         }
 
+        let features = self.features_for_applied_candidate(
+            common,
+            candidate,
+            config,
+            frontier_neighbor_algorithm,
+            frontier_neighbor_count,
+            frontier_window_size,
+        );
         self.restore_lookahead_candidate(snapshot);
-        Ok(CandidateOutcome::Clean(Outcomes {
-            door_valid,
-            connections_valid,
-        }))
+        Ok(CandidateOutcome::Clean(
+            Outcomes {
+                door_valid,
+                connections_valid,
+            },
+            features,
+        ))
     }
 
-    pub fn outcomes_after_candidate(&mut self, common: &CommonData, candidate: Action) -> Outcomes {
+    fn outcomes_and_features_after_candidate(
+        &mut self,
+        common: &CommonData,
+        candidate: Action,
+        config: &FeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+    ) -> (Outcomes, Features) {
         let snapshot = self.apply_lookahead_candidate(candidate, common);
         let outcomes = self.outcomes(common);
+        let features = self.features_for_applied_candidate(
+            common,
+            candidate,
+            config,
+            frontier_neighbor_algorithm,
+            frontier_neighbor_count,
+            frontier_window_size,
+        );
         self.restore_lookahead_candidate(snapshot);
-        outcomes
+        (outcomes, features)
+    }
+
+    fn features_for_applied_candidate(
+        &self,
+        common: &CommonData,
+        candidate: Action,
+        config: &FeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+    ) -> Features {
+        if config.is_empty() {
+            return Features::default();
+        }
+        let extra_occupied =
+            if config.frontier_occupancy && candidate.room_idx < common.room.len() as RoomIdx {
+                let geometry_idx = common.room[candidate.room_idx as usize].geometry_idx;
+                Some((
+                    &common.geometry[geometry_idx as usize],
+                    candidate.x,
+                    candidate.y,
+                ))
+            } else {
+                None
+            };
+        self.features_with_occupancy(
+            common,
+            config,
+            &self.occupancy,
+            extra_occupied,
+            frontier_neighbor_algorithm,
+            frontier_neighbor_count,
+            frontier_window_size,
+        )
     }
 
     fn apply_lookahead_candidate(

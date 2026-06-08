@@ -90,6 +90,13 @@ class Outcomes:
 
 
 @dataclass
+class SparseFeatureRequirements:
+    frontier_count: int
+    sparse_row_count: int
+    worker_sparse_row_counts: list[int]
+
+
+@dataclass
 class DoorMatchCounts:
     horizontal: torch.Tensor
     vertical: torch.Tensor
@@ -310,7 +317,7 @@ class EnvironmentGroup:
 
     def get_candidates_with_outcomes(
         self, max_candidates: int, device: torch.device
-    ) -> tuple[Actions, Outcomes, Outcomes]:
+    ) -> tuple[Actions, Outcomes, Outcomes, SparseFeatureRequirements]:
         (
             room_idx,
             room_x,
@@ -319,6 +326,9 @@ class EnvironmentGroup:
             pre_connection_invalid,
             door_invalid,
             connection_invalid,
+            frontier_count,
+            sparse_row_count,
+            worker_sparse_row_counts,
         ) = (
             self.env.get_candidates_with_outcomes(max_candidates)
         )
@@ -335,6 +345,11 @@ class EnvironmentGroup:
             Outcomes(
                 door_invalid=torch.from_numpy(door_invalid).to(device),
                 connection_invalid=torch.from_numpy(connection_invalid).to(device),
+            ),
+            SparseFeatureRequirements(
+                frontier_count,
+                sparse_row_count,
+                worker_sparse_row_counts,
             ),
         )
 

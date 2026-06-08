@@ -8,6 +8,7 @@ from env import (
     EpisodeData,
     GenerateConfig,
     Outcomes,
+    SparseFeatureRequirements,
     SparseFeatures,
     Features,
 )
@@ -104,16 +105,23 @@ def extract_candidate_features(
     include_action_candidates: bool,
     sparse_frontiers: bool = False,
     feature_slot: PinnedSparseFeatureSlot | None = None,
+    sparse_feature_requirements: SparseFeatureRequirements | None = None,
 ):
     if sparse_frontiers and feature_slot is not None:
-        frontier_count, sparse_row_count, worker_sparse_row_counts = (
-            env.env.get_sparse_feature_requirements_after_candidates(
-                candidates.room_idx.contiguous().cpu().numpy(),
-                candidates.room_x.contiguous().cpu().numpy(),
-                candidates.room_y.contiguous().cpu().numpy(),
-                0,
+        use_cached = sparse_feature_requirements is not None
+        if sparse_feature_requirements is None:
+            frontier_count, sparse_row_count, worker_sparse_row_counts = (
+                env.env.get_sparse_feature_requirements_after_candidates(
+                    candidates.room_idx.contiguous().cpu().numpy(),
+                    candidates.room_x.contiguous().cpu().numpy(),
+                    candidates.room_y.contiguous().cpu().numpy(),
+                    0,
+                )
             )
-        )
+        else:
+            frontier_count = sparse_feature_requirements.frontier_count
+            sparse_row_count = sparse_feature_requirements.sparse_row_count
+            worker_sparse_row_counts = sparse_feature_requirements.worker_sparse_row_counts
         feature_slot.ensure(
             candidates.room_idx.numel(),
             sparse_row_count,
@@ -126,6 +134,7 @@ def extract_candidate_features(
             frontier_count,
             sparse_row_count,
             worker_sparse_row_counts,
+            use_cached,
             feature_slot.inventory.numpy(),
             feature_slot.room_x.numpy(),
             feature_slot.room_y.numpy(),
@@ -398,13 +407,27 @@ class CandidateBatch:
     candidates: Actions
     reward_outcomes: Outcomes
     post_candidate_outcomes: Outcomes | None
+    sparse_feature_requirements: SparseFeatureRequirements | None
+
+    def to(self, device: torch.device) -> "CandidateBatch":
+        return CandidateBatch(
+            self.candidates.to(device),
+            self.reward_outcomes.to(device),
+            None if self.post_candidate_outcomes is None else self.post_candidate_outcomes.to(device),
+            self.sparse_feature_requirements,
+        )
+
+
+@dataclass
+class PreparedGenerationStep:
+    candidate_batch: CandidateBatch
+    features: Features | SparseFeatures | None
 
 
 @dataclass
 class PendingGenerationStep:
     group: GenerationGroup
-    candidate_batch: CandidateBatch
-    future: Future[Features | SparseFeatures]
+    future: Future[PreparedGenerationStep]
 
 
 def create_generation_environment_groups(
@@ -449,13 +472,82 @@ def get_generation_candidates(
     device: torch.device,
 ) -> CandidateBatch:
     if group.config.lookahead_outcomes:
-        candidates, reward_outcomes, post_candidate_outcomes = group.env.get_candidates_with_outcomes(
+        (
+            candidates,
+            reward_outcomes,
+            post_candidate_outcomes,
+            sparse_feature_requirements,
+        ) = group.env.get_candidates_with_outcomes(
             group.config.max_candidates, device
         )
-        return CandidateBatch(candidates, reward_outcomes, post_candidate_outcomes)
+        return CandidateBatch(
+            candidates,
+            reward_outcomes,
+            post_candidate_outcomes,
+            sparse_feature_requirements,
+        )
     candidates = group.env.get_candidates(group.config.max_candidates, device)
     reward_outcomes = group.env.get_outcomes(device, verify_consistency=False)
-    return CandidateBatch(candidates, reward_outcomes, None)
+    return CandidateBatch(candidates, reward_outcomes, None, None)
+
+
+def candidate_log_inputs(
+    config: GenerateConfig,
+    candidate_shape: torch.Size,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    candidate_log_temperature = config.temperature.to(torch.device("cpu")).log().unsqueeze(1)
+    candidate_log_temperature = candidate_log_temperature.expand(candidate_shape).contiguous()
+    candidate_log_action_candidates = torch.full(
+        candidate_shape,
+        math.log(config.max_candidates),
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    return candidate_log_temperature, candidate_log_action_candidates
+
+
+def prepare_candidate_features(
+    env: EnvironmentGroup,
+    config: GenerateConfig,
+    candidate_batch: CandidateBatch,
+    sparse_frontiers: bool,
+    feature_slot: PinnedSparseFeatureSlot | None,
+) -> PreparedGenerationStep:
+    candidates = candidate_batch.candidates
+    if candidates.room_idx.shape[1] == 1:
+        return PreparedGenerationStep(candidate_batch, None)
+    candidate_log_temperature, candidate_log_action_candidates = candidate_log_inputs(
+        config,
+        candidates.room_idx.shape,
+    )
+    return PreparedGenerationStep(
+        candidate_batch,
+        extract_candidate_features(
+            env,
+            candidates,
+            candidate_log_temperature,
+            env.engine.features.temperature,
+            candidate_log_action_candidates,
+            env.engine.features.action_candidates,
+            sparse_frontiers,
+            feature_slot,
+            candidate_batch.sparse_feature_requirements,
+        ),
+    )
+
+
+def prepare_lookahead_generation_step(
+    group: GenerationGroup,
+    sparse_frontiers: bool,
+) -> PreparedGenerationStep:
+    candidate_batch = get_generation_candidates(group, torch.device("cpu"))
+    return prepare_candidate_features(
+        group.env,
+        group.config,
+        candidate_batch,
+        sparse_frontiers,
+        group.feature_slot,
+    )
 
 
 def select_candidate_actions(
@@ -522,30 +614,29 @@ def start_generation_step(
     pending: deque[PendingGenerationStep],
 ) -> None:
     while group.step < group.config.episode_length:
-        candidate_batch = get_generation_candidates(group, device)
-        candidates = candidate_batch.candidates
-        if candidates.room_idx.shape[1] != 1:
-            candidate_log_temperature = torch.log(group.config.temperature).to(
-                torch.device("cpu")
-            ).unsqueeze(1).expand(candidates.room_idx.shape).contiguous()
-            candidate_log_action_candidates = torch.full(
-                candidates.room_idx.shape,
-                math.log(group.config.max_candidates),
-                dtype=torch.float32,
-                device=torch.device("cpu"),
-            )
+        if group.config.lookahead_outcomes:
             pending.append(
                 PendingGenerationStep(
                     group,
-                    candidate_batch,
                     executor.submit(
-                        extract_candidate_features,
+                        prepare_lookahead_generation_step,
+                        group,
+                        sparse_frontiers,
+                    ),
+                )
+            )
+            return
+        candidate_batch = get_generation_candidates(group, device)
+        candidates = candidate_batch.candidates
+        if candidates.room_idx.shape[1] != 1:
+            pending.append(
+                PendingGenerationStep(
+                    group,
+                    executor.submit(
+                        prepare_candidate_features,
                         group.env,
-                        candidates,
-                        candidate_log_temperature,
-                        group.env.engine.features.temperature,
-                        candidate_log_action_candidates,
-                        group.env.engine.features.action_candidates,
+                        group.config,
+                        candidate_batch,
                         sparse_frontiers,
                         group.feature_slot,
                     ),
@@ -639,19 +730,28 @@ def run_generation_groups(
                 )
             while pending:
                 step = pending.popleft()
-                features = step.future.result()
-                candidates = step.candidate_batch.candidates
-                action_index, selected_actions = select_candidate_actions(
-                    step.group,
-                    model,
-                    candidates,
-                    step.candidate_batch.reward_outcomes,
-                    features,
-                    device,
-                    gpu_lock,
-                    transfer_stream,
-                    num_rooms,
-                )
+                prepared_step = step.future.result()
+                candidate_batch = prepared_step.candidate_batch.to(device)
+                candidates = candidate_batch.candidates
+                if prepared_step.features is None:
+                    action_index = torch.zeros(
+                        candidates.room_idx.shape[0],
+                        dtype=torch.int64,
+                        device=device,
+                    )
+                    selected_actions = candidates.select(action_index)
+                else:
+                    _, selected_actions = select_candidate_actions(
+                        step.group,
+                        model,
+                        candidates,
+                        candidate_batch.reward_outcomes,
+                        prepared_step.features,
+                        device,
+                        gpu_lock,
+                        transfer_stream,
+                        num_rooms,
+                    )
                 verify_and_step(
                     step.group,
                     selected_actions,
