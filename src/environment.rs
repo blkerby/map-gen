@@ -60,6 +60,7 @@ fn check_outcome_transition_consistency(
     Ok(())
 }
 
+#[cfg(test)]
 fn introduces_invalid_outcome(before: &Outcomes, after: &Outcomes) -> bool {
     before
         .door_valid
@@ -75,6 +76,11 @@ fn introduces_invalid_outcome(before: &Outcomes, after: &Outcomes) -> bool {
             .any(|(&before, &after)| {
                 before == DoorValidOutcome::Unknown && after == DoorValidOutcome::Invalid
             })
+}
+
+enum CandidateOutcome {
+    Clean(Outcomes),
+    Rejected,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -895,37 +901,85 @@ impl Environment {
         let mut rejected = Vec::new();
 
         for candidate in candidates {
-            let post_candidate_outcomes = self.outcomes_after_candidate(common, candidate);
-            check_outcome_transition_consistency(
-                &pre_candidate_outcomes.door_valid,
-                &post_candidate_outcomes.door_valid,
-                "door",
-                "lookahead candidate",
-            )?;
-            check_outcome_transition_consistency(
-                &pre_candidate_outcomes.connections_valid,
-                &post_candidate_outcomes.connections_valid,
-                "connection",
-                "lookahead candidate",
-            )?;
-            if introduces_invalid_outcome(&pre_candidate_outcomes, &post_candidate_outcomes) {
-                rejected.push((candidate, post_candidate_outcomes));
-            } else {
-                clean.push((candidate, post_candidate_outcomes));
-                if clean.len() == max_candidates {
-                    break;
+            match self.evaluate_candidate_outcome(common, &pre_candidate_outcomes, candidate)? {
+                CandidateOutcome::Rejected => rejected.push(candidate),
+                CandidateOutcome::Clean(post_candidate_outcomes) => {
+                    clean.push((candidate, post_candidate_outcomes));
+                    if clean.len() == max_candidates {
+                        break;
+                    }
                 }
             }
         }
 
         let mut candidates_with_outcomes = if clean.is_empty() && !rejected.is_empty() {
             rejected
+                .into_iter()
+                .take(max_candidates)
+                .map(|candidate| {
+                    let post_candidate_outcomes = self.outcomes_after_candidate(common, candidate);
+                    (candidate, post_candidate_outcomes)
+                })
+                .collect()
         } else {
             clean
         };
         candidates_with_outcomes.truncate(max_candidates);
         let (candidates, post_candidate_outcomes) = candidates_with_outcomes.into_iter().unzip();
         Ok((pre_candidate_outcomes, candidates, post_candidate_outcomes))
+    }
+
+    fn evaluate_candidate_outcome(
+        &self,
+        common: &CommonData,
+        pre_candidate_outcomes: &Outcomes,
+        candidate: Action,
+    ) -> Result<CandidateOutcome, String> {
+        let mut env = self.clone_for_lookahead();
+        env.step(candidate, common);
+        let mut door_valid = Vec::with_capacity(pre_candidate_outcomes.door_valid.len());
+        let mut outcome_idx = 0;
+        for dir in 0..NUM_DIRS {
+            for i in 0..common.room_dir_door[dir].len() {
+                let before = pre_candidate_outcomes.door_valid[outcome_idx];
+                if before == DoorValidOutcome::Unknown {
+                    let after = env.door_outcome(common, dir, i);
+                    if after == DoorValidOutcome::Invalid {
+                        return Ok(CandidateOutcome::Rejected);
+                    }
+                    door_valid.push(after);
+                } else {
+                    door_valid.push(before);
+                }
+                outcome_idx += 1;
+            }
+        }
+
+        let frontier_reachability = if env.finished {
+            None
+        } else {
+            Some(env.scc_dag_with_merged_frontiers())
+        };
+        let mut connections_valid =
+            Vec::with_capacity(pre_candidate_outcomes.connections_valid.len());
+        for connection_idx in 0..common.room_connection.len() {
+            let before = pre_candidate_outcomes.connections_valid[connection_idx];
+            if before == DoorValidOutcome::Unknown {
+                let after =
+                    env.connection_outcome(common, connection_idx, frontier_reachability.as_ref());
+                if after == DoorValidOutcome::Invalid {
+                    return Ok(CandidateOutcome::Rejected);
+                }
+                connections_valid.push(after);
+            } else {
+                connections_valid.push(before);
+            }
+        }
+
+        Ok(CandidateOutcome::Clean(Outcomes {
+            door_valid,
+            connections_valid,
+        }))
     }
 
     pub fn outcomes_after_candidate(&self, common: &CommonData, candidate: Action) -> Outcomes {
@@ -1380,35 +1434,8 @@ impl Environment {
     pub fn outcomes(&self, common: &CommonData) -> Outcomes {
         let mut door_valid = vec![];
         for dir in 0..NUM_DIRS {
-            let matches = &self.door_matches[dir];
-            for (i, &m) in matches.iter().enumerate() {
-                let outcome = if m != DirDoorIdx::MAX {
-                    DoorValidOutcome::Valid
-                } else if self.finished {
-                    // The episode is ended, so any unmatched door is invalid.
-                    DoorValidOutcome::Invalid
-                } else {
-                    // The door is not yet matched. It is invalid if there is no candidate that could connect to it,
-                    // otherwise it is unknown.
-                    let room_dir_door = &common.room_dir_door[dir][i];
-                    let room_idx = room_dir_door.room_idx;
-                    if self.room_used[room_idx as usize] {
-                        match self.frontier.get(&DoorLocation::from_room_dir_door(
-                            room_dir_door,
-                            self.room_x[room_idx as usize],
-                            self.room_y[room_idx as usize],
-                        )) {
-                            None => DoorValidOutcome::Invalid, // No frontier means this door is blocked by the new room.
-                            Some(frontier) if frontier.candidates.is_empty() => {
-                                DoorValidOutcome::Invalid
-                            }
-                            Some(_) => DoorValidOutcome::Unknown,
-                        }
-                    } else {
-                        DoorValidOutcome::Unknown
-                    }
-                };
-                door_valid.push(outcome);
+            for i in 0..common.room_dir_door[dir].len() {
+                door_valid.push(self.door_outcome(common, dir, i));
             }
         }
 
@@ -1418,39 +1445,76 @@ impl Environment {
             Some(self.scc_dag_with_merged_frontiers())
         };
         let mut connections_valid = Vec::with_capacity(common.room_connection.len());
-        for connection in &common.room_connection {
-            let outcome = if self.room_used[connection.room_idx as usize] {
-                let from_component =
-                    self.room_part_component(common, connection.room_idx, connection.from_part);
-                let to_component =
-                    self.room_part_component(common, connection.room_idx, connection.to_part);
-                if self.scc_dag.can_reach(from_component, to_component) {
-                    DoorValidOutcome::Valid
-                } else if let Some((frontier_merged_scc_dag, frontier_merged_component_remap)) =
-                    &frontier_reachability
-                {
-                    if frontier_merged_scc_dag.can_reach(
-                        frontier_merged_component_remap[from_component],
-                        frontier_merged_component_remap[to_component],
-                    ) {
-                        DoorValidOutcome::Unknown
-                    } else {
-                        DoorValidOutcome::Invalid
-                    }
-                } else {
-                    DoorValidOutcome::Invalid
-                }
-            } else if self.finished {
-                DoorValidOutcome::Invalid
-            } else {
-                DoorValidOutcome::Unknown
-            };
-            connections_valid.push(outcome);
+        for connection_idx in 0..common.room_connection.len() {
+            connections_valid.push(self.connection_outcome(
+                common,
+                connection_idx,
+                frontier_reachability.as_ref(),
+            ));
         }
 
         Outcomes {
             door_valid,
             connections_valid,
+        }
+    }
+
+    fn door_outcome(&self, common: &CommonData, dir: usize, i: usize) -> DoorValidOutcome {
+        if self.door_matches[dir][i] != DirDoorIdx::MAX {
+            return DoorValidOutcome::Valid;
+        }
+        if self.finished {
+            return DoorValidOutcome::Invalid;
+        }
+
+        let room_dir_door = &common.room_dir_door[dir][i];
+        let room_idx = room_dir_door.room_idx;
+        if !self.room_used[room_idx as usize] {
+            return DoorValidOutcome::Unknown;
+        }
+        match self.frontier.get(&DoorLocation::from_room_dir_door(
+            room_dir_door,
+            self.room_x[room_idx as usize],
+            self.room_y[room_idx as usize],
+        )) {
+            None => DoorValidOutcome::Invalid,
+            Some(frontier) if frontier.candidates.is_empty() => DoorValidOutcome::Invalid,
+            Some(_) => DoorValidOutcome::Unknown,
+        }
+    }
+
+    fn connection_outcome(
+        &self,
+        common: &CommonData,
+        connection_idx: usize,
+        frontier_reachability: Option<&(SccDag, Vec<usize>)>,
+    ) -> DoorValidOutcome {
+        let connection = &common.room_connection[connection_idx];
+        if self.room_used[connection.room_idx as usize] {
+            let from_component =
+                self.room_part_component(common, connection.room_idx, connection.from_part);
+            let to_component =
+                self.room_part_component(common, connection.room_idx, connection.to_part);
+            if self.scc_dag.can_reach(from_component, to_component) {
+                DoorValidOutcome::Valid
+            } else if let Some((frontier_merged_scc_dag, frontier_merged_component_remap)) =
+                frontier_reachability
+            {
+                if frontier_merged_scc_dag.can_reach(
+                    frontier_merged_component_remap[from_component],
+                    frontier_merged_component_remap[to_component],
+                ) {
+                    DoorValidOutcome::Unknown
+                } else {
+                    DoorValidOutcome::Invalid
+                }
+            } else {
+                DoorValidOutcome::Invalid
+            }
+        } else if self.finished {
+            DoorValidOutcome::Invalid
+        } else {
+            DoorValidOutcome::Unknown
         }
     }
 
