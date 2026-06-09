@@ -385,7 +385,7 @@ class FrontierModel(torch.nn.Module):
             COORD_OFFSET,
         )
 
-    def forward(self, features: Features):
+    def forward(self, features: Features, include_proposal: bool):
         # Shapes below use: b=batch, f=frontiers, k=neighbors, e=embedding width,
         # h=message hidden width.
         # node: [b, f, 5]
@@ -511,7 +511,11 @@ class FrontierModel(torch.nn.Module):
             mean_pool = X.sum(1) / count
             max_pool = torch.where(node_mask.unsqueeze(-1), X, -torch.inf).max(1).values
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
-        proposal_score = self.proposal_output(X)
+        proposal_score = (
+            self.proposal_output(X)
+            if include_proposal
+            else X.new_empty([X.shape[0], X.shape[1], 0])
+        )
         # mean_pool, max_pool, pooled_state: [b, e]
         pooled_inputs = []
         if inventory_features is not None:

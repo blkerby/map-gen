@@ -636,7 +636,7 @@ def select_candidate_actions(
             dtype=torch.bfloat16,
             enabled=device.type == "cuda" and group.config.autocast,
         ):
-            preds = model(env_features)
+            preds = model(env_features, include_proposal=False)
         expected_reward = compute_expected_reward(
             Predictions(
                 preds.door_invalid.view(environment_count, candidate_count, -1),

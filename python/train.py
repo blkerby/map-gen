@@ -870,12 +870,18 @@ class TrainingSession:
 
         for feature_batch in prepared_batch.feature_batches:
             features = feature_batch.features.to(self.device)
+            include_proposal = (
+                prepared_batch.kind == "fresh"
+                and feature_batch.proposal_frontier_idx is not None
+                and feature_batch.proposal_door_variant_idx is not None
+                and feature_batch.proposal_selected_candidate is not None
+            )
             with torch.amp.autocast(
                 "cuda",
                 dtype=torch.bfloat16,
                 enabled=self.device.type == "cuda" and self.config.model.autocast,
             ):
-                preds = self.main_model(features)
+                preds = self.main_model(features, include_proposal=include_proposal)
             prefix_loss = compute_loss_breakdown(
                 preds,
                 repeated_outcomes,
@@ -896,12 +902,7 @@ class TrainingSession:
             total_loss.balance_contribution += (
                 prefix_loss.balance_contribution.item() * prefix_weight
             )
-            if (
-                prepared_batch.kind == "fresh"
-                and feature_batch.proposal_frontier_idx is not None
-                and feature_batch.proposal_door_variant_idx is not None
-                and feature_batch.proposal_selected_candidate is not None
-            ):
+            if include_proposal:
                 batch_proposal_loss = self.proposal_batch_loss(
                     preds.proposal_score,
                     feature_batch.proposal_frontier_idx,
