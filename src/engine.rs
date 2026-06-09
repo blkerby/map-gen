@@ -12,7 +12,7 @@ use crate::environment::{
 use crossbeam_channel as channel;
 use numpy::{
     Element, IntoPyArray, PyArray1, PyArray2, PyArray3, PyArray4, PyArrayMethods, PyReadonlyArray1,
-    PyReadonlyArray2, PyReadwriteArray1, PyReadwriteArray2,
+    PyReadonlyArray2, PyReadonlyArray3, PyReadwriteArray1, PyReadwriteArray2,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -205,7 +205,12 @@ enum WorkerCommand {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-        max_candidates: usize,
+        recommended_candidates: usize,
+        exploration_candidates: usize,
+        proposal_temperature: InputShard<f32>,
+        proposal_scores: Option<InputShard<f32>>,
+        proposal_frontier_count: usize,
+        proposal_door_variant_count: usize,
         room_idx: OutputShard<RoomIdx>,
         room_x: OutputShard<Coord>,
         room_y: OutputShard<Coord>,
@@ -478,7 +483,12 @@ fn worker_loop(
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
-                max_candidates,
+                recommended_candidates,
+                exploration_candidates,
+                proposal_temperature,
+                proposal_scores,
+                proposal_frontier_count,
+                proposal_door_variant_count,
                 room_idx,
                 room_x,
                 room_y,
@@ -497,6 +507,8 @@ fn worker_loop(
                 let room_idx = unsafe { room_idx.into_mut_slice() };
                 let room_x = unsafe { room_x.into_mut_slice() };
                 let room_y = unsafe { room_y.into_mut_slice() };
+                let proposal_temperature = unsafe { proposal_temperature.into_slice() };
+                let proposal_scores = proposal_scores.map(|scores| unsafe { scores.into_slice() });
                 let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
                 let proposal_door_variant_idx =
                     unsafe { proposal_door_variant_idx.into_mut_slice() };
@@ -505,9 +517,11 @@ fn worker_loop(
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 let door_match = unsafe { door_match.into_mut_slice() };
+                let max_candidates = recommended_candidates + exploration_candidates;
                 debug_assert_eq!(room_idx.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_x.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_y.len(), environments.len() * max_candidates);
+                debug_assert_eq!(proposal_temperature.len(), environments.len());
                 debug_assert_eq!(
                     proposal_frontier_idx.len(),
                     environments.len() * max_candidates
@@ -540,6 +554,13 @@ fn worker_loop(
                 let mut consistency_error = None;
                 pending_features.clear();
                 for (env_idx, env) in environments.iter_mut().enumerate() {
+                    let proposal_score_start =
+                        env_idx * proposal_frontier_count * proposal_door_variant_count;
+                    let proposal_score_end = proposal_score_start
+                        + proposal_frontier_count * proposal_door_variant_count;
+                    let env_proposal_scores = proposal_scores
+                        .as_ref()
+                        .map(|scores| &scores[proposal_score_start..proposal_score_end]);
                     let (
                         pre_candidate_outcomes,
                         candidates,
@@ -550,7 +571,12 @@ fn worker_loop(
                         mut candidate_features,
                     ) = match env.get_filtered_candidates_with_outcomes(
                         &common_data,
-                        max_candidates,
+                        recommended_candidates,
+                        exploration_candidates,
+                        proposal_temperature[env_idx],
+                        env_proposal_scores,
+                        proposal_frontier_count,
+                        proposal_door_variant_count,
                         &features,
                         frontier_neighbor_algorithm,
                         frontier_neighbor_count,
@@ -2040,7 +2066,10 @@ impl EnvironmentGroup {
     fn get_candidates_with_outcomes<'py>(
         &mut self,
         py: Python<'py>,
-        mut max_candidates: usize,
+        mut recommended_candidates: usize,
+        mut exploration_candidates: usize,
+        proposal_temperature: PyReadonlyArray1<'py, f32>,
+        proposal_scores: Option<PyReadonlyArray3<'py, f32>>,
     ) -> PyResult<(
         Bound<'py, PyArray2<RoomIdx>>,
         Bound<'py, PyArray2<Coord>>,
@@ -2059,8 +2088,45 @@ impl EnvironmentGroup {
         Vec<usize>,
     )> {
         if self.action_count == 0 {
-            max_candidates = 1;
+            recommended_candidates = 0;
+            exploration_candidates = 1;
         }
+        let max_candidates = recommended_candidates + exploration_candidates;
+        let proposal_temperature = proposal_temperature
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("proposal_temperature must be contiguous"))?;
+        if proposal_temperature.len() != self.num_environments {
+            return Err(PyValueError::new_err(
+                "proposal_temperature must have one value per environment",
+            ));
+        }
+        let proposal_score_shape = proposal_scores
+            .as_ref()
+            .map(|scores| scores.as_array().shape().to_vec());
+        let (proposal_frontier_count, proposal_door_variant_count) =
+            if let Some(shape) = proposal_score_shape {
+                if shape.len() != 3 || shape[0] != self.num_environments {
+                    return Err(PyValueError::new_err(
+                        "proposal_scores must have shape [environment, frontier, door_variant]",
+                    ));
+                }
+                (shape[1], shape[2])
+            } else {
+                (0, 0)
+            };
+        if self.action_count > 0 && recommended_candidates > 0 && proposal_scores.is_none() {
+            return Err(PyValueError::new_err(
+                "proposal_scores are required when recommended_candidates is greater than zero",
+            ));
+        }
+        let proposal_scores = proposal_scores
+            .as_ref()
+            .map(|scores| {
+                scores
+                    .as_slice()
+                    .map_err(|_| PyValueError::new_err("proposal_scores must be contiguous"))
+            })
+            .transpose()?;
         let (door_outcome_count, connection_outcome_count) = output_sizes(&self.common_data);
         let output_len = self.num_environments * max_candidates;
         let pre_door_output_len = self.num_environments * door_outcome_count;
@@ -2103,9 +2169,22 @@ impl EnvironmentGroup {
                 let connection_output_end = output_end * connection_outcome_count;
                 let door_match_output_start = output_start * door_outcome_count;
                 let door_match_output_end = output_end * door_outcome_count;
+                let proposal_score_start =
+                    worker.start * proposal_frontier_count * proposal_door_variant_count;
+                let proposal_score_end =
+                    worker.end() * proposal_frontier_count * proposal_door_variant_count;
 
                 if let Err(err) = worker.send(WorkerCommand::GetCandidatesWithOutcomes {
-                    max_candidates,
+                    recommended_candidates,
+                    exploration_candidates,
+                    proposal_temperature: InputShard::from_slice(
+                        &proposal_temperature[worker.start..worker.end()],
+                    ),
+                    proposal_scores: proposal_scores.map(|scores| {
+                        InputShard::from_slice(&scores[proposal_score_start..proposal_score_end])
+                    }),
+                    proposal_frontier_count,
+                    proposal_door_variant_count,
                     room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
                     room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
                     room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),

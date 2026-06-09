@@ -445,6 +445,7 @@ class GenerationGroup:
     config: GenerateConfig
     step: int
     feature_slot: PinnedSparseFeatureSlot | None
+    previous_lookahead_outcomes: Outcomes | None
 
 
 @dataclass
@@ -474,9 +475,15 @@ class PreparedGenerationStep:
 
 
 @dataclass
-class PendingGenerationStep:
+class PendingCandidateStep:
     group: GenerationGroup
     future: Future[PreparedGenerationStep]
+
+
+@dataclass
+class PendingProposalStep:
+    group: GenerationGroup
+    future: Future[Features | None]
 
 
 def create_generation_environment_groups(
@@ -518,6 +525,7 @@ def create_generation_environment_groups(
 
 def get_generation_candidate_batch(
     group: GenerationGroup,
+    proposal_scores: torch.Tensor | None,
     device: torch.device,
 ) -> CandidateBatch:
     (
@@ -528,7 +536,11 @@ def get_generation_candidate_batch(
         post_candidate_outcomes,
         sparse_feature_requirements,
     ) = group.env.get_candidates_with_outcomes(
-        group.config.max_candidates, device
+        group.config.recommended_candidates,
+        group.config.exploration_candidates,
+        group.config.proposal_temperature,
+        proposal_scores,
+        device,
     )
     return CandidateBatch(
         candidates,
@@ -562,6 +574,64 @@ def candidate_log_inputs(
         candidate_log_temperature,
         candidate_log_recommended_candidates,
         candidate_log_exploration_candidates,
+    )
+
+
+def state_log_inputs(
+    config: GenerateConfig,
+    environment_count: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    log_temperature = config.temperature.to(torch.device("cpu")).log()
+    log_recommended_candidates = torch.full(
+        [environment_count],
+        math.log(config.recommended_candidates + 1),
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    log_exploration_candidates = torch.full(
+        [environment_count],
+        math.log(config.exploration_candidates + 1),
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    return log_temperature, log_recommended_candidates, log_exploration_candidates
+
+
+def select_outcomes(outcomes: Outcomes, index: torch.Tensor) -> Outcomes:
+    def gather(values: torch.Tensor) -> torch.Tensor:
+        gather_index = index.view(-1, 1, 1).expand(-1, 1, values.shape[2])
+        return torch.gather(values, 1, gather_index).squeeze(1)
+
+    return Outcomes(
+        gather(outcomes.door_invalid),
+        gather(outcomes.connection_invalid),
+        gather(outcomes.door_match),
+    )
+
+
+def prepare_proposal_features(group: GenerationGroup) -> Features | None:
+    if (
+        group.step == 0
+        or group.config.recommended_candidates == 0
+        or group.previous_lookahead_outcomes is None
+    ):
+        return None
+    environment_count = group.config.temperature.shape[0]
+    (
+        log_temperature,
+        log_recommended_candidates,
+        log_exploration_candidates,
+    ) = state_log_inputs(group.config, environment_count)
+    return group.env.get_features(
+        torch.device("cpu"),
+        log_temperature,
+        group.env.engine.features.temperature,
+        log_recommended_candidates,
+        group.env.engine.features.recommended_candidates,
+        log_exploration_candidates,
+        group.env.engine.features.exploration_candidates,
+        group.previous_lookahead_outcomes,
+        group.env.engine.features.lookahead_outcomes,
     )
 
 
@@ -605,9 +675,14 @@ def prepare_candidate_features(
 
 def prepare_lookahead_generation_step(
     group: GenerationGroup,
+    proposal_scores: torch.Tensor | None,
     sparse_frontiers: bool,
 ) -> PreparedGenerationStep:
-    candidate_batch = get_generation_candidate_batch(group, torch.device("cpu"))
+    candidate_batch = get_generation_candidate_batch(
+        group,
+        proposal_scores,
+        torch.device("cpu"),
+    )
     return prepare_candidate_features(
         group.env,
         group.config,
@@ -660,6 +735,25 @@ def select_candidate_actions(
     return action_index, selected_actions, candidate_logits
 
 
+def compute_proposal_scores(
+    group: GenerationGroup,
+    model,
+    features: Features,
+    device: torch.device,
+    gpu_lock: threading.Lock,
+    transfer_stream: torch.cuda.Stream | None,
+) -> torch.Tensor:
+    with gpu_lock:
+        env_features = transfer_features(features, device, transfer_stream)
+        with torch.amp.autocast(
+            "cuda",
+            dtype=torch.bfloat16,
+            enabled=device.type == "cuda" and group.config.autocast,
+        ):
+            preds = model(env_features, include_proposal=True)
+        return preds.proposal_score.to(torch.float32).to(torch.device("cpu"))
+
+
 def verify_and_step(
     group: GenerationGroup,
     selected_actions: Actions,
@@ -675,20 +769,53 @@ def start_generation_step(
     group: GenerationGroup,
     sparse_frontiers: bool,
     executor: ThreadPoolExecutor,
-    pending: deque[PendingGenerationStep],
+    pending_proposals: deque[PendingProposalStep],
+    pending_candidates: deque[PendingCandidateStep],
 ) -> None:
-    while group.step < group.config.episode_length:
-        pending.append(
-            PendingGenerationStep(
+    if group.step >= group.config.episode_length:
+        return
+    if group.step == 0 or group.config.recommended_candidates == 0:
+        pending_candidates.append(
+            PendingCandidateStep(
                 group,
                 executor.submit(
                     prepare_lookahead_generation_step,
                     group,
+                    None,
                     sparse_frontiers,
                 ),
             )
         )
         return
+    pending_proposals.append(
+        PendingProposalStep(
+            group,
+            executor.submit(
+                prepare_proposal_features,
+                group,
+            )
+        )
+    )
+
+
+def start_candidate_step(
+    group: GenerationGroup,
+    proposal_scores: torch.Tensor | None,
+    sparse_frontiers: bool,
+    executor: ThreadPoolExecutor,
+    pending_candidates: deque[PendingCandidateStep],
+) -> None:
+    pending_candidates.append(
+        PendingCandidateStep(
+            group,
+            executor.submit(
+                prepare_lookahead_generation_step,
+                group,
+                proposal_scores,
+                sparse_frontiers,
+            ),
+        )
+    )
 
 
 def merge_generation_results(
@@ -755,12 +882,14 @@ def run_generation_groups(
             PinnedSparseFeatureSlot(env, pin_memory=True)
             if device.type == "cuda"
             else None,
+            None,
         )
         for env, config in zip(envs, configs)
     ]
     group_index_by_id = {id(group): idx for idx, group in enumerate(groups)}
     with ThreadPoolExecutor(max_workers=len(groups)) as executor:
-        pending: deque[PendingGenerationStep] = deque()
+        pending_proposals: deque[PendingProposalStep] = deque()
+        pending_candidates: deque[PendingCandidateStep] = deque()
         group_proposal_frontier_idx = [[] for _ in groups]
         group_proposal_door_variant_idx = [[] for _ in groups]
         group_selected_candidate = [[] for _ in groups]
@@ -768,14 +897,40 @@ def run_generation_groups(
         with torch.no_grad():
             for group in groups:
                 group.env.clear()
+                group.previous_lookahead_outcomes = None
                 start_generation_step(
                     group,
                     sparse_frontiers,
                     executor,
-                    pending,
+                    pending_proposals,
+                    pending_candidates,
                 )
-            while pending:
-                step = pending.popleft()
+            while pending_proposals or pending_candidates:
+                if not pending_candidates:
+                    proposal_step = pending_proposals.popleft()
+                    proposal_features = proposal_step.future.result()
+                    proposal_scores = (
+                        None
+                        if proposal_features is None
+                        else compute_proposal_scores(
+                            proposal_step.group,
+                            model,
+                            proposal_features,
+                            device,
+                            gpu_lock,
+                            transfer_stream,
+                        )
+                    )
+                    start_candidate_step(
+                        proposal_step.group,
+                        proposal_scores,
+                        sparse_frontiers,
+                        executor,
+                        pending_candidates,
+                    )
+                    continue
+
+                step = pending_candidates.popleft()
                 prepared_step = step.future.result()
                 candidate_batch = prepared_step.candidate_batch.to(device)
                 candidates = candidate_batch.candidates
@@ -834,6 +989,10 @@ def run_generation_groups(
                 group_proposal_door_variant_idx[group_index].append(door_variant_idx)
                 group_selected_candidate[group_index].append(action_index)
                 group_proposal_target_logits[group_index].append(target_logits)
+                step.group.previous_lookahead_outcomes = select_outcomes(
+                    candidate_batch.post_candidate_outcomes,
+                    action_index,
+                ).to(torch.device("cpu"))
                 verify_and_step(
                     step.group,
                     selected_actions,
@@ -846,7 +1005,8 @@ def run_generation_groups(
                         step.group,
                         sparse_frontiers,
                         executor,
-                        pending,
+                        pending_proposals,
+                        pending_candidates,
                     )
         results = []
         for group_index, group in enumerate(groups):

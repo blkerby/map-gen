@@ -936,32 +936,132 @@ impl Environment {
         }
         let mut sorted_frontiers = self.frontier.iter().collect::<Vec<_>>();
         sorted_frontiers.sort_unstable_by_key(|(location, _)| **location);
-        let smallest_frontier_size = sorted_frontiers
-            .iter()
-            .map(|(_, frontier)| frontier.candidates.len())
-            .filter(|&x| x > 0)
-            .min()
-            .unwrap_or(1);
-        let candidate_frontier = sorted_frontiers
+        let frontier_candidates = sorted_frontiers
             .iter()
             .enumerate()
-            .find(|(_, (_, frontier))| frontier.candidates.len() == smallest_frontier_size);
-        let Some((frontier_idx, (_, frontier))) = candidate_frontier else {
-            return Vec::new();
-        };
-        let frontier_idx = frontier_idx as FrontierIdx;
-        let candidate_geometries = frontier.candidates.clone();
-        let mut candidates = Vec::with_capacity(candidate_geometries.len());
-        for candidate in candidate_geometries {
-            self.push_candidate_representatives(common, candidate, frontier_idx, &mut candidates);
+            .map(|(frontier_idx, (_, frontier))| {
+                (frontier_idx as FrontierIdx, frontier.candidates.clone())
+            })
+            .collect::<Vec<_>>();
+        let mut candidates = Vec::new();
+        for (frontier_idx, candidate_geometries) in frontier_candidates {
+            for candidate in candidate_geometries {
+                self.push_candidate_representatives(
+                    common,
+                    candidate,
+                    frontier_idx,
+                    &mut candidates,
+                );
+            }
         }
         candidates
+    }
+
+    fn candidate_proposal_score(
+        candidate: CandidateAction,
+        proposal_scores: &[f32],
+        proposal_frontier_count: usize,
+        proposal_door_variant_count: usize,
+    ) -> f32 {
+        if candidate.frontier_idx < 0 || candidate.door_variant_idx < 0 {
+            return f32::NEG_INFINITY;
+        }
+        let frontier_idx = candidate.frontier_idx as usize;
+        let door_variant_idx = candidate.door_variant_idx as usize;
+        if frontier_idx >= proposal_frontier_count
+            || door_variant_idx >= proposal_door_variant_count
+        {
+            return f32::NEG_INFINITY;
+        }
+        proposal_scores[frontier_idx * proposal_door_variant_count + door_variant_idx]
+    }
+
+    fn proposal_sample_order(
+        &mut self,
+        candidates: &[CandidateAction],
+        proposal_scores: &[f32],
+        proposal_frontier_count: usize,
+        proposal_door_variant_count: usize,
+        proposal_temperature: f32,
+    ) -> Vec<usize> {
+        let temperature = proposal_temperature.max(1e-6);
+        let logits = candidates
+            .iter()
+            .map(|&candidate| {
+                Self::candidate_proposal_score(
+                    candidate,
+                    proposal_scores,
+                    proposal_frontier_count,
+                    proposal_door_variant_count,
+                ) / temperature
+            })
+            .collect::<Vec<_>>();
+        let max_logit = logits
+            .iter()
+            .copied()
+            .filter(|value| value.is_finite())
+            .fold(f32::NEG_INFINITY, f32::max);
+        if !max_logit.is_finite() {
+            let mut order = (0..candidates.len()).collect::<Vec<_>>();
+            order.shuffle(&mut self.rng);
+            return order;
+        }
+        let mut remaining = logits
+            .iter()
+            .map(|&logit| {
+                if logit.is_finite() {
+                    (logit - max_logit).exp()
+                } else {
+                    0.0
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut order = Vec::with_capacity(candidates.len());
+        for _ in 0..candidates.len() {
+            let total_weight = remaining.iter().sum::<f32>();
+            if total_weight <= 0.0 || !total_weight.is_finite() {
+                let mut tail = remaining
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, &weight)| (weight >= 0.0).then_some(idx))
+                    .collect::<Vec<_>>();
+                tail.shuffle(&mut self.rng);
+                order.extend(tail);
+                break;
+            }
+            let mut target = self.rng.random_range(0.0..total_weight);
+            let mut selected_idx = None;
+            for (idx, weight) in remaining.iter().copied().enumerate() {
+                if weight <= 0.0 {
+                    continue;
+                }
+                if target < weight {
+                    selected_idx = Some(idx);
+                    break;
+                }
+                target -= weight;
+            }
+            let selected_idx = selected_idx.unwrap_or_else(|| {
+                remaining
+                    .iter()
+                    .rposition(|&weight| weight > 0.0)
+                    .expect("positive total weight requires a positive candidate weight")
+            });
+            remaining[selected_idx] = -1.0;
+            order.push(selected_idx);
+        }
+        order
     }
 
     pub fn get_filtered_candidates_with_outcomes(
         &mut self,
         common: &CommonData,
-        max_candidates: usize,
+        recommended_candidates: usize,
+        exploration_candidates: usize,
+        proposal_temperature: f32,
+        proposal_scores: Option<&[f32]>,
+        proposal_frontier_count: usize,
+        proposal_door_variant_count: usize,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -979,12 +1079,34 @@ impl Environment {
         String,
     > {
         let pre_candidate_outcomes = self.outcomes(common);
-        let mut candidates = self.get_all_candidates(common);
-        candidates.shuffle(&mut self.rng);
+        let candidates = self.get_all_candidates(common);
+        let max_candidates = recommended_candidates + exploration_candidates;
         let mut clean = Vec::with_capacity(max_candidates.min(candidates.len()));
         let mut rejected = Vec::new();
+        let mut consumed = vec![false; candidates.len()];
 
-        for candidate in candidates {
+        let recommended_order = if recommended_candidates > 0 {
+            let proposal_scores = proposal_scores.ok_or_else(|| {
+                "proposal scores are required when recommended_candidates is greater than zero"
+                    .to_string()
+            })?;
+            self.proposal_sample_order(
+                &candidates,
+                proposal_scores,
+                proposal_frontier_count,
+                proposal_door_variant_count,
+                proposal_temperature,
+            )
+        } else {
+            Vec::new()
+        };
+        let mut recommended_clean = 0;
+        for candidate_idx in recommended_order {
+            if recommended_clean == recommended_candidates {
+                break;
+            }
+            consumed[candidate_idx] = true;
+            let candidate = candidates[candidate_idx];
             match self.evaluate_candidate_outcome(
                 common,
                 &pre_candidate_outcomes,
@@ -997,9 +1119,36 @@ impl Environment {
                 CandidateOutcome::Rejected => rejected.push(candidate),
                 CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
                     clean.push((candidate, post_candidate_outcomes, door_match, features));
-                    if clean.len() == max_candidates {
-                        break;
-                    }
+                    recommended_clean += 1;
+                }
+            }
+        }
+
+        let mut exploration_order = consumed
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, &consumed)| (!consumed).then_some(idx))
+            .collect::<Vec<_>>();
+        exploration_order.shuffle(&mut self.rng);
+        let mut exploration_clean = 0;
+        for candidate_idx in exploration_order {
+            if exploration_clean == exploration_candidates {
+                break;
+            }
+            let candidate = candidates[candidate_idx];
+            match self.evaluate_candidate_outcome(
+                common,
+                &pre_candidate_outcomes,
+                candidate.action,
+                config,
+                frontier_neighbor_algorithm,
+                frontier_neighbor_count,
+                frontier_window_size,
+            )? {
+                CandidateOutcome::Rejected => rejected.push(candidate),
+                CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
+                    clean.push((candidate, post_candidate_outcomes, door_match, features));
+                    exploration_clean += 1;
                 }
             }
         }
@@ -1926,6 +2075,62 @@ mod tests {
                 assert!(neighbors[dst].contains(&src));
             }
         }
+    }
+
+    #[test]
+    fn proposal_sample_order_prefers_high_scored_candidate() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 4), 0);
+        let candidates = vec![
+            CandidateAction {
+                action: Action {
+                    room_idx: 0,
+                    x: 0,
+                    y: 0,
+                },
+                frontier_idx: 0,
+                door_variant_idx: 0,
+            },
+            CandidateAction {
+                action: Action {
+                    room_idx: 0,
+                    x: 1,
+                    y: 0,
+                },
+                frontier_idx: 1,
+                door_variant_idx: 2,
+            },
+            CandidateAction {
+                action: Action {
+                    room_idx: 0,
+                    x: 2,
+                    y: 0,
+                },
+                frontier_idx: 1,
+                door_variant_idx: 1,
+            },
+        ];
+        let proposal_scores = vec![0.0, 0.0, 0.0, 0.0, -10.0, 10.0];
+
+        assert_eq!(
+            Environment::candidate_proposal_score(candidates[1], &proposal_scores, 2, 3),
+            10.0
+        );
+        let order = env.proposal_sample_order(&candidates, &proposal_scores, 2, 3, 0.01);
+        assert_eq!(order[0], 1);
     }
 
     #[test]

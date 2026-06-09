@@ -357,7 +357,12 @@ class EnvironmentGroup:
         )
 
     def get_candidates_with_outcomes(
-        self, max_candidates: int, device: torch.device
+        self,
+        recommended_candidates: int,
+        exploration_candidates: int,
+        proposal_temperature: torch.Tensor,
+        proposal_scores: torch.Tensor | None,
+        device: torch.device,
     ) -> tuple[Actions, Outcomes, Outcomes, SparseFeatureRequirements]:
         (
             room_idx,
@@ -373,7 +378,12 @@ class EnvironmentGroup:
             sparse_row_count,
             worker_sparse_row_counts,
         ) = (
-            self.env.get_candidates_with_outcomes(max_candidates)
+            self.env.get_candidates_with_outcomes(
+                recommended_candidates,
+                exploration_candidates,
+                proposal_temperature.contiguous().cpu().numpy(),
+                None if proposal_scores is None else proposal_scores.contiguous().cpu().numpy(),
+            )
         )
         proposal_frontier_idx, proposal_door_variant_idx = proposal_indices
         return (
