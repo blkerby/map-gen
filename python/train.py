@@ -78,6 +78,7 @@ class FeatureTrainBatch:
     proposal_frontier_idx: torch.Tensor | None
     proposal_door_variant_idx: torch.Tensor | None
     proposal_selected_candidate: torch.Tensor | None
+    proposal_target_logits: torch.Tensor | None
 
 
 @dataclass
@@ -665,10 +666,12 @@ class TrainingSession:
                 proposal_frontier_idx = None
                 proposal_door_variant_idx = None
                 proposal_selected_candidate = None
+                proposal_target_logits = None
                 if proposal_data is not None and step + 1 < self.episode_length:
                     proposal_frontier_idx = proposal_data.frontier_idx[:, step + 1]
                     proposal_door_variant_idx = proposal_data.door_variant_idx[:, step + 1]
                     proposal_selected_candidate = proposal_data.selected_candidate[:, step + 1]
+                    proposal_target_logits = proposal_data.target_logits[:, step + 1]
                 feature_batches.append(
                     FeatureTrainBatch(
                         env.get_features(
@@ -691,6 +694,7 @@ class TrainingSession:
                         proposal_frontier_idx,
                         proposal_door_variant_idx,
                         proposal_selected_candidate,
+                        proposal_target_logits,
                     )
                 )
         return len(feature_batches), feature_batches
@@ -799,13 +803,12 @@ class TrainingSession:
         proposal_score: torch.Tensor,
         frontier_idx: torch.Tensor,
         door_variant_idx: torch.Tensor,
-        selected_candidate: torch.Tensor,
+        target_logits: torch.Tensor,
     ) -> torch.Tensor:
         frontier_idx = frontier_idx.to(self.device, dtype=torch.int64)
         door_variant_idx = door_variant_idx.to(self.device, dtype=torch.int64)
-        selected_candidate = selected_candidate.to(self.device, dtype=torch.int64)
-        candidate_count = frontier_idx.shape[1]
-        valid = (frontier_idx >= 0) & (door_variant_idx >= 0)
+        target_logits = target_logits.to(self.device, dtype=torch.float32)
+        valid = (frontier_idx >= 0) & (door_variant_idx >= 0) & torch.isfinite(target_logits)
         safe_frontier_idx = frontier_idx.clamp_min(0)
         safe_door_variant_idx = door_variant_idx.clamp_min(0)
         batch_idx = torch.arange(
@@ -822,21 +825,39 @@ class TrainingSession:
             valid,
             candidate_logits,
             torch.full_like(candidate_logits, float("-inf")),
+        ).to(torch.float32)
+        target_logits = torch.where(
+            valid,
+            target_logits,
+            torch.full_like(target_logits, float("-inf")),
         )
-        selected_in_range = (selected_candidate >= 0) & (selected_candidate < candidate_count)
-        selected_valid = torch.zeros_like(selected_in_range)
-        if candidate_count > 0:
-            selected_valid = selected_in_range & torch.gather(
-                valid,
-                1,
-                selected_candidate.clamp_max(candidate_count - 1).unsqueeze(1),
-            ).squeeze(1)
-        if not torch.any(selected_valid):
+        row_valid = torch.any(valid, dim=1)
+        if not torch.any(row_valid):
             return torch.sum(proposal_score) * 0.0
-        return torch.nn.functional.cross_entropy(
-            candidate_logits[selected_valid].to(torch.float32),
-            selected_candidate[selected_valid],
+        row_candidate_logits = candidate_logits[row_valid]
+        row_target_logits = target_logits[row_valid]
+        row_mask = valid[row_valid]
+        proposal_log_probs = torch.nn.functional.log_softmax(
+            row_candidate_logits,
+            dim=1,
         )
+        target_log_probs = torch.nn.functional.log_softmax(
+            row_target_logits,
+            dim=1,
+        )
+        safe_target_log_probs = torch.where(
+            row_mask,
+            target_log_probs,
+            torch.zeros_like(target_log_probs),
+        )
+        safe_proposal_log_probs = torch.where(
+            row_mask,
+            proposal_log_probs,
+            torch.zeros_like(proposal_log_probs),
+        )
+        target_probs = torch.exp(safe_target_log_probs)
+        kl_terms = target_probs * (safe_target_log_probs - safe_proposal_log_probs)
+        return torch.sum(torch.where(row_mask, kl_terms, torch.zeros_like(kl_terms))) / row_mask.shape[0]
 
     def train_feature_batch_backward(
         self,
@@ -875,6 +896,7 @@ class TrainingSession:
                 and feature_batch.proposal_frontier_idx is not None
                 and feature_batch.proposal_door_variant_idx is not None
                 and feature_batch.proposal_selected_candidate is not None
+                and feature_batch.proposal_target_logits is not None
             )
             with torch.amp.autocast(
                 "cuda",
@@ -907,7 +929,7 @@ class TrainingSession:
                     preds.proposal_score,
                     feature_batch.proposal_frontier_idx,
                     feature_batch.proposal_door_variant_idx,
-                    feature_batch.proposal_selected_candidate,
+                    feature_batch.proposal_target_logits,
                 )
                 weighted_proposal_loss = (
                     self.config.train.proposal_weight
@@ -1029,6 +1051,10 @@ class TrainingSession:
                 ]),
                 selected_candidate=torch.cat([
                     proposal_data.selected_candidate
+                    for proposal_data in proposal_data_iterations
+                ]),
+                target_logits=torch.cat([
+                    proposal_data.target_logits
                     for proposal_data in proposal_data_iterations
                 ]),
             ),

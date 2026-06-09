@@ -85,12 +85,14 @@ class ProposalData:
     frontier_idx: torch.Tensor
     door_variant_idx: torch.Tensor
     selected_candidate: torch.Tensor
+    target_logits: torch.Tensor
 
     def to(self, device: torch.device) -> "ProposalData":
         return ProposalData(
             self.frontier_idx.to(device),
             self.door_variant_idx.to(device),
             self.selected_candidate.to(device),
+            self.target_logits.to(device),
         )
 
     def slice(self, start: int, end: int) -> "ProposalData":
@@ -98,6 +100,7 @@ class ProposalData:
             self.frontier_idx[start:end],
             self.door_variant_idx[start:end],
             self.selected_candidate[start:end],
+            self.target_logits[start:end],
         )
 
 

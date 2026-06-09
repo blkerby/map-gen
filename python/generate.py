@@ -627,7 +627,7 @@ def select_candidate_actions(
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
     num_rooms: int,
-) -> tuple[torch.Tensor, Actions]:
+) -> tuple[torch.Tensor, Actions, torch.Tensor]:
     environment_count, candidate_count = candidates.room_idx.shape
     with gpu_lock:
         env_features = transfer_features(features, device, transfer_stream)
@@ -653,13 +653,11 @@ def select_candidate_actions(
             torch.full_like(expected_reward, float("-inf")),
             expected_reward,
         )
-        probs = torch.softmax(
-            expected_reward / torch.unsqueeze(group.config.temperature, 1),
-            dim=1,
-        )
+        candidate_logits = expected_reward / torch.unsqueeze(group.config.temperature, 1)
+        probs = torch.softmax(candidate_logits, dim=1)
         action_index = rand_choice(probs)
         selected_actions = candidates.select(action_index)
-    return action_index, selected_actions
+    return action_index, selected_actions, candidate_logits
 
 
 def verify_and_step(
@@ -766,6 +764,7 @@ def run_generation_groups(
         group_proposal_frontier_idx = [[] for _ in groups]
         group_proposal_door_variant_idx = [[] for _ in groups]
         group_selected_candidate = [[] for _ in groups]
+        group_proposal_target_logits = [[] for _ in groups]
         with torch.no_grad():
             for group in groups:
                 group.env.clear()
@@ -787,8 +786,13 @@ def run_generation_groups(
                         device=device,
                     )
                     selected_actions = candidates.select(action_index)
+                    candidate_logits = torch.zeros(
+                        candidates.room_idx.shape,
+                        dtype=torch.float32,
+                        device=device,
+                    )
                 else:
-                    action_index, selected_actions = select_candidate_actions(
+                    action_index, selected_actions, candidate_logits = select_candidate_actions(
                         step.group,
                         model,
                         candidates,
@@ -813,15 +817,23 @@ def run_generation_groups(
                     dtype=candidate_batch.proposal_door_variant_idx.dtype,
                     device=device,
                 )
+                target_logits = torch.full(
+                    [candidates.room_idx.shape[0], max_candidates],
+                    float("-inf"),
+                    dtype=torch.float32,
+                    device=device,
+                )
                 frontier_idx[:, :candidate_batch.proposal_frontier_idx.shape[1]] = (
                     candidate_batch.proposal_frontier_idx
                 )
                 door_variant_idx[:, :candidate_batch.proposal_door_variant_idx.shape[1]] = (
                     candidate_batch.proposal_door_variant_idx
                 )
+                target_logits[:, :candidate_logits.shape[1]] = candidate_logits.to(torch.float32)
                 group_proposal_frontier_idx[group_index].append(frontier_idx)
                 group_proposal_door_variant_idx[group_index].append(door_variant_idx)
                 group_selected_candidate[group_index].append(action_index)
+                group_proposal_target_logits[group_index].append(target_logits)
                 verify_and_step(
                     step.group,
                     selected_actions,
@@ -865,6 +877,7 @@ def run_generation_groups(
                     torch.stack(group_proposal_frontier_idx[group_index], dim=1),
                     torch.stack(group_proposal_door_variant_idx[group_index], dim=1),
                     torch.stack(group_selected_candidate[group_index], dim=1),
+                    torch.stack(group_proposal_target_logits[group_index], dim=1),
                 ),
             ))
     return merge_generation_results(results)
