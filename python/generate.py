@@ -446,6 +446,7 @@ class GenerationGroup:
     step: int
     feature_slot: PinnedSparseFeatureSlot | None
     previous_lookahead_outcomes: Outcomes | None
+    previous_proposal_scores: torch.Tensor | None
 
 
 @dataclass
@@ -702,7 +703,7 @@ def select_candidate_actions(
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
     num_rooms: int,
-) -> tuple[torch.Tensor, Actions, torch.Tensor]:
+) -> tuple[torch.Tensor, Actions, torch.Tensor, torch.Tensor | None]:
     environment_count, candidate_count = candidates.room_idx.shape
     with gpu_lock:
         env_features = transfer_features(features, device, transfer_stream)
@@ -711,7 +712,8 @@ def select_candidate_actions(
             dtype=torch.bfloat16,
             enabled=device.type == "cuda" and group.config.autocast,
         ):
-            preds = model(env_features, include_proposal=False)
+            include_proposal = group.config.recommended_candidates > 0
+            preds = model(env_features, include_proposal=include_proposal)
         expected_reward = compute_expected_reward(
             Predictions(
                 preds.door_invalid.view(environment_count, candidate_count, -1),
@@ -732,7 +734,19 @@ def select_candidate_actions(
         probs = torch.softmax(candidate_logits, dim=1)
         action_index = rand_choice(probs)
         selected_actions = candidates.select(action_index)
-    return action_index, selected_actions, candidate_logits
+        selected_proposal_scores = None
+        if include_proposal:
+            proposal_score = preds.proposal_score.to(torch.float32).view(
+                environment_count,
+                candidate_count,
+                preds.proposal_score.shape[1],
+                preds.proposal_score.shape[2],
+            )
+            selected_proposal_scores = proposal_score[
+                torch.arange(environment_count, device=device),
+                action_index,
+            ].to(torch.device("cpu"))
+    return action_index, selected_actions, candidate_logits, selected_proposal_scores
 
 
 def compute_proposal_scores(
@@ -785,6 +799,15 @@ def start_generation_step(
                     sparse_frontiers,
                 ),
             )
+        )
+        return
+    if group.previous_proposal_scores is not None:
+        start_candidate_step(
+            group,
+            group.previous_proposal_scores,
+            sparse_frontiers,
+            executor,
+            pending_candidates,
         )
         return
     pending_proposals.append(
@@ -883,6 +906,7 @@ def run_generation_groups(
             if device.type == "cuda"
             else None,
             None,
+            None,
         )
         for env, config in zip(envs, configs)
     ]
@@ -898,6 +922,7 @@ def run_generation_groups(
             for group in groups:
                 group.env.clear()
                 group.previous_lookahead_outcomes = None
+                group.previous_proposal_scores = None
                 start_generation_step(
                     group,
                     sparse_frontiers,
@@ -947,8 +972,14 @@ def run_generation_groups(
                         dtype=torch.float32,
                         device=device,
                     )
+                    selected_proposal_scores = None
                 else:
-                    action_index, selected_actions, candidate_logits = select_candidate_actions(
+                    (
+                        action_index,
+                        selected_actions,
+                        candidate_logits,
+                        selected_proposal_scores,
+                    ) = select_candidate_actions(
                         step.group,
                         model,
                         candidates,
@@ -994,6 +1025,7 @@ def run_generation_groups(
                     candidate_batch.post_candidate_outcomes,
                     action_index,
                 ).to(torch.device("cpu"))
+                step.group.previous_proposal_scores = selected_proposal_scores
                 verify_and_step(
                     step.group,
                     selected_actions,
