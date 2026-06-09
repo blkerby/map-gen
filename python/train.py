@@ -19,7 +19,17 @@ import map_gen
 from aim import Run
 from safetensors import safe_open
 
-from env import Actions, DoorMatchCounts, DoorMatches, Engine, EpisodeData, GenerateConfig, Outcomes, Features
+from env import (
+    Actions,
+    DoorMatchCounts,
+    DoorMatches,
+    Engine,
+    EpisodeData,
+    GenerateConfig,
+    Outcomes,
+    Features,
+    ProposalData,
+)
 from experience import ExperienceStorage
 from generate import run_generation_groups
 from loss import (
@@ -60,6 +70,16 @@ class PreparedTrainBatch:
     door_matches: DoorMatches
     prefix_count: int
     feature_batches: list[Features]
+    proposal_data: ProposalData | None
+    proposal_batches: list["ProposalTrainBatch"]
+
+
+@dataclass
+class ProposalTrainBatch:
+    features: Features
+    frontier_idx: torch.Tensor
+    door_variant_idx: torch.Tensor
+    selected_candidate: torch.Tensor
 
 
 @dataclass
@@ -68,9 +88,11 @@ class MainLossBreakdown:
     door: float
     connection: float
     balance: float
+    proposal: float
     door_contribution: float
     connection_contribution: float
     balance_contribution: float
+    proposal_contribution: float
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -261,10 +283,17 @@ def create_generate_config(
 ) -> GenerateConfig:
     return GenerateConfig(
         episode_length=episode_length,
-        max_candidates=config.generation.action_candidates,
+        recommended_candidates=config.generation.recommended_candidates,
+        exploration_candidates=config.generation.exploration_candidates,
         temperature=torch.full(
             [num_envs],
             config.generation.temperature,
+            dtype=torch.float32,
+            device=device,
+        ),
+        proposal_temperature=torch.full(
+            [num_envs],
+            config.generation.proposal_temperature,
             dtype=torch.float32,
             device=device,
         ),
@@ -328,7 +357,7 @@ def run_generation_process_task(
     model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
-) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, RustProfileReport]:
+) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, ProposalData, RustProfileReport]:
     if GENERATION_PROCESS_STATE is None:
         raise RuntimeError("generation process was not initialized")
     state = GENERATION_PROCESS_STATE
@@ -345,7 +374,7 @@ def run_generation_process_task(
         )
         for env in state.envs
     ]
-    episode_data, outcomes, door_match_counts = run_generation_groups(
+    episode_data, outcomes, door_match_counts, proposal_data = run_generation_groups(
         state.envs,
         state.model,
         gen_configs,
@@ -357,6 +386,7 @@ def run_generation_process_task(
         episode_data.to(torch.device("cpu")),
         outcomes.to(torch.device("cpu")),
         door_match_counts.to(torch.device("cpu")),
+        proposal_data.to(torch.device("cpu")),
         profile_report,
     )
 
@@ -579,25 +609,57 @@ class TrainingSession:
     def prepare_feature_batches(
         self,
         train_episode_data: EpisodeData,
+        proposal_data: ProposalData | None,
         env,
-    ) -> tuple[int, list[Features]]:
+    ) -> tuple[int, list[Features], list[ProposalTrainBatch]]:
         offset = torch.randint(0, self.config.train.sample_period, [1]).item()
         train_actions = train_episode_data.actions
         train_actions_cpu = train_actions.to(torch.device("cpu"))
         log_temperature = torch.log(train_episode_data.temperature).to(torch.device("cpu"))
-        log_action_candidates = torch.log(train_episode_data.action_candidates).to(
+        log_recommended_candidates = torch.log(train_episode_data.recommended_candidates + 1).to(
+            torch.device("cpu")
+        )
+        log_exploration_candidates = torch.log(train_episode_data.exploration_candidates + 1).to(
             torch.device("cpu")
         )
         env.clear()
         feature_batches = []
+        proposal_batches = []
+        previous_lookahead_outcomes = Outcomes(
+            torch.empty([train_actions.room_idx.shape[0], 0], dtype=torch.int8),
+            torch.empty([train_actions.room_idx.shape[0], 0], dtype=torch.int8),
+            torch.empty([train_actions.room_idx.shape[0], 0], dtype=torch.int16),
+        )
         for step in range(self.episode_length):
             next_actions = Actions(
                 train_actions_cpu.room_idx[:, step],
                 train_actions_cpu.room_x[:, step],
                 train_actions_cpu.room_y[:, step],
             )
-            if step % self.config.train.sample_period == offset:
-                lookahead_outcomes = env.get_outcomes_after_candidates(
+            sample_step = step % self.config.train.sample_period == offset
+            if sample_step and proposal_data is not None and step > 0:
+                proposal_batches.append(
+                    ProposalTrainBatch(
+                        env.get_features(
+                            torch.device("cpu"),
+                            log_temperature,
+                            self.config.features.temperature,
+                            log_recommended_candidates,
+                            self.config.features.recommended_candidates,
+                            log_exploration_candidates,
+                            self.config.features.exploration_candidates,
+                            previous_lookahead_outcomes,
+                            self.config.features.lookahead_outcomes,
+                            0,
+                            train_actions.room_idx.shape[0],
+                        ),
+                        proposal_data.frontier_idx[:, step],
+                        proposal_data.door_variant_idx[:, step],
+                        proposal_data.selected_candidate[:, step],
+                    )
+                )
+            if self.config.features.lookahead_outcomes or sample_step:
+                next_lookahead_outcomes = env.get_outcomes_after_candidates(
                     Actions(
                         next_actions.room_idx.unsqueeze(1),
                         next_actions.room_x.unsqueeze(1),
@@ -607,21 +669,21 @@ class TrainingSession:
                     0,
                 )
                 dummy_action = next_actions.room_idx >= self.num_rooms
-                lookahead_outcomes = Outcomes(
+                next_lookahead_outcomes = Outcomes(
                     torch.where(
                         dummy_action[:, None, None],
-                        torch.full_like(lookahead_outcomes.door_invalid, -1),
-                        lookahead_outcomes.door_invalid,
+                        torch.full_like(next_lookahead_outcomes.door_invalid, -1),
+                        next_lookahead_outcomes.door_invalid,
                     ),
                     torch.where(
                         dummy_action[:, None, None],
-                        torch.full_like(lookahead_outcomes.connection_invalid, -1),
-                        lookahead_outcomes.connection_invalid,
+                        torch.full_like(next_lookahead_outcomes.connection_invalid, -1),
+                        next_lookahead_outcomes.connection_invalid,
                     ),
                     torch.where(
                         dummy_action[:, None, None],
-                        torch.full_like(lookahead_outcomes.door_match, -1),
-                        lookahead_outcomes.door_match,
+                        torch.full_like(next_lookahead_outcomes.door_match, -1),
+                        next_lookahead_outcomes.door_match,
                     ),
                 )
             if self.config.features.lookahead_outcomes:
@@ -634,29 +696,39 @@ class TrainingSession:
                         torch.device("cpu"),
                         log_temperature,
                         self.config.features.temperature,
-                        log_action_candidates,
-                        self.config.features.action_candidates,
+                        log_recommended_candidates,
+                        self.config.features.recommended_candidates,
+                        log_exploration_candidates,
+                        self.config.features.exploration_candidates,
                         Outcomes(
-                            lookahead_outcomes.door_invalid.squeeze(1),
-                            lookahead_outcomes.connection_invalid.squeeze(1),
-                            lookahead_outcomes.door_match.squeeze(1),
+                            next_lookahead_outcomes.door_invalid.squeeze(1),
+                            next_lookahead_outcomes.connection_invalid.squeeze(1),
+                            next_lookahead_outcomes.door_match.squeeze(1),
                         ),
                         self.config.features.lookahead_outcomes,
                         0,
                         train_actions.room_idx.shape[0],
                     )
                 )
-        return len(feature_batches), feature_batches
+            if self.config.features.lookahead_outcomes:
+                previous_lookahead_outcomes = Outcomes(
+                    next_lookahead_outcomes.door_invalid.squeeze(1),
+                    next_lookahead_outcomes.connection_invalid.squeeze(1),
+                    next_lookahead_outcomes.door_match.squeeze(1),
+                )
+        return len(feature_batches), feature_batches, proposal_batches
 
     def prepare_feature_batch(
         self,
         kind: Literal["fresh", "replay"],
         train_episode_data: EpisodeData,
         train_outcomes: Outcomes,
+        proposal_data: ProposalData | None,
         env,
     ) -> PreparedTrainBatch:
-        prefix_count, feature_batches = self.prepare_feature_batches(
+        prefix_count, feature_batches, proposal_batches = self.prepare_feature_batches(
             train_episode_data,
+            proposal_data,
             env,
         )
         door_matches = env.get_door_matches(self.device)
@@ -667,6 +739,8 @@ class TrainingSession:
             door_matches,
             prefix_count=prefix_count,
             feature_batches=feature_batches,
+            proposal_data=proposal_data,
+            proposal_batches=proposal_batches,
         )
 
     def prepare_train_batch_task(
@@ -674,6 +748,7 @@ class TrainingSession:
         task: TrainBatchTask,
         fresh_episode_data: EpisodeData,
         fresh_outcomes: Outcomes,
+        fresh_proposal_data: ProposalData,
     ) -> PreparedTrainBatch:
         env = self.train_batch_envs[task.env_index]
         if task.kind == "fresh":
@@ -683,15 +758,26 @@ class TrainingSession:
                 fresh_outcomes,
                 task.start,
             )
-            return self.prepare_feature_batch(task.kind, train_episode_data, train_outcomes, env)
+            train_proposal_data = fresh_proposal_data.slice(
+                task.start,
+                task.start + self.config.train.batch_size,
+            )
+            return self.prepare_feature_batch(
+                task.kind,
+                train_episode_data,
+                train_outcomes,
+                train_proposal_data,
+                env,
+            )
 
         replay_episode_data = self.experience.sample(
             self.config.train.batch_size,
             self.config.train.episodes_per_file,
             self.config.train.hist_c,
         )
-        prefix_count, feature_batches = self.prepare_feature_batches(
+        prefix_count, feature_batches, proposal_batches = self.prepare_feature_batches(
             replay_episode_data,
+            None,
             env,
         )
         replay_door_matches = env.get_door_matches(self.device)
@@ -705,6 +791,8 @@ class TrainingSession:
             replay_door_matches,
             prefix_count=prefix_count,
             feature_batches=feature_batches,
+            proposal_data=None,
+            proposal_batches=proposal_batches,
         )
 
     def train_batch_backward(
@@ -733,6 +821,55 @@ class TrainingSession:
         (balance_loss * loss_scale).backward()
         return balance_loss
 
+    def proposal_batch_loss(
+        self,
+        proposal_batch: ProposalTrainBatch,
+    ) -> torch.Tensor:
+        features = proposal_batch.features.to(self.device)
+        frontier_idx = proposal_batch.frontier_idx.to(self.device, dtype=torch.int64)
+        door_variant_idx = proposal_batch.door_variant_idx.to(self.device, dtype=torch.int64)
+        selected_candidate = proposal_batch.selected_candidate.to(self.device, dtype=torch.int64)
+        with torch.amp.autocast(
+            "cuda",
+            dtype=torch.bfloat16,
+            enabled=self.device.type == "cuda" and self.config.model.autocast,
+        ):
+            preds = self.main_model(features)
+        proposal_score = preds.proposal_score
+        candidate_count = frontier_idx.shape[1]
+        valid = (frontier_idx >= 0) & (door_variant_idx >= 0)
+        safe_frontier_idx = frontier_idx.clamp_min(0)
+        safe_door_variant_idx = door_variant_idx.clamp_min(0)
+        batch_idx = torch.arange(
+            frontier_idx.shape[0],
+            dtype=torch.int64,
+            device=self.device,
+        ).unsqueeze(1)
+        candidate_logits = proposal_score[
+            batch_idx,
+            safe_frontier_idx,
+            safe_door_variant_idx,
+        ]
+        candidate_logits = torch.where(
+            valid,
+            candidate_logits,
+            torch.full_like(candidate_logits, float("-inf")),
+        )
+        selected_in_range = (selected_candidate >= 0) & (selected_candidate < candidate_count)
+        selected_valid = torch.zeros_like(selected_in_range)
+        if candidate_count > 0:
+            selected_valid = selected_in_range & torch.gather(
+                valid,
+                1,
+                selected_candidate.clamp_max(candidate_count - 1).unsqueeze(1),
+            ).squeeze(1)
+        if not torch.any(selected_valid):
+            return torch.sum(proposal_score) * 0.0
+        return torch.nn.functional.cross_entropy(
+            candidate_logits[selected_valid].to(torch.float32),
+            selected_candidate[selected_valid],
+        )
+
     def train_feature_batch_backward(
         self,
         prepared_batch: PreparedTrainBatch,
@@ -760,7 +897,7 @@ class TrainingSession:
             dtype=torch.bool,
             device=self.device,
         )
-        total_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        total_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         prefix_weight = 1.0 / prepared_batch.prefix_count
 
         for features in prepared_batch.feature_batches:
@@ -791,6 +928,23 @@ class TrainingSession:
             total_loss.balance_contribution += (
                 prefix_loss.balance_contribution.item() * prefix_weight
             )
+        proposal_loss = 0.0
+        proposal_contribution = 0.0
+        if prepared_batch.kind == "fresh" and prepared_batch.proposal_batches:
+            proposal_weight = 1.0 / len(prepared_batch.proposal_batches)
+            for proposal_batch in prepared_batch.proposal_batches:
+                batch_proposal_loss = self.proposal_batch_loss(proposal_batch)
+                weighted_proposal_loss = (
+                    self.config.train.proposal_weight
+                    * batch_proposal_loss
+                    * proposal_weight
+                )
+                (weighted_proposal_loss * loss_scale).backward()
+                proposal_loss += batch_proposal_loss.item() * proposal_weight
+                proposal_contribution += weighted_proposal_loss.item()
+        total_loss.total += proposal_contribution
+        total_loss.proposal += proposal_loss
+        total_loss.proposal_contribution += proposal_contribution
         return total_loss
 
     def train_optimizer_step(self) -> None:
@@ -807,10 +961,13 @@ class TrainingSession:
         self.balance_optimizer.step()
         self.update_ema_model()
 
-    def generate_round(self) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, RustProfileReport]:
+    def generate_round(
+        self,
+    ) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, ProposalData, RustProfileReport]:
         episode_data_iterations = []
         outcome_iterations = []
         door_match_count_iterations = []
+        proposal_data_iterations = []
         profile_reports = []
         model_state = {
             name: as_checkpoint_tensor(value)
@@ -836,11 +993,13 @@ class TrainingSession:
                 iteration_episode_data,
                 iteration_outcomes,
                 iteration_door_match_counts,
+                iteration_proposal_data,
                 iteration_profile_report,
             ) in shard_results:
                 episode_data_iterations.append(iteration_episode_data.to(self.device))
                 outcome_iterations.append(iteration_outcomes.to(self.device))
                 door_match_count_iterations.append(iteration_door_match_counts.to(self.device))
+                proposal_data_iterations.append(iteration_proposal_data.to(self.device))
                 profile_reports.append(iteration_profile_report)
 
         return (
@@ -859,8 +1018,13 @@ class TrainingSession:
                 temperature=torch.cat([
                     episode_data.temperature for episode_data in episode_data_iterations
                 ]),
-                action_candidates=torch.cat([
-                    episode_data.action_candidates for episode_data in episode_data_iterations
+                recommended_candidates=torch.cat([
+                    episode_data.recommended_candidates
+                    for episode_data in episode_data_iterations
+                ]),
+                exploration_candidates=torch.cat([
+                    episode_data.exploration_candidates
+                    for episode_data in episode_data_iterations
                 ]),
             ),
             Outcomes(
@@ -880,6 +1044,20 @@ class TrainingSession:
                     dim=0,
                 ),
             ),
+            ProposalData(
+                frontier_idx=torch.cat([
+                    proposal_data.frontier_idx
+                    for proposal_data in proposal_data_iterations
+                ]),
+                door_variant_idx=torch.cat([
+                    proposal_data.door_variant_idx
+                    for proposal_data in proposal_data_iterations
+                ]),
+                selected_candidate=torch.cat([
+                    proposal_data.selected_candidate
+                    for proposal_data in proposal_data_iterations
+                ]),
+            ),
             merge_profile_reports(profile_reports),
         )
 
@@ -887,23 +1065,29 @@ class TrainingSession:
         self,
         episode_data: EpisodeData,
         gen_outcomes: Outcomes,
+        proposal_data: ProposalData,
         step_config: Config,
     ) -> tuple[MainLossBreakdown, float]:
         self.main_optimizer.param_groups[0]["lr"] = step_config.optimizer.lr
         self.balance_optimizer.param_groups[0]["lr"] = step_config.balance_optimizer.lr
 
-        total_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        total_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         total_balance_loss = 0.0
         train_batch_count = 0
 
         def prepare_train_task(task: TrainBatchTask) -> PreparedTrainBatch:
-            return self.prepare_train_batch_task(task, episode_data, gen_outcomes)
+            return self.prepare_train_batch_task(
+                task,
+                episode_data,
+                gen_outcomes,
+                proposal_data,
+            )
 
         def train_prepared_batch_group(prepared_batches: list[PreparedTrainBatch]) -> tuple[MainLossBreakdown, float, int]:
             self.main_model.zero_grad()
             self.balance_model.zero_grad()
             loss_scale = 1.0 / len(prepared_batches)
-            group_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            group_loss = MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
             group_balance_loss = 0.0
             for prepared_batch in prepared_batches:
                 batch_loss, batch_balance_loss = self.train_batch_backward(
@@ -914,9 +1098,11 @@ class TrainingSession:
                 group_loss.door += batch_loss.door
                 group_loss.connection += batch_loss.connection
                 group_loss.balance += batch_loss.balance
+                group_loss.proposal += batch_loss.proposal
                 group_loss.door_contribution += batch_loss.door_contribution
                 group_loss.connection_contribution += batch_loss.connection_contribution
                 group_loss.balance_contribution += batch_loss.balance_contribution
+                group_loss.proposal_contribution += batch_loss.proposal_contribution
                 group_balance_loss += batch_balance_loss
             self.train_optimizer_step()
             return group_loss, group_balance_loss, len(prepared_batches)
@@ -933,9 +1119,11 @@ class TrainingSession:
                 total_loss.door += group_loss.door
                 total_loss.connection += group_loss.connection
                 total_loss.balance += group_loss.balance
+                total_loss.proposal += group_loss.proposal
                 total_loss.door_contribution += group_loss.door_contribution
                 total_loss.connection_contribution += group_loss.connection_contribution
                 total_loss.balance_contribution += group_loss.balance_contribution
+                total_loss.proposal_contribution += group_loss.proposal_contribution
                 total_balance_loss += group_balance_loss
                 train_batch_count += group_count
                 prepared_batch_group = []
@@ -945,23 +1133,27 @@ class TrainingSession:
             total_loss.door += group_loss.door
             total_loss.connection += group_loss.connection
             total_loss.balance += group_loss.balance
+            total_loss.proposal += group_loss.proposal
             total_loss.door_contribution += group_loss.door_contribution
             total_loss.connection_contribution += group_loss.connection_contribution
             total_loss.balance_contribution += group_loss.balance_contribution
+            total_loss.proposal_contribution += group_loss.proposal_contribution
             total_balance_loss += group_balance_loss
             train_batch_count += group_count
 
         if train_batch_count == 0:
-            return MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0
+            return MainLossBreakdown(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), 0.0
         return (
             MainLossBreakdown(
                 total_loss.total / train_batch_count,
                 total_loss.door / train_batch_count,
                 total_loss.connection / train_batch_count,
                 total_loss.balance / train_batch_count,
+                total_loss.proposal / train_batch_count,
                 total_loss.door_contribution / train_batch_count,
                 total_loss.connection_contribution / train_batch_count,
                 total_loss.balance_contribution / train_batch_count,
+                total_loss.proposal_contribution / train_batch_count,
             ),
             total_balance_loss / train_batch_count,
         )
@@ -1021,6 +1213,7 @@ class TrainingSession:
         door_loss_pct = 100.0 * loss.door_contribution / loss_denominator
         connection_loss_pct = 100.0 * loss.connection_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
+        proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
 
         metrics = {
             "loss": loss.total,
@@ -1030,6 +1223,8 @@ class TrainingSession:
             "connection_loss_pct": connection_loss_pct,
             "main_balance_loss": loss.balance,
             "main_balance_loss_pct": main_balance_loss_pct,
+            "proposal_loss": loss.proposal,
+            "proposal_loss_pct": proposal_loss_pct,
             "balance_loss": balance_loss,
             "success_rate": success_rate,
             "success_door": success_door,
@@ -1043,7 +1238,9 @@ class TrainingSession:
             "num_episodes": self.num_episodes,
             "lr": step_config.optimizer.lr,
             "temperature": step_config.generation.temperature,
-            "action_candidates": step_config.generation.action_candidates,
+            "recommended_candidates": step_config.generation.recommended_candidates,
+            "exploration_candidates": step_config.generation.exploration_candidates,
+            "proposal_temperature": step_config.generation.proposal_temperature,
             "reward_door": step_config.generation.reward_door,
             "reward_connection": step_config.generation.reward_connection,
             "reward_balance": step_config.generation.reward_balance,
@@ -1065,7 +1262,7 @@ class TrainingSession:
         schedule_progress = min(self.num_episodes / self.config.knot_episodes[-1], 1.0)
         logging.info(
             "round %s, loss %.4f (door %.4f %.1f%%, conn %.4f %.1f%%, "
-            "main_bal %.4f %.1f%%), "
+            "main_bal %.4f %.1f%%, prop %.4f %.1f%%), "
             "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), ss %.4f, bal_loss %.4f, "
             "bal_ss %.4f, frac %.4f",
@@ -1077,6 +1274,8 @@ class TrainingSession:
             connection_loss_pct,
             loss.balance,
             main_balance_loss_pct,
+            loss.proposal,
+            proposal_loss_pct,
             scalar(success_rate),
             scalar(avg_invalid),
             scalar(min_invalid),
@@ -1138,10 +1337,21 @@ class TrainingSession:
             for round_idx in range(start_round, total_episodes // self.episodes_per_round):
                 if self.args.profile:
                     map_gen.reset_profile()
-                episode_data, gen_outcomes, door_match_counts, generation_profile = self.generate_round()
+                (
+                    episode_data,
+                    gen_outcomes,
+                    door_match_counts,
+                    proposal_data,
+                    generation_profile,
+                ) = self.generate_round()
                 self.num_episodes += self.episodes_per_round
                 step_config = instantiate_scheduleable_config(self.config, self.num_episodes)
-                avg_loss, avg_balance_loss = self.train_round(episode_data, gen_outcomes, step_config)
+                avg_loss, avg_balance_loss = self.train_round(
+                    episode_data,
+                    gen_outcomes,
+                    proposal_data,
+                    step_config,
+                )
 
                 self.experience.store(episode_data)
 

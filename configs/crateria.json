@@ -33,8 +33,10 @@
     "num_iterations": 4,
     "num_devices": 2,
     "pipeline_groups": 2,
-    "action_candidates": {"log": [1, 4, 8, 16]},
+    "recommended_candidates": {"log": [1, 4, 8, 16]},
+    "exploration_candidates": {"log": [1, 1, 1, 1]},
     "temperature": {"log": [10.0, 1.0, 0.03, 0.03]},
+    "proposal_temperature": {"log": [10.0, 1.0, 0.03, 0.03]},
     "reward_door": 1.0,
     "reward_connection": 1.0,
     "reward_balance": 0.2,
@@ -46,7 +48,8 @@
   "features": {
     "inventory": true,
     "temperature": true,
-    "action_candidates": true,
+    "recommended_candidates": true,
+    "exploration_candidates": true,
     "lookahead_outcomes": true,
     "room_position": true,
     "frontier_mask": true,
@@ -71,6 +74,7 @@
     "door_weight": 1.0,
     "connection_weight": 1.0,
     "balance_weight": 5.0,
+    "proposal_weight": 0.1,
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 1
   }

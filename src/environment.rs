@@ -10,8 +10,8 @@ use std::time::Instant;
 
 use crate::common::{
     Action, CommonData, ConnectionVariantIdx, Coord, DirDoorIdx, Direction, DoorKind, DoorLocation,
-    DoorValidOutcome, GeometryData, GeometryIdx, NUM_DIRS, PartIdx, RoomIdx, RoomPartIdx,
-    get_behind_door_position,
+    DoorValidOutcome, DoorVariantIdx, FrontierIdx, GeometryData, GeometryIdx, NUM_DIRS, PartIdx,
+    RoomIdx, RoomPartIdx, get_behind_door_position,
 };
 use crate::engine::{profile_enabled, record_profile_metric};
 use crate::scc_dag::SccDag;
@@ -122,6 +122,17 @@ struct GeometryAction {
     geometry_idx: GeometryIdx,
     x: Coord,
     y: Coord,
+    door_direction: Direction,
+    door_x: Coord,
+    door_y: Coord,
+    door_kind: DoorKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CandidateAction {
+    pub action: Action,
+    pub frontier_idx: FrontierIdx,
+    pub door_variant_idx: DoorVariantIdx,
 }
 
 #[derive(Clone)]
@@ -137,7 +148,8 @@ pub struct Outcomes {
 pub struct FeatureConfig {
     pub inventory: bool,
     pub temperature: bool,
-    pub action_candidates: bool,
+    pub recommended_candidates: bool,
+    pub exploration_candidates: bool,
     // This is attached by Python from outcome tensors; Rust only needs to accept
     // the strict feature config field.
     #[allow(dead_code)]
@@ -159,7 +171,8 @@ impl FeatureConfig {
     pub fn is_empty(&self) -> bool {
         !self.inventory
             && !self.temperature
-            && !self.action_candidates
+            && !self.recommended_candidates
+            && !self.exploration_candidates
             && !self.room_position
             && !self.connection_reachability
             && !self.has_frontier_features()
@@ -193,7 +206,8 @@ impl FeatureConfig {
         Self {
             inventory: true,
             temperature: true,
-            action_candidates: true,
+            recommended_candidates: true,
+            exploration_candidates: true,
             lookahead_outcomes: true,
             room_position: true,
             frontier_mask: true,
@@ -214,7 +228,8 @@ impl FeatureConfig {
         Self {
             inventory: false,
             temperature: false,
-            action_candidates: false,
+            recommended_candidates: false,
+            exploration_candidates: false,
             lookahead_outcomes: false,
             room_position: false,
             frontier_mask: false,
@@ -555,7 +570,8 @@ impl Environment {
         &mut self,
         common: &CommonData,
         candidate: GeometryAction,
-        actions: &mut Vec<Action>,
+        frontier_idx: FrontierIdx,
+        actions: &mut Vec<CandidateAction>,
     ) {
         for &connection_variant_idx in
             common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
@@ -566,10 +582,20 @@ impl Environment {
             if let Some(room_idx) =
                 self.choose_unused_room_in_connection_variant(common, connection_variant_idx)
             {
-                actions.push(Action {
-                    room_idx,
-                    x: candidate.x,
-                    y: candidate.y,
+                actions.push(CandidateAction {
+                    action: Action {
+                        room_idx,
+                        x: candidate.x,
+                        y: candidate.y,
+                    },
+                    frontier_idx,
+                    door_variant_idx: common.door_variant_idx(
+                        connection_variant_idx,
+                        candidate.door_direction,
+                        candidate.door_x,
+                        candidate.door_y,
+                        candidate.door_kind,
+                    ),
                 });
             }
         }
@@ -756,6 +782,10 @@ impl Environment {
                             geometry_idx: opp_door.geometry_idx,
                             x: room_x,
                             y: room_y,
+                            door_direction: door.direction.opposite(),
+                            door_x: opp_door.x,
+                            door_y: opp_door.y,
+                            door_kind: opp_door.kind,
                         };
                         candidates.push(candidate);
                     }
@@ -896,28 +926,34 @@ impl Environment {
         (scc_dag, component_remap)
     }
 
-    fn get_all_candidates(&mut self, common: &CommonData) -> Vec<Action> {
+    fn get_all_candidates(&mut self, common: &CommonData) -> Vec<CandidateAction> {
         if self.actions.is_empty() {
-            return vec![self.get_initial_action(common)];
+            return vec![CandidateAction {
+                action: self.get_initial_action(common),
+                frontier_idx: -1,
+                door_variant_idx: -1,
+            }];
         }
-        let smallest_frontier_size = self
-            .frontier
-            .values()
-            .map(|frontier| frontier.candidates.len())
+        let mut sorted_frontiers = self.frontier.iter().collect::<Vec<_>>();
+        sorted_frontiers.sort_unstable_by_key(|(location, _)| **location);
+        let smallest_frontier_size = sorted_frontiers
+            .iter()
+            .map(|(_, frontier)| frontier.candidates.len())
             .filter(|&x| x > 0)
             .min()
             .unwrap_or(1);
-        let candidate_geometries = {
-            self.frontier
-                .iter()
-                .filter(|(_, frontier)| frontier.candidates.len() == smallest_frontier_size)
-                .min_by_key(|(door_loc, _)| *door_loc)
-                .map(|(_, frontier)| frontier.candidates.clone())
-                .unwrap_or_default()
+        let candidate_frontier = sorted_frontiers
+            .iter()
+            .enumerate()
+            .find(|(_, (_, frontier))| frontier.candidates.len() == smallest_frontier_size);
+        let Some((frontier_idx, (_, frontier))) = candidate_frontier else {
+            return Vec::new();
         };
+        let frontier_idx = frontier_idx as FrontierIdx;
+        let candidate_geometries = frontier.candidates.clone();
         let mut candidates = Vec::with_capacity(candidate_geometries.len());
         for candidate in candidate_geometries {
-            self.push_candidate_representatives(common, candidate, &mut candidates);
+            self.push_candidate_representatives(common, candidate, frontier_idx, &mut candidates);
         }
         candidates
     }
@@ -934,6 +970,8 @@ impl Environment {
         (
             Outcomes,
             Vec<Action>,
+            Vec<FrontierIdx>,
+            Vec<DoorVariantIdx>,
             Vec<Outcomes>,
             Vec<Vec<i16>>,
             Vec<Features>,
@@ -950,7 +988,7 @@ impl Environment {
             match self.evaluate_candidate_outcome(
                 common,
                 &pre_candidate_outcomes,
-                candidate,
+                candidate.action,
                 config,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
@@ -974,7 +1012,7 @@ impl Environment {
                     let (post_candidate_outcomes, door_match, features) = self
                         .outcomes_and_features_after_candidate(
                             common,
-                            candidate,
+                            candidate.action,
                             config,
                             frontier_neighbor_algorithm,
                             frontier_neighbor_count,
@@ -988,11 +1026,15 @@ impl Environment {
         };
         candidates_with_outcomes.truncate(max_candidates);
         let mut candidates = Vec::with_capacity(candidates_with_outcomes.len());
+        let mut proposal_frontier_idx = Vec::with_capacity(candidates_with_outcomes.len());
+        let mut proposal_door_variant_idx = Vec::with_capacity(candidates_with_outcomes.len());
         let mut post_candidate_outcomes = Vec::with_capacity(candidates_with_outcomes.len());
         let mut door_matches = Vec::with_capacity(candidates_with_outcomes.len());
         let mut features = Vec::with_capacity(candidates_with_outcomes.len());
         for (candidate, outcomes, door_match, candidate_features) in candidates_with_outcomes {
-            candidates.push(candidate);
+            candidates.push(candidate.action);
+            proposal_frontier_idx.push(candidate.frontier_idx);
+            proposal_door_variant_idx.push(candidate.door_variant_idx);
             post_candidate_outcomes.push(outcomes);
             door_matches.push(door_match);
             features.push(candidate_features);
@@ -1000,6 +1042,8 @@ impl Environment {
         Ok((
             pre_candidate_outcomes,
             candidates,
+            proposal_frontier_idx,
+            proposal_door_variant_idx,
             post_candidate_outcomes,
             door_matches,
             features,

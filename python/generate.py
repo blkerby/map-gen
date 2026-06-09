@@ -8,6 +8,7 @@ from env import (
     EpisodeData,
     GenerateConfig,
     Outcomes,
+    ProposalData,
     SparseFeatureRequirements,
     SparseFeatures,
     Features,
@@ -101,8 +102,10 @@ def extract_candidate_features(
     candidates: Actions,
     log_temperature: torch.Tensor,
     include_temperature: bool,
-    log_action_candidates: torch.Tensor,
-    include_action_candidates: bool,
+    log_recommended_candidates: torch.Tensor,
+    include_recommended_candidates: bool,
+    log_exploration_candidates: torch.Tensor,
+    include_exploration_candidates: bool,
     lookahead_outcomes: Outcomes,
     include_lookahead_outcomes: bool,
     sparse_feature_requirements: SparseFeatureRequirements,
@@ -141,8 +144,10 @@ def extract_candidate_features(
             candidates.room_idx.shape[1],
             log_temperature,
             include_temperature,
-            log_action_candidates,
-            include_action_candidates,
+            log_recommended_candidates,
+            include_recommended_candidates,
+            log_exploration_candidates,
+            include_exploration_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
             sparse_row_count,
@@ -154,8 +159,10 @@ def extract_candidate_features(
             torch.device("cpu"),
             log_temperature,
             include_temperature,
-            log_action_candidates,
-            include_action_candidates,
+            log_recommended_candidates,
+            include_recommended_candidates,
+            log_exploration_candidates,
+            include_exploration_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
             0,
@@ -165,8 +172,10 @@ def extract_candidate_features(
         torch.device("cpu"),
         log_temperature,
         include_temperature,
-        log_action_candidates,
-        include_action_candidates,
+        log_recommended_candidates,
+        include_recommended_candidates,
+        log_exploration_candidates,
+        include_exploration_candidates,
         lookahead_outcomes,
         include_lookahead_outcomes,
         0,
@@ -203,7 +212,10 @@ def transfer_features_sync(
     room_y = features.room_y.to(device, non_blocking=non_blocking)
     room_placed = features.room_placed.to(device, non_blocking=non_blocking)
     log_temperature = features.log_temperature.to(device, non_blocking=non_blocking)
-    log_action_candidates = features.log_action_candidates.to(
+    log_recommended_candidates = features.log_recommended_candidates.to(
+        device, non_blocking=non_blocking
+    )
+    log_exploration_candidates = features.log_exploration_candidates.to(
         device, non_blocking=non_blocking
     )
     lookahead_door_invalid = features.lookahead_door_invalid.to(
@@ -224,7 +236,8 @@ def transfer_features_sync(
         room_y,
         room_placed,
         log_temperature,
-        log_action_candidates,
+        log_recommended_candidates,
+        log_exploration_candidates,
         lookahead_door_invalid,
         lookahead_door_match,
         lookahead_connection_invalid,
@@ -363,8 +376,10 @@ class PinnedSparseFeatureSlot:
         candidate_count: int,
         log_temperature: torch.Tensor,
         include_temperature: bool,
-        log_action_candidates: torch.Tensor,
-        include_action_candidates: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        log_exploration_candidates: torch.Tensor,
+        include_exploration_candidates: bool,
         lookahead_outcomes: Outcomes,
         include_lookahead_outcomes: bool,
         sparse_row_count: int,
@@ -375,8 +390,12 @@ class PinnedSparseFeatureSlot:
             log_temperature = log_temperature.new_empty(
                 [environment_count, candidate_count, 0]
             )
-        if not include_action_candidates:
-            log_action_candidates = log_action_candidates.new_empty(
+        if not include_recommended_candidates:
+            log_recommended_candidates = log_recommended_candidates.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+        if not include_exploration_candidates:
+            log_exploration_candidates = log_exploration_candidates.new_empty(
                 [environment_count, candidate_count, 0]
             )
         lookahead_door_invalid = lookahead_outcomes.door_invalid
@@ -402,7 +421,8 @@ class PinnedSparseFeatureSlot:
                 environment_count, candidate_count, self.room_width
             ),
             log_temperature,
-            log_action_candidates,
+            log_recommended_candidates,
+            log_exploration_candidates,
             lookahead_door_invalid,
             lookahead_door_match,
             lookahead_connection_invalid,
@@ -430,6 +450,8 @@ class GenerationGroup:
 @dataclass
 class CandidateBatch:
     candidates: Actions
+    proposal_frontier_idx: torch.Tensor
+    proposal_door_variant_idx: torch.Tensor
     reward_outcomes: Outcomes
     post_candidate_outcomes: Outcomes
     sparse_feature_requirements: SparseFeatureRequirements
@@ -437,6 +459,8 @@ class CandidateBatch:
     def to(self, device: torch.device) -> "CandidateBatch":
         return CandidateBatch(
             self.candidates.to(device),
+            self.proposal_frontier_idx.to(device),
+            self.proposal_door_variant_idx.to(device),
             self.reward_outcomes.to(device),
             self.post_candidate_outcomes.to(device),
             self.sparse_feature_requirements,
@@ -498,6 +522,8 @@ def get_generation_candidate_batch(
 ) -> CandidateBatch:
     (
         candidates,
+        proposal_frontier_idx,
+        proposal_door_variant_idx,
         reward_outcomes,
         post_candidate_outcomes,
         sparse_feature_requirements,
@@ -506,6 +532,8 @@ def get_generation_candidate_batch(
     )
     return CandidateBatch(
         candidates,
+        proposal_frontier_idx,
+        proposal_door_variant_idx,
         reward_outcomes,
         post_candidate_outcomes,
         sparse_feature_requirements,
@@ -515,16 +543,26 @@ def get_generation_candidate_batch(
 def candidate_log_inputs(
     config: GenerateConfig,
     candidate_shape: torch.Size,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     candidate_log_temperature = config.temperature.to(torch.device("cpu")).log().unsqueeze(1)
     candidate_log_temperature = candidate_log_temperature.expand(candidate_shape).contiguous()
-    candidate_log_action_candidates = torch.full(
+    candidate_log_recommended_candidates = torch.full(
         candidate_shape,
-        math.log(config.max_candidates),
+        math.log(config.recommended_candidates + 1),
         dtype=torch.float32,
         device=torch.device("cpu"),
     )
-    return candidate_log_temperature, candidate_log_action_candidates
+    candidate_log_exploration_candidates = torch.full(
+        candidate_shape,
+        math.log(config.exploration_candidates + 1),
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    return (
+        candidate_log_temperature,
+        candidate_log_recommended_candidates,
+        candidate_log_exploration_candidates,
+    )
 
 
 def prepare_candidate_features(
@@ -537,7 +575,11 @@ def prepare_candidate_features(
     candidates = candidate_batch.candidates
     if candidates.room_idx.shape[1] == 1:
         return PreparedGenerationStep(candidate_batch, None)
-    candidate_log_temperature, candidate_log_action_candidates = candidate_log_inputs(
+    (
+        candidate_log_temperature,
+        candidate_log_recommended_candidates,
+        candidate_log_exploration_candidates,
+    ) = candidate_log_inputs(
         config,
         candidates.room_idx.shape,
     )
@@ -548,8 +590,10 @@ def prepare_candidate_features(
             candidates,
             candidate_log_temperature,
             env.engine.features.temperature,
-            candidate_log_action_candidates,
-            env.engine.features.action_candidates,
+            candidate_log_recommended_candidates,
+            env.engine.features.recommended_candidates,
+            candidate_log_exploration_candidates,
+            env.engine.features.exploration_candidates,
             candidate_batch.post_candidate_outcomes,
             env.engine.features.lookahead_outcomes,
             candidate_batch.sparse_feature_requirements,
@@ -598,6 +642,7 @@ def select_candidate_actions(
                 preds.door_invalid.view(environment_count, candidate_count, -1),
                 preds.connection_invalid.view(environment_count, candidate_count, -1),
                 preds.balance_score.view(environment_count, candidate_count, -1),
+                preds.proposal_score,
             ),
             outcomes,
             group.config,
@@ -649,34 +694,43 @@ def start_generation_step(
 
 
 def merge_generation_results(
-    results: list[tuple[EpisodeData, Outcomes, DoorMatchCounts]],
-) -> tuple[EpisodeData, Outcomes, DoorMatchCounts]:
+    results: list[tuple[EpisodeData, Outcomes, DoorMatchCounts, ProposalData]],
+) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, ProposalData]:
     return (
         EpisodeData(
             actions=Actions(
                 *(
-                    torch.cat([getattr(episode_data.actions, name) for episode_data, _, _ in results])
+                    torch.cat([getattr(episode_data.actions, name) for episode_data, _, _, _ in results])
                     for name in vars(results[0][0].actions)
                 )
             ),
-            temperature=torch.cat([episode_data.temperature for episode_data, _, _ in results]),
-            action_candidates=torch.cat([
-                episode_data.action_candidates for episode_data, _, _ in results
+            temperature=torch.cat([episode_data.temperature for episode_data, _, _, _ in results]),
+            recommended_candidates=torch.cat([
+                episode_data.recommended_candidates for episode_data, _, _, _ in results
+            ]),
+            exploration_candidates=torch.cat([
+                episode_data.exploration_candidates for episode_data, _, _, _ in results
             ]),
         ),
         Outcomes(
             *(
-                torch.cat([getattr(outcomes, name) for _, outcomes, _ in results])
+                torch.cat([getattr(outcomes, name) for _, outcomes, _, _ in results])
                 for name in vars(results[0][1])
             )
         ),
         DoorMatchCounts(
             *(
                 torch.sum(
-                    torch.stack([getattr(counts, name) for _, _, counts in results]),
+                    torch.stack([getattr(counts, name) for _, _, counts, _ in results]),
                     dim=0,
                 )
                 for name in vars(results[0][2])
+            )
+        ),
+        ProposalData(
+            *(
+                torch.cat([getattr(proposal, name) for _, _, _, proposal in results])
+                for name in vars(results[0][3])
             )
         ),
     )
@@ -688,7 +742,7 @@ def run_generation_groups(
     configs: list[GenerateConfig],
     device: torch.device,
     verify_outcome_consistency: bool = False,
-) -> tuple[EpisodeData, Outcomes, DoorMatchCounts]:
+) -> tuple[EpisodeData, Outcomes, DoorMatchCounts, ProposalData]:
     if not envs or len(envs) != len(configs):
         raise ValueError("generation groups require one config per environment group")
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
@@ -706,8 +760,12 @@ def run_generation_groups(
         )
         for env, config in zip(envs, configs)
     ]
+    group_index_by_id = {id(group): idx for idx, group in enumerate(groups)}
     with ThreadPoolExecutor(max_workers=len(groups)) as executor:
         pending: deque[PendingGenerationStep] = deque()
+        group_proposal_frontier_idx = [[] for _ in groups]
+        group_proposal_door_variant_idx = [[] for _ in groups]
+        group_selected_candidate = [[] for _ in groups]
         with torch.no_grad():
             for group in groups:
                 group.env.clear()
@@ -730,7 +788,7 @@ def run_generation_groups(
                     )
                     selected_actions = candidates.select(action_index)
                 else:
-                    _, selected_actions = select_candidate_actions(
+                    action_index, selected_actions = select_candidate_actions(
                         step.group,
                         model,
                         candidates,
@@ -741,6 +799,29 @@ def run_generation_groups(
                         transfer_stream,
                         num_rooms,
                     )
+                group_index = group_index_by_id[id(step.group)]
+                max_candidates = step.group.config.max_candidates
+                frontier_idx = torch.full(
+                    [candidates.room_idx.shape[0], max_candidates],
+                    -1,
+                    dtype=candidate_batch.proposal_frontier_idx.dtype,
+                    device=device,
+                )
+                door_variant_idx = torch.full(
+                    [candidates.room_idx.shape[0], max_candidates],
+                    -1,
+                    dtype=candidate_batch.proposal_door_variant_idx.dtype,
+                    device=device,
+                )
+                frontier_idx[:, :candidate_batch.proposal_frontier_idx.shape[1]] = (
+                    candidate_batch.proposal_frontier_idx
+                )
+                door_variant_idx[:, :candidate_batch.proposal_door_variant_idx.shape[1]] = (
+                    candidate_batch.proposal_door_variant_idx
+                )
+                group_proposal_frontier_idx[group_index].append(frontier_idx)
+                group_proposal_door_variant_idx[group_index].append(door_variant_idx)
+                group_selected_candidate[group_index].append(action_index)
                 verify_and_step(
                     step.group,
                     selected_actions,
@@ -756,7 +837,7 @@ def run_generation_groups(
                         pending,
                     )
         results = []
-        for group in groups:
+        for group_index, group in enumerate(groups):
             group.env.finish()
             actions = group.env.get_actions(device)
             outcomes = group.env.get_outcomes(
@@ -769,11 +850,21 @@ def run_generation_groups(
                     group.config.temperature,
                     torch.full_like(
                         group.config.temperature,
-                        group.config.max_candidates,
+                        group.config.recommended_candidates,
+                        dtype=torch.float32,
+                    ),
+                    torch.full_like(
+                        group.config.temperature,
+                        group.config.exploration_candidates,
                         dtype=torch.float32,
                     ),
                 ),
                 outcomes,
                 door_match_counts,
+                ProposalData(
+                    torch.stack(group_proposal_frontier_idx[group_index], dim=1),
+                    torch.stack(group_proposal_door_variant_idx[group_index], dim=1),
+                    torch.stack(group_selected_candidate[group_index], dim=1),
+                ),
             ))
     return merge_generation_results(results)

@@ -6,6 +6,8 @@ use serde::Deserialize;
 pub type RoomIdx = u8; // index into provided room geometry JSON array
 pub type GeometryIdx = u8; // flat index of unique room geometries (map + door layout)
 pub type ConnectionVariantIdx = u8; // flat index of unique room types (map + door layout + connections)
+pub type FrontierIdx = i16; // index into the sorted frontier feature rows
+pub type DoorVariantIdx = i16; // index into door variants keyed by room type and local door identity
 pub type Coord = i8; // x or y position on the map
 pub type PartIdx = u8; // index of part within a room
 pub type RoomPartIdx = u16; // flat index of part across all rooms
@@ -199,6 +201,7 @@ pub struct GeometryDirDoorData {
     pub geometry_idx: GeometryIdx,
     pub x: Coord,
     pub y: Coord,
+    pub kind: DoorKind,
 }
 
 pub struct CommonData {
@@ -220,6 +223,8 @@ pub struct CommonData {
     pub connection_output: Vec<OutputData>,
     pub num_door_output_variants: usize,
     pub num_connection_output_variants: usize,
+    door_variant_idx_by_key:
+        HashMap<(ConnectionVariantIdx, Direction, Coord, Coord, DoorKind), DoorVariantIdx>,
 }
 
 impl GeometryKey {
@@ -481,6 +486,7 @@ impl CommonData {
                         geometry_idx,
                         x: door.x,
                         y: door.y,
+                        kind: door.kind,
                     });
                 }
                 geometry_data.push(geometry);
@@ -552,6 +558,16 @@ impl CommonData {
                 variant_outcome_idx,
             });
         }
+        if door_output_variant_by_key.len() > DoorVariantIdx::MAX as usize {
+            bail!(
+                "room set has too many door output variants, exceeding the maximum {}",
+                DoorVariantIdx::MAX
+            );
+        }
+        let door_variant_idx_by_key = door_output_variant_by_key
+            .iter()
+            .map(|(&key, &idx)| (key, idx as DoorVariantIdx))
+            .collect();
 
         let mut connection_output = vec![];
         let mut connection_output_variant_by_key = HashMap::new();
@@ -588,6 +604,7 @@ impl CommonData {
             connection_output,
             num_door_output_variants: door_output_variant_by_key.len(),
             num_connection_output_variants: connection_output_variant_by_key.len(),
+            door_variant_idx_by_key,
         };
         common.build_intersection_set();
         println!(
@@ -596,6 +613,20 @@ impl CommonData {
             common.geometry.len()
         );
         Ok(common)
+    }
+
+    pub fn door_variant_idx(
+        &self,
+        connection_variant_idx: ConnectionVariantIdx,
+        direction: Direction,
+        x: Coord,
+        y: Coord,
+        kind: DoorKind,
+    ) -> DoorVariantIdx {
+        *self
+            .door_variant_idx_by_key
+            .get(&(connection_variant_idx, direction, x, y, kind))
+            .expect("candidate door must have a door output variant")
     }
 
     fn build_intersection_set(&mut self) {

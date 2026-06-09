@@ -16,12 +16,18 @@ if TYPE_CHECKING:
 @dataclass
 class GenerateConfig:
     episode_length: int
-    max_candidates: int
+    recommended_candidates: int
+    exploration_candidates: int
     temperature: torch.Tensor
+    proposal_temperature: torch.Tensor
     reward_door: float
     reward_connection: float
     reward_balance: float
     autocast: bool
+
+    @property
+    def max_candidates(self) -> int:
+        return self.recommended_candidates + self.exploration_candidates
 
 
 # Each tensor here is uint8 with shape
@@ -54,20 +60,44 @@ class Actions:
 class EpisodeData:
     actions: Actions
     temperature: torch.Tensor
-    action_candidates: torch.Tensor
+    recommended_candidates: torch.Tensor
+    exploration_candidates: torch.Tensor
 
     def to(self, device: torch.device) -> "EpisodeData":
         return EpisodeData(
             self.actions.to(device),
             self.temperature.to(device),
-            self.action_candidates.to(device),
+            self.recommended_candidates.to(device),
+            self.exploration_candidates.to(device),
         )
 
     def slice(self, start: int, end: int) -> "EpisodeData":
         return EpisodeData(
             self.actions.slice(start, end),
             self.temperature[start:end],
-            self.action_candidates[start:end],
+            self.recommended_candidates[start:end],
+            self.exploration_candidates[start:end],
+        )
+
+
+@dataclass
+class ProposalData:
+    frontier_idx: torch.Tensor
+    door_variant_idx: torch.Tensor
+    selected_candidate: torch.Tensor
+
+    def to(self, device: torch.device) -> "ProposalData":
+        return ProposalData(
+            self.frontier_idx.to(device),
+            self.door_variant_idx.to(device),
+            self.selected_candidate.to(device),
+        )
+
+    def slice(self, start: int, end: int) -> "ProposalData":
+        return ProposalData(
+            self.frontier_idx[start:end],
+            self.door_variant_idx[start:end],
+            self.selected_candidate[start:end],
         )
 
 
@@ -133,7 +163,8 @@ class Features:
     room_y: torch.Tensor
     room_placed: torch.Tensor
     log_temperature: torch.Tensor
-    log_action_candidates: torch.Tensor
+    log_recommended_candidates: torch.Tensor
+    log_exploration_candidates: torch.Tensor
     lookahead_door_invalid: torch.Tensor
     lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
@@ -161,7 +192,8 @@ class SparseFeatures:
     room_y: torch.Tensor
     room_placed: torch.Tensor
     log_temperature: torch.Tensor
-    log_action_candidates: torch.Tensor
+    log_recommended_candidates: torch.Tensor
+    log_exploration_candidates: torch.Tensor
     lookahead_door_invalid: torch.Tensor
     lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
@@ -181,7 +213,8 @@ class SparseFeatures:
             self.room_y.flatten(0, 1),
             self.room_placed.flatten(0, 1),
             self.log_temperature.flatten(0, 1),
-            self.log_action_candidates.flatten(0, 1),
+            self.log_recommended_candidates.flatten(0, 1),
+            self.log_exploration_candidates.flatten(0, 1),
             self.lookahead_door_invalid.flatten(0, 1),
             self.lookahead_door_match.flatten(0, 1),
             self.lookahead_connection_invalid.flatten(0, 1),
@@ -327,6 +360,7 @@ class EnvironmentGroup:
             room_idx,
             room_x,
             room_y,
+            proposal_indices,
             pre_door_invalid,
             pre_connection_invalid,
             door_invalid,
@@ -338,12 +372,15 @@ class EnvironmentGroup:
         ) = (
             self.env.get_candidates_with_outcomes(max_candidates)
         )
+        proposal_frontier_idx, proposal_door_variant_idx = proposal_indices
         return (
             Actions(
                 room_idx=torch.from_numpy(room_idx).to(device),
                 room_x=torch.from_numpy(room_x).to(device),
                 room_y=torch.from_numpy(room_y).to(device),
             ),
+            torch.from_numpy(proposal_frontier_idx).to(device),
+            torch.from_numpy(proposal_door_variant_idx).to(device),
             Outcomes(
                 door_invalid=torch.from_numpy(pre_door_invalid).to(device),
                 connection_invalid=torch.from_numpy(pre_connection_invalid).to(device),
@@ -417,8 +454,10 @@ class EnvironmentGroup:
         device: torch.device,
         log_temperature: torch.Tensor,
         include_temperature: bool,
-        log_action_candidates: torch.Tensor,
-        include_action_candidates: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        log_exploration_candidates: torch.Tensor,
+        include_exploration_candidates: bool,
         lookahead_outcomes: Outcomes,
         include_lookahead_outcomes: bool,
     ) -> Features:
@@ -426,10 +465,16 @@ class EnvironmentGroup:
         log_temperature = log_temperature.to(device)
         if not include_temperature:
             log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
-        log_action_candidates = log_action_candidates.to(device)
-        if not include_action_candidates:
-            log_action_candidates = log_action_candidates.new_empty([
-                *log_action_candidates.shape,
+        log_recommended_candidates = log_recommended_candidates.to(device)
+        if not include_recommended_candidates:
+            log_recommended_candidates = log_recommended_candidates.new_empty([
+                *log_recommended_candidates.shape,
+                0,
+            ])
+        log_exploration_candidates = log_exploration_candidates.to(device)
+        if not include_exploration_candidates:
+            log_exploration_candidates = log_exploration_candidates.new_empty([
+                *log_exploration_candidates.shape,
                 0,
             ])
         lookahead_door_invalid = lookahead_outcomes.door_invalid.to(device)
@@ -451,7 +496,8 @@ class EnvironmentGroup:
         return Features(
             *tensors[:4],
             log_temperature,
-            log_action_candidates,
+            log_recommended_candidates,
+            log_exploration_candidates,
             lookahead_door_invalid,
             lookahead_door_match,
             lookahead_connection_invalid,
@@ -463,8 +509,10 @@ class EnvironmentGroup:
         device: torch.device,
         log_temperature: torch.Tensor,
         include_temperature: bool,
-        log_action_candidates: torch.Tensor,
-        include_action_candidates: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        log_exploration_candidates: torch.Tensor,
+        include_exploration_candidates: bool,
         lookahead_outcomes: Outcomes,
         include_lookahead_outcomes: bool,
         environment_start: int = 0,
@@ -475,8 +523,10 @@ class EnvironmentGroup:
             device,
             log_temperature,
             include_temperature,
-            log_action_candidates,
-            include_action_candidates,
+            log_recommended_candidates,
+            include_recommended_candidates,
+            log_exploration_candidates,
+            include_exploration_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
         )
@@ -487,8 +537,10 @@ class EnvironmentGroup:
         device: torch.device,
         log_temperature: torch.Tensor,
         include_temperature: bool,
-        log_action_candidates: torch.Tensor,
-        include_action_candidates: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        log_exploration_candidates: torch.Tensor,
+        include_exploration_candidates: bool,
         lookahead_outcomes: Outcomes,
         include_lookahead_outcomes: bool,
         environment_start: int = 0,
@@ -504,8 +556,10 @@ class EnvironmentGroup:
             device,
             log_temperature,
             include_temperature,
-            log_action_candidates,
-            include_action_candidates,
+            log_recommended_candidates,
+            include_recommended_candidates,
+            log_exploration_candidates,
+            include_exploration_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
         )
@@ -516,8 +570,10 @@ class EnvironmentGroup:
         device: torch.device,
         log_temperature: torch.Tensor,
         include_temperature: bool,
-        log_action_candidates: torch.Tensor,
-        include_action_candidates: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        log_exploration_candidates: torch.Tensor,
+        include_exploration_candidates: bool,
         lookahead_outcomes: Outcomes,
         include_lookahead_outcomes: bool,
         environment_start: int = 0,
@@ -535,9 +591,14 @@ class EnvironmentGroup:
                 log_temperature.shape[1],
                 0,
             ]).to(device),
-            log_action_candidates.to(device) if include_action_candidates else log_action_candidates.new_empty([
-                log_action_candidates.shape[0],
-                log_action_candidates.shape[1],
+            log_recommended_candidates.to(device) if include_recommended_candidates else log_recommended_candidates.new_empty([
+                log_recommended_candidates.shape[0],
+                log_recommended_candidates.shape[1],
+                0,
+            ]).to(device),
+            log_exploration_candidates.to(device) if include_exploration_candidates else log_exploration_candidates.new_empty([
+                log_exploration_candidates.shape[0],
+                log_exploration_candidates.shape[1],
                 0,
             ]).to(device),
             lookahead_outcomes.door_invalid.to(device)

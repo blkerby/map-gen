@@ -24,6 +24,8 @@ class Predictions:
     connection_invalid: torch.Tensor
     # Predicted balance-model log-odds for the matched target door:
     balance_score: torch.Tensor
+    # Frontier-local proposal logits for door variants:
+    proposal_score: torch.Tensor
 
 
 @dataclass
@@ -45,6 +47,7 @@ def get_predictions(raw_preds, output_sizes):
         door_invalid=preds[0],
         connection_invalid=preds[1],
         balance_score=preds[2],
+        proposal_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
     )
 
 
@@ -191,7 +194,8 @@ class FrontierModel(torch.nn.Module):
                 and self.num_connection_outputs > 0
             )
             + int(self.features.temperature)
-            + int(self.features.action_candidates)
+            + int(self.features.recommended_candidates)
+            + int(self.features.exploration_candidates)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -211,7 +215,8 @@ class FrontierModel(torch.nn.Module):
                 )
             )
             + int(self.features.temperature)
-            + int(self.features.action_candidates)
+            + int(self.features.recommended_candidates)
+            + int(self.features.exploration_candidates)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -278,6 +283,11 @@ class FrontierModel(torch.nn.Module):
             output_metadata.connection, output_metadata.num_connection_variants, embedding_width)
         self.balance_score_output = FactorizedOutcomeHead(
             output_metadata.door, output_metadata.num_door_variants, embedding_width)
+        self.proposal_output = torch.nn.Linear(
+            embedding_width,
+            output_metadata.num_door_variants,
+            bias=False,
+        )
 
     def _door_match_embedding(
         self,
@@ -434,9 +444,13 @@ class FrontierModel(torch.nn.Module):
             features.log_temperature.to(X.dtype).unsqueeze(-1)
             if self.features.temperature else None
         )
-        action_candidate_features = (
-            features.log_action_candidates.to(X.dtype).unsqueeze(-1)
-            if self.features.action_candidates else None
+        recommended_candidate_features = (
+            features.log_recommended_candidates.to(X.dtype).unsqueeze(-1)
+            if self.features.recommended_candidates else None
+        )
+        exploration_candidate_features = (
+            features.log_exploration_candidates.to(X.dtype).unsqueeze(-1)
+            if self.features.exploration_candidates else None
         )
         lookahead_features = (
             self._lookahead_outcome_features(features, X.dtype)
@@ -449,8 +463,10 @@ class FrontierModel(torch.nn.Module):
             global_inputs.append(connection_features)
         if temperature_features is not None:
             global_inputs.append(temperature_features)
-        if action_candidate_features is not None:
-            global_inputs.append(action_candidate_features)
+        if recommended_candidate_features is not None:
+            global_inputs.append(recommended_candidate_features)
+        if exploration_candidate_features is not None:
+            global_inputs.append(exploration_candidate_features)
         if lookahead_features is not None:
             global_inputs.append(lookahead_features)
         global_state = (
@@ -495,6 +511,7 @@ class FrontierModel(torch.nn.Module):
             mean_pool = X.sum(1) / count
             max_pool = torch.where(node_mask.unsqueeze(-1), X, -torch.inf).max(1).values
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
+        proposal_score = self.proposal_output(X)
         # mean_pool, max_pool, pooled_state: [b, e]
         pooled_inputs = []
         if inventory_features is not None:
@@ -506,8 +523,10 @@ class FrontierModel(torch.nn.Module):
             pooled_inputs.append(connection_features)
         if temperature_features is not None:
             pooled_inputs.append(temperature_features)
-        if action_candidate_features is not None:
-            pooled_inputs.append(action_candidate_features)
+        if recommended_candidate_features is not None:
+            pooled_inputs.append(recommended_candidate_features)
+        if exploration_candidate_features is not None:
+            pooled_inputs.append(exploration_candidate_features)
         if lookahead_features is not None:
             pooled_inputs.append(lookahead_features)
         pooled_state = (
@@ -535,7 +554,13 @@ class FrontierModel(torch.nn.Module):
             self.pos_embedding_x,
             self.pos_embedding_y,
         )
-        return get_predictions(torch.cat([door, connection, balance_score], dim=-1), self.output_sizes)
+        preds = get_predictions(torch.cat([door, connection, balance_score], dim=-1), self.output_sizes)
+        return Predictions(
+            preds.door_invalid,
+            preds.connection_invalid,
+            preds.balance_score,
+            proposal_score,
+        )
 
 
 class BalanceModel(torch.nn.Module):

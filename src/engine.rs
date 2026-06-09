@@ -1,7 +1,10 @@
 /// The `engine` module exposes the map generation environment to Python through the Engine and
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
-use crate::common::{Action, CommonData, Coord, Direction, DoorValidOutcome, Room, RoomIdx};
+use crate::common::{
+    Action, CommonData, Coord, Direction, DoorValidOutcome, DoorVariantIdx, FrontierIdx, Room,
+    RoomIdx,
+};
 use crate::environment::{
     Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig, Features, FrontierNeighborAlgorithm,
     Outcomes,
@@ -206,6 +209,8 @@ enum WorkerCommand {
         room_idx: OutputShard<RoomIdx>,
         room_x: OutputShard<Coord>,
         room_y: OutputShard<Coord>,
+        proposal_frontier_idx: OutputShard<FrontierIdx>,
+        proposal_door_variant_idx: OutputShard<DoorVariantIdx>,
         door_outcome_count: usize,
         connection_outcome_count: usize,
         pre_door_valid: OutputShard<i8>,
@@ -477,6 +482,8 @@ fn worker_loop(
                 room_idx,
                 room_x,
                 room_y,
+                proposal_frontier_idx,
+                proposal_door_variant_idx,
                 door_outcome_count,
                 connection_outcome_count,
                 pre_door_valid,
@@ -490,6 +497,9 @@ fn worker_loop(
                 let room_idx = unsafe { room_idx.into_mut_slice() };
                 let room_x = unsafe { room_x.into_mut_slice() };
                 let room_y = unsafe { room_y.into_mut_slice() };
+                let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
+                let proposal_door_variant_idx =
+                    unsafe { proposal_door_variant_idx.into_mut_slice() };
                 let pre_door_valid = unsafe { pre_door_valid.into_mut_slice() };
                 let pre_connections_valid = unsafe { pre_connections_valid.into_mut_slice() };
                 let door_valid = unsafe { door_valid.into_mut_slice() };
@@ -498,6 +508,14 @@ fn worker_loop(
                 debug_assert_eq!(room_idx.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_x.len(), environments.len() * max_candidates);
                 debug_assert_eq!(room_y.len(), environments.len() * max_candidates);
+                debug_assert_eq!(
+                    proposal_frontier_idx.len(),
+                    environments.len() * max_candidates
+                );
+                debug_assert_eq!(
+                    proposal_door_variant_idx.len(),
+                    environments.len() * max_candidates
+                );
                 debug_assert_eq!(
                     pre_door_valid.len(),
                     environments.len() * door_outcome_count
@@ -525,6 +543,8 @@ fn worker_loop(
                     let (
                         pre_candidate_outcomes,
                         candidates,
+                        candidate_frontier_idx,
+                        candidate_door_variant_idx,
                         outcomes,
                         door_matches,
                         mut candidate_features,
@@ -582,6 +602,14 @@ fn worker_loop(
                             room_idx[idx] = candidate.room_idx;
                             room_x[idx] = candidate.x;
                             room_y[idx] = candidate.y;
+                        }
+                        if let Some(&frontier_idx) = candidate_frontier_idx.get(candidate_idx) {
+                            proposal_frontier_idx[idx] = frontier_idx;
+                        }
+                        if let Some(&door_variant_idx) =
+                            candidate_door_variant_idx.get(candidate_idx)
+                        {
+                            proposal_door_variant_idx[idx] = door_variant_idx;
                         }
 
                         let outcome = outcomes
@@ -1590,7 +1618,8 @@ impl SparseFeatureBuffers {
         let sparse_features = FeatureConfig {
             inventory: false,
             temperature: false,
-            action_candidates: false,
+            recommended_candidates: false,
+            exploration_candidates: false,
             room_position: false,
             connection_reachability: false,
             ..*features
@@ -1634,7 +1663,8 @@ impl SparseFeatureBuffers {
         let sparse_features = FeatureConfig {
             inventory: false,
             temperature: false,
-            action_candidates: false,
+            recommended_candidates: false,
+            exploration_candidates: false,
             room_position: false,
             connection_reachability: false,
             ..*features
@@ -2015,6 +2045,10 @@ impl EnvironmentGroup {
         Bound<'py, PyArray2<RoomIdx>>,
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
+        (
+            Bound<'py, PyArray2<FrontierIdx>>,
+            Bound<'py, PyArray2<DoorVariantIdx>>,
+        ),
         Bound<'py, PyArray2<i8>>,
         Bound<'py, PyArray2<i8>>,
         Bound<'py, PyArray3<i8>>,
@@ -2043,6 +2077,8 @@ impl EnvironmentGroup {
         let mut room_idx = vec![dummy_candidate.room_idx; output_len];
         let mut room_x = vec![dummy_candidate.x; output_len];
         let mut room_y = vec![dummy_candidate.y; output_len];
+        let mut proposal_frontier_idx = vec![-1; output_len];
+        let mut proposal_door_variant_idx = vec![-1; output_len];
         let mut pre_door_valid = vec![DoorValidOutcome::Unknown as i8; pre_door_output_len];
         let mut pre_connections_valid =
             vec![DoorValidOutcome::Unknown as i8; pre_connection_output_len];
@@ -2073,6 +2109,12 @@ impl EnvironmentGroup {
                     room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
                     room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
                     room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
+                    proposal_frontier_idx: OutputShard::from_slice(
+                        &mut proposal_frontier_idx[output_start..output_end],
+                    ),
+                    proposal_door_variant_idx: OutputShard::from_slice(
+                        &mut proposal_door_variant_idx[output_start..output_end],
+                    ),
                     frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
@@ -2115,6 +2157,20 @@ impl EnvironmentGroup {
             pyarray2_from_flat_vec(py, room_idx, self.num_environments, max_candidates)?,
             pyarray2_from_flat_vec(py, room_x, self.num_environments, max_candidates)?,
             pyarray2_from_flat_vec(py, room_y, self.num_environments, max_candidates)?,
+            (
+                pyarray2_from_flat_vec(
+                    py,
+                    proposal_frontier_idx,
+                    self.num_environments,
+                    max_candidates,
+                )?,
+                pyarray2_from_flat_vec(
+                    py,
+                    proposal_door_variant_idx,
+                    self.num_environments,
+                    max_candidates,
+                )?,
+            ),
             pyarray2_from_flat_vec(
                 py,
                 pre_door_valid,
