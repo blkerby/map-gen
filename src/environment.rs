@@ -976,14 +976,13 @@ impl Environment {
         proposal_scores[frontier_idx * proposal_door_variant_count + door_variant_idx]
     }
 
-    fn proposal_sample_order(
-        &mut self,
+    fn proposal_sample_weights(
         candidates: &[CandidateAction],
         proposal_scores: &[f32],
         proposal_frontier_count: usize,
         proposal_door_variant_count: usize,
         proposal_temperature: f32,
-    ) -> Vec<usize> {
+    ) -> Vec<f32> {
         let temperature = proposal_temperature.max(1e-6);
         let logits = candidates
             .iter()
@@ -1002,11 +1001,9 @@ impl Environment {
             .filter(|value| value.is_finite())
             .fold(f32::NEG_INFINITY, f32::max);
         if !max_logit.is_finite() {
-            let mut order = (0..candidates.len()).collect::<Vec<_>>();
-            order.shuffle(&mut self.rng);
-            return order;
+            return vec![1.0; candidates.len()];
         }
-        let mut remaining = logits
+        logits
             .iter()
             .map(|&logit| {
                 if logit.is_finite() {
@@ -1015,42 +1012,37 @@ impl Environment {
                     0.0
                 }
             })
-            .collect::<Vec<_>>();
-        let mut order = Vec::with_capacity(candidates.len());
-        for _ in 0..candidates.len() {
-            let total_weight = remaining.iter().sum::<f32>();
-            if total_weight <= 0.0 || !total_weight.is_finite() {
-                let mut tail = remaining
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, &weight)| (weight >= 0.0).then_some(idx))
-                    .collect::<Vec<_>>();
-                tail.shuffle(&mut self.rng);
-                order.extend(tail);
-                break;
-            }
-            let mut target = self.rng.random_range(0.0..total_weight);
-            let mut selected_idx = None;
-            for (idx, weight) in remaining.iter().copied().enumerate() {
-                if weight <= 0.0 {
-                    continue;
-                }
-                if target < weight {
-                    selected_idx = Some(idx);
-                    break;
-                }
-                target -= weight;
-            }
-            let selected_idx = selected_idx.unwrap_or_else(|| {
-                remaining
-                    .iter()
-                    .rposition(|&weight| weight > 0.0)
-                    .expect("positive total weight requires a positive candidate weight")
-            });
-            remaining[selected_idx] = -1.0;
-            order.push(selected_idx);
+            .collect::<Vec<_>>()
+    }
+
+    fn sample_weighted_remaining(&mut self, weights: &[f32], consumed: &[bool]) -> Option<usize> {
+        let total_weight = weights
+            .iter()
+            .zip(consumed)
+            .filter_map(|(&weight, &consumed)| (!consumed && weight > 0.0).then_some(weight))
+            .sum::<f32>();
+        if total_weight <= 0.0 || !total_weight.is_finite() {
+            let remaining = consumed
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, &consumed)| (!consumed).then_some(idx))
+                .collect::<Vec<_>>();
+            return remaining.choose(&mut self.rng).copied();
         }
-        order
+        let mut target = self.rng.random_range(0.0..total_weight);
+        for (idx, (&weight, &consumed)) in weights.iter().zip(consumed).enumerate() {
+            if consumed || weight <= 0.0 {
+                continue;
+            }
+            if target < weight {
+                return Some(idx);
+            }
+            target -= weight;
+        }
+        weights
+            .iter()
+            .zip(consumed)
+            .rposition(|(&weight, &consumed)| !consumed && weight > 0.0)
     }
 
     pub fn get_filtered_candidates_with_outcomes(
@@ -1085,12 +1077,12 @@ impl Environment {
         let mut rejected = Vec::new();
         let mut consumed = vec![false; candidates.len()];
 
-        let recommended_order = if recommended_candidates > 0 {
+        let proposal_weights = if recommended_candidates > 0 {
             let proposal_scores = proposal_scores.ok_or_else(|| {
                 "proposal scores are required when recommended_candidates is greater than zero"
                     .to_string()
             })?;
-            self.proposal_sample_order(
+            Self::proposal_sample_weights(
                 &candidates,
                 proposal_scores,
                 proposal_frontier_count,
@@ -1101,10 +1093,11 @@ impl Environment {
             Vec::new()
         };
         let mut recommended_clean = 0;
-        for candidate_idx in recommended_order {
-            if recommended_clean == recommended_candidates {
+        while recommended_clean < recommended_candidates {
+            let Some(candidate_idx) = self.sample_weighted_remaining(&proposal_weights, &consumed)
+            else {
                 break;
-            }
+            };
             consumed[candidate_idx] = true;
             let candidate = candidates[candidate_idx];
             match self.evaluate_candidate_outcome(
@@ -2129,8 +2122,12 @@ mod tests {
             Environment::candidate_proposal_score(candidates[1], &proposal_scores, 2, 3),
             10.0
         );
-        let order = env.proposal_sample_order(&candidates, &proposal_scores, 2, 3, 0.01);
-        assert_eq!(order[0], 1);
+        let weights =
+            Environment::proposal_sample_weights(&candidates, &proposal_scores, 2, 3, 0.01);
+        assert_eq!(
+            env.sample_weighted_remaining(&weights, &[false, false, false]),
+            Some(1)
+        );
     }
 
     #[test]

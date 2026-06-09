@@ -907,27 +907,28 @@ def run_generation_groups(
                 )
             while pending_proposals or pending_candidates:
                 if not pending_candidates:
-                    proposal_step = pending_proposals.popleft()
-                    proposal_features = proposal_step.future.result()
-                    proposal_scores = (
-                        None
-                        if proposal_features is None
-                        else compute_proposal_scores(
-                            proposal_step.group,
-                            model,
-                            proposal_features,
-                            device,
-                            gpu_lock,
-                            transfer_stream,
+                    while pending_proposals:
+                        proposal_step = pending_proposals.popleft()
+                        proposal_features = proposal_step.future.result()
+                        proposal_scores = (
+                            None
+                            if proposal_features is None
+                            else compute_proposal_scores(
+                                proposal_step.group,
+                                model,
+                                proposal_features,
+                                device,
+                                gpu_lock,
+                                transfer_stream,
+                            )
                         )
-                    )
-                    start_candidate_step(
-                        proposal_step.group,
-                        proposal_scores,
-                        sparse_frontiers,
-                        executor,
-                        pending_candidates,
-                    )
+                        start_candidate_step(
+                            proposal_step.group,
+                            proposal_scores,
+                            sparse_frontiers,
+                            executor,
+                            pending_candidates,
+                        )
                     continue
 
                 step = pending_candidates.popleft()
