@@ -39,14 +39,12 @@ const PROFILE_LOOKAHEAD_SNAPSHOT: usize = 33;
 const PROFILE_LOOKAHEAD_STEP: usize = 34;
 const PROFILE_FEATURES_SETUP: usize = 35;
 const PROFILE_FEATURES_SORT_FRONTIERS: usize = 36;
-const PROFILE_FEATURES_FRONTIER_BASE: usize = 37;
-const PROFILE_FEATURES_FRONTIER_OCCUPANCY: usize = 38;
-const PROFILE_FEATURES_CONNECTION_REACHABILITY: usize = 39;
-const PROFILE_FEATURES_FRONTIER_NEIGHBOR: usize = 40;
-const PROFILE_FEATURES_FRONTIER_NEIGHBOR_FLAGS: usize = 41;
-const PROFILE_FEATURES_ROOM_POSITION_CLONE: usize = 42;
-const PROFILE_FEATURES_OUTPUT: usize = 43;
-const PROFILE_FEATURES_APPLY_CANDIDATE: usize = 44;
+const PROFILE_FEATURES_CONNECTION_REACHABILITY: usize = 37;
+const PROFILE_FEATURES_FRONTIER_NEIGHBOR: usize = 38;
+const PROFILE_FEATURES_FRONTIER_NEIGHBOR_FLAGS: usize = 39;
+const PROFILE_FEATURES_ROOM_POSITION_CLONE: usize = 40;
+const PROFILE_FEATURES_OUTPUT: usize = 41;
+const PROFILE_FEATURES_APPLY_CANDIDATE: usize = 42;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CandidateUpdate {
@@ -115,14 +113,9 @@ fn introduces_invalid_outcome(before: &PreliminaryOutcomes, after: &PreliminaryO
             })
 }
 
-enum CandidateRejectionReason {
-    Door,
-    Connection,
-}
-
 enum CandidateOutcome {
     Clean(PreliminaryOutcomes, Vec<i16>, Features),
-    Rejected(CandidateRejectionReason),
+    Rejected,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1303,7 +1296,7 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
             )? {
-                CandidateOutcome::Rejected(_) => rejected.push(candidate),
+                CandidateOutcome::Rejected => rejected.push(candidate),
                 CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
                     clean.push((candidate, post_candidate_outcomes, door_match, features));
                     recommended_clean += 1;
@@ -1332,7 +1325,7 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
             )? {
-                CandidateOutcome::Rejected(_) => rejected.push(candidate),
+                CandidateOutcome::Rejected => rejected.push(candidate),
                 CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
                     clean.push((candidate, post_candidate_outcomes, door_match, features));
                     exploration_clean += 1;
@@ -1407,8 +1400,6 @@ impl Environment {
             Vec<Features>,
             usize,
             usize,
-            usize,
-            usize,
         ),
         String,
     > {
@@ -1425,8 +1416,6 @@ impl Environment {
         let mut rejected = Vec::new();
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
-        let mut door_rejected_count = 0;
-        let mut connection_rejected_count = 0;
         for (&frontier_idx, &door_variant_idx) in
             sampled_frontier_idx.iter().zip(sampled_door_variant_idx)
         {
@@ -1454,12 +1443,8 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
             )? {
-                CandidateOutcome::Rejected(reason) => {
+                CandidateOutcome::Rejected => {
                     rejected_count += 1;
-                    match reason {
-                        CandidateRejectionReason::Door => door_rejected_count += 1,
-                        CandidateRejectionReason::Connection => connection_rejected_count += 1,
-                    }
                     rejected.push(CandidateAction {
                         action,
                         frontier_idx,
@@ -1529,8 +1514,6 @@ impl Environment {
             features,
             evaluated_count,
             rejected_count,
-            door_rejected_count,
-            connection_rejected_count,
         ))
     }
 
@@ -1561,7 +1544,7 @@ impl Environment {
                         let profile = profile_start();
                         self.restore_lookahead_candidate(snapshot);
                         profile_end(PROFILE_PROPOSAL_RESTORE, profile);
-                        return Ok(CandidateOutcome::Rejected(CandidateRejectionReason::Door));
+                        return Ok(CandidateOutcome::Rejected);
                     }
                     door_valid.push(after);
                 } else {
@@ -1590,9 +1573,7 @@ impl Environment {
                     let profile = profile_start();
                     self.restore_lookahead_candidate(snapshot);
                     profile_end(PROFILE_PROPOSAL_RESTORE, profile);
-                    return Ok(CandidateOutcome::Rejected(
-                        CandidateRejectionReason::Connection,
-                    ));
+                    return Ok(CandidateOutcome::Rejected);
                 }
                 connections_valid.push(after);
             } else {
@@ -1986,7 +1967,6 @@ impl Environment {
         profile_end(PROFILE_FEATURES_SORT_FRONTIERS, profile);
 
         let map_width = self.map_size.0 as usize;
-        let mut profile = profile_start();
         for (idx, (location, data)) in sorted_frontiers.iter().enumerate() {
             let row = idx * FEATURE_FRONTIER_WIDTH;
             frontier[row] = i8::from(config.frontier_mask);
@@ -2003,8 +1983,6 @@ impl Environment {
             if !config.frontier_occupancy {
                 continue;
             }
-            profile_end(PROFILE_FEATURES_FRONTIER_BASE, profile);
-            let occupancy_profile = profile_start();
             let window_start_x = location.x() as isize - frontier_window_size as isize / 2;
             let window_start_y = location.y() as isize - frontier_window_size as isize / 2;
             let window_start = idx * packed_frontier_window_size;
@@ -2058,8 +2036,6 @@ impl Environment {
                     || offset_y + geometry.min_y
                         >= (window_start_y + frontier_window_size as isize) as Coord
                 {
-                    profile_end(PROFILE_FEATURES_FRONTIER_OCCUPANCY, occupancy_profile);
-                    profile = profile_start();
                     continue;
                 }
                 for &(dx, dy) in &geometry.occupied_tiles {
@@ -2075,10 +2051,7 @@ impl Environment {
                     }
                 }
             }
-            profile_end(PROFILE_FEATURES_FRONTIER_OCCUPANCY, occupancy_profile);
-            profile = profile_start();
         }
-        profile_end(PROFILE_FEATURES_FRONTIER_BASE, profile);
 
         let profile = profile_start();
         for (connection_idx, connection) in common.room_connection.iter().enumerate() {
@@ -2671,8 +2644,6 @@ mod tests {
             features,
             evaluated_count,
             rejected_count,
-            door_rejected_count,
-            connection_rejected_count,
         ) = env
             .get_proposal_candidates_with_outcomes(
                 &common,
@@ -2688,10 +2659,6 @@ mod tests {
 
         assert_eq!(evaluated_count, 1);
         assert_eq!(rejected_count, 1);
-        assert_eq!(
-            door_rejected_count + connection_rejected_count,
-            rejected_count
-        );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidate_frontier_idx.len(), candidates.len());
         assert_eq!(candidate_door_variant_idx.len(), candidates.len());

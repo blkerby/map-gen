@@ -164,16 +164,12 @@ class CandidateStats:
     clean_counts: torch.Tensor
     evaluated_counts: torch.Tensor
     rejected_counts: torch.Tensor
-    door_rejected_counts: torch.Tensor
-    connection_rejected_counts: torch.Tensor
 
     def to(self, device: torch.device) -> "CandidateStats":
         return CandidateStats(
             self.clean_counts.to(device),
             self.evaluated_counts.to(device),
             self.rejected_counts.to(device),
-            self.door_rejected_counts.to(device),
-            self.connection_rejected_counts.to(device),
         )
 
 
@@ -501,16 +497,6 @@ class EnvironmentGroup:
                     dtype=torch.int64,
                 ),
                 rejected_counts=torch.from_numpy(result.rejected_counts).to(
-                    device=device,
-                    dtype=torch.int64,
-                ),
-                door_rejected_counts=torch.from_numpy(result.door_rejected_counts).to(
-                    device=device,
-                    dtype=torch.int64,
-                ),
-                connection_rejected_counts=torch.from_numpy(
-                    result.connection_rejected_counts
-                ).to(
                     device=device,
                     dtype=torch.int64,
                 ),
