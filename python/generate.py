@@ -610,12 +610,8 @@ def get_shortlist_candidate_batch(
 def unpack_proposal_mask(mask: ProposalCandidateMask, device: torch.device) -> torch.Tensor:
     packed = mask.mask.to(device)
     shifts = torch.arange(8, device=device, dtype=packed.dtype)
-    bits = ((packed.unsqueeze(-1) >> shifts) & 1).to(torch.bool).flatten(1)
-    return bits[:, : mask.frontier_count * mask.door_variant_count].view(
-        packed.shape[0],
-        mask.frontier_count,
-        mask.door_variant_count,
-    )
+    bits = ((packed.unsqueeze(-1) >> shifts) & 1).to(torch.bool).flatten(2)
+    return bits[:, :, : mask.door_variant_count]
 
 
 def sample_proposal_shortlist(
@@ -626,11 +622,8 @@ def sample_proposal_shortlist(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     proposal_frontier_count = proposal_scores.shape[1]
     proposal_door_variant_count = proposal_scores.shape[2]
-    valid = unpack_proposal_mask(proposal_mask, device)[
-        :, :proposal_frontier_count, :proposal_door_variant_count
-    ]
-    environment_count, frontier_count, door_variant_count = valid.shape
-    if frontier_count == 0 or door_variant_count == 0:
+    environment_count, selected_frontier_count = proposal_mask.frontier_idx.shape
+    if proposal_frontier_count == 0 or proposal_door_variant_count == 0:
         empty_sampled = torch.full(
             (environment_count, config.shortlist_candidates),
             -1,
@@ -638,37 +631,33 @@ def sample_proposal_shortlist(
             device=device,
         )
         return empty_sampled, empty_sampled
-    flat_valid = valid.flatten(1)
-    flat_scores = proposal_scores.to(torch.float32).flatten(1)
-    logits = flat_scores / config.proposal_temperature.to(device).unsqueeze(1).clamp_min(1e-6)
-    logits = torch.where(flat_valid, logits, torch.full_like(logits, float("-inf")))
-    max_logits = logits.max(dim=1, keepdim=True).values
-    valid_row = torch.isfinite(max_logits)
-    weights = torch.where(
-        flat_valid,
-        torch.exp(logits - torch.where(valid_row, max_logits, torch.zeros_like(max_logits))),
-        torch.zeros_like(logits),
-    )
-    shortlist_candidates = min(config.shortlist_candidates, weights.shape[1])
-    safe_weights = torch.where(
-        valid_row,
-        weights,
-        torch.where(
-            torch.arange(weights.shape[1], device=device).unsqueeze(0) == 0,
-            torch.ones_like(weights),
-            torch.zeros_like(weights),
-        ),
-    )
-    sampled_flat = torch.multinomial(
-        safe_weights,
+    frontier_idx = proposal_mask.frontier_idx.to(device)
+    valid_frontier = (frontier_idx >= 0) & (frontier_idx < proposal_frontier_count)
+    safe_frontier_idx = frontier_idx.clamp(0, proposal_frontier_count - 1).to(torch.int64)
+    row_idx = torch.arange(environment_count, device=device).unsqueeze(1)
+    valid = unpack_proposal_mask(proposal_mask, device)[:, :, :proposal_door_variant_count]
+    valid = valid & valid_frontier.unsqueeze(2)
+    sample_keys = proposal_scores[row_idx, safe_frontier_idx].to(dtype=torch.float32, copy=True)
+    sample_keys.div_(config.proposal_temperature.to(device).view(-1, 1, 1).clamp_min(1e-6))
+    sample_keys.masked_fill_(~valid, float("-inf"))
+    sample_keys = sample_keys.flatten(1)
+    shortlist_candidates = min(config.shortlist_candidates, sample_keys.shape[1])
+    gumbel = torch.empty_like(sample_keys).exponential_().log_().neg_()
+    sample_keys.add_(gumbel)
+    sampled_flat = torch.topk(
+        sample_keys,
         shortlist_candidates,
-        replacement=False,
-    )
+        dim=1,
+        sorted=True,
+    ).indices
+    flat_valid = valid.flatten(1)
     sampled_is_valid = flat_valid.gather(1, sampled_flat)
-    sampled_flat = torch.where(
-        valid_row & sampled_is_valid,
-        sampled_flat,
-        torch.full_like(sampled_flat, -1),
+    sampled_slot_idx = torch.div(sampled_flat, proposal_door_variant_count, rounding_mode="floor")
+    sampled_door_variant_idx = sampled_flat % proposal_door_variant_count
+    sampled_door_variant_idx = torch.where(
+        sampled_is_valid,
+        sampled_door_variant_idx,
+        torch.full_like(sampled_door_variant_idx, -1),
     )
     if shortlist_candidates < config.shortlist_candidates:
         padding = torch.full(
@@ -677,11 +666,15 @@ def sample_proposal_shortlist(
             dtype=sampled_flat.dtype,
             device=device,
         )
-        sampled_flat = torch.cat([sampled_flat, padding], dim=1)
-    sampled_frontier_idx = torch.div(sampled_flat, door_variant_count, rounding_mode="floor")
-    sampled_door_variant_idx = sampled_flat % door_variant_count
-    sampled_frontier_idx = torch.where(sampled_flat >= 0, sampled_frontier_idx, -1)
-    sampled_door_variant_idx = torch.where(sampled_flat >= 0, sampled_door_variant_idx, -1)
+        sampled_door_variant_idx = torch.cat([sampled_door_variant_idx, padding], dim=1)
+        sampled_slot_idx = torch.cat([sampled_slot_idx, padding], dim=1)
+    safe_sampled_slot_idx = sampled_slot_idx.clamp(0, max(selected_frontier_count - 1, 0))
+    sampled_frontier_idx = torch.gather(frontier_idx, 1, safe_sampled_slot_idx)
+    sampled_frontier_idx = torch.where(
+        sampled_door_variant_idx >= 0,
+        sampled_frontier_idx,
+        torch.full_like(sampled_frontier_idx, -1),
+    )
     return (
         sampled_frontier_idx.to(torch.int16),
         sampled_door_variant_idx.to(torch.int16),
@@ -733,7 +726,10 @@ def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> Preli
 
 
 def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
-    proposal_mask = group.env.get_proposal_candidate_mask(torch.device("cpu"))
+    proposal_mask = group.env.get_proposal_candidate_mask(
+        group.config.proposal_frontiers,
+        torch.device("cpu"),
+    )
     if group.previous_proposal_scores is not None:
         return ProposalInputs(None, proposal_mask)
     if group.previous_lookahead_outcomes is None:
@@ -1136,13 +1132,14 @@ def run_generation_groups(
                         proposal_inputs = proposal_step.future.result()
                         profiler.add("python.wait_proposal_features", profile_time)
                         valid_counts = proposal_inputs.mask.valid_counts
+                        row_valid_counts = valid_counts.sum(dim=1)
                         shortlist_limited = (
-                            valid_counts > proposal_step.group.config.shortlist_candidates
+                            row_valid_counts > proposal_step.group.config.shortlist_candidates
                         )
-                        stat_totals["proposal_mask_rows"] += float(valid_counts.numel())
-                        stat_totals["proposal_valid_cells"] += float(valid_counts.sum().item())
+                        stat_totals["proposal_mask_rows"] += float(row_valid_counts.numel())
+                        stat_totals["proposal_valid_cells"] += float(row_valid_counts.sum().item())
                         stat_totals["proposal_full_set_rows"] += float(
-                            (valid_counts <= proposal_step.group.config.shortlist_candidates)
+                            (row_valid_counts <= proposal_step.group.config.shortlist_candidates)
                             .sum()
                             .item()
                         )

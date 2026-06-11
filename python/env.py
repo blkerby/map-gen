@@ -18,6 +18,7 @@ class GenerateConfig:
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
+    proposal_frontiers: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
     reward_door: float
@@ -145,16 +146,16 @@ class SparseFeatureRequirements:
 
 @dataclass
 class ProposalCandidateMask:
+    frontier_idx: torch.Tensor
     mask: torch.Tensor
     valid_counts: torch.Tensor
-    frontier_count: int
     door_variant_count: int
 
     def to(self, device: torch.device) -> "ProposalCandidateMask":
         return ProposalCandidateMask(
+            self.frontier_idx.to(device),
             self.mask.to(device),
             self.valid_counts.to(device),
-            self.frontier_count,
             self.door_variant_count,
         )
 
@@ -416,12 +417,16 @@ class EnvironmentGroup:
         )
         return self._candidate_result(result, device)
 
-    def get_proposal_candidate_mask(self, device: torch.device) -> ProposalCandidateMask:
-        result = self.env.get_proposal_candidate_mask()
+    def get_proposal_candidate_mask(
+        self,
+        proposal_frontiers: int,
+        device: torch.device,
+    ) -> ProposalCandidateMask:
+        result = self.env.get_proposal_candidate_mask(proposal_frontiers)
         return ProposalCandidateMask(
+            torch.from_numpy(result.frontier_idx).to(device),
             torch.from_numpy(result.mask).to(device),
             torch.from_numpy(result.valid_counts).to(device=device, dtype=torch.int64),
-            result.frontier_count,
             result.door_variant_count,
         )
 

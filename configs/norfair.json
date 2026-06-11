@@ -9,11 +9,11 @@
     "compile": true,
     "autocast": true,
     "generation_autocast": true,
-    "embedding_width": 512,
-    "global_embedding_width": 512,
-    "hidden_width": 512,
+    "embedding_width": 256,
+    "global_embedding_width": 256,
+    "hidden_width": 256,
     "door_match_embedding_width": 64,
-    "num_layers": 4
+    "num_layers": 2
   },
   "optimizer": {
     "lr": {"log": [0.0005, 0.0004, 0.0003, 0.0002, 0.0001]},
@@ -35,7 +35,8 @@
     "num_devices": 2,
     "pipeline_groups": 2,
     "recommended_candidates": 4,
-    "shortlist_candidates": 32,
+    "shortlist_candidates": 16,
+    "proposal_frontiers": 1,
     "temperature": {"log": [10.0, 1.0, 0.03, 0.03, 0.03]},
     "proposal_temperature": {"log": [30.0, 3.0, 0.1, 0.1, 0.1]},
     "reward_door": 1.0,

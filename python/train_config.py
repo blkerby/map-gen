@@ -47,6 +47,7 @@ class GenerationConfig(StrictBaseModel):
     pipeline_groups: int
     recommended_candidates: ScheduleableInt
     shortlist_candidates: ScheduleableInt
+    proposal_frontiers: ScheduleableInt
     temperature: ScheduleableFloat
     proposal_temperature: ScheduleableFloat
     reward_door: ScheduleableFloat
@@ -184,6 +185,11 @@ def validate_config(config: Config) -> None:
         and config.generation.shortlist_candidates < 0
     ):
         raise ValueError("generation.shortlist_candidates must be greater than or equal to zero")
+    if (
+        isinstance(config.generation.proposal_frontiers, int)
+        and config.generation.proposal_frontiers <= 0
+    ):
+        raise ValueError("generation.proposal_frontiers must be greater than zero")
     if (
         isinstance(config.generation.recommended_candidates, int)
         and isinstance(config.generation.shortlist_candidates, int)

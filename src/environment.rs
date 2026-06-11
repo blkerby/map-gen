@@ -670,17 +670,41 @@ impl Environment {
     pub fn proposal_candidate_mask(
         &self,
         common: &CommonData,
-        proposal_frontier_count: usize,
+        proposal_frontiers: usize,
         proposal_door_variant_count: usize,
+        frontier_idx: &mut [FrontierIdx],
         output: &mut [u8],
-    ) -> usize {
+        valid_counts: &mut [usize],
+    ) {
+        let mask_byte_count = proposal_door_variant_count.div_ceil(8);
+        debug_assert_eq!(frontier_idx.len(), proposal_frontiers);
+        debug_assert_eq!(valid_counts.len(), proposal_frontiers);
+        debug_assert_eq!(output.len(), proposal_frontiers * mask_byte_count);
+        frontier_idx.fill(-1);
+        valid_counts.fill(0);
         output.fill(0);
-        if self.actions.is_empty() {
-            return 0;
+        if self.actions.is_empty() || proposal_frontiers == 0 {
+            return;
         }
-        let mut valid_count = 0;
-        for (frontier_idx, (_, frontier)) in self.sorted_frontiers().iter().enumerate() {
-            assert!(frontier_idx < proposal_frontier_count);
+        let sorted_frontiers = self.sorted_frontiers();
+        let mut selected_frontiers = sorted_frontiers
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, frontier))| !frontier.candidates.is_empty())
+            .collect::<Vec<_>>();
+        selected_frontiers.sort_unstable_by_key(|(frontier_idx, (_, frontier))| {
+            (frontier.candidates.len(), *frontier_idx)
+        });
+        for (slot_idx, (selected_frontier_idx, (_, frontier))) in selected_frontiers
+            .into_iter()
+            .take(proposal_frontiers)
+            .enumerate()
+        {
+            frontier_idx[slot_idx] = selected_frontier_idx as FrontierIdx;
+            let output_start = slot_idx * mask_byte_count;
+            let output_end = output_start + mask_byte_count;
+            let output = &mut output[output_start..output_end];
+            let mut valid_count = 0;
             for candidate in &frontier.candidates {
                 for &connection_variant_idx in
                     common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
@@ -697,17 +721,17 @@ impl Environment {
                     );
                     let door_variant_idx = door_variant_idx as usize;
                     assert!(door_variant_idx < proposal_door_variant_count);
-                    let bit_idx = frontier_idx * proposal_door_variant_count + door_variant_idx;
-                    let byte = &mut output[bit_idx / 8];
-                    let mask = 1 << (bit_idx % 8);
+                    let byte = &mut output[door_variant_idx / 8];
+                    let mask = 1 << (door_variant_idx % 8);
                     if *byte & mask == 0 {
                         *byte |= mask;
                         valid_count += 1;
                     }
                 }
             }
+            debug_assert!(valid_count > 0);
+            valid_counts[slot_idx] = valid_count;
         }
-        valid_count
     }
 
     fn action_for_proposal_candidate(
@@ -2580,11 +2604,91 @@ mod tests {
 
         let frontier_count = Environment::max_frontiers(&common);
         let door_variant_count = common.num_door_output_variants;
-        let mut mask = vec![0; (frontier_count * door_variant_count).div_ceil(8)];
-        let valid_count =
-            env.proposal_candidate_mask(&common, frontier_count, door_variant_count, &mut mask);
+        let mut mask = vec![0; door_variant_count.div_ceil(8)];
+        let mut frontier_idx = vec![-1];
+        let mut valid_counts = vec![0];
+        env.proposal_candidate_mask(
+            &common,
+            1,
+            door_variant_count,
+            &mut frontier_idx,
+            &mut mask,
+            &mut valid_counts,
+        );
 
-        assert!(valid_count > 0);
+        assert!(frontier_count > 0);
+        assert!(frontier_idx[0] >= 0);
+        assert!(valid_counts[0] > 0);
+        assert!(mask.iter().any(|&byte| byte != 0));
+    }
+
+    #[test]
+    fn proposal_candidate_mask_selects_frontier_with_fewest_candidates() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1], [1, 0]],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (5, 5), 0);
+        env.actions.push(Action {
+            room_idx: 0,
+            x: 2,
+            y: 2,
+        });
+        let candidate = GeometryAction {
+            geometry_idx: 0,
+            x: 1,
+            y: 2,
+            door_direction: Direction::Right,
+            door_x: 0,
+            door_y: 0,
+            door_kind: 0,
+        };
+        env.frontier.insert(
+            door_location(0, 0, false),
+            Frontier {
+                dir_door_idx: 0,
+                component: 0,
+                kind: 0,
+                candidates: vec![candidate, candidate],
+            },
+        );
+        env.frontier.insert(
+            door_location(1, 0, false),
+            Frontier {
+                dir_door_idx: 0,
+                component: 0,
+                kind: 0,
+                candidates: vec![candidate],
+            },
+        );
+
+        let door_variant_count = common.num_door_output_variants;
+        let mask_byte_count = door_variant_count.div_ceil(8);
+        let mut mask = vec![0; 2 * mask_byte_count];
+        let mut frontier_idx = vec![-1; 2];
+        let mut valid_counts = vec![0; 2];
+        env.proposal_candidate_mask(
+            &common,
+            2,
+            door_variant_count,
+            &mut frontier_idx,
+            &mut mask,
+            &mut valid_counts,
+        );
+
+        assert_eq!(frontier_idx, vec![1, 0]);
+        assert!(valid_counts.iter().all(|&count| count > 0));
         assert!(mask.iter().any(|&byte| byte != 0));
     }
 
@@ -2626,13 +2730,24 @@ mod tests {
 
         let frontier_count = Environment::max_frontiers(&common);
         let door_variant_count = common.num_door_output_variants;
-        let mut mask = vec![0; (frontier_count * door_variant_count).div_ceil(8)];
-        env.proposal_candidate_mask(&common, frontier_count, door_variant_count, &mut mask);
-        let bit_idx = (0..frontier_count * door_variant_count)
+        let mut mask = vec![0; door_variant_count.div_ceil(8)];
+        let mut frontier_idx = vec![-1];
+        let mut valid_counts = vec![0];
+        env.proposal_candidate_mask(
+            &common,
+            1,
+            door_variant_count,
+            &mut frontier_idx,
+            &mut mask,
+            &mut valid_counts,
+        );
+        assert!(frontier_count > 0);
+        assert!(frontier_idx[0] >= 0);
+        let door_variant_idx = (0..door_variant_count)
             .find(|&idx| mask[idx / 8] & (1 << (idx % 8)) != 0)
             .expect("test setup should have a valid proposal candidate");
-        let sampled_frontier_idx = [(bit_idx / door_variant_count) as FrontierIdx, -1];
-        let sampled_door_variant_idx = [(bit_idx % door_variant_count) as DoorVariantIdx, -1];
+        let sampled_frontier_idx = [frontier_idx[0], -1];
+        let sampled_door_variant_idx = [door_variant_idx as DoorVariantIdx, -1];
 
         let (
             _pre_outcomes,
