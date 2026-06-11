@@ -613,6 +613,13 @@ impl Environment {
         sorted_frontiers
     }
 
+    fn sorted_frontier_locations(&self) -> Vec<DoorLocation> {
+        self.sorted_frontiers()
+            .iter()
+            .map(|(location, _)| **location)
+            .collect()
+    }
+
     pub fn proposal_candidate_mask(
         &self,
         common: &CommonData,
@@ -662,6 +669,7 @@ impl Environment {
     fn action_for_proposal_candidate(
         &self,
         common: &CommonData,
+        sorted_frontier_locations: &[DoorLocation],
         frontier_idx: FrontierIdx,
         door_variant_idx: DoorVariantIdx,
     ) -> Option<Action> {
@@ -670,11 +678,10 @@ impl Environment {
         }
         let frontier_idx = frontier_idx as usize;
         let door_variant_idx = door_variant_idx as usize;
-        let candidate_geometries = self
-            .sorted_frontiers()
-            .get(frontier_idx)
-            .map(|(_, frontier)| frontier.candidates.clone())?;
-        for candidate in candidate_geometries {
+        let frontier = self
+            .frontier
+            .get(sorted_frontier_locations.get(frontier_idx)?)?;
+        for &candidate in &frontier.candidates {
             for &connection_variant_idx in
                 common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
             {
@@ -1354,6 +1361,7 @@ impl Environment {
     > {
         debug_assert_eq!(sampled_frontier_idx.len(), sampled_door_variant_idx.len());
         let pre_candidate_outcomes = self.outcomes(common);
+        let sorted_frontier_locations = self.sorted_frontier_locations();
         let mut clean = Vec::with_capacity(recommended_candidates);
         let mut rejected = Vec::new();
         let mut evaluated_count = 0;
@@ -1364,9 +1372,12 @@ impl Environment {
             if clean.len() == recommended_candidates {
                 break;
             }
-            let Some(action) =
-                self.action_for_proposal_candidate(common, frontier_idx, door_variant_idx)
-            else {
+            let Some(action) = self.action_for_proposal_candidate(
+                common,
+                &sorted_frontier_locations,
+                frontier_idx,
+                door_variant_idx,
+            ) else {
                 continue;
             };
             evaluated_count += 1;
