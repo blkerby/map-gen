@@ -146,7 +146,6 @@ class SparseFeatureRequirements:
 @dataclass
 class ProposalCandidateMask:
     mask: torch.Tensor
-    candidate_counts: torch.Tensor
     valid_counts: torch.Tensor
     frontier_count: int
     door_variant_count: int
@@ -154,7 +153,6 @@ class ProposalCandidateMask:
     def to(self, device: torch.device) -> "ProposalCandidateMask":
         return ProposalCandidateMask(
             self.mask.to(device),
-            self.candidate_counts.to(device),
             self.valid_counts.to(device),
             self.frontier_count,
             self.door_variant_count,
@@ -422,7 +420,6 @@ class EnvironmentGroup:
         result = self.env.get_proposal_candidate_mask()
         return ProposalCandidateMask(
             torch.from_numpy(result.mask).to(device),
-            torch.from_numpy(result.candidate_counts).to(device=device, dtype=torch.float32),
             torch.from_numpy(result.valid_counts).to(device=device, dtype=torch.int64),
             result.frontier_count,
             result.door_variant_count,

@@ -629,14 +629,10 @@ def sample_proposal_shortlist(
     valid = unpack_proposal_mask(proposal_mask, device)[
         :, :proposal_frontier_count, :proposal_door_variant_count
     ]
-    candidate_counts = proposal_mask.candidate_counts.to(device)[
-        :, :proposal_frontier_count, :proposal_door_variant_count
-    ].to(torch.float32)
     environment_count, frontier_count, door_variant_count = valid.shape
     flat_valid = valid.flatten(1)
     flat_scores = proposal_scores.to(torch.float32).flatten(1)
     logits = flat_scores / config.proposal_temperature.to(device).unsqueeze(1).clamp_min(1e-6)
-    logits = logits + torch.log(candidate_counts.flatten(1).clamp_min(1.0))
     logits = torch.where(flat_valid, logits, torch.full_like(logits, float("-inf")))
     max_logits = logits.max(dim=1, keepdim=True).values
     valid_row = torch.isfinite(max_logits)

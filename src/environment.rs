@@ -626,10 +626,8 @@ impl Environment {
         proposal_frontier_count: usize,
         proposal_door_variant_count: usize,
         output: &mut [u8],
-        counts: &mut [u16],
     ) -> usize {
         output.fill(0);
-        counts.fill(0);
         if self.actions.is_empty() {
             return 0;
         }
@@ -653,7 +651,6 @@ impl Environment {
                     let door_variant_idx = door_variant_idx as usize;
                     assert!(door_variant_idx < proposal_door_variant_count);
                     let bit_idx = frontier_idx * proposal_door_variant_count + door_variant_idx;
-                    counts[bit_idx] = counts[bit_idx].saturating_add(1);
                     let byte = &mut output[bit_idx / 8];
                     let mask = 1 << (bit_idx % 8);
                     if *byte & mask == 0 {
@@ -2441,21 +2438,11 @@ mod tests {
         let frontier_count = Environment::max_frontiers(&common);
         let door_variant_count = common.num_door_output_variants;
         let mut mask = vec![0; (frontier_count * door_variant_count).div_ceil(8)];
-        let mut counts = vec![0; frontier_count * door_variant_count];
-        let valid_count = env.proposal_candidate_mask(
-            &common,
-            frontier_count,
-            door_variant_count,
-            &mut mask,
-            &mut counts,
-        );
+        let valid_count =
+            env.proposal_candidate_mask(&common, frontier_count, door_variant_count, &mut mask);
 
         assert!(valid_count > 0);
         assert!(mask.iter().any(|&byte| byte != 0));
-        assert_eq!(
-            valid_count,
-            counts.iter().filter(|&&count| count > 0).count()
-        );
     }
 
     #[test]
@@ -2497,14 +2484,7 @@ mod tests {
         let frontier_count = Environment::max_frontiers(&common);
         let door_variant_count = common.num_door_output_variants;
         let mut mask = vec![0; (frontier_count * door_variant_count).div_ceil(8)];
-        let mut counts = vec![0; frontier_count * door_variant_count];
-        env.proposal_candidate_mask(
-            &common,
-            frontier_count,
-            door_variant_count,
-            &mut mask,
-            &mut counts,
-        );
+        env.proposal_candidate_mask(&common, frontier_count, door_variant_count, &mut mask);
         let bit_idx = (0..frontier_count * door_variant_count)
             .find(|&idx| mask[idx / 8] & (1 << (idx % 8)) != 0)
             .expect("test setup should have a valid proposal candidate");

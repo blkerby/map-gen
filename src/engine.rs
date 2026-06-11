@@ -231,7 +231,6 @@ enum WorkerCommand {
         proposal_door_variant_count: usize,
         proposal_mask_byte_count: usize,
         mask: OutputShard<u8>,
-        candidate_counts: OutputShard<u16>,
         valid_counts: OutputShard<usize>,
     },
     GetCandidatesFromProposals {
@@ -737,32 +736,21 @@ fn worker_loop(
                 proposal_door_variant_count,
                 proposal_mask_byte_count,
                 mask,
-                candidate_counts,
                 valid_counts,
             } => {
                 let mask = unsafe { mask.into_mut_slice() };
-                let candidate_counts = unsafe { candidate_counts.into_mut_slice() };
                 let valid_counts = unsafe { valid_counts.into_mut_slice() };
                 debug_assert_eq!(mask.len(), environments.len() * proposal_mask_byte_count);
-                debug_assert_eq!(
-                    candidate_counts.len(),
-                    environments.len() * proposal_frontier_count * proposal_door_variant_count
-                );
                 debug_assert_eq!(valid_counts.len(), environments.len());
 
                 for (env_idx, env) in environments.iter().enumerate() {
                     let start = env_idx * proposal_mask_byte_count;
                     let end = start + proposal_mask_byte_count;
-                    let count_start =
-                        env_idx * proposal_frontier_count * proposal_door_variant_count;
-                    let count_end =
-                        count_start + proposal_frontier_count * proposal_door_variant_count;
                     valid_counts[env_idx] = env.proposal_candidate_mask(
                         &common_data,
                         proposal_frontier_count,
                         proposal_door_variant_count,
                         &mut mask[start..end],
-                        &mut candidate_counts[count_start..count_end],
                     );
                 }
                 WorkerResponse::Done
@@ -1540,7 +1528,6 @@ pub struct CandidatesWithOutcomes {
 #[pyclass(module = "map_gen")]
 pub struct ProposalCandidateMask {
     mask: Py<PyArray2<u8>>,
-    candidate_counts: Py<PyArray3<u16>>,
     valid_counts: Py<PyArray1<usize>>,
     #[pyo3(get)]
     frontier_count: usize,
@@ -1646,11 +1633,6 @@ impl ProposalCandidateMask {
     #[getter]
     fn mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.mask.clone_ref(py)
-    }
-
-    #[getter]
-    fn candidate_counts(&self, py: Python<'_>) -> Py<PyArray3<u16>> {
-        self.candidate_counts.clone_ref(py)
     }
 
     #[getter]
@@ -2519,7 +2501,6 @@ impl EnvironmentGroup {
         let mask_bit_count = frontier_count * door_variant_count;
         let mask_byte_count = mask_bit_count.div_ceil(8);
         let mut mask = vec![0; self.num_environments * mask_byte_count];
-        let mut candidate_counts = vec![0; self.num_environments * mask_bit_count];
         let mut valid_counts = vec![0; self.num_environments];
 
         py.detach(|| {
@@ -2528,16 +2509,11 @@ impl EnvironmentGroup {
             for (worker_idx, worker) in self.workers.iter().enumerate() {
                 let mask_start = worker.start * mask_byte_count;
                 let mask_end = worker.end() * mask_byte_count;
-                let count_start = worker.start * mask_bit_count;
-                let count_end = worker.end() * mask_bit_count;
                 if let Err(err) = worker.send(WorkerCommand::GetProposalCandidateMask {
                     proposal_frontier_count: frontier_count,
                     proposal_door_variant_count: door_variant_count,
                     proposal_mask_byte_count: mask_byte_count,
                     mask: OutputShard::from_slice(&mut mask[mask_start..mask_end]),
-                    candidate_counts: OutputShard::from_slice(
-                        &mut candidate_counts[count_start..count_end],
-                    ),
                     valid_counts: OutputShard::from_slice(
                         &mut valid_counts[worker.start..worker.end()],
                     ),
@@ -2554,14 +2530,6 @@ impl EnvironmentGroup {
         Ok(ProposalCandidateMask {
             mask: pyarray2_from_flat_vec(py, mask, self.num_environments, mask_byte_count)?
                 .unbind(),
-            candidate_counts: pyarray3_from_flat_vec(
-                py,
-                candidate_counts,
-                self.num_environments,
-                frontier_count,
-                door_variant_count,
-            )?
-            .unbind(),
             valid_counts: valid_counts.into_pyarray(py).unbind(),
             frontier_count,
             door_variant_count,
