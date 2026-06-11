@@ -1099,6 +1099,8 @@ def run_generation_groups(
             "proposal_clean_candidates": 0.0,
             "proposal_evaluated_candidates": 0.0,
             "proposal_rejected_candidates": 0.0,
+            "proposal_door_rejected_candidates": 0.0,
+            "proposal_connection_rejected_candidates": 0.0,
             "proposal_exhausted_rows": 0.0,
         }
         with torch.no_grad():
@@ -1217,6 +1219,12 @@ def run_generation_groups(
                     stat_totals["proposal_rejected_candidates"] += float(
                         stats.rejected_counts.sum().item()
                     )
+                    stat_totals["proposal_door_rejected_candidates"] += float(
+                        stats.door_rejected_counts.sum().item()
+                    )
+                    stat_totals["proposal_connection_rejected_candidates"] += float(
+                        stats.connection_rejected_counts.sum().item()
+                    )
                     stat_totals["proposal_exhausted_rows"] += float(
                         (
                             (
@@ -1325,6 +1333,12 @@ def run_generation_groups(
         "proposal_full_set_rate": stat_totals["proposal_full_set_rows"] / proposal_rows,
         "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
         "proposal_rejection_rate": stat_totals["proposal_rejected_candidates"] / evaluated,
+        "proposal_door_rejection_rate": (
+            stat_totals["proposal_door_rejected_candidates"] / evaluated
+        ),
+        "proposal_connection_rejection_rate": (
+            stat_totals["proposal_connection_rejected_candidates"] / evaluated
+        ),
         "proposal_exhaustion_rate": stat_totals["proposal_exhausted_rows"] / proposal_rows,
     }
     return episode_data, outcomes, door_match_counts, proposal_data, generation_stats, profiler.report()

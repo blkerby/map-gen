@@ -278,6 +278,8 @@ enum WorkerCommand {
         clean_counts: OutputShard<usize>,
         evaluated_counts: OutputShard<usize>,
         rejected_counts: OutputShard<usize>,
+        door_rejected_counts: OutputShard<usize>,
+        connection_rejected_counts: OutputShard<usize>,
     },
     GetActions {
         action_count: usize,
@@ -800,6 +802,8 @@ fn worker_loop(
                 clean_counts,
                 evaluated_counts,
                 rejected_counts,
+                door_rejected_counts,
+                connection_rejected_counts,
             } => {
                 let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
                 let sampled_door_variant_idx = unsafe { sampled_door_variant_idx.into_slice() };
@@ -817,6 +821,9 @@ fn worker_loop(
                 let clean_counts = unsafe { clean_counts.into_mut_slice() };
                 let evaluated_counts = unsafe { evaluated_counts.into_mut_slice() };
                 let rejected_counts = unsafe { rejected_counts.into_mut_slice() };
+                let door_rejected_counts = unsafe { door_rejected_counts.into_mut_slice() };
+                let connection_rejected_counts =
+                    unsafe { connection_rejected_counts.into_mut_slice() };
 
                 debug_assert_eq!(
                     sampled_frontier_idx.len(),
@@ -873,6 +880,8 @@ fn worker_loop(
                         mut candidate_features,
                         evaluated_count,
                         rejected_count,
+                        door_rejected_count,
+                        connection_rejected_count,
                     ) = match env.get_proposal_candidates_with_outcomes(
                         &common_data,
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
@@ -892,6 +901,8 @@ fn worker_loop(
                     clean_counts[env_idx] = candidates.len();
                     evaluated_counts[env_idx] = evaluated_count;
                     rejected_counts[env_idx] = rejected_count;
+                    door_rejected_counts[env_idx] = door_rejected_count;
+                    connection_rejected_counts[env_idx] = connection_rejected_count;
                     let pre_door_start = env_idx * door_outcome_count;
                     for (outcome_idx, outcome) in
                         pre_candidate_outcomes.door_valid.iter().enumerate()
@@ -1539,6 +1550,8 @@ pub struct CandidatesWithOutcomes {
     clean_counts: Py<PyArray1<usize>>,
     evaluated_counts: Py<PyArray1<usize>>,
     rejected_counts: Py<PyArray1<usize>>,
+    door_rejected_counts: Py<PyArray1<usize>>,
+    connection_rejected_counts: Py<PyArray1<usize>>,
     #[pyo3(get)]
     feature_frontier_count: usize,
     #[pyo3(get)]
@@ -1647,6 +1660,16 @@ impl CandidatesWithOutcomes {
     #[getter]
     fn rejected_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
         self.rejected_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn door_rejected_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.door_rejected_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn connection_rejected_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.connection_rejected_counts.clone_ref(py)
     }
 }
 
@@ -2611,6 +2634,8 @@ impl EnvironmentGroup {
         let mut clean_counts = vec![0; self.num_environments];
         let mut evaluated_counts = vec![0; self.num_environments];
         let mut rejected_counts = vec![0; self.num_environments];
+        let mut door_rejected_counts = vec![0; self.num_environments];
+        let mut connection_rejected_counts = vec![0; self.num_environments];
 
         let (feature_frontier_count, sparse_row_count, worker_sparse_row_counts) =
             py.detach(|| {
@@ -2682,6 +2707,12 @@ impl EnvironmentGroup {
                         ),
                         rejected_counts: OutputShard::from_slice(
                             &mut rejected_counts[worker.start..worker.end()],
+                        ),
+                        door_rejected_counts: OutputShard::from_slice(
+                            &mut door_rejected_counts[worker.start..worker.end()],
+                        ),
+                        connection_rejected_counts: OutputShard::from_slice(
+                            &mut connection_rejected_counts[worker.start..worker.end()],
                         ),
                     }) {
                         set_first_error(&mut first_error, err);
@@ -2778,6 +2809,8 @@ impl EnvironmentGroup {
             clean_counts: clean_counts.into_pyarray(py).unbind(),
             evaluated_counts: evaluated_counts.into_pyarray(py).unbind(),
             rejected_counts: rejected_counts.into_pyarray(py).unbind(),
+            door_rejected_counts: door_rejected_counts.into_pyarray(py).unbind(),
+            connection_rejected_counts: connection_rejected_counts.into_pyarray(py).unbind(),
             feature_frontier_count,
             sparse_row_count,
             worker_sparse_row_counts,
@@ -3004,6 +3037,8 @@ impl EnvironmentGroup {
             clean_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
             evaluated_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
             rejected_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            door_rejected_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            connection_rejected_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
             feature_frontier_count,
             sparse_row_count,
             worker_sparse_row_counts,

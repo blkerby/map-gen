@@ -115,9 +115,14 @@ fn introduces_invalid_outcome(before: &PreliminaryOutcomes, after: &PreliminaryO
             })
 }
 
+enum CandidateRejectionReason {
+    Door,
+    Connection,
+}
+
 enum CandidateOutcome {
     Clean(PreliminaryOutcomes, Vec<i16>, Features),
-    Rejected,
+    Rejected(CandidateRejectionReason),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1298,7 +1303,7 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
             )? {
-                CandidateOutcome::Rejected => rejected.push(candidate),
+                CandidateOutcome::Rejected(_) => rejected.push(candidate),
                 CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
                     clean.push((candidate, post_candidate_outcomes, door_match, features));
                     recommended_clean += 1;
@@ -1327,7 +1332,7 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
             )? {
-                CandidateOutcome::Rejected => rejected.push(candidate),
+                CandidateOutcome::Rejected(_) => rejected.push(candidate),
                 CandidateOutcome::Clean(post_candidate_outcomes, door_match, features) => {
                     clean.push((candidate, post_candidate_outcomes, door_match, features));
                     exploration_clean += 1;
@@ -1402,6 +1407,8 @@ impl Environment {
             Vec<Features>,
             usize,
             usize,
+            usize,
+            usize,
         ),
         String,
     > {
@@ -1418,6 +1425,8 @@ impl Environment {
         let mut rejected = Vec::new();
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
+        let mut door_rejected_count = 0;
+        let mut connection_rejected_count = 0;
         for (&frontier_idx, &door_variant_idx) in
             sampled_frontier_idx.iter().zip(sampled_door_variant_idx)
         {
@@ -1445,8 +1454,12 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
             )? {
-                CandidateOutcome::Rejected => {
+                CandidateOutcome::Rejected(reason) => {
                     rejected_count += 1;
+                    match reason {
+                        CandidateRejectionReason::Door => door_rejected_count += 1,
+                        CandidateRejectionReason::Connection => connection_rejected_count += 1,
+                    }
                     rejected.push(CandidateAction {
                         action,
                         frontier_idx,
@@ -1516,6 +1529,8 @@ impl Environment {
             features,
             evaluated_count,
             rejected_count,
+            door_rejected_count,
+            connection_rejected_count,
         ))
     }
 
@@ -1546,7 +1561,7 @@ impl Environment {
                         let profile = profile_start();
                         self.restore_lookahead_candidate(snapshot);
                         profile_end(PROFILE_PROPOSAL_RESTORE, profile);
-                        return Ok(CandidateOutcome::Rejected);
+                        return Ok(CandidateOutcome::Rejected(CandidateRejectionReason::Door));
                     }
                     door_valid.push(after);
                 } else {
@@ -1575,7 +1590,9 @@ impl Environment {
                     let profile = profile_start();
                     self.restore_lookahead_candidate(snapshot);
                     profile_end(PROFILE_PROPOSAL_RESTORE, profile);
-                    return Ok(CandidateOutcome::Rejected);
+                    return Ok(CandidateOutcome::Rejected(
+                        CandidateRejectionReason::Connection,
+                    ));
                 }
                 connections_valid.push(after);
             } else {
@@ -2654,6 +2671,8 @@ mod tests {
             features,
             evaluated_count,
             rejected_count,
+            door_rejected_count,
+            connection_rejected_count,
         ) = env
             .get_proposal_candidates_with_outcomes(
                 &common,
@@ -2669,6 +2688,10 @@ mod tests {
 
         assert_eq!(evaluated_count, 1);
         assert_eq!(rejected_count, 1);
+        assert_eq!(
+            door_rejected_count + connection_rejected_count,
+            rejected_count
+        );
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidate_frontier_idx.len(), candidates.len());
         assert_eq!(candidate_door_variant_idx.len(), candidates.len());

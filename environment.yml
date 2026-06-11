@@ -8,3 +8,6 @@ dependencies:
   - numpy
   - pytorch
   - safetensors
+  - pip
+  - pip:
+      - aim==3.29.1
