@@ -257,9 +257,6 @@ def prepare_feature_batches(
     log_recommended_candidates = torch.log(train_episode_data.recommended_candidates + 1).to(
         torch.device("cpu")
     )
-    log_exploration_candidates = torch.log(train_episode_data.exploration_candidates + 1).to(
-        torch.device("cpu")
-    )
     env.clear()
     feature_batches = []
     for step in range(episode_length):
@@ -319,8 +316,6 @@ def prepare_feature_batches(
                         config.features.temperature,
                         log_recommended_candidates,
                         config.features.recommended_candidates,
-                        log_exploration_candidates,
-                        config.features.exploration_candidates,
                         PreliminaryOutcomes(
                             next_lookahead_outcomes.door_invalid.squeeze(1),
                             next_lookahead_outcomes.connection_invalid.squeeze(1),

@@ -18,7 +18,6 @@ class ExperienceStorage:
         assert episode_data.actions.room_idx.shape[0] == self.episodes_per_file
         assert episode_data.temperature.shape[0] == self.episodes_per_file
         assert episode_data.recommended_candidates.shape[0] == self.episodes_per_file
-        assert episode_data.exploration_candidates.shape[0] == self.episodes_per_file
         file_path = os.path.join(self.data_path, "{}.safetensors".format(next_file_number))
         safetensors.torch.save_file(
             {
@@ -27,7 +26,6 @@ class ExperienceStorage:
                 "room_y": episode_data.actions.room_y,
                 "temperature": episode_data.temperature,
                 "recommended_candidates": episode_data.recommended_candidates,
-                "exploration_candidates": episode_data.exploration_candidates,
             },
             file_path,
         )
@@ -46,7 +44,6 @@ class ExperienceStorage:
                 ),
                 temperature=tensors["temperature"],
                 recommended_candidates=tensors["recommended_candidates"],
-                exploration_candidates=tensors["exploration_candidates"],
             )
             ind = torch.randperm(data.actions.room_idx.shape[0])[:episodes_per_file]
             data = EpisodeData(
@@ -57,7 +54,6 @@ class ExperienceStorage:
                 ),
                 temperature=data.temperature[ind],
                 recommended_candidates=data.recommended_candidates[ind],
-                exploration_candidates=data.exploration_candidates[ind],
             )
             data_list.append(data)
 
@@ -70,9 +66,6 @@ class ExperienceStorage:
             temperature=torch.cat([data.temperature for data in data_list], dim=0),
             recommended_candidates=torch.cat([
                 data.recommended_candidates for data in data_list
-            ], dim=0),
-            exploration_candidates=torch.cat([
-                data.exploration_candidates for data in data_list
             ], dim=0),
         )
 

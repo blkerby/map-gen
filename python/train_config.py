@@ -46,7 +46,7 @@ class GenerationConfig(StrictBaseModel):
     num_devices: int
     pipeline_groups: int
     recommended_candidates: ScheduleableInt
-    exploration_candidates: ScheduleableInt
+    shortlist_candidates: ScheduleableInt
     temperature: ScheduleableFloat
     proposal_temperature: ScheduleableFloat
     reward_door: ScheduleableFloat
@@ -63,7 +63,6 @@ class FeatureConfig(StrictBaseModel):
     inventory: bool
     temperature: bool
     recommended_candidates: bool
-    exploration_candidates: bool
     lookahead_outcomes: bool
     room_position: bool
     frontier_mask: bool
@@ -131,7 +130,7 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
         result = round(instantiate_float(value, path))
         if path in {
             "config.generation.recommended_candidates",
-            "config.generation.exploration_candidates",
+            "config.generation.shortlist_candidates",
         }:
             if result < 0:
                 raise ValueError(f"{path} must round to an integer greater than or equal to zero")
@@ -174,22 +173,20 @@ def validate_config(config: Config) -> None:
         raise ValueError("generation.pipeline_groups must be greater than zero")
     if (
         isinstance(config.generation.recommended_candidates, int)
-        and config.generation.recommended_candidates < 0
+        and config.generation.recommended_candidates <= 0
     ):
-        raise ValueError("generation.recommended_candidates must be greater than or equal to zero")
+        raise ValueError("generation.recommended_candidates must be greater than zero")
     if (
-        isinstance(config.generation.exploration_candidates, int)
-        and config.generation.exploration_candidates < 0
+        isinstance(config.generation.shortlist_candidates, int)
+        and config.generation.shortlist_candidates < 0
     ):
-        raise ValueError("generation.exploration_candidates must be greater than or equal to zero")
+        raise ValueError("generation.shortlist_candidates must be greater than or equal to zero")
     if (
         isinstance(config.generation.recommended_candidates, int)
-        and isinstance(config.generation.exploration_candidates, int)
-        and config.generation.recommended_candidates + config.generation.exploration_candidates <= 0
+        and isinstance(config.generation.shortlist_candidates, int)
+        and config.generation.shortlist_candidates < config.generation.recommended_candidates
     ):
-        raise ValueError(
-            "generation.recommended_candidates + generation.exploration_candidates must be greater than zero"
-        )
+        raise ValueError("generation.shortlist_candidates must be at least recommended_candidates")
     if config.generation.num_devices > config.generation.num_environments:
         raise ValueError("generation.num_devices must not exceed generation.num_environments")
     num_generation_groups = (

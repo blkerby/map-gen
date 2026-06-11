@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const PROFILE_METRIC_COUNT: usize = 21;
+const PROFILE_METRIC_COUNT: usize = 23;
 const PROFILE_METRIC_NAMES: [&str; PROFILE_METRIC_COUNT] = [
     "worker.clear",
     "worker.finish",
@@ -47,6 +47,8 @@ const PROFILE_METRIC_NAMES: [&str; PROFILE_METRIC_COUNT] = [
     "env.step.build_new_frontier_candidates",
     "env.step.filter_existing_frontiers",
     "worker.step_known",
+    "worker.get_proposal_candidate_mask",
+    "worker.get_candidates_from_proposals",
 ];
 
 static PROFILE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -224,6 +226,46 @@ enum WorkerCommand {
         connections_valid: OutputShard<i8>,
         door_match: OutputShard<i16>,
     },
+    GetProposalCandidateMask {
+        proposal_frontier_count: usize,
+        proposal_door_variant_count: usize,
+        proposal_mask_byte_count: usize,
+        mask: OutputShard<u8>,
+        candidate_counts: OutputShard<u16>,
+        valid_counts: OutputShard<usize>,
+    },
+    GetCandidatesFromProposals {
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+        recommended_candidates: usize,
+        shortlist_candidates: usize,
+        sampled_frontier_idx: InputShard<FrontierIdx>,
+        sampled_door_variant_idx: InputShard<DoorVariantIdx>,
+        room_idx: OutputShard<RoomIdx>,
+        room_x: OutputShard<Coord>,
+        room_y: OutputShard<Coord>,
+        proposal_frontier_idx: OutputShard<FrontierIdx>,
+        proposal_door_variant_idx: OutputShard<DoorVariantIdx>,
+        door_outcome_count: usize,
+        connection_outcome_count: usize,
+        pre_door_valid: OutputShard<i8>,
+        pre_connections_valid: OutputShard<i8>,
+        door_valid: OutputShard<i8>,
+        connections_valid: OutputShard<i8>,
+        door_match: OutputShard<i16>,
+        clean_counts: OutputShard<usize>,
+        evaluated_counts: OutputShard<usize>,
+        rejected_counts: OutputShard<usize>,
+        concrete_candidate_counts: OutputShard<usize>,
+        concrete_clean_counts: OutputShard<usize>,
+        concrete_rejected_counts: OutputShard<usize>,
+        proposal_cell_counts: OutputShard<usize>,
+        proposal_cell_clean_counts: OutputShard<usize>,
+        proposal_cell_rejected_counts: OutputShard<usize>,
+        proposal_cell_clean_door_invalid_sums: OutputShard<usize>,
+        proposal_comparison_mismatch_counts: OutputShard<usize>,
+    },
     GetActions {
         action_count: usize,
         room_idx: OutputShard<RoomIdx>,
@@ -332,6 +374,8 @@ impl WorkerCommand {
             WorkerCommand::PackFeatures { .. } => Some(12),
             WorkerCommand::PackSparseFeatures { .. } => Some(12),
             WorkerCommand::StepKnown { .. } => Some(20),
+            WorkerCommand::GetProposalCandidateMask { .. } => Some(21),
+            WorkerCommand::GetCandidatesFromProposals { .. } => Some(22),
             WorkerCommand::Shutdown => None,
         }
     }
@@ -624,6 +668,307 @@ fn worker_loop(
                         y: 0,
                     };
                     for candidate_idx in 0..max_candidates {
+                        let idx = row_start + candidate_idx;
+                        if let Some(candidate) = candidates.get(candidate_idx) {
+                            room_idx[idx] = candidate.room_idx;
+                            room_x[idx] = candidate.x;
+                            room_y[idx] = candidate.y;
+                        }
+                        if let Some(&frontier_idx) = candidate_frontier_idx.get(candidate_idx) {
+                            proposal_frontier_idx[idx] = frontier_idx;
+                        }
+                        if let Some(&door_variant_idx) =
+                            candidate_door_variant_idx.get(candidate_idx)
+                        {
+                            proposal_door_variant_idx[idx] = door_variant_idx;
+                        }
+
+                        let outcome = outcomes
+                            .get(candidate_idx)
+                            .or(dummy_outcome.as_ref())
+                            .expect("dummy outcome must exist for padded candidates");
+                        let match_values = door_matches
+                            .get(candidate_idx)
+                            .or(dummy_door_match.as_ref())
+                            .expect("dummy door match must exist for padded candidates");
+                        if candidate_idx >= candidate_features.len() {
+                            candidate_features.push(env.features_after_candidate(
+                                &common_data,
+                                dummy_candidate,
+                                &features,
+                                frontier_neighbor_algorithm,
+                                frontier_neighbor_count,
+                                frontier_window_size,
+                            ));
+                        }
+                        let door_start = idx * door_outcome_count;
+                        let door_end = door_start + door_outcome_count;
+                        let connection_start = idx * connection_outcome_count;
+                        let connection_end = connection_start + connection_outcome_count;
+                        for (dst, &outcome) in door_valid[door_start..door_end]
+                            .iter_mut()
+                            .zip(&outcome.door_valid)
+                        {
+                            *dst = outcome as i8;
+                        }
+                        for (dst, &outcome) in connections_valid[connection_start..connection_end]
+                            .iter_mut()
+                            .zip(&outcome.connections_valid)
+                        {
+                            *dst = outcome as i8;
+                        }
+                        for (dst, &value) in door_match[door_start..door_end]
+                            .iter_mut()
+                            .zip(match_values)
+                        {
+                            *dst = value;
+                        }
+                    }
+                    pending_features.append(&mut candidate_features);
+                }
+                match consistency_error {
+                    Some(err) => WorkerResponse::Error(err),
+                    None => {
+                        let frontier_count = max_feature_frontier_count(&pending_features);
+                        WorkerResponse::FeatureInfo(
+                            frontier_count,
+                            pending_features
+                                .iter()
+                                .map(|features| features.frontier.len() / FEATURE_FRONTIER_WIDTH)
+                                .sum(),
+                        )
+                    }
+                }
+            }
+            WorkerCommand::GetProposalCandidateMask {
+                proposal_frontier_count,
+                proposal_door_variant_count,
+                proposal_mask_byte_count,
+                mask,
+                candidate_counts,
+                valid_counts,
+            } => {
+                let mask = unsafe { mask.into_mut_slice() };
+                let candidate_counts = unsafe { candidate_counts.into_mut_slice() };
+                let valid_counts = unsafe { valid_counts.into_mut_slice() };
+                debug_assert_eq!(mask.len(), environments.len() * proposal_mask_byte_count);
+                debug_assert_eq!(
+                    candidate_counts.len(),
+                    environments.len() * proposal_frontier_count * proposal_door_variant_count
+                );
+                debug_assert_eq!(valid_counts.len(), environments.len());
+
+                for (env_idx, env) in environments.iter().enumerate() {
+                    let start = env_idx * proposal_mask_byte_count;
+                    let end = start + proposal_mask_byte_count;
+                    let count_start =
+                        env_idx * proposal_frontier_count * proposal_door_variant_count;
+                    let count_end =
+                        count_start + proposal_frontier_count * proposal_door_variant_count;
+                    valid_counts[env_idx] = env.proposal_candidate_mask(
+                        &common_data,
+                        proposal_frontier_count,
+                        proposal_door_variant_count,
+                        &mut mask[start..end],
+                        &mut candidate_counts[count_start..count_end],
+                    );
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::GetCandidatesFromProposals {
+                frontier_neighbor_algorithm,
+                frontier_neighbor_count,
+                frontier_window_size,
+                recommended_candidates,
+                shortlist_candidates,
+                sampled_frontier_idx,
+                sampled_door_variant_idx,
+                room_idx,
+                room_x,
+                room_y,
+                proposal_frontier_idx,
+                proposal_door_variant_idx,
+                door_outcome_count,
+                connection_outcome_count,
+                pre_door_valid,
+                pre_connections_valid,
+                door_valid,
+                connections_valid,
+                door_match,
+                clean_counts,
+                evaluated_counts,
+                rejected_counts,
+                concrete_candidate_counts,
+                concrete_clean_counts,
+                concrete_rejected_counts,
+                proposal_cell_counts,
+                proposal_cell_clean_counts,
+                proposal_cell_rejected_counts,
+                proposal_cell_clean_door_invalid_sums,
+                proposal_comparison_mismatch_counts,
+            } => {
+                let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
+                let sampled_door_variant_idx = unsafe { sampled_door_variant_idx.into_slice() };
+                let room_idx = unsafe { room_idx.into_mut_slice() };
+                let room_x = unsafe { room_x.into_mut_slice() };
+                let room_y = unsafe { room_y.into_mut_slice() };
+                let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
+                let proposal_door_variant_idx =
+                    unsafe { proposal_door_variant_idx.into_mut_slice() };
+                let pre_door_valid = unsafe { pre_door_valid.into_mut_slice() };
+                let pre_connections_valid = unsafe { pre_connections_valid.into_mut_slice() };
+                let door_valid = unsafe { door_valid.into_mut_slice() };
+                let connections_valid = unsafe { connections_valid.into_mut_slice() };
+                let door_match = unsafe { door_match.into_mut_slice() };
+                let clean_counts = unsafe { clean_counts.into_mut_slice() };
+                let evaluated_counts = unsafe { evaluated_counts.into_mut_slice() };
+                let rejected_counts = unsafe { rejected_counts.into_mut_slice() };
+                let concrete_candidate_counts =
+                    unsafe { concrete_candidate_counts.into_mut_slice() };
+                let concrete_clean_counts = unsafe { concrete_clean_counts.into_mut_slice() };
+                let concrete_rejected_counts = unsafe { concrete_rejected_counts.into_mut_slice() };
+                let proposal_cell_counts = unsafe { proposal_cell_counts.into_mut_slice() };
+                let proposal_cell_clean_counts =
+                    unsafe { proposal_cell_clean_counts.into_mut_slice() };
+                let proposal_cell_rejected_counts =
+                    unsafe { proposal_cell_rejected_counts.into_mut_slice() };
+                let proposal_cell_clean_door_invalid_sums =
+                    unsafe { proposal_cell_clean_door_invalid_sums.into_mut_slice() };
+                let proposal_comparison_mismatch_counts =
+                    unsafe { proposal_comparison_mismatch_counts.into_mut_slice() };
+
+                debug_assert_eq!(
+                    sampled_frontier_idx.len(),
+                    environments.len() * shortlist_candidates
+                );
+                debug_assert_eq!(
+                    sampled_door_variant_idx.len(),
+                    environments.len() * shortlist_candidates
+                );
+                debug_assert_eq!(room_idx.len(), environments.len() * recommended_candidates);
+                debug_assert_eq!(room_x.len(), environments.len() * recommended_candidates);
+                debug_assert_eq!(room_y.len(), environments.len() * recommended_candidates);
+                debug_assert_eq!(
+                    proposal_frontier_idx.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    proposal_door_variant_idx.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    pre_door_valid.len(),
+                    environments.len() * door_outcome_count
+                );
+                debug_assert_eq!(
+                    pre_connections_valid.len(),
+                    environments.len() * connection_outcome_count
+                );
+                debug_assert_eq!(
+                    door_valid.len(),
+                    environments.len() * recommended_candidates * door_outcome_count
+                );
+                debug_assert_eq!(
+                    connections_valid.len(),
+                    environments.len() * recommended_candidates * connection_outcome_count
+                );
+                debug_assert_eq!(
+                    door_match.len(),
+                    environments.len() * recommended_candidates * door_outcome_count
+                );
+
+                let mut consistency_error = None;
+                pending_features.clear();
+                for (env_idx, env) in environments.iter_mut().enumerate() {
+                    let shortlist_start = env_idx * shortlist_candidates;
+                    let shortlist_end = shortlist_start + shortlist_candidates;
+                    let (
+                        pre_candidate_outcomes,
+                        candidates,
+                        candidate_frontier_idx,
+                        candidate_door_variant_idx,
+                        outcomes,
+                        door_matches,
+                        mut candidate_features,
+                        evaluated_count,
+                        rejected_count,
+                    ) = match env.get_proposal_candidates_with_outcomes(
+                        &common_data,
+                        &sampled_frontier_idx[shortlist_start..shortlist_end],
+                        &sampled_door_variant_idx[shortlist_start..shortlist_end],
+                        recommended_candidates,
+                        &features,
+                        frontier_neighbor_algorithm,
+                        frontier_neighbor_count,
+                        frontier_window_size,
+                    ) {
+                        Ok(result) => result,
+                        Err(err) => {
+                            consistency_error = Some(err);
+                            break;
+                        }
+                    };
+                    clean_counts[env_idx] = candidates.len();
+                    evaluated_counts[env_idx] = evaluated_count;
+                    rejected_counts[env_idx] = rejected_count;
+                    match env.compare_proposal_cells_to_concrete_pool(
+                        &common_data,
+                        &features,
+                        frontier_neighbor_algorithm,
+                        frontier_neighbor_count,
+                        frontier_window_size,
+                    ) {
+                        Ok(stats) => {
+                            concrete_candidate_counts[env_idx] = stats.concrete_count;
+                            concrete_clean_counts[env_idx] = stats.concrete_clean_count;
+                            concrete_rejected_counts[env_idx] = stats.concrete_rejected_count;
+                            proposal_cell_counts[env_idx] = stats.proposal_cell_count;
+                            proposal_cell_clean_counts[env_idx] = stats.proposal_clean_count;
+                            proposal_cell_rejected_counts[env_idx] = stats.proposal_rejected_count;
+                            proposal_cell_clean_door_invalid_sums[env_idx] =
+                                stats.proposal_clean_door_invalid_sum;
+                            proposal_comparison_mismatch_counts[env_idx] = stats.mismatch_count;
+                        }
+                        Err(err) => {
+                            consistency_error = Some(err);
+                            break;
+                        }
+                    }
+                    let pre_door_start = env_idx * door_outcome_count;
+                    for (outcome_idx, outcome) in
+                        pre_candidate_outcomes.door_valid.iter().enumerate()
+                    {
+                        pre_door_valid[pre_door_start + outcome_idx] = *outcome as i8;
+                    }
+                    let pre_connection_start = env_idx * connection_outcome_count;
+                    for (outcome_idx, outcome) in
+                        pre_candidate_outcomes.connections_valid.iter().enumerate()
+                    {
+                        pre_connections_valid[pre_connection_start + outcome_idx] = *outcome as i8;
+                    }
+                    let row_start = env_idx * recommended_candidates;
+                    let dummy_outcome = if candidates.len() < recommended_candidates {
+                        Some(PreliminaryOutcomes {
+                            door_valid: vec![DoorValidOutcome::Unknown; door_outcome_count],
+                            connections_valid: vec![
+                                DoorValidOutcome::Unknown;
+                                connection_outcome_count
+                            ],
+                        })
+                    } else {
+                        None
+                    };
+                    let dummy_door_match = if candidates.len() < recommended_candidates {
+                        Some(vec![-1; door_outcome_count])
+                    } else {
+                        None
+                    };
+                    let dummy_candidate = Action {
+                        room_idx: common_data.room.len() as RoomIdx,
+                        x: 0,
+                        y: 0,
+                    };
+                    for candidate_idx in 0..recommended_candidates {
                         let idx = row_start + candidate_idx;
                         if let Some(candidate) = candidates.get(candidate_idx) {
                             room_idx[idx] = candidate.room_idx;
@@ -1233,12 +1578,34 @@ pub struct CandidatesWithOutcomes {
     door_valid: Py<PyArray3<i8>>,
     connections_valid: Py<PyArray3<i8>>,
     door_match: Py<PyArray3<i16>>,
+    clean_counts: Py<PyArray1<usize>>,
+    evaluated_counts: Py<PyArray1<usize>>,
+    rejected_counts: Py<PyArray1<usize>>,
+    concrete_candidate_counts: Py<PyArray1<usize>>,
+    concrete_clean_counts: Py<PyArray1<usize>>,
+    concrete_rejected_counts: Py<PyArray1<usize>>,
+    proposal_cell_counts: Py<PyArray1<usize>>,
+    proposal_cell_clean_counts: Py<PyArray1<usize>>,
+    proposal_cell_rejected_counts: Py<PyArray1<usize>>,
+    proposal_cell_clean_door_invalid_sums: Py<PyArray1<usize>>,
+    proposal_comparison_mismatch_counts: Py<PyArray1<usize>>,
     #[pyo3(get)]
     feature_frontier_count: usize,
     #[pyo3(get)]
     sparse_row_count: usize,
     #[pyo3(get)]
     worker_sparse_row_counts: Vec<usize>,
+}
+
+#[pyclass(module = "map_gen")]
+pub struct ProposalCandidateMask {
+    mask: Py<PyArray2<u8>>,
+    candidate_counts: Py<PyArray3<u16>>,
+    valid_counts: Py<PyArray1<usize>>,
+    #[pyo3(get)]
+    frontier_count: usize,
+    #[pyo3(get)]
+    door_variant_count: usize,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1316,6 +1683,79 @@ impl CandidatesWithOutcomes {
     #[getter]
     fn door_match(&self, py: Python<'_>) -> Py<PyArray3<i16>> {
         self.door_match.clone_ref(py)
+    }
+
+    #[getter]
+    fn clean_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.clean_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn evaluated_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.evaluated_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn rejected_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.rejected_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn concrete_candidate_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.concrete_candidate_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn concrete_clean_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.concrete_clean_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn concrete_rejected_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.concrete_rejected_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn proposal_cell_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.proposal_cell_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn proposal_cell_clean_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.proposal_cell_clean_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn proposal_cell_rejected_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.proposal_cell_rejected_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn proposal_cell_clean_door_invalid_sums(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.proposal_cell_clean_door_invalid_sums.clone_ref(py)
+    }
+
+    #[getter]
+    fn proposal_comparison_mismatch_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.proposal_comparison_mismatch_counts.clone_ref(py)
+    }
+}
+
+#[pymethods]
+impl ProposalCandidateMask {
+    #[getter]
+    fn mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
+        self.mask.clone_ref(py)
+    }
+
+    #[getter]
+    fn candidate_counts(&self, py: Python<'_>) -> Py<PyArray3<u16>> {
+        self.candidate_counts.clone_ref(py)
+    }
+
+    #[getter]
+    fn valid_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
+        self.valid_counts.clone_ref(py)
     }
 }
 
@@ -1755,7 +2195,6 @@ impl SparseFeatureBuffers {
             inventory: false,
             temperature: false,
             recommended_candidates: false,
-            exploration_candidates: false,
             room_position: false,
             connection_reachability: false,
             ..*features
@@ -1800,7 +2239,6 @@ impl SparseFeatureBuffers {
             inventory: false,
             temperature: false,
             recommended_candidates: false,
-            exploration_candidates: false,
             room_position: false,
             connection_reachability: false,
             ..*features
@@ -2172,6 +2610,334 @@ impl EnvironmentGroup {
         self.step_with_kind(py, room_idx, room_x, room_y, StepCommandKind::StepKnown)
     }
 
+    fn get_proposal_candidate_mask<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> PyResult<ProposalCandidateMask> {
+        let frontier_count = Environment::max_frontiers(&self.common_data);
+        let door_variant_count = self.common_data.num_door_output_variants;
+        let mask_bit_count = frontier_count * door_variant_count;
+        let mask_byte_count = mask_bit_count.div_ceil(8);
+        let mut mask = vec![0; self.num_environments * mask_byte_count];
+        let mut candidate_counts = vec![0; self.num_environments * mask_bit_count];
+        let mut valid_counts = vec![0; self.num_environments];
+
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let mask_start = worker.start * mask_byte_count;
+                let mask_end = worker.end() * mask_byte_count;
+                let count_start = worker.start * mask_bit_count;
+                let count_end = worker.end() * mask_bit_count;
+                if let Err(err) = worker.send(WorkerCommand::GetProposalCandidateMask {
+                    proposal_frontier_count: frontier_count,
+                    proposal_door_variant_count: door_variant_count,
+                    proposal_mask_byte_count: mask_byte_count,
+                    mask: OutputShard::from_slice(&mut mask[mask_start..mask_end]),
+                    candidate_counts: OutputShard::from_slice(
+                        &mut candidate_counts[count_start..count_end],
+                    ),
+                    valid_counts: OutputShard::from_slice(
+                        &mut valid_counts[worker.start..worker.end()],
+                    ),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
+
+        Ok(ProposalCandidateMask {
+            mask: pyarray2_from_flat_vec(py, mask, self.num_environments, mask_byte_count)?
+                .unbind(),
+            candidate_counts: pyarray3_from_flat_vec(
+                py,
+                candidate_counts,
+                self.num_environments,
+                frontier_count,
+                door_variant_count,
+            )?
+            .unbind(),
+            valid_counts: valid_counts.into_pyarray(py).unbind(),
+            frontier_count,
+            door_variant_count,
+        })
+    }
+
+    fn get_candidates_from_proposals<'py>(
+        &mut self,
+        py: Python<'py>,
+        sampled_frontier_idx: PyReadonlyArray2<'py, FrontierIdx>,
+        sampled_door_variant_idx: PyReadonlyArray2<'py, DoorVariantIdx>,
+        mut recommended_candidates: usize,
+    ) -> PyResult<CandidatesWithOutcomes> {
+        if self.action_count == 0 {
+            recommended_candidates = 1;
+        }
+        let sampled_shape = sampled_frontier_idx.as_array().shape().to_vec();
+        if sampled_shape.len() != 2
+            || sampled_door_variant_idx.as_array().shape() != sampled_shape
+            || sampled_shape[0] != self.num_environments
+        {
+            return Err(PyValueError::new_err(
+                "sampled proposal arrays must have shape [environment, shortlist_candidate]",
+            ));
+        }
+        let shortlist_candidates = sampled_shape[1];
+        let sampled_frontier_idx = sampled_frontier_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("sampled_frontier_idx must be contiguous"))?;
+        let sampled_door_variant_idx = sampled_door_variant_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("sampled_door_variant_idx must be contiguous"))?;
+        let (door_outcome_count, connection_outcome_count) = output_sizes(&self.common_data);
+        let output_len = self.num_environments * recommended_candidates;
+        let pre_door_output_len = self.num_environments * door_outcome_count;
+        let pre_connection_output_len = self.num_environments * connection_outcome_count;
+        let door_output_len = output_len * door_outcome_count;
+        let connection_output_len = output_len * connection_outcome_count;
+        let door_match_output_len = output_len * door_outcome_count;
+        let dummy_candidate = Action {
+            room_idx: self.common_data.room.len() as RoomIdx,
+            x: 0,
+            y: 0,
+        };
+
+        let mut room_idx = vec![dummy_candidate.room_idx; output_len];
+        let mut room_x = vec![dummy_candidate.x; output_len];
+        let mut room_y = vec![dummy_candidate.y; output_len];
+        let mut proposal_frontier_idx = vec![-1; output_len];
+        let mut proposal_door_variant_idx = vec![-1; output_len];
+        let mut pre_door_valid = vec![DoorValidOutcome::Unknown as i8; pre_door_output_len];
+        let mut pre_connections_valid =
+            vec![DoorValidOutcome::Unknown as i8; pre_connection_output_len];
+        let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
+        let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
+        let mut door_match = vec![-1; door_match_output_len];
+        let mut clean_counts = vec![0; self.num_environments];
+        let mut evaluated_counts = vec![0; self.num_environments];
+        let mut rejected_counts = vec![0; self.num_environments];
+        let mut concrete_candidate_counts = vec![0; self.num_environments];
+        let mut concrete_clean_counts = vec![0; self.num_environments];
+        let mut concrete_rejected_counts = vec![0; self.num_environments];
+        let mut proposal_cell_counts = vec![0; self.num_environments];
+        let mut proposal_cell_clean_counts = vec![0; self.num_environments];
+        let mut proposal_cell_rejected_counts = vec![0; self.num_environments];
+        let mut proposal_cell_clean_door_invalid_sums = vec![0; self.num_environments];
+        let mut proposal_comparison_mismatch_counts = vec![0; self.num_environments];
+
+        let (feature_frontier_count, sparse_row_count, worker_sparse_row_counts) =
+            py.detach(|| {
+                let mut sent_workers = Vec::with_capacity(self.workers.len());
+                let mut first_error = None;
+                for (worker_idx, worker) in self.workers.iter().enumerate() {
+                    let output_start = worker.start * recommended_candidates;
+                    let output_end = worker.end() * recommended_candidates;
+                    let shortlist_start = worker.start * shortlist_candidates;
+                    let shortlist_end = worker.end() * shortlist_candidates;
+                    let pre_door_output_start = worker.start * door_outcome_count;
+                    let pre_door_output_end =
+                        pre_door_output_start + worker.len * door_outcome_count;
+                    let pre_connection_output_start = worker.start * connection_outcome_count;
+                    let pre_connection_output_end =
+                        pre_connection_output_start + worker.len * connection_outcome_count;
+                    let door_output_start = output_start * door_outcome_count;
+                    let door_output_end = output_end * door_outcome_count;
+                    let connection_output_start = output_start * connection_outcome_count;
+                    let connection_output_end = output_end * connection_outcome_count;
+                    let door_match_output_start = output_start * door_outcome_count;
+                    let door_match_output_end =
+                        door_match_output_start + (output_end - output_start) * door_outcome_count;
+
+                    if let Err(err) = worker.send(WorkerCommand::GetCandidatesFromProposals {
+                        recommended_candidates,
+                        shortlist_candidates,
+                        sampled_frontier_idx: InputShard::from_slice(
+                            &sampled_frontier_idx[shortlist_start..shortlist_end],
+                        ),
+                        sampled_door_variant_idx: InputShard::from_slice(
+                            &sampled_door_variant_idx[shortlist_start..shortlist_end],
+                        ),
+                        room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
+                        room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
+                        room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
+                        proposal_frontier_idx: OutputShard::from_slice(
+                            &mut proposal_frontier_idx[output_start..output_end],
+                        ),
+                        proposal_door_variant_idx: OutputShard::from_slice(
+                            &mut proposal_door_variant_idx[output_start..output_end],
+                        ),
+                        frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
+                        frontier_neighbor_count: self.frontier_neighbor_count,
+                        frontier_window_size: self.frontier_window_size,
+                        door_outcome_count,
+                        connection_outcome_count,
+                        pre_door_valid: OutputShard::from_slice(
+                            &mut pre_door_valid[pre_door_output_start..pre_door_output_end],
+                        ),
+                        pre_connections_valid: OutputShard::from_slice(
+                            &mut pre_connections_valid
+                                [pre_connection_output_start..pre_connection_output_end],
+                        ),
+                        door_valid: OutputShard::from_slice(
+                            &mut door_valid[door_output_start..door_output_end],
+                        ),
+                        connections_valid: OutputShard::from_slice(
+                            &mut connections_valid[connection_output_start..connection_output_end],
+                        ),
+                        door_match: OutputShard::from_slice(
+                            &mut door_match[door_match_output_start..door_match_output_end],
+                        ),
+                        clean_counts: OutputShard::from_slice(
+                            &mut clean_counts[worker.start..worker.end()],
+                        ),
+                        evaluated_counts: OutputShard::from_slice(
+                            &mut evaluated_counts[worker.start..worker.end()],
+                        ),
+                        rejected_counts: OutputShard::from_slice(
+                            &mut rejected_counts[worker.start..worker.end()],
+                        ),
+                        concrete_candidate_counts: OutputShard::from_slice(
+                            &mut concrete_candidate_counts[worker.start..worker.end()],
+                        ),
+                        concrete_clean_counts: OutputShard::from_slice(
+                            &mut concrete_clean_counts[worker.start..worker.end()],
+                        ),
+                        concrete_rejected_counts: OutputShard::from_slice(
+                            &mut concrete_rejected_counts[worker.start..worker.end()],
+                        ),
+                        proposal_cell_counts: OutputShard::from_slice(
+                            &mut proposal_cell_counts[worker.start..worker.end()],
+                        ),
+                        proposal_cell_clean_counts: OutputShard::from_slice(
+                            &mut proposal_cell_clean_counts[worker.start..worker.end()],
+                        ),
+                        proposal_cell_rejected_counts: OutputShard::from_slice(
+                            &mut proposal_cell_rejected_counts[worker.start..worker.end()],
+                        ),
+                        proposal_cell_clean_door_invalid_sums: OutputShard::from_slice(
+                            &mut proposal_cell_clean_door_invalid_sums[worker.start..worker.end()],
+                        ),
+                        proposal_comparison_mismatch_counts: OutputShard::from_slice(
+                            &mut proposal_comparison_mismatch_counts[worker.start..worker.end()],
+                        ),
+                    }) {
+                        set_first_error(&mut first_error, err);
+                        break;
+                    }
+                    sent_workers.push(worker_idx);
+                }
+
+                collect_feature_info(&self.workers, sent_workers, first_error)
+            })?;
+        let feature_frontier_count =
+            feature_frontier_count * usize::from(self.features.has_frontier_features());
+        let sparse_row_count =
+            sparse_row_count * usize::from(self.features.has_frontier_features());
+        let worker_sparse_row_counts = worker_sparse_row_counts
+            .into_iter()
+            .map(|count| count * usize::from(self.features.has_frontier_features()))
+            .collect::<Vec<_>>();
+
+        Ok(CandidatesWithOutcomes {
+            room_idx: pyarray2_from_flat_vec(
+                py,
+                room_idx,
+                self.num_environments,
+                recommended_candidates,
+            )?
+            .unbind(),
+            room_x: pyarray2_from_flat_vec(
+                py,
+                room_x,
+                self.num_environments,
+                recommended_candidates,
+            )?
+            .unbind(),
+            room_y: pyarray2_from_flat_vec(
+                py,
+                room_y,
+                self.num_environments,
+                recommended_candidates,
+            )?
+            .unbind(),
+            proposal_frontier_idx: pyarray2_from_flat_vec(
+                py,
+                proposal_frontier_idx,
+                self.num_environments,
+                recommended_candidates,
+            )?
+            .unbind(),
+            proposal_door_variant_idx: pyarray2_from_flat_vec(
+                py,
+                proposal_door_variant_idx,
+                self.num_environments,
+                recommended_candidates,
+            )?
+            .unbind(),
+            pre_door_valid: pyarray2_from_flat_vec(
+                py,
+                pre_door_valid,
+                self.num_environments,
+                door_outcome_count,
+            )?
+            .unbind(),
+            pre_connections_valid: pyarray2_from_flat_vec(
+                py,
+                pre_connections_valid,
+                self.num_environments,
+                connection_outcome_count,
+            )?
+            .unbind(),
+            door_valid: pyarray3_from_flat_vec(
+                py,
+                door_valid,
+                self.num_environments,
+                recommended_candidates,
+                door_outcome_count,
+            )?
+            .unbind(),
+            connections_valid: pyarray3_from_flat_vec(
+                py,
+                connections_valid,
+                self.num_environments,
+                recommended_candidates,
+                connection_outcome_count,
+            )?
+            .unbind(),
+            door_match: pyarray3_from_flat_vec(
+                py,
+                door_match,
+                self.num_environments,
+                recommended_candidates,
+                door_outcome_count,
+            )?
+            .unbind(),
+            clean_counts: clean_counts.into_pyarray(py).unbind(),
+            evaluated_counts: evaluated_counts.into_pyarray(py).unbind(),
+            rejected_counts: rejected_counts.into_pyarray(py).unbind(),
+            concrete_candidate_counts: concrete_candidate_counts.into_pyarray(py).unbind(),
+            concrete_clean_counts: concrete_clean_counts.into_pyarray(py).unbind(),
+            concrete_rejected_counts: concrete_rejected_counts.into_pyarray(py).unbind(),
+            proposal_cell_counts: proposal_cell_counts.into_pyarray(py).unbind(),
+            proposal_cell_clean_counts: proposal_cell_clean_counts.into_pyarray(py).unbind(),
+            proposal_cell_rejected_counts: proposal_cell_rejected_counts.into_pyarray(py).unbind(),
+            proposal_cell_clean_door_invalid_sums: proposal_cell_clean_door_invalid_sums
+                .into_pyarray(py)
+                .unbind(),
+            proposal_comparison_mismatch_counts: proposal_comparison_mismatch_counts
+                .into_pyarray(py)
+                .unbind(),
+            feature_frontier_count,
+            sparse_row_count,
+            worker_sparse_row_counts,
+        })
+    }
+
     fn get_candidates_with_outcomes<'py>(
         &mut self,
         py: Python<'py>,
@@ -2389,6 +3155,21 @@ impl EnvironmentGroup {
                 door_outcome_count,
             )?
             .unbind(),
+            clean_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            evaluated_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            rejected_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            concrete_candidate_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            concrete_clean_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            concrete_rejected_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            proposal_cell_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            proposal_cell_clean_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            proposal_cell_rejected_counts: vec![0; self.num_environments].into_pyarray(py).unbind(),
+            proposal_cell_clean_door_invalid_sums: vec![0; self.num_environments]
+                .into_pyarray(py)
+                .unbind(),
+            proposal_comparison_mismatch_counts: vec![0; self.num_environments]
+                .into_pyarray(py)
+                .unbind(),
             feature_frontier_count,
             sparse_row_count,
             worker_sparse_row_counts,

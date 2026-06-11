@@ -29,7 +29,7 @@ from env import (
     ProposalData,
 )
 from experience import ExperienceStorage
-from generate import run_generation_groups
+from generate import GenerationStats, run_generation_groups
 from learn import (
     CandidateDiagnostics,
     MainLossBreakdown,
@@ -254,7 +254,7 @@ def create_generate_config(
     return GenerateConfig(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
-        exploration_candidates=config.generation.exploration_candidates,
+        shortlist_candidates=config.generation.shortlist_candidates,
         temperature=torch.full(
             [num_envs],
             config.generation.temperature,
@@ -328,7 +328,7 @@ def run_generation_process_task(
     model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
-) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, RustProfileReport]:
+) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, RustProfileReport]:
     if GENERATION_PROCESS_STATE is None:
         raise RuntimeError("generation process was not initialized")
     state = GENERATION_PROCESS_STATE
@@ -350,6 +350,7 @@ def run_generation_process_task(
         outcomes,
         door_match_counts,
         proposal_data,
+        generation_stats,
         python_profile_report,
     ) = run_generation_groups(
         state.envs,
@@ -369,6 +370,7 @@ def run_generation_process_task(
         outcomes.to(torch.device("cpu")),
         door_match_counts.to(torch.device("cpu")),
         proposal_data.to(torch.device("cpu")),
+        generation_stats,
         profile_report,
     )
 
@@ -544,11 +546,12 @@ class TrainingSession:
 
     def generate_round(
         self,
-    ) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, RustProfileReport]:
+    ) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, RustProfileReport]:
         episode_data_iterations = []
         outcome_iterations = []
         door_match_count_iterations = []
         proposal_data_iterations = []
+        generation_stats_iterations = []
         profile_reports = []
         model_state = {
             name: as_checkpoint_tensor(value)
@@ -575,13 +578,21 @@ class TrainingSession:
                 iteration_outcomes,
                 iteration_door_match_counts,
                 iteration_proposal_data,
+                iteration_generation_stats,
                 iteration_profile_report,
             ) in shard_results:
                 episode_data_iterations.append(iteration_episode_data.to(self.device))
                 outcome_iterations.append(iteration_outcomes.to(self.device))
                 door_match_count_iterations.append(iteration_door_match_counts.to(self.device))
                 proposal_data_iterations.append(iteration_proposal_data.to(self.device))
+                generation_stats_iterations.append(iteration_generation_stats)
                 profile_reports.append(iteration_profile_report)
+
+        generation_stats = {
+            name: sum(stats[name] for stats in generation_stats_iterations)
+            / len(generation_stats_iterations)
+            for name in generation_stats_iterations[0]
+        }
 
         return (
             EpisodeData(
@@ -601,10 +612,6 @@ class TrainingSession:
                 ]),
                 recommended_candidates=torch.cat([
                     episode_data.recommended_candidates
-                    for episode_data in episode_data_iterations
-                ]),
-                exploration_candidates=torch.cat([
-                    episode_data.exploration_candidates
                     for episode_data in episode_data_iterations
                 ]),
             ),
@@ -652,6 +659,7 @@ class TrainingSession:
                     for proposal_data in proposal_data_iterations
                 ]),
             ),
+            generation_stats,
             merge_profile_reports(profile_reports),
         )
 
@@ -690,6 +698,7 @@ class TrainingSession:
         door_match_counts: DoorMatchCounts,
         loss: MainLossBreakdown,
         candidate_diagnostics: CandidateDiagnostics,
+        generation_stats: GenerationStats,
         balance_loss: float,
         round_idx: int,
         step_config: Config,
@@ -775,7 +784,7 @@ class TrainingSession:
             "lr": step_config.optimizer.lr,
             "temperature": step_config.generation.temperature,
             "recommended_candidates": step_config.generation.recommended_candidates,
-            "exploration_candidates": step_config.generation.exploration_candidates,
+            "shortlist_candidates": step_config.generation.shortlist_candidates,
             "proposal_temperature": step_config.generation.proposal_temperature,
             "reward_door": step_config.generation.reward_door,
             "reward_connection": step_config.generation.reward_connection,
@@ -790,6 +799,7 @@ class TrainingSession:
             "door_match_up_top3": up_topk[2],
             "door_match_ss": door_match_ss,
             "balance_door_match_ss": balance_door_match_ss,
+            **generation_stats,
         }
         for name, value in metrics.items():
             self.aim_run.track(value, name=name, step=round_idx)
@@ -804,7 +814,9 @@ class TrainingSession:
             "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), front %.2f, ss %.3f, "
             "p %.4f, "
-            "cand %d, frac %.4f",
+            "cand %d, short %d, pv %.1f, clean %.2f, rej %.4f, ex %.4f, "
+            "fs %.3f, old %.1f/%.1f, cell %.1f/%.1f, cmp %.4f, "
+            "pr %.3f, pa %.3f, fd %.2f, bd %.2f, sd %.2f, frac %.4f",
             round_idx,
             loss.total,
             loss.door,
@@ -827,7 +839,23 @@ class TrainingSession:
             scalar(avg_frontiers),
             scalar(door_match_ss),
             scalar(candidate_diagnostics.selected_probability),
-            step_config.generation.recommended_candidates + step_config.generation.exploration_candidates,
+            step_config.generation.recommended_candidates,
+            step_config.generation.shortlist_candidates,
+            generation_stats["proposal_valid_cells"],
+            generation_stats["proposal_clean_candidates"],
+            generation_stats["proposal_rejection_rate"],
+            generation_stats["proposal_exhaustion_rate"],
+            generation_stats["proposal_full_set_rate"],
+            generation_stats["proposal_concrete_candidates"],
+            generation_stats["proposal_concrete_clean_candidates"],
+            generation_stats["proposal_cell_candidates"],
+            generation_stats["proposal_cell_clean_candidates"],
+            generation_stats["proposal_comparison_mismatch_rate"],
+            generation_stats["proposal_shortlist_prefix_rank"],
+            generation_stats["proposal_shortlist_prefix_logit_advantage"],
+            generation_stats["proposal_full_clean_door_invalid"],
+            generation_stats["proposal_batch_door_invalid"],
+            generation_stats["proposal_selected_door_invalid"],
             schedule_progress,
         )
         # logging.info(
@@ -885,6 +913,7 @@ class TrainingSession:
                     episode_outcomes,
                     door_match_counts,
                     proposal_data,
+                    generation_stats,
                     generation_profile,
                 ) = self.generate_round()
                 candidate_diagnostics = compute_candidate_diagnostics(proposal_data)
@@ -904,6 +933,7 @@ class TrainingSession:
                     door_match_counts,
                     avg_loss,
                     candidate_diagnostics,
+                    generation_stats,
                     avg_balance_loss,
                     round_idx,
                     step_config,

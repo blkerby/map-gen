@@ -201,7 +201,6 @@ class FrontierModel(torch.nn.Module):
             )
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
-            + int(self.features.exploration_candidates)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -222,7 +221,6 @@ class FrontierModel(torch.nn.Module):
             )
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
-            + int(self.features.exploration_candidates)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -461,10 +459,6 @@ class FrontierModel(torch.nn.Module):
             features.log_recommended_candidates.to(X.dtype).unsqueeze(-1)
             if self.features.recommended_candidates else None
         )
-        exploration_candidate_features = (
-            features.log_exploration_candidates.to(X.dtype).unsqueeze(-1)
-            if self.features.exploration_candidates else None
-        )
         lookahead_features = (
             self._lookahead_outcome_features(features, X.dtype)
             if self.features.lookahead_outcomes else None
@@ -478,8 +472,6 @@ class FrontierModel(torch.nn.Module):
             global_inputs.append(temperature_features)
         if recommended_candidate_features is not None:
             global_inputs.append(recommended_candidate_features)
-        if exploration_candidate_features is not None:
-            global_inputs.append(exploration_candidate_features)
         if lookahead_features is not None:
             global_inputs.append(lookahead_features)
         global_state = (
@@ -543,8 +535,6 @@ class FrontierModel(torch.nn.Module):
             pooled_inputs.append(temperature_features)
         if recommended_candidate_features is not None:
             pooled_inputs.append(recommended_candidate_features)
-        if exploration_candidate_features is not None:
-            pooled_inputs.append(exploration_candidate_features)
         if lookahead_features is not None:
             pooled_inputs.append(lookahead_features)
         pooled_state = (

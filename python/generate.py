@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from env import (
     Actions,
+    CandidateStats,
     DoorMatchCounts,
     Engine,
     EnvironmentGroup,
@@ -10,6 +11,7 @@ from env import (
     GenerateConfig,
     PreliminaryOutcomes,
     ProposalData,
+    ProposalCandidateMask,
     SparseFeatureRequirements,
     SparseFeatures,
     Features,
@@ -27,6 +29,7 @@ import torch
 from train_config import Config
 
 type ProfileReport = list[tuple[str, int, int]]
+type GenerationStats = dict[str, float]
 
 
 # We make use of a somewhat complicated way of pipelining the generation process,
@@ -74,41 +77,6 @@ def profile_start(enabled: bool) -> int:
 def sync_profile_device(device: torch.device, enabled: bool) -> None:
     if enabled and device.type == "cuda":
         torch.cuda.current_stream(device).synchronize()
-
-
-@dataclass
-class CachedProposalScores:
-    tensor: torch.Tensor
-    ready_event: torch.cuda.Event | None
-
-    def resolve(self) -> torch.Tensor:
-        if self.ready_event is not None:
-            self.ready_event.synchronize()
-            self.ready_event = None
-        return self.tensor
-
-
-def cache_proposal_scores_tensor(
-    scores: torch.Tensor,
-    copy_stream: torch.cuda.Stream | None,
-) -> CachedProposalScores:
-    scores = scores.to(torch.float32)
-    if scores.device.type != "cuda":
-        return CachedProposalScores(scores.to(torch.device("cpu")), None)
-    if copy_stream is None:
-        raise ValueError("CUDA proposal score caching requires a copy stream")
-    cpu_scores = torch.empty(
-        scores.shape,
-        dtype=scores.dtype,
-        device=torch.device("cpu"),
-        pin_memory=True,
-    )
-    copy_stream.wait_stream(torch.cuda.current_stream(scores.device))
-    with torch.cuda.device(scores.device), torch.cuda.stream(copy_stream):
-        cpu_scores.copy_(scores, non_blocking=True)
-        ready_event = torch.cuda.Event()
-        ready_event.record(copy_stream)
-    return CachedProposalScores(cpu_scores, ready_event)
 
 
 def outcome_reward(model_logprobs: torch.Tensor, known_invalid: torch.Tensor) -> torch.Tensor:
@@ -172,8 +140,6 @@ def extract_candidate_features(
     include_temperature: bool,
     log_recommended_candidates: torch.Tensor,
     include_recommended_candidates: bool,
-    log_exploration_candidates: torch.Tensor,
-    include_exploration_candidates: bool,
     lookahead_outcomes: PreliminaryOutcomes,
     include_lookahead_outcomes: bool,
     sparse_feature_requirements: SparseFeatureRequirements,
@@ -214,8 +180,6 @@ def extract_candidate_features(
             include_temperature,
             log_recommended_candidates,
             include_recommended_candidates,
-            log_exploration_candidates,
-            include_exploration_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
             sparse_row_count,
@@ -229,8 +193,6 @@ def extract_candidate_features(
             include_temperature,
             log_recommended_candidates,
             include_recommended_candidates,
-            log_exploration_candidates,
-            include_exploration_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
             0,
@@ -242,8 +204,6 @@ def extract_candidate_features(
         include_temperature,
         log_recommended_candidates,
         include_recommended_candidates,
-        log_exploration_candidates,
-        include_exploration_candidates,
         lookahead_outcomes,
         include_lookahead_outcomes,
         0,
@@ -283,9 +243,6 @@ def transfer_features_sync(
     log_recommended_candidates = features.log_recommended_candidates.to(
         device, non_blocking=non_blocking
     )
-    log_exploration_candidates = features.log_exploration_candidates.to(
-        device, non_blocking=non_blocking
-    )
     lookahead_door_invalid = features.lookahead_door_invalid.to(
         device, non_blocking=non_blocking
     )
@@ -305,7 +262,6 @@ def transfer_features_sync(
         room_placed,
         log_temperature,
         log_recommended_candidates,
-        log_exploration_candidates,
         lookahead_door_invalid,
         lookahead_door_match,
         lookahead_connection_invalid,
@@ -446,8 +402,6 @@ class PinnedSparseFeatureSlot:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
-        log_exploration_candidates: torch.Tensor,
-        include_exploration_candidates: bool,
         lookahead_outcomes: PreliminaryOutcomes,
         include_lookahead_outcomes: bool,
         sparse_row_count: int,
@@ -460,10 +414,6 @@ class PinnedSparseFeatureSlot:
             )
         if not include_recommended_candidates:
             log_recommended_candidates = log_recommended_candidates.new_empty(
-                [environment_count, candidate_count, 0]
-            )
-        if not include_exploration_candidates:
-            log_exploration_candidates = log_exploration_candidates.new_empty(
                 [environment_count, candidate_count, 0]
             )
         lookahead_door_invalid = lookahead_outcomes.door_invalid
@@ -490,7 +440,6 @@ class PinnedSparseFeatureSlot:
             ),
             log_temperature,
             log_recommended_candidates,
-            log_exploration_candidates,
             lookahead_door_invalid,
             lookahead_door_match,
             lookahead_connection_invalid,
@@ -514,7 +463,7 @@ class GenerationGroup:
     step: int
     feature_slot: PinnedSparseFeatureSlot | None
     previous_lookahead_outcomes: PreliminaryOutcomes | None
-    previous_proposal_scores: CachedProposalScores | None
+    previous_proposal_scores: torch.Tensor | None
 
 
 @dataclass
@@ -525,6 +474,7 @@ class CandidateBatch:
     reward_outcomes: PreliminaryOutcomes
     post_candidate_outcomes: PreliminaryOutcomes
     sparse_feature_requirements: SparseFeatureRequirements
+    stats: CandidateStats
 
     def to(self, device: torch.device) -> "CandidateBatch":
         return CandidateBatch(
@@ -534,6 +484,7 @@ class CandidateBatch:
             self.reward_outcomes.to(device),
             self.post_candidate_outcomes.to(device),
             self.sparse_feature_requirements,
+            self.stats.to(device),
         )
 
 
@@ -547,12 +498,28 @@ class PreparedGenerationStep:
 class PendingCandidateStep:
     group: GenerationGroup
     future: Future[PreparedGenerationStep]
+    shortlist_limited: torch.Tensor
 
 
 @dataclass
 class PendingProposalStep:
     group: GenerationGroup
-    future: Future[Features | None]
+    future: Future[ProposalInputs]
+
+
+@dataclass
+class ProposalInputs:
+    features: Features | None
+    mask: ProposalCandidateMask
+
+
+@dataclass
+class ProposalShortlistDiagnostics:
+    valid_logit_sum: float
+    valid_logit_count: float
+    prefix_logit_sum: float
+    prefix_count: float
+    prefix_rank_sum: float
 
 
 def create_generation_environment_groups(
@@ -592,12 +559,7 @@ def create_generation_environment_groups(
     ]
 
 
-def get_generation_candidate_batch(
-    group: GenerationGroup,
-    proposal_scores: CachedProposalScores | None,
-    device: torch.device,
-) -> CandidateBatch:
-    resolved_proposal_scores = None if proposal_scores is None else proposal_scores.resolve()
+def get_initial_candidate_batch(group: GenerationGroup, device: torch.device) -> CandidateBatch:
     (
         candidates,
         proposal_frontier_idx,
@@ -605,11 +567,11 @@ def get_generation_candidate_batch(
         reward_outcomes,
         post_candidate_outcomes,
         sparse_feature_requirements,
+        stats,
     ) = group.env.get_candidates_with_outcomes(
         group.config.recommended_candidates,
-        group.config.exploration_candidates,
         group.config.proposal_temperature,
-        resolved_proposal_scores,
+        None,
         device,
     )
     return CandidateBatch(
@@ -619,13 +581,147 @@ def get_generation_candidate_batch(
         reward_outcomes,
         post_candidate_outcomes,
         sparse_feature_requirements,
+        stats,
+    )
+
+
+def get_shortlist_candidate_batch(
+    group: GenerationGroup,
+    sampled_frontier_idx: torch.Tensor,
+    sampled_door_variant_idx: torch.Tensor,
+    device: torch.device,
+) -> CandidateBatch:
+    (
+        candidates,
+        proposal_frontier_idx,
+        proposal_door_variant_idx,
+        reward_outcomes,
+        post_candidate_outcomes,
+        sparse_feature_requirements,
+        stats,
+    ) = group.env.get_candidates_from_proposals(
+        sampled_frontier_idx,
+        sampled_door_variant_idx,
+        group.config.recommended_candidates,
+        device,
+    )
+    return CandidateBatch(
+        candidates,
+        proposal_frontier_idx,
+        proposal_door_variant_idx,
+        reward_outcomes,
+        post_candidate_outcomes,
+        sparse_feature_requirements,
+        stats,
+    )
+
+
+def unpack_proposal_mask(mask: ProposalCandidateMask, device: torch.device) -> torch.Tensor:
+    packed = mask.mask.to(device)
+    shifts = torch.arange(8, device=device, dtype=packed.dtype)
+    bits = ((packed.unsqueeze(-1) >> shifts) & 1).to(torch.bool).flatten(1)
+    return bits[:, : mask.frontier_count * mask.door_variant_count].view(
+        packed.shape[0],
+        mask.frontier_count,
+        mask.door_variant_count,
+    )
+
+
+def sample_proposal_shortlist(
+    proposal_scores: torch.Tensor,
+    proposal_mask: ProposalCandidateMask,
+    config: GenerateConfig,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, ProposalShortlistDiagnostics]:
+    proposal_frontier_count = proposal_scores.shape[1]
+    proposal_door_variant_count = proposal_scores.shape[2]
+    valid = unpack_proposal_mask(proposal_mask, device)[
+        :, :proposal_frontier_count, :proposal_door_variant_count
+    ]
+    candidate_counts = proposal_mask.candidate_counts.to(device)[
+        :, :proposal_frontier_count, :proposal_door_variant_count
+    ].to(torch.float32)
+    environment_count, frontier_count, door_variant_count = valid.shape
+    flat_valid = valid.flatten(1)
+    flat_scores = proposal_scores.to(torch.float32).flatten(1)
+    logits = flat_scores / config.proposal_temperature.to(device).unsqueeze(1).clamp_min(1e-6)
+    logits = logits + torch.log(candidate_counts.flatten(1).clamp_min(1.0))
+    logits = torch.where(flat_valid, logits, torch.full_like(logits, float("-inf")))
+    max_logits = logits.max(dim=1, keepdim=True).values
+    valid_row = torch.isfinite(max_logits)
+    weights = torch.where(
+        flat_valid,
+        torch.exp(logits - torch.where(valid_row, max_logits, torch.zeros_like(max_logits))),
+        torch.zeros_like(logits),
+    )
+    shortlist_candidates = min(config.shortlist_candidates, weights.shape[1])
+    safe_weights = torch.where(
+        valid_row,
+        weights,
+        torch.where(
+            torch.arange(weights.shape[1], device=device).unsqueeze(0) == 0,
+            torch.ones_like(weights),
+            torch.zeros_like(weights),
+        ),
+    )
+    sampled_flat = torch.multinomial(
+        safe_weights,
+        shortlist_candidates,
+        replacement=False,
+    )
+    sampled_is_valid = flat_valid.gather(1, sampled_flat)
+    sampled_flat = torch.where(
+        valid_row & sampled_is_valid,
+        sampled_flat,
+        torch.full_like(sampled_flat, -1),
+    )
+    if shortlist_candidates < config.shortlist_candidates:
+        padding = torch.full(
+            (environment_count, config.shortlist_candidates - shortlist_candidates),
+            -1,
+            dtype=sampled_flat.dtype,
+            device=device,
+        )
+        sampled_flat = torch.cat([sampled_flat, padding], dim=1)
+    sampled_frontier_idx = torch.div(sampled_flat, door_variant_count, rounding_mode="floor")
+    sampled_door_variant_idx = sampled_flat % door_variant_count
+    sampled_frontier_idx = torch.where(sampled_flat >= 0, sampled_frontier_idx, -1)
+    sampled_door_variant_idx = torch.where(sampled_flat >= 0, sampled_door_variant_idx, -1)
+    prefix_count = min(config.recommended_candidates, sampled_flat.shape[1])
+    prefix_sampled_flat = sampled_flat[:, :prefix_count].clamp_min(0)
+    prefix_valid = sampled_flat[:, :prefix_count] >= 0
+    prefix_logits = torch.gather(logits, 1, prefix_sampled_flat)
+    valid_counts = flat_valid.sum(dim=1).clamp_min(1).to(torch.float32)
+    lower_rank_count = (
+        flat_valid.unsqueeze(1)
+        & (logits.unsqueeze(1) < prefix_logits.unsqueeze(2))
+    ).sum(dim=2)
+    equal_rank_count = (
+        flat_valid.unsqueeze(1)
+        & (logits.unsqueeze(1) == prefix_logits.unsqueeze(2))
+    ).sum(dim=2)
+    prefix_rank = (
+        lower_rank_count.to(torch.float32)
+        + 0.5 * equal_rank_count.to(torch.float32)
+    ) / valid_counts.unsqueeze(1)
+    diagnostics = ProposalShortlistDiagnostics(
+        valid_logit_sum=float(torch.where(flat_valid, logits, 0).sum().item()),
+        valid_logit_count=float(flat_valid.sum().item()),
+        prefix_logit_sum=float(torch.where(prefix_valid, prefix_logits, 0).sum().item()),
+        prefix_count=float(prefix_valid.sum().item()),
+        prefix_rank_sum=float(torch.where(prefix_valid, prefix_rank, 0).sum().item()),
+    )
+    return (
+        sampled_frontier_idx.to(torch.int16),
+        sampled_door_variant_idx.to(torch.int16),
+        diagnostics,
     )
 
 
 def candidate_log_inputs(
     config: GenerateConfig,
     candidate_shape: torch.Size,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     candidate_log_temperature = config.temperature.to(torch.device("cpu")).log().unsqueeze(1)
     candidate_log_temperature = candidate_log_temperature.expand(candidate_shape).contiguous()
     candidate_log_recommended_candidates = torch.full(
@@ -634,23 +730,16 @@ def candidate_log_inputs(
         dtype=torch.float32,
         device=torch.device("cpu"),
     )
-    candidate_log_exploration_candidates = torch.full(
-        candidate_shape,
-        math.log(config.exploration_candidates + 1),
-        dtype=torch.float32,
-        device=torch.device("cpu"),
-    )
     return (
         candidate_log_temperature,
         candidate_log_recommended_candidates,
-        candidate_log_exploration_candidates,
     )
 
 
 def state_log_inputs(
     config: GenerateConfig,
     environment_count: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     log_temperature = config.temperature.to(torch.device("cpu")).log()
     log_recommended_candidates = torch.full(
         [environment_count],
@@ -658,13 +747,7 @@ def state_log_inputs(
         dtype=torch.float32,
         device=torch.device("cpu"),
     )
-    log_exploration_candidates = torch.full(
-        [environment_count],
-        math.log(config.exploration_candidates + 1),
-        dtype=torch.float32,
-        device=torch.device("cpu"),
-    )
-    return log_temperature, log_recommended_candidates, log_exploration_candidates
+    return log_temperature, log_recommended_candidates
 
 
 def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> PreliminaryOutcomes:
@@ -679,29 +762,28 @@ def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> Preli
     )
 
 
-def prepare_proposal_features(group: GenerationGroup) -> Features | None:
-    if (
-        group.step == 0
-        or group.config.recommended_candidates == 0
-        or group.previous_lookahead_outcomes is None
-    ):
-        return None
+def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
+    proposal_mask = group.env.get_proposal_candidate_mask(torch.device("cpu"))
+    if group.previous_proposal_scores is not None:
+        return ProposalInputs(None, proposal_mask)
+    if group.previous_lookahead_outcomes is None:
+        raise ValueError("proposal features require previous lookahead outcomes")
     environment_count = group.config.temperature.shape[0]
     (
         log_temperature,
         log_recommended_candidates,
-        log_exploration_candidates,
     ) = state_log_inputs(group.config, environment_count)
-    return group.env.get_features(
-        torch.device("cpu"),
-        log_temperature,
-        group.env.engine.features.temperature,
-        log_recommended_candidates,
-        group.env.engine.features.recommended_candidates,
-        log_exploration_candidates,
-        group.env.engine.features.exploration_candidates,
-        group.previous_lookahead_outcomes,
-        group.env.engine.features.lookahead_outcomes,
+    return ProposalInputs(
+        group.env.get_features(
+            torch.device("cpu"),
+            log_temperature,
+            group.env.engine.features.temperature,
+            log_recommended_candidates,
+            group.env.engine.features.recommended_candidates,
+            group.previous_lookahead_outcomes,
+            group.env.engine.features.lookahead_outcomes,
+        ),
+        proposal_mask,
     )
 
 
@@ -718,7 +800,6 @@ def prepare_candidate_features(
     (
         candidate_log_temperature,
         candidate_log_recommended_candidates,
-        candidate_log_exploration_candidates,
     ) = candidate_log_inputs(
         config,
         candidates.room_idx.shape,
@@ -732,8 +813,6 @@ def prepare_candidate_features(
             env.engine.features.temperature,
             candidate_log_recommended_candidates,
             env.engine.features.recommended_candidates,
-            candidate_log_exploration_candidates,
-            env.engine.features.exploration_candidates,
             candidate_batch.post_candidate_outcomes,
             env.engine.features.lookahead_outcomes,
             candidate_batch.sparse_feature_requirements,
@@ -743,14 +822,30 @@ def prepare_candidate_features(
     )
 
 
-def prepare_lookahead_generation_step(
+def prepare_initial_generation_step(
     group: GenerationGroup,
-    proposal_scores: CachedProposalScores | None,
     sparse_frontiers: bool,
 ) -> PreparedGenerationStep:
-    candidate_batch = get_generation_candidate_batch(
+    candidate_batch = get_initial_candidate_batch(group, torch.device("cpu"))
+    return prepare_candidate_features(
+        group.env,
+        group.config,
+        candidate_batch,
+        sparse_frontiers,
+        group.feature_slot,
+    )
+
+
+def prepare_shortlist_generation_step(
+    group: GenerationGroup,
+    sampled_frontier_idx: torch.Tensor,
+    sampled_door_variant_idx: torch.Tensor,
+    sparse_frontiers: bool,
+) -> PreparedGenerationStep:
+    candidate_batch = get_shortlist_candidate_batch(
         group,
-        proposal_scores,
+        sampled_frontier_idx,
+        sampled_door_variant_idx,
         torch.device("cpu"),
     )
     return prepare_candidate_features(
@@ -771,10 +866,9 @@ def select_candidate_actions(
     device: torch.device,
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
-    proposal_copy_stream: torch.cuda.Stream | None,
     num_rooms: int,
     profiler: GenerationProfiler,
-) -> tuple[torch.Tensor, Actions, torch.Tensor, CachedProposalScores | None]:
+) -> tuple[torch.Tensor, Actions, torch.Tensor, torch.Tensor | None]:
     environment_count, candidate_count = candidates.room_idx.shape
     profile = profiler.enabled
     with gpu_lock:
@@ -827,7 +921,17 @@ def select_candidate_actions(
             expected_reward,
         )
         candidate_logits = expected_reward / torch.unsqueeze(group.config.temperature, 1)
-        probs = torch.softmax(candidate_logits, dim=1)
+        valid_row = torch.any(torch.isfinite(candidate_logits), dim=1)
+        safe_candidate_logits = torch.where(
+            valid_row.unsqueeze(1),
+            candidate_logits,
+            torch.where(
+                torch.arange(candidate_count, device=device).unsqueeze(0) == 0,
+                torch.zeros_like(candidate_logits),
+                torch.full_like(candidate_logits, float("-inf")),
+            ),
+        )
+        probs = torch.softmax(safe_candidate_logits, dim=1)
         action_index = rand_choice(probs)
         selected_actions = candidates.select(action_index)
         sync_profile_device(device, profile)
@@ -846,10 +950,6 @@ def select_candidate_actions(
                 torch.arange(environment_count, device=device),
                 action_index,
             ]
-            selected_proposal_scores = cache_proposal_scores_tensor(
-                selected_proposal_scores,
-                proposal_copy_stream,
-            )
         profiler.add("python.score.cache_proposal", profile_time)
     return action_index, selected_actions, candidate_logits, selected_proposal_scores
 
@@ -861,8 +961,7 @@ def compute_proposal_scores(
     device: torch.device,
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
-    proposal_copy_stream: torch.cuda.Stream | None,
-) -> CachedProposalScores:
+) -> torch.Tensor:
     with gpu_lock:
         env_features = transfer_features(features, device, transfer_stream)
         with torch.amp.autocast(
@@ -871,7 +970,7 @@ def compute_proposal_scores(
             enabled=device.type == "cuda" and group.config.autocast,
         ):
             preds = model(env_features, include_proposal=True)
-        return cache_proposal_scores_tensor(preds.proposal_score, proposal_copy_stream)
+        return preds.proposal_score
 
 
 def verify_and_step(
@@ -894,33 +993,28 @@ def start_generation_step(
 ) -> None:
     if group.step >= group.config.episode_length:
         return
-    if group.step == 0 or group.config.recommended_candidates == 0:
+    if group.step == 0:
         pending_candidates.append(
             PendingCandidateStep(
                 group,
                 executor.submit(
-                    prepare_lookahead_generation_step,
+                    prepare_initial_generation_step,
                     group,
-                    None,
                     sparse_frontiers,
                 ),
+                torch.zeros(
+                    [group.config.temperature.shape[0]],
+                    dtype=torch.bool,
+                    device=torch.device("cpu"),
+                ),
             )
-        )
-        return
-    if group.previous_proposal_scores is not None:
-        start_candidate_step(
-            group,
-            group.previous_proposal_scores,
-            sparse_frontiers,
-            executor,
-            pending_candidates,
         )
         return
     pending_proposals.append(
         PendingProposalStep(
             group,
             executor.submit(
-                prepare_proposal_features,
+                prepare_proposal_inputs,
                 group,
             )
         )
@@ -929,7 +1023,9 @@ def start_generation_step(
 
 def start_candidate_step(
     group: GenerationGroup,
-    proposal_scores: CachedProposalScores | None,
+    sampled_frontier_idx: torch.Tensor,
+    sampled_door_variant_idx: torch.Tensor,
+    shortlist_limited: torch.Tensor,
     sparse_frontiers: bool,
     executor: ThreadPoolExecutor,
     pending_candidates: deque[PendingCandidateStep],
@@ -938,11 +1034,13 @@ def start_candidate_step(
         PendingCandidateStep(
             group,
             executor.submit(
-                prepare_lookahead_generation_step,
+                prepare_shortlist_generation_step,
                 group,
-                proposal_scores,
+                sampled_frontier_idx,
+                sampled_door_variant_idx,
                 sparse_frontiers,
             ),
+            shortlist_limited,
         )
     )
 
@@ -961,9 +1059,6 @@ def merge_generation_results(
             temperature=torch.cat([episode_data.temperature for episode_data, _, _, _ in results]),
             recommended_candidates=torch.cat([
                 episode_data.recommended_candidates for episode_data, _, _, _ in results
-            ]),
-            exploration_candidates=torch.cat([
-                episode_data.exploration_candidates for episode_data, _, _, _ in results
             ]),
         ),
         EpisodeOutcomes(
@@ -1006,12 +1101,11 @@ def run_generation_groups(
     device: torch.device,
     verify_outcome_consistency: bool = False,
     profile: bool = False,
-) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, ProfileReport]:
+) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, ProfileReport]:
     if not envs or len(envs) != len(configs):
         raise ValueError("generation groups require one config per environment group")
     profiler = GenerationProfiler(profile)
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
-    proposal_copy_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     gpu_lock = threading.Lock()
     num_rooms = len(envs[0].engine.rooms)
     sparse_frontiers = device.type == "cuda"
@@ -1036,6 +1130,32 @@ def run_generation_groups(
         group_proposal_door_variant_idx = [[] for _ in groups]
         group_selected_candidate = [[] for _ in groups]
         group_proposal_target_logits = [[] for _ in groups]
+        stat_totals = {
+            "proposal_mask_rows": 0.0,
+            "proposal_valid_cells": 0.0,
+            "proposal_full_set_rows": 0.0,
+            "proposal_clean_candidates": 0.0,
+            "proposal_evaluated_candidates": 0.0,
+            "proposal_rejected_candidates": 0.0,
+            "proposal_exhausted_rows": 0.0,
+            "proposal_concrete_candidates": 0.0,
+            "proposal_concrete_clean_candidates": 0.0,
+            "proposal_concrete_rejected_candidates": 0.0,
+            "proposal_cell_candidates": 0.0,
+            "proposal_cell_clean_candidates": 0.0,
+            "proposal_cell_rejected_candidates": 0.0,
+            "proposal_cell_clean_door_invalid_sum": 0.0,
+            "proposal_comparison_mismatches": 0.0,
+            "proposal_shortlist_valid_logit_sum": 0.0,
+            "proposal_shortlist_valid_logit_count": 0.0,
+            "proposal_shortlist_prefix_logit_sum": 0.0,
+            "proposal_shortlist_prefix_count": 0.0,
+            "proposal_shortlist_prefix_rank_sum": 0.0,
+            "proposal_batch_door_invalid_sum": 0.0,
+            "proposal_batch_candidate_count": 0.0,
+            "proposal_selected_door_invalid_sum": 0.0,
+            "proposal_selected_candidate_count": 0.0,
+        }
         with torch.no_grad():
             for group in groups:
                 group.env.clear()
@@ -1053,24 +1173,65 @@ def run_generation_groups(
                     while pending_proposals:
                         proposal_step = pending_proposals.popleft()
                         profile_time = profile_start(profile)
-                        proposal_features = proposal_step.future.result()
+                        proposal_inputs = proposal_step.future.result()
                         profiler.add("python.wait_proposal_features", profile_time)
-                        proposal_scores = (
-                            None
-                            if proposal_features is None
-                            else compute_proposal_scores(
+                        valid_counts = proposal_inputs.mask.valid_counts
+                        shortlist_limited = (
+                            valid_counts > proposal_step.group.config.shortlist_candidates
+                        )
+                        stat_totals["proposal_mask_rows"] += float(valid_counts.numel())
+                        stat_totals["proposal_valid_cells"] += float(valid_counts.sum().item())
+                        stat_totals["proposal_full_set_rows"] += float(
+                            (valid_counts <= proposal_step.group.config.shortlist_candidates)
+                            .sum()
+                            .item()
+                        )
+                        if proposal_step.group.previous_proposal_scores is not None:
+                            proposal_scores = proposal_step.group.previous_proposal_scores
+                        else:
+                            if proposal_inputs.features is None:
+                                raise ValueError("proposal scores require proposal features")
+                            proposal_scores = compute_proposal_scores(
                                 proposal_step.group,
                                 model,
-                                proposal_features,
+                                proposal_inputs.features,
                                 device,
                                 gpu_lock,
                                 transfer_stream,
-                                proposal_copy_stream,
                             )
+                        profile_time = profile_start(profile)
+                        (
+                            sampled_frontier_idx,
+                            sampled_door_variant_idx,
+                            shortlist_diagnostics,
+                        ) = sample_proposal_shortlist(
+                            proposal_scores,
+                            proposal_inputs.mask,
+                            proposal_step.group.config,
+                            device,
                         )
+                        stat_totals["proposal_shortlist_valid_logit_sum"] += (
+                            shortlist_diagnostics.valid_logit_sum
+                        )
+                        stat_totals["proposal_shortlist_valid_logit_count"] += (
+                            shortlist_diagnostics.valid_logit_count
+                        )
+                        stat_totals["proposal_shortlist_prefix_logit_sum"] += (
+                            shortlist_diagnostics.prefix_logit_sum
+                        )
+                        stat_totals["proposal_shortlist_prefix_count"] += (
+                            shortlist_diagnostics.prefix_count
+                        )
+                        stat_totals["proposal_shortlist_prefix_rank_sum"] += (
+                            shortlist_diagnostics.prefix_rank_sum
+                        )
+                        sync_profile_device(device, profile)
+                        profiler.add("python.proposal.sample_shortlist", profile_time)
                         start_candidate_step(
                             proposal_step.group,
-                            proposal_scores,
+                            sampled_frontier_idx.to(torch.device("cpu")),
+                            sampled_door_variant_idx.to(torch.device("cpu")),
+                            shortlist_limited.to(torch.device("cpu")),
                             sparse_frontiers,
                             executor,
                             pending_candidates,
@@ -1113,9 +1274,90 @@ def run_generation_groups(
                         device,
                         gpu_lock,
                         transfer_stream,
-                        proposal_copy_stream,
                         num_rooms,
                         profiler,
+                    )
+                if step.group.step > 0:
+                    stats = candidate_batch.stats
+                    stat_totals["proposal_clean_candidates"] += float(
+                        stats.clean_counts.sum().item()
+                    )
+                    stat_totals["proposal_evaluated_candidates"] += float(
+                        stats.evaluated_counts.sum().item()
+                    )
+                    stat_totals["proposal_rejected_candidates"] += float(
+                        stats.rejected_counts.sum().item()
+                    )
+                    stat_totals["proposal_exhausted_rows"] += float(
+                        (
+                            (
+                                stats.clean_counts
+                                < step.group.config.recommended_candidates
+                            )
+                            & step.shortlist_limited.to(device)
+                        ).sum().item()
+                    )
+                    stat_totals["proposal_concrete_candidates"] += float(
+                        stats.concrete_candidate_counts.sum().item()
+                    )
+                    stat_totals["proposal_concrete_clean_candidates"] += float(
+                        stats.concrete_clean_counts.sum().item()
+                    )
+                    stat_totals["proposal_concrete_rejected_candidates"] += float(
+                        stats.concrete_rejected_counts.sum().item()
+                    )
+                    stat_totals["proposal_cell_candidates"] += float(
+                        stats.proposal_cell_counts.sum().item()
+                    )
+                    stat_totals["proposal_cell_clean_candidates"] += float(
+                        stats.proposal_cell_clean_counts.sum().item()
+                    )
+                    stat_totals["proposal_cell_rejected_candidates"] += float(
+                        stats.proposal_cell_rejected_counts.sum().item()
+                    )
+                    stat_totals["proposal_cell_clean_door_invalid_sum"] += float(
+                        stats.proposal_cell_clean_door_invalid_sums.sum().item()
+                    )
+                    stat_totals["proposal_comparison_mismatches"] += float(
+                        stats.proposal_comparison_mismatch_counts.sum().item()
+                    )
+                    candidate_valid = candidates.room_idx != num_rooms
+                    candidate_door_invalid = (
+                        candidate_batch.post_candidate_outcomes.door_invalid == 1
+                    ).sum(dim=2)
+                    stat_totals["proposal_batch_door_invalid_sum"] += float(
+                        torch.where(
+                            candidate_valid,
+                            candidate_door_invalid,
+                            torch.zeros_like(candidate_door_invalid),
+                        )
+                        .sum()
+                        .item()
+                    )
+                    stat_totals["proposal_batch_candidate_count"] += float(
+                        candidate_valid.sum().item()
+                    )
+                    selected_door_invalid = torch.gather(
+                        candidate_door_invalid,
+                        1,
+                        action_index.unsqueeze(1),
+                    ).squeeze(1)
+                    selected_valid = torch.gather(
+                        candidate_valid,
+                        1,
+                        action_index.unsqueeze(1),
+                    ).squeeze(1)
+                    stat_totals["proposal_selected_door_invalid_sum"] += float(
+                        torch.where(
+                            selected_valid,
+                            selected_door_invalid,
+                            torch.zeros_like(selected_door_invalid),
+                        )
+                        .sum()
+                        .item()
+                    )
+                    stat_totals["proposal_selected_candidate_count"] += float(
+                        selected_valid.sum().item()
                     )
                 group_index = group_index_by_id[id(step.group)]
                 profile_time = profile_start(profile)
@@ -1192,11 +1434,6 @@ def run_generation_groups(
                         group.config.recommended_candidates,
                         dtype=torch.float32,
                     ),
-                    torch.full_like(
-                        group.config.temperature,
-                        group.config.exploration_candidates,
-                        dtype=torch.float32,
-                    ),
                 ),
                 episode_outcomes,
                 door_match_counts,
@@ -1214,4 +1451,74 @@ def run_generation_groups(
         door_match_counts,
         proposal_data,
     ) = merge_generation_results(results)
-    return episode_data, outcomes, door_match_counts, proposal_data, profiler.report()
+    proposal_rows = max(stat_totals["proposal_mask_rows"], 1.0)
+    evaluated = max(stat_totals["proposal_evaluated_candidates"], 1.0)
+    proposal_cells = max(stat_totals["proposal_cell_candidates"], 1.0)
+    shortlist_valid_logits = max(
+        stat_totals["proposal_shortlist_valid_logit_count"], 1.0
+    )
+    shortlist_prefix_count = max(
+        stat_totals["proposal_shortlist_prefix_count"], 1.0
+    )
+    proposal_batch_candidates = max(
+        stat_totals["proposal_batch_candidate_count"], 1.0
+    )
+    proposal_selected_candidates = max(
+        stat_totals["proposal_selected_candidate_count"], 1.0
+    )
+    proposal_cell_clean_candidates = max(
+        stat_totals["proposal_cell_clean_candidates"], 1.0
+    )
+    shortlist_valid_logit = (
+        stat_totals["proposal_shortlist_valid_logit_sum"] / shortlist_valid_logits
+    )
+    shortlist_prefix_logit = (
+        stat_totals["proposal_shortlist_prefix_logit_sum"] / shortlist_prefix_count
+    )
+    generation_stats = {
+        "proposal_valid_cells": stat_totals["proposal_valid_cells"] / proposal_rows,
+        "proposal_full_set_rate": stat_totals["proposal_full_set_rows"] / proposal_rows,
+        "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
+        "proposal_rejection_rate": stat_totals["proposal_rejected_candidates"] / evaluated,
+        "proposal_exhaustion_rate": stat_totals["proposal_exhausted_rows"] / proposal_rows,
+        "proposal_concrete_candidates": stat_totals["proposal_concrete_candidates"]
+        / proposal_rows,
+        "proposal_concrete_clean_candidates": stat_totals[
+            "proposal_concrete_clean_candidates"
+        ]
+        / proposal_rows,
+        "proposal_concrete_rejected_candidates": stat_totals[
+            "proposal_concrete_rejected_candidates"
+        ]
+        / proposal_rows,
+        "proposal_cell_candidates": stat_totals["proposal_cell_candidates"] / proposal_rows,
+        "proposal_cell_clean_candidates": stat_totals["proposal_cell_clean_candidates"]
+        / proposal_rows,
+        "proposal_cell_rejected_candidates": stat_totals[
+            "proposal_cell_rejected_candidates"
+        ]
+        / proposal_rows,
+        "proposal_comparison_mismatch_rate": stat_totals[
+            "proposal_comparison_mismatches"
+        ]
+        / proposal_cells,
+        "proposal_shortlist_prefix_rank": stat_totals[
+            "proposal_shortlist_prefix_rank_sum"
+        ]
+        / shortlist_prefix_count,
+        "proposal_shortlist_prefix_logit_advantage": shortlist_prefix_logit
+        - shortlist_valid_logit,
+        "proposal_batch_door_invalid": stat_totals[
+            "proposal_batch_door_invalid_sum"
+        ]
+        / proposal_batch_candidates,
+        "proposal_selected_door_invalid": stat_totals[
+            "proposal_selected_door_invalid_sum"
+        ]
+        / proposal_selected_candidates,
+        "proposal_full_clean_door_invalid": stat_totals[
+            "proposal_cell_clean_door_invalid_sum"
+        ]
+        / proposal_cell_clean_candidates,
+    }
+    return episode_data, outcomes, door_match_counts, proposal_data, generation_stats, profiler.report()
