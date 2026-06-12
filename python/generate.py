@@ -144,11 +144,11 @@ def extract_candidate_features(
     include_lookahead_outcomes: bool,
     feature_requirements: CandidateFeatureRequirements,
     sparse_frontiers: bool = False,
-    feature_slot: DenseFeatureSlot | PinnedSparseFeatureSlot | None = None,
+    feature_slot: DenseFeatureSlot | SparseFeatureSlot | None = None,
 ):
     if sparse_frontiers and feature_slot is not None:
-        if not isinstance(feature_slot, PinnedSparseFeatureSlot):
-            raise ValueError("sparse candidate features require a pinned sparse feature slot")
+        if not isinstance(feature_slot, SparseFeatureSlot):
+            raise ValueError("sparse candidate features require a sparse feature slot")
         frontier_count = feature_requirements.frontier_count
         sparse_row_count = feature_requirements.sparse_row_count
         worker_sparse_row_counts = feature_requirements.worker_sparse_row_counts
@@ -188,7 +188,7 @@ def extract_candidate_features(
             frontier_count,
         ).flatten_candidates()
     if sparse_frontiers:
-        raise ValueError("sparse candidate features require a pinned feature slot")
+        raise ValueError("sparse candidate features require a sparse feature slot")
     if not isinstance(feature_slot, DenseFeatureSlot):
         raise ValueError("dense candidate features require a dense feature slot")
     frontier_count = feature_requirements.frontier_count
@@ -516,7 +516,7 @@ class DenseFeatureSlot:
 
 # When a GPU is available, we use pinned memory for model input tensors,
 # to allow for asynchronous CPU-to-GPU transfers.
-class PinnedSparseFeatureSlot:
+class SparseFeatureSlot:
     def __init__(self, env: EnvironmentGroup, pin_memory: bool):
         features = env.engine.features
         inventory_count, max_frontier_count, room_count = env.engine.get_feature_sizes()
@@ -665,7 +665,7 @@ class GenerationGroup:
     env: EnvironmentGroup
     config: GenerateConfig
     step: int
-    feature_slot: DenseFeatureSlot | PinnedSparseFeatureSlot
+    feature_slot: DenseFeatureSlot | SparseFeatureSlot
     previous_lookahead_outcomes: PreliminaryOutcomes | None
     previous_proposal_scores: torch.Tensor | None
 
@@ -962,7 +962,7 @@ def prepare_candidate_features(
     config: GenerateConfig,
     candidate_batch: CandidateBatch,
     sparse_frontiers: bool,
-    feature_slot: DenseFeatureSlot | PinnedSparseFeatureSlot,
+    feature_slot: DenseFeatureSlot | SparseFeatureSlot,
 ) -> PreparedGenerationStep:
     candidates = candidate_batch.candidates
     if candidates.room_idx.shape[1] == 1:
@@ -1291,7 +1291,7 @@ def run_generation_groups(
             env,
             config,
             0,
-            PinnedSparseFeatureSlot(env, pin_memory=True)
+            SparseFeatureSlot(env, pin_memory=True)
             if device.type == "cuda"
             else DenseFeatureSlot(env),
             None,
