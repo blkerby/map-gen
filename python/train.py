@@ -42,7 +42,15 @@ from loss import (
     compute_balance_door_match_ss,
 )
 from model import BalanceModel, FrontierModel
-from train_config import Config, episodes_per_round, instantiate_scheduleable_config, validate_config
+from optimizers import AdEMAMix
+from train_config import (
+    AdEMAMixOptimizerConfig,
+    Config,
+    OptimizerConfig,
+    episodes_per_round,
+    instantiate_scheduleable_config,
+    validate_config,
+)
 from visualize import save_episode_frames
 
 
@@ -216,6 +224,33 @@ def create_balance_model(config: Config, rooms: list[dict], device: torch.device
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,
     ).to(device)
+
+
+def create_optimizer(
+    parameters,
+    config: OptimizerConfig,
+    initial_config: OptimizerConfig,
+) -> torch.optim.Optimizer:
+    if isinstance(config, AdEMAMixOptimizerConfig):
+        if not isinstance(initial_config, AdEMAMixOptimizerConfig):
+            raise TypeError("initial optimizer config must have the same type as optimizer config")
+        return AdEMAMix(
+            parameters,
+            lr=initial_config.lr,
+            beta1=config.beta1,
+            beta2=config.beta2,
+            beta3=config.beta3,
+            alpha=config.alpha,
+            beta3_warmup_steps=config.beta3_warmup_steps,
+            alpha_warmup_steps=config.alpha_warmup_steps,
+            eps=config.eps,
+            weight_decay=config.weight_decay,
+        )
+    return torch.optim.Adam(
+        parameters,
+        lr=initial_config.lr,
+        betas=(config.beta1, config.beta2),
+    )
 
 
 def create_generation_environment_groups_for_device(
@@ -1197,15 +1232,15 @@ def build_session(args: Args) -> TrainingSession:
         args.profile,
     )
     initial_config = instantiate_scheduleable_config(config, 0)
-    main_optimizer = torch.optim.Adam(
+    main_optimizer = create_optimizer(
         main_model.parameters(),
-        lr=initial_config.optimizer.lr,
-        betas=(config.optimizer.beta1, config.optimizer.beta2),
+        config.optimizer,
+        initial_config.optimizer,
     )
-    balance_optimizer = torch.optim.Adam(
+    balance_optimizer = create_optimizer(
         balance_model.parameters(),
-        lr=initial_config.balance_optimizer.lr,
-        betas=(config.balance_optimizer.beta1, config.balance_optimizer.beta2),
+        config.balance_optimizer,
+        initial_config.balance_optimizer,
     )
     session = TrainingSession(
         args=args,

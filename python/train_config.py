@@ -29,10 +29,27 @@ class ModelConfig(StrictBaseModel):
     num_layers: int
 
 
-class OptimizerConfig(StrictBaseModel):
+class AdamOptimizerConfig(StrictBaseModel):
+    type: Literal["adam"]
     lr: ScheduleableFloat
     beta1: float
     beta2: float
+
+
+class AdEMAMixOptimizerConfig(StrictBaseModel):
+    type: Literal["ademamix"]
+    lr: ScheduleableFloat
+    beta1: float
+    beta2: float
+    beta3: float
+    alpha: float
+    beta3_warmup_steps: int
+    alpha_warmup_steps: int
+    eps: float
+    weight_decay: float
+
+
+type OptimizerConfig = AdamOptimizerConfig | AdEMAMixOptimizerConfig
 
 
 class BalanceModelConfig(StrictBaseModel):
@@ -168,6 +185,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("visualize must be greater than or equal to zero")
     if config.model.global_embedding_width <= 0:
         raise ValueError("model.global_embedding_width must be greater than zero")
+    validate_optimizer_config(config.optimizer, "optimizer")
+    validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
         raise ValueError("generation.num_iterations must be greater than zero")
     if config.generation.num_devices <= 0:
@@ -257,3 +276,29 @@ def episodes_per_round(config: Config) -> int:
             "train.fresh_pass_factor is non-zero"
         )
     return value
+
+
+def validate_optimizer_config(config: OptimizerConfig, path: str) -> None:
+    validate_beta(config.beta1, f"{path}.beta1")
+    validate_beta(config.beta2, f"{path}.beta2")
+    if isinstance(config, AdEMAMixOptimizerConfig):
+        validate_beta(config.beta3, f"{path}.beta3")
+        if config.beta3 <= config.beta1:
+            raise ValueError(f"{path}.beta3 must be greater than {path}.beta1")
+        if config.beta3_warmup_steps > 0 and config.beta1 <= 0.0:
+            raise ValueError(f"{path}.beta1 must be greater than zero when beta3 warmup is enabled")
+        if config.alpha < 0.0:
+            raise ValueError(f"{path}.alpha must be greater than or equal to zero")
+        if config.beta3_warmup_steps < 0:
+            raise ValueError(f"{path}.beta3_warmup_steps must be greater than or equal to zero")
+        if config.alpha_warmup_steps < 0:
+            raise ValueError(f"{path}.alpha_warmup_steps must be greater than or equal to zero")
+        if config.eps <= 0.0:
+            raise ValueError(f"{path}.eps must be greater than zero")
+        if config.weight_decay < 0.0:
+            raise ValueError(f"{path}.weight_decay must be greater than or equal to zero")
+
+
+def validate_beta(value: float, path: str) -> None:
+    if value < 0.0 or value >= 1.0:
+        raise ValueError(f"{path} must be greater than or equal to zero and less than one")

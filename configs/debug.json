@@ -16,6 +16,7 @@
     "num_layers": 2
   },
   "optimizer": {
+    "type": "adam",
     "lr": 0.001,
     "beta1": 0.95,
     "beta2": 0.99
@@ -25,6 +26,7 @@
     "num_layers": 1
   },
   "balance_optimizer": {
+    "type": "adam",
     "lr": 0.001,
     "beta1": 0.95,
     "beta2": 0.99

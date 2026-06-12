@@ -327,10 +327,7 @@ class FrontierModel(torch.nn.Module):
             ], dim=-1))
         return torch.cat(values, dim=-1) if values else None
 
-    def _feature_dtype(self, device):
-        device_type = device.type
-        if torch.is_autocast_enabled(device_type):
-            return torch.get_autocast_dtype(device_type)
+    def _feature_dtype(self):
         return next(self.parameters()).dtype
 
     def _direction_door_match_features(
@@ -408,7 +405,7 @@ class FrontierModel(torch.nn.Module):
         row_count = node.shape[0]
         # numeric: [r, numeric_width]
         numeric = []
-        dtype = self._feature_dtype(node.device)
+        dtype = self._feature_dtype()
         if self.features.frontier_occupancy:
             numeric.append(
                 features.frontier_occupancy.unsqueeze(-1)

@@ -16,6 +16,7 @@
     "num_layers": 2
   },
   "optimizer": {
+    "type": "adam",
     "lr": {"log": [0.0005, 0.0004, 0.0003, 0.0002, 0.0001]},
     "beta1": 0.95,
     "beta2": 0.99
@@ -25,15 +26,16 @@
     "num_layers": 1
   },
   "balance_optimizer": {
+    "type": "adam",
     "lr": {"log": [0.001, 0.0003, 0.0001, 0.00005, 0.00002]},
     "beta1": 0.95,
     "beta2": 0.99
   },
   "generation": {
-    "num_environments": 8192,
-    "num_iterations": 1,
+    "num_environments": 2048,
+    "num_iterations": 4,
     "num_devices": 2,
-    "pipeline_groups": 1,
+    "pipeline_groups": 2,
     "recommended_candidates": 4,
     "shortlist_candidates": 16,
     "temperature": {"log": [10.0, 1.0, 0.03, 0.03, 0.03]},
