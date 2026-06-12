@@ -1,6 +1,6 @@
 use bitvec::vec::BitVec;
 use delaunator::{EMPTY, Point, next_halfedge, triangulate};
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 use rand::SeedableRng;
 use rand::prelude::*;
 use serde::Deserialize;
@@ -1880,6 +1880,7 @@ impl Environment {
         self.scc_dag = snapshot.scc_dag;
     }
 
+    #[cfg(test)]
     pub fn feature_frontier_count_after_candidate(
         &self,
         candidate: Action,
@@ -1889,7 +1890,7 @@ impl Environment {
             return self.frontier.len();
         }
         let mut frontier_count = self.frontier.len();
-        let mut toggled_locations = HashSet::new();
+        let mut toggled_locations = hashbrown::HashSet::new();
         for door in &common.room[candidate.room_idx as usize].doors {
             let location = DoorLocation::new(door, candidate.x, candidate.y);
             let contains =

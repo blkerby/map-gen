@@ -138,7 +138,7 @@ class EpisodeOutcomes:
 
 
 @dataclass
-class SparseFeatureRequirements:
+class CandidateFeatureRequirements:
     frontier_count: int
     sparse_row_count: int
     worker_sparse_row_counts: list[int]
@@ -398,7 +398,7 @@ class EnvironmentGroup:
         torch.Tensor,
         PreliminaryOutcomes,
         PreliminaryOutcomes,
-        SparseFeatureRequirements,
+        CandidateFeatureRequirements,
         CandidateStats,
     ]:
         result = self.env.get_candidates_with_outcomes(
@@ -434,7 +434,7 @@ class EnvironmentGroup:
         torch.Tensor,
         PreliminaryOutcomes,
         PreliminaryOutcomes,
-        SparseFeatureRequirements,
+        CandidateFeatureRequirements,
         CandidateStats,
     ]:
         result = self.env.get_candidates_from_proposals(
@@ -454,7 +454,7 @@ class EnvironmentGroup:
         torch.Tensor,
         PreliminaryOutcomes,
         PreliminaryOutcomes,
-        SparseFeatureRequirements,
+        CandidateFeatureRequirements,
         CandidateStats,
     ]:
         return (
@@ -479,7 +479,7 @@ class EnvironmentGroup:
                 connection_invalid=torch.from_numpy(result.connections_valid).to(device),
                 door_match=torch.from_numpy(result.door_match).to(device),
             ),
-            SparseFeatureRequirements(
+            CandidateFeatureRequirements(
                 result.feature_frontier_count,
                 result.sparse_row_count,
                 result.worker_sparse_row_counts,
@@ -610,35 +610,6 @@ class EnvironmentGroup:
     ) -> Features:
         return self._features(
             self.env.get_features(environment_start, environment_count),
-            device,
-            log_temperature,
-            include_temperature,
-            log_recommended_candidates,
-            include_recommended_candidates,
-            lookahead_outcomes,
-            include_lookahead_outcomes,
-        )
-
-    def get_features_after_candidates(
-        self,
-        actions: Actions,
-        device: torch.device,
-        log_temperature: torch.Tensor,
-        include_temperature: bool,
-        log_recommended_candidates: torch.Tensor,
-        include_recommended_candidates: bool,
-        lookahead_outcomes: PreliminaryOutcomes,
-        include_lookahead_outcomes: bool,
-        environment_start: int = 0,
-    ) -> Features:
-        values = self.env.get_features_after_candidates(
-            actions.room_idx.contiguous().cpu().numpy(),
-            actions.room_x.contiguous().cpu().numpy(),
-            actions.room_y.contiguous().cpu().numpy(),
-            environment_start,
-        )
-        return self._features(
-            values,
             device,
             log_temperature,
             include_temperature,
