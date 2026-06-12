@@ -10,7 +10,7 @@ from env import (
     DoorMatches,
     EpisodeData,
     EpisodeOutcomes,
-    Features,
+    SparseFeatures,
     PreliminaryOutcomes,
     ProposalData,
 )
@@ -33,7 +33,7 @@ class TrainBatchTask:
 
 @dataclass
 class FeatureTrainBatch:
-    features: Features
+    features: SparseFeatures
     proposal_frontier_idx: torch.Tensor | None
     proposal_door_variant_idx: torch.Tensor | None
     proposal_selected_candidate: torch.Tensor | None
@@ -139,8 +139,11 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
 
 def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagnostics:
     target_logits = proposal_data.target_logits.to(torch.float32)
+    frontier_valid = proposal_data.frontier_idx >= 0
+    while frontier_valid.ndim < target_logits.ndim:
+        frontier_valid = frontier_valid.unsqueeze(-1)
     valid = (
-        (proposal_data.frontier_idx >= 0)
+        frontier_valid
         & (proposal_data.door_variant_idx >= 0)
         & torch.isfinite(target_logits)
     )
@@ -310,7 +313,7 @@ def prepare_feature_batches(
                 proposal_target_logits = proposal_data.target_logits[:, step + 1]
             feature_batches.append(
                 FeatureTrainBatch(
-                    env.get_features(
+                    env.get_sparse_features(
                         torch.device("cpu"),
                         log_temperature,
                         config.features.temperature,
@@ -453,26 +456,26 @@ def proposal_batch_loss(
     frontier_idx = frontier_idx.to(device, dtype=torch.int64)
     door_variant_idx = door_variant_idx.to(device, dtype=torch.int64)
     target_logits = target_logits.to(device, dtype=torch.float32)
+    frontier_valid = frontier_idx >= 0
+    if frontier_valid.ndim == 1:
+        frontier_valid = frontier_valid.unsqueeze(1)
     valid = (
-        (frontier_idx >= 0)
-        & (frontier_idx < proposal_score.shape[1])
+        frontier_valid
         & (door_variant_idx >= 0)
-        & (door_variant_idx < proposal_score.shape[2])
+        & (door_variant_idx < proposal_score.shape[1])
         & torch.isfinite(target_logits)
     )
     row_valid = torch.any(valid, dim=1)
     if not torch.any(row_valid):
         return torch.sum(proposal_score) * 0.0
-    safe_frontier_idx = frontier_idx.clamp_min(0)
     safe_door_variant_idx = door_variant_idx.clamp_min(0)
     batch_idx = torch.arange(
-        frontier_idx.shape[0],
+        door_variant_idx.shape[0],
         dtype=torch.int64,
         device=device,
     ).unsqueeze(1)
     candidate_logits = proposal_score[
         batch_idx,
-        safe_frontier_idx,
         safe_door_variant_idx,
     ]
     candidate_logits = torch.where(
@@ -517,6 +520,34 @@ def proposal_batch_loss(
         / row_mask.shape[0]
     )
     return proposal_loss
+
+
+def proposal_scores_for_frontier(
+    proposal_score: torch.Tensor,
+    row_snapshot_idx: torch.Tensor,
+    row_frontier_idx: torch.Tensor,
+    frontier_idx: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    frontier_idx = frontier_idx.to(device)
+    result = torch.full(
+        (frontier_idx.shape[0], proposal_score.shape[1]),
+        float("-inf"),
+        dtype=proposal_score.dtype,
+        device=device,
+    )
+    if proposal_score.shape[0] == 0:
+        return result
+    row_snapshot_idx = row_snapshot_idx.to(device)
+    row_frontier_idx = row_frontier_idx.to(device)
+    row_valid = (
+        (row_snapshot_idx >= 0)
+        & (row_snapshot_idx < frontier_idx.shape[0])
+        & (row_frontier_idx == frontier_idx[row_snapshot_idx])
+    )
+    if torch.any(row_valid):
+        result[row_snapshot_idx[row_valid]] = proposal_score[row_valid]
+    return result
 
 
 def train_feature_batch_backward(
@@ -598,8 +629,15 @@ def train_feature_batch_backward(
             prefix_loss.avg_frontiers_contribution.item() * prefix_weight
         )
         if include_proposal:
-            batch_proposal_loss = proposal_batch_loss(
+            proposal_score = proposal_scores_for_frontier(
                 preds.proposal_score,
+                preds.proposal_row_snapshot_idx,
+                preds.proposal_row_frontier_idx,
+                feature_batch.proposal_frontier_idx,
+                context.device,
+            )
+            batch_proposal_loss = proposal_batch_loss(
+                proposal_score,
                 feature_batch.proposal_frontier_idx,
                 feature_batch.proposal_door_variant_idx,
                 feature_batch.proposal_target_logits,

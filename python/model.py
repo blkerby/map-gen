@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from env import OutputMetadata, Features
+from env import OutputMetadata, SparseFeatures
 
 if TYPE_CHECKING:
     from train_config import FeatureConfig
@@ -30,6 +30,8 @@ class Predictions:
     proposal_score: torch.Tensor
     # Optional frontier-local state before global pooling:
     proposal_state: torch.Tensor
+    proposal_row_snapshot_idx: torch.Tensor
+    proposal_row_frontier_idx: torch.Tensor
 
 
 @dataclass
@@ -54,6 +56,8 @@ def get_predictions(raw_preds, output_sizes):
         avg_frontiers=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         proposal_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_state=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
+        proposal_row_snapshot_idx=raw_preds.new_empty([0], dtype=torch.int64),
+        proposal_row_frontier_idx=raw_preds.new_empty([0], dtype=torch.int16),
     )
 
 
@@ -350,7 +354,11 @@ class FrontierModel(torch.nn.Module):
         values = embedding.to(dtype)[source_idx, safe_matches]
         return torch.sum(values * known.unsqueeze(-1), dim=1)
 
-    def _lookahead_outcome_features(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+    def _lookahead_outcome_features(
+        self,
+        features: SparseFeatures,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
         left, right, up, down = torch.split(
             features.lookahead_door_match,
             [self.left_count, self.right_count, self.up_count, self.down_count],
@@ -373,16 +381,10 @@ class FrontierModel(torch.nn.Module):
             return None
         node = features.frontier
         neighbor = features.frontier_neighbor.clamp_min(0).to(torch.int64)
-
-        def gather_neighbor(values):
-            return torch.gather(
-                values.unsqueeze(2).expand(-1, -1, neighbor.shape[2]), 1, neighbor
-            )
-
-        raw_x = node[:, :, 1].to(torch.int64)
-        raw_y = node[:, :, 2].to(torch.int64)
-        raw_x0, raw_x1 = raw_x.unsqueeze(2), gather_neighbor(raw_x)
-        raw_y0, raw_y1 = raw_y.unsqueeze(2), gather_neighbor(raw_y)
+        raw_x = node[:, 1].to(torch.int64)
+        raw_y = node[:, 2].to(torch.int64)
+        raw_x0, raw_x1 = raw_x.unsqueeze(1), raw_x[neighbor]
+        raw_y0, raw_y1 = raw_y.unsqueeze(1), raw_y[neighbor]
         return self._position_embedding(
             raw_x1 - raw_x0,
             raw_y1 - raw_y0,
@@ -393,16 +395,18 @@ class FrontierModel(torch.nn.Module):
 
     def forward(
         self,
-        features: Features,
+        features: SparseFeatures,
         include_proposal: bool,
         return_proposal_state: bool = False,
     ):
-        # Shapes below use: b=batch, f=frontiers, k=neighbors, e=embedding width,
+        # Shapes below use: s=snapshot, r=sparse frontier row, k=neighbors, e=embedding width,
         # h=message hidden width.
-        # node: [b, f, 5]
+        # node: [r, 5]
         node = features.frontier
-        node_mask = node[:, :, 0] != 0
-        # numeric: [b, f, numeric_width]
+        row_snapshot_idx = features.row_snapshot_idx.to(torch.int64)
+        snapshot_count = features.inventory.shape[0]
+        row_count = node.shape[0]
+        # numeric: [r, numeric_width]
         numeric = []
         dtype = self._feature_dtype(node.device)
         if self.features.frontier_occupancy:
@@ -419,22 +423,21 @@ class FrontierModel(torch.nn.Module):
                 (flags & 1 != 0).to(dtype),
                 (flags & 2 != 0).to(dtype),
             ], dim=-1).flatten(-2))
-        # X: [b, f, e]
-        X = node.new_zeros([node.shape[0], node.shape[1], self.embedding_width], dtype=dtype)
+        # X: [r, e]
+        X = node.new_zeros([row_count, self.embedding_width], dtype=dtype)
         if self.node_numeric is not None:
-            numeric = [value.unsqueeze(-1) if value.ndim == 2 else value for value in numeric]
             X = X + self.node_numeric(torch.cat(numeric, dim=-1))
         if self.frontier_pos_embedding_x is not None:
             X = X + self._position_embedding(
-                node[:, :, 1],
-                node[:, :, 2],
+                node[:, 1],
+                node[:, 2],
                 self.frontier_pos_embedding_x,
                 self.frontier_pos_embedding_y,
             )
         if self.orientation_embedding is not None:
-            X = X + self.orientation_embedding(node[:, :, 3].to(torch.int64))
+            X = X + self.orientation_embedding(node[:, 3].to(torch.int64))
         if self.kind_embedding is not None:
-            X = X + self.kind_embedding(node[:, :, 4].to(torch.int64))
+            X = X + self.kind_embedding(node[:, 4].to(torch.int64))
         # if self.inventory_embedding is not None:
         #     X = X + torch.matmul(
         #         features.inventory.to(torch.float32), self.inventory_embedding
@@ -443,7 +446,6 @@ class FrontierModel(torch.nn.Module):
         #     X = X + self.connection_reachability_embedding(
         #         features.connection_reachability.to(torch.float32)
         #     ).unsqueeze(1)
-        X = X * node_mask.unsqueeze(-1)
         inventory_features = features.inventory.to(X.dtype) if self.include_inventory else None
         connection_features = (
             self.connection_reachability_embedding(
@@ -477,52 +479,59 @@ class FrontierModel(torch.nn.Module):
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None
-            else X.new_zeros([X.shape[0], self.global_embedding_width])
+            else X.new_zeros([snapshot_count, self.global_embedding_width])
         )
-        if node.shape[1] == 0:
-            mean_pool = max_pool = X.new_zeros([X.shape[0], X.shape[2]])
+        if row_count == 0:
+            mean_pool = max_pool = X.new_zeros([snapshot_count, self.embedding_width])
         else:
-            # pair: [b, f, k, pair_width], neighbor: [b, f, k], pair_mask: [b, f, k, 1]
+            # pair: [r, k, pair_width], neighbor: [r, k], pair_mask: [r, k, 1]
             pair = self._pair_features(features, dtype)
             relative_position = self._relative_position_features(features)
             neighbor = features.frontier_neighbor.clamp_min(0).to(torch.int64)
             pair_mask = (features.frontier_neighbor >= 0).unsqueeze(-1)
-            global_broadcast = global_state.unsqueeze(1).expand(-1, node.shape[1], -1)
+            global_rows = global_state[row_snapshot_idx]
             for source_layer, pair_layer, output_layer, update_layer in zip(
                 self.source_message_layers,
                 self.pair_message_layers,
                 self.message_output_layers,
                 self.update_layers,
             ):
-                # source: [b, f, h]
+                # source: [r, h]
                 source = source_layer(X)
-                # Gather each frontier's neighbors: source: [b, f, k, h]
-                source = torch.gather(
-                    source,
-                    1,
-                    neighbor.flatten(1).unsqueeze(-1).expand(-1, -1, source.shape[-1]),
-                ).view(*neighbor.shape, source.shape[-1])
+                # Gather each frontier's neighbors: source: [r, k, h]
+                source = source[neighbor]
                 messages = source if pair_layer is None else source + pair_layer(pair)
                 if relative_position is not None:
                     messages = messages + relative_position
-                # messages: [b, f, k, h]
+                # messages: [r, k, h]
                 messages = output_layer(messages) * pair_mask
-                # messages: [b, f, k, e]
-                messages = messages.sum(2) / pair_mask.sum(2).clamp_min(1)
-                # messages [b, f, e]
-                X = X + update_layer(torch.cat([X, messages, global_broadcast], dim=-1))
-                X = X * node_mask.unsqueeze(-1)
-            count = node_mask.sum(1, keepdim=True).clamp_min(1)
-            mean_pool = X.sum(1) / count
-            max_pool = torch.where(node_mask.unsqueeze(-1), X, -torch.inf).max(1).values
+                # messages: [r, k, e]
+                messages = messages.sum(1) / pair_mask.sum(1).clamp_min(1)
+                # messages [r, e]
+                X = X + update_layer(torch.cat([X, messages, global_rows], dim=-1))
+            mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
+            mean_pool.index_add_(0, row_snapshot_idx, X)
+            count = torch.bincount(
+                row_snapshot_idx,
+                minlength=snapshot_count,
+            ).to(X.dtype).unsqueeze(1).clamp_min(1)
+            mean_pool = mean_pool / count
+            max_pool = X.new_full([snapshot_count, self.embedding_width], -torch.inf)
+            max_pool.scatter_reduce_(
+                0,
+                row_snapshot_idx.unsqueeze(1).expand(-1, self.embedding_width),
+                X,
+                reduce="amax",
+                include_self=True,
+            )
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
         proposal_score = (
             self.proposal_output(X)
             if include_proposal
-            else X.new_empty([X.shape[0], X.shape[1], 0])
+            else X.new_empty([row_count, 0])
         )
-        proposal_state = X if return_proposal_state else X.new_empty([X.shape[0], X.shape[1], 0])
-        # mean_pool, max_pool, pooled_state: [b, e]
+        proposal_state = X if return_proposal_state else X.new_empty([row_count, 0])
+        # mean_pool, max_pool, pooled_state: [s, e]
         pooled_inputs = []
         if inventory_features is not None:
             # pooled_inputs.append(torch.matmul(features.inventory.to(torch.float32), self.inventory_embedding))
@@ -540,17 +549,17 @@ class FrontierModel(torch.nn.Module):
         pooled_state = (
             self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
             if self.pooled_mlp is not None
-            else X.new_zeros([X.shape[0], self.embedding_width])
+            else X.new_zeros([snapshot_count, self.embedding_width])
         )
         if self.features.room_position:
             room_x = (features.room_x.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_y = (features.room_y.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_placed = features.room_placed.to(torch.bool).unsqueeze(1)
         else:
-            room_x = torch.full([X.shape[0], 1, self.num_rooms], COORD_OFFSET, dtype=torch.int64, device=X.device)
+            room_x = torch.full([snapshot_count, 1, self.num_rooms], COORD_OFFSET, dtype=torch.int64, device=X.device)
             room_y = room_x
-            room_placed = torch.zeros([X.shape[0], 1, self.num_rooms], dtype=torch.bool, device=X.device)
-        # X: [b, 1, e]
+            room_placed = torch.zeros([snapshot_count, 1, self.num_rooms], dtype=torch.bool, device=X.device)
+        # X: [s, 1, e]
         X = pooled_state.unsqueeze(1)
         door = self.door_output(X, room_x, room_y, room_placed, self.pos_embedding_x, self.pos_embedding_y)
         connection = self.connection_output(X, room_x, room_y, room_placed, self.pos_embedding_x, self.pos_embedding_y)
@@ -571,6 +580,8 @@ class FrontierModel(torch.nn.Module):
             avg_frontiers,
             proposal_score,
             proposal_state,
+            row_snapshot_idx if return_proposal_state or include_proposal else row_snapshot_idx.new_empty([0]),
+            features.row_frontier_idx if return_proposal_state or include_proposal else features.row_frontier_idx.new_empty([0]),
         )
 
 

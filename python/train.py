@@ -256,7 +256,6 @@ def create_generate_config(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
         shortlist_candidates=config.generation.shortlist_candidates,
-        proposal_frontiers=config.generation.proposal_frontiers,
         temperature=torch.full(
             [num_envs],
             config.generation.temperature,
@@ -806,7 +805,6 @@ class TrainingSession:
             "temperature": step_config.generation.temperature,
             "recommended_candidates": step_config.generation.recommended_candidates,
             "shortlist_candidates": step_config.generation.shortlist_candidates,
-            "proposal_frontiers": step_config.generation.proposal_frontiers,
             "proposal_temperature": step_config.generation.proposal_temperature,
             "reward_door": step_config.generation.reward_door,
             "reward_connection": step_config.generation.reward_connection,

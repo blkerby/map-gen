@@ -14,7 +14,6 @@ from env import (
     ProposalCandidateMask,
     CandidateFeatureRequirements,
     SparseFeatures,
-    Features,
 )
 from model import Predictions
 from collections import deque
@@ -143,63 +142,20 @@ def extract_candidate_features(
     lookahead_outcomes: PreliminaryOutcomes,
     include_lookahead_outcomes: bool,
     feature_requirements: CandidateFeatureRequirements,
-    sparse_frontiers: bool = False,
-    feature_slot: DenseFeatureSlot | SparseFeatureSlot | None = None,
+    feature_slot: SparseFeatureSlot,
 ):
-    if sparse_frontiers and feature_slot is not None:
-        if not isinstance(feature_slot, SparseFeatureSlot):
-            raise ValueError("sparse candidate features require a sparse feature slot")
-        frontier_count = feature_requirements.frontier_count
-        sparse_row_count = feature_requirements.sparse_row_count
-        worker_sparse_row_counts = feature_requirements.worker_sparse_row_counts
-        feature_slot.ensure(
-            candidates.room_idx.numel(),
-            sparse_row_count,
-        )
-        env.env.pack_sparse_features_after_candidates_into(
-            candidates.room_idx.shape[0],
-            candidates.room_idx.shape[1],
-            0,
-            frontier_count,
-            sparse_row_count,
-            worker_sparse_row_counts,
-            feature_slot.inventory.numpy(),
-            feature_slot.room_x.numpy(),
-            feature_slot.room_y.numpy(),
-            feature_slot.room_placed.numpy(),
-            feature_slot.frontier.numpy(),
-            feature_slot.frontier_occupancy.numpy(),
-            feature_slot.frontier_neighbor.numpy(),
-            feature_slot.frontier_neighbor_pair.numpy(),
-            feature_slot.connection_reachability.numpy(),
-            feature_slot.frontier_connection_reachability.numpy(),
-            feature_slot.dense_row_idx.numpy(),
-        )
-        return feature_slot.features(
-            candidates.room_idx.shape[0],
-            candidates.room_idx.shape[1],
-            log_temperature,
-            include_temperature,
-            log_recommended_candidates,
-            include_recommended_candidates,
-            lookahead_outcomes,
-            include_lookahead_outcomes,
-            sparse_row_count,
-            frontier_count,
-        ).flatten_candidates()
-    if sparse_frontiers:
-        raise ValueError("sparse candidate features require a sparse feature slot")
-    if not isinstance(feature_slot, DenseFeatureSlot):
-        raise ValueError("dense candidate features require a dense feature slot")
-    frontier_count = feature_requirements.frontier_count
-    snapshot_count = candidates.room_idx.numel()
-    feature_slot.ensure(snapshot_count, frontier_count)
-    feature_slot.clear(snapshot_count, frontier_count)
-    env.env.pack_features_after_candidates_into(
+    sparse_row_count = feature_requirements.sparse_row_count
+    worker_sparse_row_counts = feature_requirements.worker_sparse_row_counts
+    feature_slot.ensure(
+        candidates.room_idx.numel(),
+        sparse_row_count,
+    )
+    env.env.pack_sparse_features_after_candidates_into(
         candidates.room_idx.shape[0],
         candidates.room_idx.shape[1],
         0,
-        frontier_count,
+        sparse_row_count,
+        worker_sparse_row_counts,
         feature_slot.inventory.numpy(),
         feature_slot.room_x.numpy(),
         feature_slot.room_y.numpy(),
@@ -210,6 +166,8 @@ def extract_candidate_features(
         feature_slot.frontier_neighbor_pair.numpy(),
         feature_slot.connection_reachability.numpy(),
         feature_slot.frontier_connection_reachability.numpy(),
+        feature_slot.row_snapshot_idx.numpy(),
+        feature_slot.row_frontier_idx.numpy(),
     )
     return feature_slot.features(
         candidates.room_idx.shape[0],
@@ -220,298 +178,24 @@ def extract_candidate_features(
         include_recommended_candidates,
         lookahead_outcomes,
         include_lookahead_outcomes,
-        frontier_count,
+        sparse_row_count,
     ).flatten_candidates()
 
 
 def transfer_features(
-    features: Features | SparseFeatures,
-    device: torch.device,
-    transfer_stream: torch.cuda.Stream | None = None,
-) -> Features:
-    if isinstance(features, SparseFeatures):
-        if transfer_stream is None or device.type != "cuda":
-            return transfer_features_sync(features, device)
-        current_stream = torch.cuda.current_stream(device)
-        with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
-            result = transfer_features_sync(features, device, non_blocking=True)
-            ready = torch.cuda.Event()
-            ready.record(transfer_stream)
-        current_stream.wait_event(ready)
-        return result
-    return features.to(device)
-
-
-def transfer_features_sync(
     features: SparseFeatures,
     device: torch.device,
-    non_blocking: bool = False,
-) -> Features:
-    dense_shape = (features.inventory.shape[0], features.frontier_count)
-    dense_row_idx = features.dense_row_idx.to(device, non_blocking=non_blocking)
-    inventory = features.inventory.to(device, non_blocking=non_blocking)
-    room_x = features.room_x.to(device, non_blocking=non_blocking)
-    room_y = features.room_y.to(device, non_blocking=non_blocking)
-    room_placed = features.room_placed.to(device, non_blocking=non_blocking)
-    log_temperature = features.log_temperature.to(device, non_blocking=non_blocking)
-    log_recommended_candidates = features.log_recommended_candidates.to(
-        device, non_blocking=non_blocking
-    )
-    lookahead_door_invalid = features.lookahead_door_invalid.to(
-        device, non_blocking=non_blocking
-    )
-    lookahead_door_match = features.lookahead_door_match.to(
-        device, non_blocking=non_blocking
-    )
-    lookahead_connection_invalid = features.lookahead_connection_invalid.to(
-        device, non_blocking=non_blocking
-    )
-    connection_reachability = features.connection_reachability.to(
-        device, non_blocking=non_blocking
-    )
-    return Features(
-        inventory,
-        room_x,
-        room_y,
-        room_placed,
-        log_temperature,
-        log_recommended_candidates,
-        lookahead_door_invalid,
-        lookahead_door_match,
-        lookahead_connection_invalid,
-        densify_sparse_feature(
-            features.frontier, 0, dense_shape, dense_row_idx, device, non_blocking
-        ),
-        densify_sparse_feature(
-            features.frontier_occupancy, 0, dense_shape, dense_row_idx, device, non_blocking
-        ),
-        densify_sparse_feature(
-            features.frontier_neighbor, -1, dense_shape, dense_row_idx, device, non_blocking
-        ),
-        densify_sparse_feature(
-            features.frontier_neighbor_pair, 0, dense_shape, dense_row_idx, device, non_blocking
-        ),
-        connection_reachability,
-        densify_sparse_feature(
-            features.frontier_connection_reachability,
-            0,
-            dense_shape,
-            dense_row_idx,
-            device,
-            non_blocking,
-        ),
-    )
-
-
-def densify_sparse_feature(
-    value: torch.Tensor,
-    fill_value: int,
-    dense_shape: tuple[int, int],
-    dense_row_idx: torch.Tensor,
-    device: torch.device,
-    non_blocking: bool,
-) -> torch.Tensor:
-    dense_value = torch.full(
-        (*dense_shape, *value.shape[1:]),
-        fill_value,
-        dtype=value.dtype,
-        device=device,
-    )
-    sparse_value = value.to(device, non_blocking=non_blocking)
-    dense_value.flatten(0, 1).view(torch.uint8).index_copy_(
-        0, dense_row_idx, sparse_value.view(torch.uint8)
-    )
-    return dense_value
-
-
-class DenseFeatureSlot:
-    def __init__(self, env: EnvironmentGroup):
-        features = env.engine.features
-        inventory_count, _, room_count = env.engine.get_feature_sizes()
-        _, connection_count = env.engine.get_output_sizes()
-        self.inventory_width = inventory_count * int(features.inventory)
-        self.room_width = room_count * int(features.room_position)
-        self.frontier_occupancy_width = (
-            (env.frontier_window_size * env.frontier_window_size + 7) // 8
-        ) * int(features.frontier_occupancy)
-        self.frontier_neighbor_width = (
-            env.frontier_neighbor_count * int(features.frontier_neighbor)
-        )
-        self.frontier_neighbor_pair_width = (
-            env.frontier_neighbor_count * int(features.frontier_neighbor_flags)
-        )
-        self.connection_reachability_width = (
-            connection_count * int(features.connection_reachability)
-        )
-        self.frontier_connection_reachability_width = (
-            connection_count
-            * int(features.frontier_connection_reachability)
-        )
-        self.snapshot_capacity = 0
-        self.frontier_capacity = 0
-        self.inventory = None
-        self.room_x = None
-        self.room_y = None
-        self.room_placed = None
-        self.frontier = None
-        self.frontier_occupancy = None
-        self.frontier_neighbor = None
-        self.frontier_neighbor_pair = None
-        self.connection_reachability = None
-        self.frontier_connection_reachability = None
-
-    def ensure(self, snapshot_count: int, frontier_count: int):
-        if (
-            self.snapshot_capacity >= snapshot_count
-            and self.frontier_capacity == frontier_count
-        ):
-            return
-        self.snapshot_capacity = max(self.snapshot_capacity, snapshot_count)
-        self.frontier_capacity = frontier_count
-        self.inventory = torch.empty(
-            (self.snapshot_capacity, self.inventory_width), dtype=torch.uint8
-        )
-        self.room_x = torch.empty(
-            (self.snapshot_capacity, self.room_width), dtype=torch.int8
-        )
-        self.room_y = torch.empty(
-            (self.snapshot_capacity, self.room_width), dtype=torch.int8
-        )
-        self.room_placed = torch.empty(
-            (self.snapshot_capacity, self.room_width), dtype=torch.uint8
-        )
-        self.frontier = torch.empty(
-            (self.snapshot_capacity, self.frontier_capacity, 5), dtype=torch.int8
-        )
-        self.frontier_occupancy = torch.empty(
-            (
-                self.snapshot_capacity,
-                self.frontier_capacity,
-                self.frontier_occupancy_width,
-            ),
-            dtype=torch.uint8,
-        )
-        self.frontier_neighbor = torch.empty(
-            (
-                self.snapshot_capacity,
-                self.frontier_capacity,
-                self.frontier_neighbor_width,
-            ),
-            dtype=torch.int16,
-        )
-        self.frontier_neighbor_pair = torch.empty(
-            (
-                self.snapshot_capacity,
-                self.frontier_capacity,
-                self.frontier_neighbor_pair_width,
-            ),
-            dtype=torch.uint8,
-        )
-        self.connection_reachability = torch.empty(
-            (self.snapshot_capacity, self.connection_reachability_width), dtype=torch.uint8
-        )
-        self.frontier_connection_reachability = torch.empty(
-            (
-                self.snapshot_capacity,
-                self.frontier_capacity,
-                self.frontier_connection_reachability_width,
-            ),
-            dtype=torch.uint8,
-        )
-
-    def clear(self, snapshot_count: int, frontier_count: int):
-        self.inventory[:snapshot_count].zero_()
-        self.room_x[:snapshot_count].zero_()
-        self.room_y[:snapshot_count].zero_()
-        self.room_placed[:snapshot_count].zero_()
-        self.frontier[:snapshot_count, :frontier_count].zero_()
-        self.frontier_occupancy[:snapshot_count, :frontier_count].zero_()
-        self.frontier_neighbor[:snapshot_count, :frontier_count].fill_(-1)
-        self.frontier_neighbor_pair[:snapshot_count, :frontier_count].zero_()
-        self.connection_reachability[:snapshot_count].zero_()
-        self.frontier_connection_reachability[:snapshot_count, :frontier_count].zero_()
-
-    def features(
-        self,
-        environment_count: int,
-        candidate_count: int,
-        log_temperature: torch.Tensor,
-        include_temperature: bool,
-        log_recommended_candidates: torch.Tensor,
-        include_recommended_candidates: bool,
-        lookahead_outcomes: PreliminaryOutcomes,
-        include_lookahead_outcomes: bool,
-        frontier_count: int,
-    ) -> Features:
-        snapshot_count = environment_count * candidate_count
-        if not include_temperature:
-            log_temperature = log_temperature.new_empty(
-                [environment_count, candidate_count, 0]
-            )
-        if not include_recommended_candidates:
-            log_recommended_candidates = log_recommended_candidates.new_empty(
-                [environment_count, candidate_count, 0]
-            )
-        lookahead_door_invalid = lookahead_outcomes.door_invalid
-        lookahead_door_match = lookahead_outcomes.door_match
-        lookahead_connection_invalid = lookahead_outcomes.connection_invalid
-        if not include_lookahead_outcomes:
-            lookahead_door_invalid = lookahead_door_invalid.new_empty(
-                [environment_count, candidate_count, 0]
-            )
-            lookahead_door_match = lookahead_door_match.new_empty(
-                [environment_count, candidate_count, 0]
-            )
-            lookahead_connection_invalid = lookahead_connection_invalid.new_empty(
-                [environment_count, candidate_count, 0]
-            )
-        return Features(
-            self.inventory[:snapshot_count].view(
-                environment_count, candidate_count, self.inventory_width
-            ),
-            self.room_x[:snapshot_count].view(environment_count, candidate_count, self.room_width),
-            self.room_y[:snapshot_count].view(environment_count, candidate_count, self.room_width),
-            self.room_placed[:snapshot_count].view(
-                environment_count, candidate_count, self.room_width
-            ),
-            log_temperature,
-            log_recommended_candidates,
-            lookahead_door_invalid,
-            lookahead_door_match,
-            lookahead_connection_invalid,
-            self.frontier[:snapshot_count, :frontier_count].view(
-                environment_count, candidate_count, frontier_count, 5
-            ),
-            self.frontier_occupancy[:snapshot_count, :frontier_count].view(
-                environment_count,
-                candidate_count,
-                frontier_count,
-                self.frontier_occupancy_width,
-            ),
-            self.frontier_neighbor[:snapshot_count, :frontier_count].view(
-                environment_count,
-                candidate_count,
-                frontier_count,
-                self.frontier_neighbor_width,
-            ),
-            self.frontier_neighbor_pair[:snapshot_count, :frontier_count].view(
-                environment_count,
-                candidate_count,
-                frontier_count,
-                self.frontier_neighbor_pair_width,
-            ),
-            self.connection_reachability[:snapshot_count].view(
-                environment_count, candidate_count, self.connection_reachability_width
-            ),
-            self.frontier_connection_reachability[
-                :snapshot_count, :frontier_count
-            ].view(
-                environment_count,
-                candidate_count,
-                frontier_count,
-                self.frontier_connection_reachability_width,
-            ),
-        )
+    transfer_stream: torch.cuda.Stream | None = None,
+) -> SparseFeatures:
+    if transfer_stream is None or device.type != "cuda":
+        return features.to(device)
+    current_stream = torch.cuda.current_stream(device)
+    with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
+        result = features.to(device, non_blocking=True)
+        ready = torch.cuda.Event()
+        ready.record(transfer_stream)
+    current_stream.wait_event(ready)
+    return result
 
 
 # When a GPU is available, we use pinned memory for model input tensors,
@@ -519,7 +203,7 @@ class DenseFeatureSlot:
 class SparseFeatureSlot:
     def __init__(self, env: EnvironmentGroup, pin_memory: bool):
         features = env.engine.features
-        inventory_count, max_frontier_count, room_count = env.engine.get_feature_sizes()
+        inventory_count, _, room_count = env.engine.get_feature_sizes()
         _, connection_count = env.engine.get_output_sizes()
         self.inventory_width = inventory_count * int(features.inventory)
         self.room_width = room_count * int(features.room_position)
@@ -553,7 +237,8 @@ class SparseFeatureSlot:
         self.frontier_neighbor_pair = None
         self.connection_reachability = None
         self.frontier_connection_reachability = None
-        self.dense_row_idx = None
+        self.row_snapshot_idx = None
+        self.row_frontier_idx = None
 
     def _empty(self, shape, dtype):
         return torch.empty(shape, dtype=dtype, pin_memory=self.pin_memory)
@@ -596,7 +281,8 @@ class SparseFeatureSlot:
             ),
             torch.uint8,
         )
-        self.dense_row_idx = self._empty((self.sparse_row_capacity,), torch.int64)
+        self.row_snapshot_idx = self._empty((self.sparse_row_capacity,), torch.int64)
+        self.row_frontier_idx = self._empty((self.sparse_row_capacity,), torch.int16)
 
     def features(
         self,
@@ -609,7 +295,6 @@ class SparseFeatureSlot:
         lookahead_outcomes: PreliminaryOutcomes,
         include_lookahead_outcomes: bool,
         sparse_row_count: int,
-        frontier_count: int,
     ) -> SparseFeatures:
         snapshot_count = environment_count * candidate_count
         if not include_temperature:
@@ -655,8 +340,8 @@ class SparseFeatureSlot:
                 environment_count, candidate_count, self.connection_reachability_width
             ),
             self.frontier_connection_reachability[:sparse_row_count],
-            self.dense_row_idx[:sparse_row_count],
-            frontier_count,
+            self.row_snapshot_idx[:sparse_row_count],
+            self.row_frontier_idx[:sparse_row_count],
         )
 
 
@@ -665,9 +350,16 @@ class GenerationGroup:
     env: EnvironmentGroup
     config: GenerateConfig
     step: int
-    feature_slot: DenseFeatureSlot | SparseFeatureSlot
+    feature_slot: SparseFeatureSlot
     previous_lookahead_outcomes: PreliminaryOutcomes | None
-    previous_proposal_scores: torch.Tensor | None
+    previous_proposal_scores: SparseProposalCache | None
+
+
+@dataclass
+class SparseProposalCache:
+    scores: torch.Tensor
+    row_snapshot_idx: torch.Tensor
+    row_frontier_idx: torch.Tensor
 
 
 @dataclass
@@ -695,7 +387,7 @@ class CandidateBatch:
 @dataclass
 class PreparedGenerationStep:
     candidate_batch: CandidateBatch
-    features: Features | SparseFeatures | None
+    features: SparseFeatures | None
 
 
 @dataclass
@@ -713,7 +405,7 @@ class PendingProposalStep:
 
 @dataclass
 class ProposalInputs:
-    features: Features | None
+    features: SparseFeatures | None
     mask: ProposalCandidateMask
 
 
@@ -814,8 +506,35 @@ def get_shortlist_candidate_batch(
 def unpack_proposal_mask(mask: ProposalCandidateMask, device: torch.device) -> torch.Tensor:
     packed = mask.mask.to(device)
     shifts = torch.arange(8, device=device, dtype=packed.dtype)
-    bits = ((packed.unsqueeze(-1) >> shifts) & 1).to(torch.bool).flatten(2)
-    return bits[:, :, : mask.door_variant_count]
+    bits = ((packed.unsqueeze(-1) >> shifts) & 1).to(torch.bool).flatten(1)
+    return bits[:, : mask.door_variant_count]
+
+
+def proposal_scores_for_mask(
+    cache: SparseProposalCache,
+    proposal_mask: ProposalCandidateMask,
+    device: torch.device,
+) -> torch.Tensor:
+    proposal_frontier_idx = proposal_mask.proposal_frontier_idx.to(device)
+    door_variant_count = cache.scores.shape[1]
+    result = torch.full(
+        (proposal_frontier_idx.shape[0], door_variant_count),
+        float("-inf"),
+        dtype=cache.scores.dtype,
+        device=device,
+    )
+    if cache.scores.shape[0] == 0:
+        return result
+    row_snapshot_idx = cache.row_snapshot_idx.to(device)
+    row_frontier_idx = cache.row_frontier_idx.to(device)
+    row_valid = (
+        (row_snapshot_idx >= 0)
+        & (row_snapshot_idx < proposal_frontier_idx.shape[0])
+        & (row_frontier_idx == proposal_frontier_idx[row_snapshot_idx])
+    )
+    if torch.any(row_valid):
+        result[row_snapshot_idx[row_valid]] = cache.scores[row_valid]
+    return result
 
 
 def sample_proposal_shortlist(
@@ -824,10 +543,9 @@ def sample_proposal_shortlist(
     config: GenerateConfig,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    proposal_frontier_count = proposal_scores.shape[1]
-    proposal_door_variant_count = proposal_scores.shape[2]
-    environment_count, selected_frontier_count = proposal_mask.frontier_idx.shape
-    if proposal_frontier_count == 0 or proposal_door_variant_count == 0:
+    proposal_door_variant_count = proposal_scores.shape[1]
+    environment_count = proposal_mask.proposal_frontier_idx.shape[0]
+    if proposal_door_variant_count == 0:
         empty_sampled = torch.full(
             (environment_count, config.shortlist_candidates),
             -1,
@@ -835,16 +553,13 @@ def sample_proposal_shortlist(
             device=device,
         )
         return empty_sampled, empty_sampled
-    frontier_idx = proposal_mask.frontier_idx.to(device)
-    valid_frontier = (frontier_idx >= 0) & (frontier_idx < proposal_frontier_count)
-    safe_frontier_idx = frontier_idx.clamp(0, proposal_frontier_count - 1).to(torch.int64)
-    row_idx = torch.arange(environment_count, device=device).unsqueeze(1)
-    valid = unpack_proposal_mask(proposal_mask, device)[:, :, :proposal_door_variant_count]
-    valid = valid & valid_frontier.unsqueeze(2)
-    sample_keys = proposal_scores[row_idx, safe_frontier_idx].to(dtype=torch.float32, copy=True)
-    sample_keys.div_(config.proposal_temperature.to(device).view(-1, 1, 1).clamp_min(1e-6))
+    frontier_idx = proposal_mask.proposal_frontier_idx.to(device)
+    valid_frontier = frontier_idx >= 0
+    valid = unpack_proposal_mask(proposal_mask, device)[:, :proposal_door_variant_count]
+    valid = valid & valid_frontier.unsqueeze(1)
+    sample_keys = proposal_scores.to(dtype=torch.float32, copy=True)
+    sample_keys.div_(config.proposal_temperature.to(device).view(-1, 1).clamp_min(1e-6))
     sample_keys.masked_fill_(~valid, float("-inf"))
-    sample_keys = sample_keys.flatten(1)
     shortlist_candidates = min(config.shortlist_candidates, sample_keys.shape[1])
     gumbel = torch.empty_like(sample_keys).exponential_().log_().neg_()
     sample_keys.add_(gumbel)
@@ -854,10 +569,8 @@ def sample_proposal_shortlist(
         dim=1,
         sorted=True,
     ).indices
-    flat_valid = valid.flatten(1)
-    sampled_is_valid = flat_valid.gather(1, sampled_flat)
-    sampled_slot_idx = torch.div(sampled_flat, proposal_door_variant_count, rounding_mode="floor")
-    sampled_door_variant_idx = sampled_flat % proposal_door_variant_count
+    sampled_is_valid = valid.gather(1, sampled_flat)
+    sampled_door_variant_idx = sampled_flat
     sampled_door_variant_idx = torch.where(
         sampled_is_valid,
         sampled_door_variant_idx,
@@ -871,9 +584,7 @@ def sample_proposal_shortlist(
             device=device,
         )
         sampled_door_variant_idx = torch.cat([sampled_door_variant_idx, padding], dim=1)
-        sampled_slot_idx = torch.cat([sampled_slot_idx, padding], dim=1)
-    safe_sampled_slot_idx = sampled_slot_idx.clamp(0, max(selected_frontier_count - 1, 0))
-    sampled_frontier_idx = torch.gather(frontier_idx, 1, safe_sampled_slot_idx)
+    sampled_frontier_idx = frontier_idx.unsqueeze(1).expand(-1, config.shortlist_candidates)
     sampled_frontier_idx = torch.where(
         sampled_door_variant_idx >= 0,
         sampled_frontier_idx,
@@ -931,7 +642,6 @@ def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> Preli
 
 def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
     proposal_mask = group.env.get_proposal_candidate_mask(
-        group.config.proposal_frontiers,
         torch.device("cpu"),
     )
     if group.previous_proposal_scores is not None:
@@ -944,7 +654,7 @@ def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
         log_recommended_candidates,
     ) = state_log_inputs(group.config, environment_count)
     return ProposalInputs(
-        group.env.get_features(
+        group.env.get_sparse_features(
             torch.device("cpu"),
             log_temperature,
             group.env.engine.features.temperature,
@@ -961,8 +671,7 @@ def prepare_candidate_features(
     env: EnvironmentGroup,
     config: GenerateConfig,
     candidate_batch: CandidateBatch,
-    sparse_frontiers: bool,
-    feature_slot: DenseFeatureSlot | SparseFeatureSlot,
+    feature_slot: SparseFeatureSlot,
 ) -> PreparedGenerationStep:
     candidates = candidate_batch.candidates
     if candidates.room_idx.shape[1] == 1:
@@ -986,7 +695,6 @@ def prepare_candidate_features(
             candidate_batch.post_candidate_outcomes,
             env.engine.features.lookahead_outcomes,
             candidate_batch.feature_requirements,
-            sparse_frontiers,
             feature_slot,
         ),
     )
@@ -994,14 +702,12 @@ def prepare_candidate_features(
 
 def prepare_initial_generation_step(
     group: GenerationGroup,
-    sparse_frontiers: bool,
 ) -> PreparedGenerationStep:
     candidate_batch = get_initial_candidate_batch(group, torch.device("cpu"))
     return prepare_candidate_features(
         group.env,
         group.config,
         candidate_batch,
-        sparse_frontiers,
         group.feature_slot,
     )
 
@@ -1010,7 +716,6 @@ def prepare_shortlist_generation_step(
     group: GenerationGroup,
     sampled_frontier_idx: torch.Tensor,
     sampled_door_variant_idx: torch.Tensor,
-    sparse_frontiers: bool,
 ) -> PreparedGenerationStep:
     candidate_batch = get_shortlist_candidate_batch(
         group,
@@ -1022,7 +727,6 @@ def prepare_shortlist_generation_step(
         group.env,
         group.config,
         candidate_batch,
-        sparse_frontiers,
         group.feature_slot,
     )
 
@@ -1032,7 +736,7 @@ def select_candidate_actions(
     model,
     candidates: Actions,
     outcomes: PreliminaryOutcomes,
-    features: Features | SparseFeatures,
+    features: SparseFeatures,
     device: torch.device,
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
@@ -1076,6 +780,8 @@ def select_candidate_actions(
                 avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
                 proposal_score=preds.proposal_score,
                 proposal_state=preds.proposal_state,
+                proposal_row_snapshot_idx=preds.proposal_row_snapshot_idx,
+                proposal_row_frontier_idx=preds.proposal_row_frontier_idx,
             ),
             outcomes,
             group.config,
@@ -1110,22 +816,28 @@ def select_candidate_actions(
         profile_time = profile_start(profile)
         selected_proposal_scores = None
         if include_proposal:
-            proposal_state = preds.proposal_state.view(
-                environment_count,
-                candidate_count,
-                preds.proposal_state.shape[1],
-                preds.proposal_state.shape[2],
+            selected_snapshot_idx = (
+                torch.arange(environment_count, device=device) * candidate_count
+                + action_index
             )
-            selected_proposal_state = proposal_state[
-                torch.arange(environment_count, device=device),
-                action_index,
-            ]
+            row_selected = torch.isin(preds.proposal_row_snapshot_idx, selected_snapshot_idx)
+            selected_proposal_state = preds.proposal_state[row_selected]
+            selected_row_snapshot_idx = preds.proposal_row_snapshot_idx[row_selected]
+            selected_row_frontier_idx = preds.proposal_row_frontier_idx[row_selected]
             with torch.amp.autocast(
                 "cuda",
                 dtype=torch.bfloat16,
                 enabled=device.type == "cuda" and group.config.autocast,
             ):
-                selected_proposal_scores = model.proposal_output(selected_proposal_state)
+                selected_proposal_scores = SparseProposalCache(
+                    model.proposal_output(selected_proposal_state),
+                    torch.div(
+                        selected_row_snapshot_idx,
+                        candidate_count,
+                        rounding_mode="floor",
+                    ),
+                    selected_row_frontier_idx,
+                )
             sync_profile_device(device, profile)
         profiler.add("python.score.cache_proposal", profile_time)
     return action_index, selected_actions, candidate_logits, selected_proposal_scores
@@ -1134,7 +846,8 @@ def select_candidate_actions(
 def compute_proposal_scores(
     group: GenerationGroup,
     model,
-    features: Features,
+    features: SparseFeatures,
+    proposal_mask: ProposalCandidateMask,
     device: torch.device,
     gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
@@ -1147,7 +860,15 @@ def compute_proposal_scores(
             enabled=device.type == "cuda" and group.config.autocast,
         ):
             preds = model(env_features, include_proposal=True)
-        return preds.proposal_score
+        return proposal_scores_for_mask(
+            SparseProposalCache(
+                preds.proposal_score,
+                preds.proposal_row_snapshot_idx,
+                preds.proposal_row_frontier_idx,
+            ),
+            proposal_mask,
+            device,
+        )
 
 
 def verify_and_step(
@@ -1163,7 +884,6 @@ def verify_and_step(
 
 def start_generation_step(
     group: GenerationGroup,
-    sparse_frontiers: bool,
     executor: ThreadPoolExecutor,
     pending_proposals: deque[PendingProposalStep],
     pending_candidates: deque[PendingCandidateStep],
@@ -1177,7 +897,6 @@ def start_generation_step(
                 executor.submit(
                     prepare_initial_generation_step,
                     group,
-                    sparse_frontiers,
                 ),
                 torch.zeros(
                     [group.config.temperature.shape[0]],
@@ -1203,7 +922,6 @@ def start_candidate_step(
     sampled_frontier_idx: torch.Tensor,
     sampled_door_variant_idx: torch.Tensor,
     shortlist_limited: torch.Tensor,
-    sparse_frontiers: bool,
     executor: ThreadPoolExecutor,
     pending_candidates: deque[PendingCandidateStep],
 ) -> None:
@@ -1215,7 +933,6 @@ def start_candidate_step(
                 group,
                 sampled_frontier_idx,
                 sampled_door_variant_idx,
-                sparse_frontiers,
             ),
             shortlist_limited,
         )
@@ -1285,15 +1002,12 @@ def run_generation_groups(
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     gpu_lock = threading.Lock()
     num_rooms = len(envs[0].engine.rooms)
-    sparse_frontiers = device.type == "cuda"
     groups = [
         GenerationGroup(
             env,
             config,
             0,
-            SparseFeatureSlot(env, pin_memory=True)
-            if device.type == "cuda"
-            else DenseFeatureSlot(env),
+            SparseFeatureSlot(env, pin_memory=device.type == "cuda"),
             None,
             None,
         )
@@ -1323,7 +1037,6 @@ def run_generation_groups(
                 group.previous_proposal_scores = None
                 start_generation_step(
                     group,
-                    sparse_frontiers,
                     executor,
                     pending_proposals,
                     pending_candidates,
@@ -1336,7 +1049,7 @@ def run_generation_groups(
                         proposal_inputs = proposal_step.future.result()
                         profiler.add("python.wait_proposal_features", profile_time)
                         valid_counts = proposal_inputs.mask.valid_counts
-                        row_valid_counts = valid_counts.sum(dim=1)
+                        row_valid_counts = valid_counts
                         shortlist_limited = (
                             row_valid_counts > proposal_step.group.config.shortlist_candidates
                         )
@@ -1348,7 +1061,11 @@ def run_generation_groups(
                             .item()
                         )
                         if proposal_step.group.previous_proposal_scores is not None:
-                            proposal_scores = proposal_step.group.previous_proposal_scores
+                            proposal_scores = proposal_scores_for_mask(
+                                proposal_step.group.previous_proposal_scores,
+                                proposal_inputs.mask,
+                                device,
+                            )
                         else:
                             if proposal_inputs.features is None:
                                 raise ValueError("proposal scores require proposal features")
@@ -1356,6 +1073,7 @@ def run_generation_groups(
                                 proposal_step.group,
                                 model,
                                 proposal_inputs.features,
+                                proposal_inputs.mask,
                                 device,
                                 gpu_lock,
                                 transfer_stream,
@@ -1377,7 +1095,6 @@ def run_generation_groups(
                             sampled_frontier_idx.to(torch.device("cpu")),
                             sampled_door_variant_idx.to(torch.device("cpu")),
                             shortlist_limited.to(torch.device("cpu")),
-                            sparse_frontiers,
                             executor,
                             pending_candidates,
                         )
@@ -1445,11 +1162,16 @@ def run_generation_groups(
                 group_index = group_index_by_id[id(step.group)]
                 profile_time = profile_start(profile)
                 max_candidates = step.group.config.max_candidates
-                frontier_idx = torch.full(
-                    [candidates.room_idx.shape[0], max_candidates],
-                    -1,
-                    dtype=candidate_batch.proposal_frontier_idx.dtype,
-                    device=device,
+                candidate_frontier_idx = candidate_batch.proposal_frontier_idx
+                first_valid_frontier = torch.where(
+                    candidate_frontier_idx >= 0,
+                    candidate_frontier_idx,
+                    torch.full_like(candidate_frontier_idx, 32767),
+                ).min(dim=1).values
+                frontier_idx = torch.where(
+                    first_valid_frontier == 32767,
+                    torch.full_like(first_valid_frontier, -1),
+                    first_valid_frontier,
                 )
                 door_variant_idx = torch.full(
                     [candidates.room_idx.shape[0], max_candidates],
@@ -1462,9 +1184,6 @@ def run_generation_groups(
                     float("-inf"),
                     dtype=torch.float32,
                     device=device,
-                )
-                frontier_idx[:, :candidate_batch.proposal_frontier_idx.shape[1]] = (
-                    candidate_batch.proposal_frontier_idx
                 )
                 door_variant_idx[:, :candidate_batch.proposal_door_variant_idx.shape[1]] = (
                     candidate_batch.proposal_door_variant_idx
@@ -1494,7 +1213,6 @@ def run_generation_groups(
                 if step.group.step < step.group.config.episode_length:
                     start_generation_step(
                         step.group,
-                        sparse_frontiers,
                         executor,
                         pending_proposals,
                         pending_candidates,

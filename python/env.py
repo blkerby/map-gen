@@ -18,7 +18,6 @@ class GenerateConfig:
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
-    proposal_frontiers: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
     reward_door: float
@@ -139,21 +138,20 @@ class EpisodeOutcomes:
 
 @dataclass
 class CandidateFeatureRequirements:
-    frontier_count: int
     sparse_row_count: int
     worker_sparse_row_counts: list[int]
 
 
 @dataclass
 class ProposalCandidateMask:
-    frontier_idx: torch.Tensor
+    proposal_frontier_idx: torch.Tensor
     mask: torch.Tensor
     valid_counts: torch.Tensor
     door_variant_count: int
 
     def to(self, device: torch.device) -> "ProposalCandidateMask":
         return ProposalCandidateMask(
-            self.frontier_idx.to(device),
+            self.proposal_frontier_idx.to(device),
             self.mask.to(device),
             self.valid_counts.to(device),
             self.door_variant_count,
@@ -245,8 +243,13 @@ class SparseFeatures:
     frontier_neighbor_pair: torch.Tensor
     connection_reachability: torch.Tensor
     frontier_connection_reachability: torch.Tensor
-    dense_row_idx: torch.Tensor
-    frontier_count: int
+    row_snapshot_idx: torch.Tensor
+    row_frontier_idx: torch.Tensor
+
+    def to(self, device: torch.device, non_blocking: bool = False) -> "SparseFeatures":
+        return SparseFeatures(
+            *(value.to(device, non_blocking=non_blocking) for value in vars(self).values())
+        )
 
     def flatten_candidates(self) -> "SparseFeatures":
         return SparseFeatures(
@@ -265,8 +268,8 @@ class SparseFeatures:
             self.frontier_neighbor_pair,
             self.connection_reachability.flatten(0, 1),
             self.frontier_connection_reachability,
-            self.dense_row_idx,
-            self.frontier_count,
+            self.row_snapshot_idx,
+            self.row_frontier_idx,
         )
 
 
@@ -411,12 +414,11 @@ class EnvironmentGroup:
 
     def get_proposal_candidate_mask(
         self,
-        proposal_frontiers: int,
         device: torch.device,
     ) -> ProposalCandidateMask:
-        result = self.env.get_proposal_candidate_mask(proposal_frontiers)
+        result = self.env.get_proposal_candidate_mask()
         return ProposalCandidateMask(
-            torch.from_numpy(result.frontier_idx).to(device),
+            torch.from_numpy(result.proposal_frontier_idx).to(device),
             torch.from_numpy(result.mask).to(device),
             torch.from_numpy(result.valid_counts).to(device=device, dtype=torch.int64),
             result.door_variant_count,
@@ -480,7 +482,6 @@ class EnvironmentGroup:
                 door_match=torch.from_numpy(result.door_match).to(device),
             ),
             CandidateFeatureRequirements(
-                result.feature_frontier_count,
                 result.sparse_row_count,
                 result.worker_sparse_row_counts,
             ),
@@ -617,6 +618,55 @@ class EnvironmentGroup:
             include_recommended_candidates,
             lookahead_outcomes,
             include_lookahead_outcomes,
+        )
+
+    def get_sparse_features(
+        self,
+        device: torch.device,
+        log_temperature: torch.Tensor,
+        include_temperature: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        lookahead_outcomes: PreliminaryOutcomes,
+        include_lookahead_outcomes: bool,
+        environment_start: int = 0,
+        environment_count: Optional[int] = None,
+    ) -> SparseFeatures:
+        values = self.env.get_sparse_features(environment_start, environment_count)
+        tensors = [torch.from_numpy(value).to(device) for value in values]
+        log_temperature = log_temperature.to(device)
+        if not include_temperature:
+            log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
+        log_recommended_candidates = log_recommended_candidates.to(device)
+        if not include_recommended_candidates:
+            log_recommended_candidates = log_recommended_candidates.new_empty([
+                *log_recommended_candidates.shape,
+                0,
+            ])
+        lookahead_door_invalid = lookahead_outcomes.door_invalid.to(device)
+        lookahead_door_match = lookahead_outcomes.door_match.to(device)
+        lookahead_connection_invalid = lookahead_outcomes.connection_invalid.to(device)
+        if not include_lookahead_outcomes:
+            lookahead_door_invalid = lookahead_door_invalid.new_empty([
+                *lookahead_door_invalid.shape[:-1],
+                0,
+            ])
+            lookahead_door_match = lookahead_door_match.new_empty([
+                *lookahead_door_match.shape[:-1],
+                0,
+            ])
+            lookahead_connection_invalid = lookahead_connection_invalid.new_empty([
+                *lookahead_connection_invalid.shape[:-1],
+                0,
+            ])
+        return SparseFeatures(
+            *tensors[:4],
+            log_temperature,
+            log_recommended_candidates,
+            lookahead_door_invalid,
+            lookahead_door_match,
+            lookahead_connection_invalid,
+            *tensors[4:],
         )
 
     def finish(self):

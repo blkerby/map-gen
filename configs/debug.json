@@ -2,7 +2,7 @@
   "experiment_name": "crateria-testing",
   "room_set": "room_definitions/crateria.json",
   "map_size": [72, 72],
-  "knot_episodes": [0, 50000, 300000, 2000000],
+  "knot_episodes": [0, 640],
   "checkpoint_period": 100,
   "visualize": 1,
   "model": {
@@ -16,7 +16,7 @@
     "num_layers": 2
   },
   "optimizer": {
-    "lr": {"log": [0.001, 0.001, 0.001, 0.0001]},
+    "lr": 0.001,
     "beta1": 0.95,
     "beta2": 0.99
   },
@@ -25,7 +25,7 @@
     "num_layers": 1
   },
   "balance_optimizer": {
-    "lr": {"log": [0.001, 0.0001, 0.00005, 0.00002]},
+    "lr": 0.001,
     "beta1": 0.95,
     "beta2": 0.99
   },
@@ -36,9 +36,8 @@
     "pipeline_groups": 1,
     "recommended_candidates": 4,
     "shortlist_candidates": 16,
-    "proposal_frontiers": 1,
-    "temperature": {"log": [10.0, 1.0, 0.03, 0.03]},
-    "proposal_temperature": {"log": [10.0, 1.0, 0.03, 0.03]},
+    "temperature": 1.0,
+    "proposal_temperature": 1.0,
     "reward_door": 1.0,
     "reward_connection": 1.0,
     "reward_balance": 0.2,

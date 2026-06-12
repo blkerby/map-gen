@@ -236,10 +236,9 @@ enum WorkerCommand {
         door_match: OutputShard<i16>,
     },
     GetProposalCandidateMask {
-        proposal_frontiers: usize,
         proposal_door_variant_count: usize,
         proposal_mask_byte_count: usize,
-        frontier_idx: OutputShard<FrontierIdx>,
+        proposal_frontier_idx: OutputShard<FrontierIdx>,
         mask: OutputShard<u8>,
         valid_counts: OutputShard<usize>,
     },
@@ -709,35 +708,31 @@ fn worker_loop(
                 }
             }
             WorkerCommand::GetProposalCandidateMask {
-                proposal_frontiers,
                 proposal_door_variant_count,
                 proposal_mask_byte_count,
-                frontier_idx,
+                proposal_frontier_idx,
                 mask,
                 valid_counts,
             } => {
-                let frontier_idx = unsafe { frontier_idx.into_mut_slice() };
+                let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
                 let mask = unsafe { mask.into_mut_slice() };
                 let valid_counts = unsafe { valid_counts.into_mut_slice() };
-                debug_assert_eq!(frontier_idx.len(), environments.len() * proposal_frontiers);
+                debug_assert_eq!(proposal_frontier_idx.len(), environments.len());
                 debug_assert_eq!(
                     mask.len(),
-                    environments.len() * proposal_frontiers * proposal_mask_byte_count
+                    environments.len() * proposal_mask_byte_count
                 );
-                debug_assert_eq!(valid_counts.len(), environments.len() * proposal_frontiers);
+                debug_assert_eq!(valid_counts.len(), environments.len());
 
                 for (env_idx, env) in environments.iter().enumerate() {
-                    let slot_start = env_idx * proposal_frontiers;
-                    let slot_end = slot_start + proposal_frontiers;
-                    let mask_start = slot_start * proposal_mask_byte_count;
-                    let mask_end = slot_end * proposal_mask_byte_count;
+                    let mask_start = env_idx * proposal_mask_byte_count;
+                    let mask_end = mask_start + proposal_mask_byte_count;
                     env.proposal_candidate_mask(
                         &common_data,
-                        proposal_frontiers,
                         proposal_door_variant_count,
-                        &mut frontier_idx[slot_start..slot_end],
+                        &mut proposal_frontier_idx[env_idx],
                         &mut mask[mask_start..mask_end],
-                        &mut valid_counts[slot_start..slot_end],
+                        &mut valid_counts[env_idx],
                     );
                 }
                 WorkerResponse::Done
@@ -1418,9 +1413,9 @@ pub struct CandidatesWithOutcomes {
 
 #[pyclass(module = "map_gen")]
 pub struct ProposalCandidateMask {
-    frontier_idx: Py<PyArray2<FrontierIdx>>,
-    mask: Py<PyArray3<u8>>,
-    valid_counts: Py<PyArray2<usize>>,
+    proposal_frontier_idx: Py<PyArray1<FrontierIdx>>,
+    mask: Py<PyArray2<u8>>,
+    valid_counts: Py<PyArray1<usize>>,
     #[pyo3(get)]
     door_variant_count: usize,
 }
@@ -1521,17 +1516,17 @@ impl CandidatesWithOutcomes {
 #[pymethods]
 impl ProposalCandidateMask {
     #[getter]
-    fn frontier_idx(&self, py: Python<'_>) -> Py<PyArray2<FrontierIdx>> {
-        self.frontier_idx.clone_ref(py)
+    fn proposal_frontier_idx(&self, py: Python<'_>) -> Py<PyArray1<FrontierIdx>> {
+        self.proposal_frontier_idx.clone_ref(py)
     }
 
     #[getter]
-    fn mask(&self, py: Python<'_>) -> Py<PyArray3<u8>> {
+    fn mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.mask.clone_ref(py)
     }
 
     #[getter]
-    fn valid_counts(&self, py: Python<'_>) -> Py<PyArray2<usize>> {
+    fn valid_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
         self.valid_counts.clone_ref(py)
     }
 }
@@ -1751,17 +1746,17 @@ impl FeatureOutputSlices<'_> {
 struct SparseFeatureOutputShards {
     fixed: FeatureOutputShards,
     sparse: FeatureOutputShards,
-    dense_row_idx: OutputShard<i64>,
+    row_snapshot_idx: OutputShard<i64>,
+    row_frontier_idx: OutputShard<FrontierIdx>,
     snapshot_start: usize,
-    dense_frontier_count: usize,
 }
 
 struct SparseFeatureOutputSlices<'a> {
     fixed: FeatureOutputSlices<'a>,
     sparse: FeatureOutputSlices<'a>,
-    dense_row_idx: &'a mut [i64],
+    row_snapshot_idx: &'a mut [i64],
+    row_frontier_idx: &'a mut [FrontierIdx],
     snapshot_start: usize,
-    dense_frontier_count: usize,
     sparse_row_count: usize,
 }
 
@@ -1770,9 +1765,9 @@ impl SparseFeatureOutputShards {
         SparseFeatureOutputSlices {
             fixed: unsafe { self.fixed.into_slices() },
             sparse: unsafe { self.sparse.into_slices() },
-            dense_row_idx: unsafe { self.dense_row_idx.into_mut_slice() },
+            row_snapshot_idx: unsafe { self.row_snapshot_idx.into_mut_slice() },
+            row_frontier_idx: unsafe { self.row_frontier_idx.into_mut_slice() },
             snapshot_start: self.snapshot_start,
-            dense_frontier_count: self.dense_frontier_count,
             sparse_row_count: 0,
         }
     }
@@ -1782,13 +1777,23 @@ impl SparseFeatureOutputSlices<'_> {
     fn write_features(&mut self, snapshot_idx: usize, features: &Features) {
         self.fixed.write_fixed_features(snapshot_idx, features);
         let frontier_count = features.frontier.len() / FEATURE_FRONTIER_WIDTH;
+        let row_start = self.sparse_row_count;
         for frontier_idx in 0..frontier_count {
             let sparse_row_idx = self.sparse_row_count;
-            self.dense_row_idx[sparse_row_idx] = ((self.snapshot_start + snapshot_idx)
-                * self.dense_frontier_count
-                + frontier_idx) as i64;
+            self.row_snapshot_idx[sparse_row_idx] = (self.snapshot_start + snapshot_idx) as i64;
+            self.row_frontier_idx[sparse_row_idx] = frontier_idx as FrontierIdx;
             self.sparse
                 .write_frontier_row(sparse_row_idx, features, frontier_idx);
+            if !self.sparse.frontier_neighbor.is_empty() {
+                for neighbor in &mut self.sparse.frontier_neighbor[sparse_row_idx
+                    * self.sparse.frontier_neighbor_count
+                    ..(sparse_row_idx + 1) * self.sparse.frontier_neighbor_count]
+                {
+                    if *neighbor >= 0 {
+                        *neighbor += row_start as i16;
+                    }
+                }
+            }
             self.sparse_row_count += 1;
         }
     }
@@ -2284,37 +2289,29 @@ impl EnvironmentGroup {
         self.step_with_kind(py, room_idx, room_x, room_y, StepCommandKind::StepKnown)
     }
 
-    fn get_proposal_candidate_mask<'py>(
-        &mut self,
-        py: Python<'py>,
-        proposal_frontiers: usize,
-    ) -> PyResult<ProposalCandidateMask> {
-        if proposal_frontiers == 0 {
-            return Err(PyValueError::new_err(
-                "proposal_frontiers must be greater than zero",
-            ));
-        }
+    fn get_proposal_candidate_mask<'py>(&mut self, py: Python<'py>) -> PyResult<ProposalCandidateMask> {
         let door_variant_count = self.common_data.num_door_output_variants;
         let mask_byte_count = door_variant_count.div_ceil(8);
-        let mut frontier_idx = vec![-1; self.num_environments * proposal_frontiers];
-        let mut mask = vec![0; self.num_environments * proposal_frontiers * mask_byte_count];
-        let mut valid_counts = vec![0; self.num_environments * proposal_frontiers];
+        let mut proposal_frontier_idx = vec![-1; self.num_environments];
+        let mut mask = vec![0; self.num_environments * mask_byte_count];
+        let mut valid_counts = vec![0; self.num_environments];
 
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let slot_start = worker.start * proposal_frontiers;
-                let slot_end = worker.end() * proposal_frontiers;
-                let mask_start = slot_start * mask_byte_count;
-                let mask_end = slot_end * mask_byte_count;
+                let mask_start = worker.start * mask_byte_count;
+                let mask_end = worker.end() * mask_byte_count;
                 if let Err(err) = worker.send(WorkerCommand::GetProposalCandidateMask {
-                    proposal_frontiers,
                     proposal_door_variant_count: door_variant_count,
                     proposal_mask_byte_count: mask_byte_count,
-                    frontier_idx: OutputShard::from_slice(&mut frontier_idx[slot_start..slot_end]),
+                    proposal_frontier_idx: OutputShard::from_slice(
+                        &mut proposal_frontier_idx[worker.start..worker.end()],
+                    ),
                     mask: OutputShard::from_slice(&mut mask[mask_start..mask_end]),
-                    valid_counts: OutputShard::from_slice(&mut valid_counts[slot_start..slot_end]),
+                    valid_counts: OutputShard::from_slice(
+                        &mut valid_counts[worker.start..worker.end()],
+                    ),
                 }) {
                     set_first_error(&mut first_error, err);
                     break;
@@ -2326,28 +2323,10 @@ impl EnvironmentGroup {
         })?;
 
         Ok(ProposalCandidateMask {
-            frontier_idx: pyarray2_from_flat_vec(
-                py,
-                frontier_idx,
-                self.num_environments,
-                proposal_frontiers,
-            )?
-            .unbind(),
-            mask: pyarray3_from_flat_vec(
-                py,
-                mask,
-                self.num_environments,
-                proposal_frontiers,
-                mask_byte_count,
-            )?
-            .unbind(),
-            valid_counts: pyarray2_from_flat_vec(
-                py,
-                valid_counts,
-                self.num_environments,
-                proposal_frontiers,
-            )?
-            .unbind(),
+            proposal_frontier_idx: proposal_frontier_idx.into_pyarray(py).unbind(),
+            mask: pyarray2_from_flat_vec(py, mask, self.num_environments, mask_byte_count)?
+                .unbind(),
+            valid_counts: valid_counts.into_pyarray(py).unbind(),
             door_variant_count,
         })
     }
@@ -3196,7 +3175,7 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
             }
-            wait_for_done_responses(&self.workers, sent_workers, first_error)
+            collect_feature_info(&self.workers, sent_workers, first_error).map(|_| ())
         })?;
         Ok((
             pyarray2_from_flat_vec(
@@ -3265,6 +3244,224 @@ impl EnvironmentGroup {
                 frontier_count,
                 connection_count * usize::from(self.features.frontier_connection_reachability),
             )?,
+        ))
+    }
+
+    #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (environment_start=0, environment_count=None))]
+    fn get_sparse_features<'py>(
+        &self,
+        py: Python<'py>,
+        environment_start: usize,
+        environment_count: Option<usize>,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray2<Coord>>,
+        Bound<'py, PyArray2<Coord>>,
+        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray2<i8>>,
+        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray2<i16>>,
+        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray2<u8>>,
+        Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray1<FrontierIdx>>,
+    )> {
+        let inventory_count = self.common_data.connection_variant_rooms.len();
+        let room_count = self.common_data.room.len();
+        let connection_count = self.common_data.room_connection.len();
+        let Some(remaining_environments) = self.num_environments.checked_sub(environment_start)
+        else {
+            return Err(PyValueError::new_err(
+                "feature range must fit within the environment group",
+            ));
+        };
+        let environment_count = environment_count.unwrap_or(remaining_environments);
+        if environment_count > remaining_environments {
+            return Err(PyValueError::new_err(
+                "feature range must fit within the environment group",
+            ));
+        }
+        let (_, sparse_row_count, worker_sparse_row_counts) = py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let start = max(environment_start, worker.start);
+                let end = min(environment_start + environment_count, worker.end());
+                if start >= end {
+                    continue;
+                }
+                if let Err(err) = worker.send(WorkerCommand::GetFeatures {
+                    frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
+                    frontier_neighbor_count: self.frontier_neighbor_count,
+                    frontier_window_size: self.frontier_window_size,
+                    environment_start: start - worker.start,
+                    environment_count: end - start,
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            collect_feature_info(&self.workers, sent_workers, first_error)
+        })?;
+        let sparse_row_count =
+            sparse_row_count * usize::from(self.features.has_frontier_features());
+        let worker_sparse_row_counts = worker_sparse_row_counts
+            .into_iter()
+            .map(|count| count * usize::from(self.features.has_frontier_features()))
+            .collect::<Vec<_>>();
+        let inventory_width = inventory_count * usize::from(self.features.inventory);
+        let room_width = room_count * usize::from(self.features.room_position);
+        let frontier_occupancy_width = (self.frontier_window_size * self.frontier_window_size)
+            .div_ceil(8)
+            * usize::from(self.features.frontier_occupancy);
+        let frontier_neighbor_width =
+            self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor);
+        let frontier_neighbor_pair_width =
+            self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor_flags);
+        let connection_reachability_width =
+            connection_count * usize::from(self.features.connection_reachability);
+        let frontier_connection_width =
+            connection_count * usize::from(self.features.frontier_connection_reachability);
+        let mut inventory = vec![0; environment_count * inventory_width];
+        let mut room_x = vec![0; environment_count * room_width];
+        let mut room_y = vec![0; environment_count * room_width];
+        let mut room_placed = vec![0; environment_count * room_width];
+        let mut frontier = vec![0; sparse_row_count * FEATURE_FRONTIER_WIDTH];
+        let mut frontier_occupancy = vec![0; sparse_row_count * frontier_occupancy_width];
+        let mut frontier_neighbor = vec![-1; sparse_row_count * frontier_neighbor_width];
+        let mut frontier_neighbor_pair = vec![0; sparse_row_count * frontier_neighbor_pair_width];
+        let mut connection_reachability = vec![0; environment_count * connection_reachability_width];
+        let mut frontier_connection_reachability =
+            vec![0; sparse_row_count * frontier_connection_width];
+        let mut row_snapshot_idx = vec![0; sparse_row_count];
+        let mut row_frontier_idx = vec![-1; sparse_row_count];
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            let mut sparse_row_start = 0;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let start = max(environment_start, worker.start);
+                let end = min(environment_start + environment_count, worker.end());
+                if start >= end {
+                    continue;
+                }
+                let snapshot_start = start - environment_start;
+                let snapshot_count = end - start;
+                let worker_sparse_row_count = worker_sparse_row_counts[worker_idx];
+                let outputs = SparseFeatureOutputShards {
+                    fixed: FeatureOutputShards {
+                        inventory: OutputShard::from_slice(
+                            &mut inventory[snapshot_start * inventory_width
+                                ..(snapshot_start + snapshot_count) * inventory_width],
+                        ),
+                        room_x: OutputShard::from_slice(
+                            &mut room_x[snapshot_start * room_width
+                                ..(snapshot_start + snapshot_count) * room_width],
+                        ),
+                        room_y: OutputShard::from_slice(
+                            &mut room_y[snapshot_start * room_width
+                                ..(snapshot_start + snapshot_count) * room_width],
+                        ),
+                        room_placed: OutputShard::from_slice(
+                            &mut room_placed[snapshot_start * room_width
+                                ..(snapshot_start + snapshot_count) * room_width],
+                        ),
+                        frontier: OutputShard::empty(),
+                        frontier_occupancy: OutputShard::empty(),
+                        frontier_neighbor: OutputShard::empty(),
+                        frontier_neighbor_pair: OutputShard::empty(),
+                        connection_reachability: OutputShard::from_slice(
+                            &mut connection_reachability[snapshot_start
+                                * connection_reachability_width
+                                ..(snapshot_start + snapshot_count)
+                                    * connection_reachability_width],
+                        ),
+                        frontier_connection_reachability: OutputShard::empty(),
+                        inventory_count: inventory_width,
+                        room_count: room_width,
+                        connection_count: connection_reachability_width,
+                        frontier_count: 0,
+                        frontier_neighbor_count: self.frontier_neighbor_count,
+                        frontier_window_size: self.frontier_window_size,
+                    },
+                    sparse: FeatureOutputShards {
+                        inventory: OutputShard::empty(),
+                        room_x: OutputShard::empty(),
+                        room_y: OutputShard::empty(),
+                        room_placed: OutputShard::empty(),
+                        frontier: OutputShard::from_slice(
+                            &mut frontier[sparse_row_start * FEATURE_FRONTIER_WIDTH
+                                ..(sparse_row_start + worker_sparse_row_count)
+                                    * FEATURE_FRONTIER_WIDTH],
+                        ),
+                        frontier_occupancy: OutputShard::from_slice(
+                            &mut frontier_occupancy[sparse_row_start * frontier_occupancy_width
+                                ..(sparse_row_start + worker_sparse_row_count)
+                                    * frontier_occupancy_width],
+                        ),
+                        frontier_neighbor: OutputShard::from_slice(
+                            &mut frontier_neighbor[sparse_row_start * frontier_neighbor_width
+                                ..(sparse_row_start + worker_sparse_row_count)
+                                    * frontier_neighbor_width],
+                        ),
+                        frontier_neighbor_pair: OutputShard::from_slice(
+                            &mut frontier_neighbor_pair[sparse_row_start
+                                * frontier_neighbor_pair_width
+                                ..(sparse_row_start + worker_sparse_row_count)
+                                    * frontier_neighbor_pair_width],
+                        ),
+                        connection_reachability: OutputShard::empty(),
+                        frontier_connection_reachability: OutputShard::from_slice(
+                            &mut frontier_connection_reachability[sparse_row_start
+                                * frontier_connection_width
+                                ..(sparse_row_start + worker_sparse_row_count)
+                                    * frontier_connection_width],
+                        ),
+                        inventory_count: 0,
+                        room_count: 0,
+                        connection_count: frontier_connection_width,
+                        frontier_count: 1,
+                        frontier_neighbor_count: self.frontier_neighbor_count,
+                        frontier_window_size: self.frontier_window_size,
+                    },
+                    row_snapshot_idx: OutputShard::from_slice(
+                        &mut row_snapshot_idx
+                            [sparse_row_start..sparse_row_start + worker_sparse_row_count],
+                    ),
+                    row_frontier_idx: OutputShard::from_slice(
+                        &mut row_frontier_idx
+                            [sparse_row_start..sparse_row_start + worker_sparse_row_count],
+                    ),
+                    snapshot_start,
+                };
+                if let Err(err) = worker.send(WorkerCommand::PackSparseFeatures {
+                    outputs,
+                    expected_snapshot_count: snapshot_count,
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+                sparse_row_start += worker_sparse_row_count;
+            }
+            collect_feature_info(&self.workers, sent_workers, first_error).map(|_| ())
+        })?;
+        Ok((
+            pyarray2_from_flat_vec(py, inventory, environment_count, inventory_width)?,
+            pyarray2_from_flat_vec(py, room_x, environment_count, room_width)?,
+            pyarray2_from_flat_vec(py, room_y, environment_count, room_width)?,
+            pyarray2_from_flat_vec(py, room_placed, environment_count, room_width)?,
+            pyarray2_from_flat_vec(py, frontier, sparse_row_count, FEATURE_FRONTIER_WIDTH)?,
+            pyarray2_from_flat_vec(py, frontier_occupancy, sparse_row_count, frontier_occupancy_width)?,
+            pyarray2_from_flat_vec(py, frontier_neighbor, sparse_row_count, frontier_neighbor_width)?,
+            pyarray2_from_flat_vec(py, frontier_neighbor_pair, sparse_row_count, frontier_neighbor_pair_width)?,
+            pyarray2_from_flat_vec(py, connection_reachability, environment_count, connection_reachability_width)?,
+            pyarray2_from_flat_vec(py, frontier_connection_reachability, sparse_row_count, frontier_connection_width)?,
+            row_snapshot_idx.into_pyarray(py),
+            row_frontier_idx.into_pyarray(py),
         ))
     }
 
@@ -3518,7 +3715,6 @@ impl EnvironmentGroup {
         environment_count: usize,
         candidate_count: usize,
         environment_start: usize,
-        frontier_count: usize,
         sparse_row_count: usize,
         worker_sparse_row_counts: Vec<usize>,
         mut inventory: PyReadwriteArray2<'py, u8>,
@@ -3531,7 +3727,8 @@ impl EnvironmentGroup {
         mut frontier_neighbor_pair: PyReadwriteArray2<'py, u8>,
         mut connection_reachability: PyReadwriteArray2<'py, u8>,
         mut frontier_connection_reachability: PyReadwriteArray2<'py, u8>,
-        mut dense_row_idx: PyReadwriteArray1<'py, i64>,
+        mut row_snapshot_idx: PyReadwriteArray1<'py, i64>,
+        mut row_frontier_idx: PyReadwriteArray1<'py, FrontierIdx>,
     ) -> PyResult<()> {
         if environment_start + environment_count > self.num_environments {
             return Err(PyValueError::new_err(
@@ -3568,7 +3765,8 @@ impl EnvironmentGroup {
         let connection_reachability_shape = connection_reachability.as_array().shape().to_vec();
         let frontier_connection_reachability_shape =
             frontier_connection_reachability.as_array().shape().to_vec();
-        let dense_row_idx_shape = dense_row_idx.as_array().shape().to_vec();
+        let row_snapshot_idx_shape = row_snapshot_idx.as_array().shape().to_vec();
+        let row_frontier_idx_shape = row_frontier_idx.as_array().shape().to_vec();
         if inventory_shape[0] < snapshot_count
             || room_x_shape[0] < snapshot_count
             || room_y_shape[0] < snapshot_count
@@ -3579,7 +3777,8 @@ impl EnvironmentGroup {
             || frontier_neighbor_shape[0] < sparse_row_count
             || frontier_neighbor_pair_shape[0] < sparse_row_count
             || frontier_connection_reachability_shape[0] < sparse_row_count
-            || dense_row_idx_shape[0] < sparse_row_count
+            || row_snapshot_idx_shape[0] < sparse_row_count
+            || row_frontier_idx_shape[0] < sparse_row_count
         {
             return Err(PyValueError::new_err(
                 "sparse feature output buffer is too small",
@@ -3648,9 +3847,12 @@ impl EnvironmentGroup {
             .map_err(|_| {
                 PyValueError::new_err("frontier_connection_reachability must be contiguous")
             })?;
-        let dense_row_idx = dense_row_idx
+        let row_snapshot_idx = row_snapshot_idx
             .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("dense_row_idx must be contiguous"))?;
+            .map_err(|_| PyValueError::new_err("row_snapshot_idx must be contiguous"))?;
+        let row_frontier_idx = row_frontier_idx
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("row_frontier_idx must be contiguous"))?;
 
         if worker_sparse_row_counts.len() != self.workers.len() {
             return Err(PyValueError::new_err(
@@ -3747,12 +3949,15 @@ impl EnvironmentGroup {
                         frontier_neighbor_count: self.frontier_neighbor_count,
                         frontier_window_size: self.frontier_window_size,
                     },
-                    dense_row_idx: OutputShard::from_slice(
-                        &mut dense_row_idx
+                    row_snapshot_idx: OutputShard::from_slice(
+                        &mut row_snapshot_idx
+                            [sparse_row_start..sparse_row_start + worker_sparse_row_count],
+                    ),
+                    row_frontier_idx: OutputShard::from_slice(
+                        &mut row_frontier_idx
                             [sparse_row_start..sparse_row_start + worker_sparse_row_count],
                     ),
                     snapshot_start,
-                    dense_frontier_count: frontier_count,
                 };
                 if let Err(err) = worker.send(WorkerCommand::PackSparseFeatures {
                     outputs,
