@@ -47,34 +47,83 @@ const PROFILE_FEATURES_OUTPUT: usize = 41;
 const PROFILE_FEATURES_APPLY_CANDIDATE: usize = 42;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CandidateUpdate {
-    Build,
+enum StepMode {
+    CommitFull,
+    CommitKnown,
     Lookahead,
-    Skip,
+    FeatureOnly,
 }
 
-impl CandidateUpdate {
-    fn builds_candidates(self) -> bool {
+impl StepMode {
+    fn records_action(self) -> bool {
         match self {
-            CandidateUpdate::Build => true,
-            CandidateUpdate::Lookahead => true,
-            CandidateUpdate::Skip => false,
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => true,
+            StepMode::Lookahead => true,
+            StepMode::FeatureOnly => false,
+        }
+    }
+
+    fn updates_geometry_inventory(self) -> bool {
+        match self {
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => true,
+            StepMode::Lookahead => true,
+            StepMode::FeatureOnly => false,
+        }
+    }
+
+    fn updates_connection_variant_inventory(self) -> bool {
+        match self {
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => true,
+            StepMode::Lookahead => true,
+            StepMode::FeatureOnly => true,
         }
     }
 
     fn updates_occupancy(self) -> bool {
         match self {
-            CandidateUpdate::Lookahead => false,
-            CandidateUpdate::Build => true,
-            CandidateUpdate::Skip => true,
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => true,
+            StepMode::Lookahead => false,
+            StepMode::FeatureOnly => false,
+        }
+    }
+
+    fn updates_door_matches(self) -> bool {
+        match self {
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => true,
+            StepMode::Lookahead => true,
+            StepMode::FeatureOnly => false,
+        }
+    }
+
+    fn builds_frontier_candidates(self) -> bool {
+        match self {
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => false,
+            StepMode::Lookahead => true,
+            StepMode::FeatureOnly => false,
         }
     }
 
     fn stores_full_candidate_lists(self) -> bool {
         match self {
-            CandidateUpdate::Build => true,
-            CandidateUpdate::Lookahead => false,
-            CandidateUpdate::Skip => false,
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => false,
+            StepMode::Lookahead => false,
+            StepMode::FeatureOnly => false,
+        }
+    }
+
+    fn filters_existing_frontier_candidates(self) -> bool {
+        match self {
+            StepMode::CommitFull => true,
+            StepMode::CommitKnown => false,
+            StepMode::Lookahead => true,
+            StepMode::FeatureOnly => false,
         }
     }
 }
@@ -798,12 +847,12 @@ impl Environment {
 
     pub fn step(&mut self, action: Action, common: &CommonData) {
         self.record_frontier_count();
-        self.step_impl(action, common, CandidateUpdate::Build);
+        self.step_impl(action, common, StepMode::CommitFull);
     }
 
     pub fn step_known(&mut self, action: Action, common: &CommonData) {
         self.record_frontier_count();
-        self.step_impl(action, common, CandidateUpdate::Skip);
+        self.step_impl(action, common, StepMode::CommitKnown);
     }
 
     fn record_frontier_count(&mut self) {
@@ -819,70 +868,19 @@ impl Environment {
     }
 
     fn step_for_lookahead(&mut self, action: Action, common: &CommonData) {
-        self.step_impl(action, common, CandidateUpdate::Lookahead);
+        self.step_impl(action, common, StepMode::Lookahead);
     }
 
     fn step_for_features(&mut self, action: Action, common: &CommonData) {
-        if self.finished {
-            return;
-        }
-        if action.room_idx >= common.room.len() as RoomIdx {
-            // Dummy/invalid action: do nothing more.
-            self.finished = true;
-            return;
-        }
-        let room = &common.room[action.room_idx as usize];
-        let connection_variant_idx = room.connection_variant_idx;
-        assert!(!self.room_used[action.room_idx as usize]);
-        self.room_used.set(action.room_idx as usize, true);
-        self.room_x[action.room_idx as usize] = action.x;
-        self.room_y[action.room_idx as usize] = action.y;
-        self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
-        self.add_room_components_and_edges(action, common);
-
-        // Feature extraction only needs frontier metadata. Future attachment candidates are
-        // maintained by committed steps when an action is selected.
-        for door in &room.doors {
-            let door_loc = DoorLocation::new(door, action.x, action.y);
-            if let Some(frontier) = self.frontier.remove(&door_loc) {
-                let i1 = door.dir_door_idx;
-                let i2 = frontier.dir_door_idx;
-                let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
-                let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
-                    .room_part_idx;
-                self.add_component_edge(
-                    self.room_part_component[p1 as usize],
-                    self.room_part_component[p2 as usize],
-                );
-                self.add_component_edge(
-                    self.room_part_component[p2 as usize],
-                    self.room_part_component[p1 as usize],
-                );
-            } else {
-                self.frontier.insert(
-                    door_loc,
-                    Frontier {
-                        dir_door_idx: door.dir_door_idx,
-                        component: self.room_part_component(common, action.room_idx, door.part_idx),
-                        kind: common.room_dir_door[door.direction as usize]
-                            [door.dir_door_idx as usize]
-                            .kind,
-                        candidates: vec![],
-                    },
-                );
-            }
-        }
+        self.step_impl(action, common, StepMode::FeatureOnly);
     }
 
-    fn step_impl(
-        &mut self,
-        action: Action,
-        common: &CommonData,
-        candidate_update: CandidateUpdate,
-    ) {
-        let profile = profile_start();
-        self.actions.push(action);
-        profile_end(PROFILE_STEP_PUSH_ACTION, profile);
+    fn step_impl(&mut self, action: Action, common: &CommonData, mode: StepMode) {
+        if mode.records_action() {
+            let profile = profile_start();
+            self.actions.push(action);
+            profile_end(PROFILE_STEP_PUSH_ACTION, profile);
+        }
         if self.finished {
             return;
         }
@@ -899,8 +897,12 @@ impl Environment {
         self.room_used.set(action.room_idx as usize, true);
         self.room_x[action.room_idx as usize] = action.x;
         self.room_y[action.room_idx as usize] = action.y;
-        self.geometry_unused_count[action_geometry_idx as usize] -= 1;
-        self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
+        if mode.updates_geometry_inventory() {
+            self.geometry_unused_count[action_geometry_idx as usize] -= 1;
+        }
+        if mode.updates_connection_variant_inventory() {
+            self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
+        }
         profile_end(PROFILE_STEP_MARK_ROOM_USED, profile);
 
         let profile = profile_start();
@@ -908,7 +910,7 @@ impl Environment {
         profile_end(PROFILE_STEP_COMPONENTS_EDGES, profile);
 
         let profile = profile_start();
-        if candidate_update.updates_occupancy() {
+        if mode.updates_occupancy() {
             for &(dx, dy) in &common.geometry[action_geometry_idx as usize].occupied_tiles {
                 let x = action.x + dx;
                 let y = action.y + dy;
@@ -928,8 +930,10 @@ impl Environment {
                 // This frontier is now connected, so remove it and mark the doors as connected:
                 let i1 = door.dir_door_idx;
                 let i2 = frontier.dir_door_idx;
-                self.door_matches[door.direction as usize][i1 as usize] = i2;
-                self.door_matches[door.direction.opposite() as usize][i2 as usize] = i1;
+                if mode.updates_door_matches() {
+                    self.door_matches[door.direction as usize][i1 as usize] = i2;
+                    self.door_matches[door.direction.opposite() as usize][i2 as usize] = i1;
+                }
                 let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
                 let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
                     .room_part_idx;
@@ -946,7 +950,7 @@ impl Environment {
                 // This door is not connected to any existing frontier, so it becomes a new frontier.
                 // Check all doors with the given orientation, to list which ones could connect here.
                 let mut candidates = vec![];
-                if candidate_update.builds_candidates() {
+                if mode.builds_frontier_candidates() {
                     let profile = profile_start();
                     let (x1, y1) = get_behind_door_position(
                         door.direction,
@@ -997,7 +1001,7 @@ impl Environment {
                             door_kind: opp_door.kind,
                         };
                         candidates.push(candidate);
-                        if !candidate_update.stores_full_candidate_lists() {
+                        if !mode.stores_full_candidate_lists() {
                             break 'door;
                         }
                     }
@@ -1015,7 +1019,7 @@ impl Environment {
         }
 
         // Filter existing frontiers to remove geometries blocked by the new room or with no unused representatives.
-        if candidate_update.builds_candidates() {
+        if mode.filters_existing_frontier_candidates() {
             let profile = profile_start();
             let geometry_unused_count = &self.geometry_unused_count;
             for frontier in self.frontier.values_mut() {
@@ -1030,7 +1034,7 @@ impl Environment {
                             cand.y,
                         )
                 };
-                if candidate_update.stores_full_candidate_lists() {
+                if mode.stores_full_candidate_lists() {
                     frontier.candidates.retain(keep_candidate);
                 } else if let Some(candidate_idx) =
                     frontier.candidates.iter().position(keep_candidate)
