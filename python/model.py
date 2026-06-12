@@ -487,8 +487,19 @@ class FrontierModel(torch.nn.Module):
             # pair: [r, k, pair_width], neighbor: [r, k], pair_mask: [r, k, 1]
             pair = self._pair_features(features, dtype)
             relative_position = self._relative_position_features(features)
-            neighbor = features.frontier_neighbor.clamp_min(0).to(torch.int64)
-            pair_mask = (features.frontier_neighbor >= 0).unsqueeze(-1)
+            frontier_neighbor = features.frontier_neighbor
+            neighbor = frontier_neighbor.clamp_min(0).to(torch.int64)
+            pair_mask = (frontier_neighbor >= 0).unsqueeze(-1)
+            single_neighbor = neighbor.shape[1] == 1
+            if single_neighbor:
+                neighbor = neighbor[:, 0]
+                pair_mask = pair_mask[:, 0]
+                if pair is not None:
+                    pair = pair[:, 0]
+                if relative_position is not None:
+                    relative_position = relative_position[:, 0]
+            else:
+                pair_count = pair_mask.sum(1).clamp_min(1)
             global_rows = global_state[row_snapshot_idx]
             for source_layer, pair_layer, output_layer, update_layer in zip(
                 self.source_message_layers,
@@ -503,27 +514,43 @@ class FrontierModel(torch.nn.Module):
                 messages = source if pair_layer is None else source + pair_layer(pair)
                 if relative_position is not None:
                     messages = messages + relative_position
-                # messages: [r, k, h]
                 messages = output_layer(messages) * pair_mask
-                # messages: [r, k, e]
-                messages = messages.sum(1) / pair_mask.sum(1).clamp_min(1)
+                if not single_neighbor:
+                    # messages: [r, k, e]
+                    messages = messages.sum(1) / pair_count
                 # messages [r, e]
                 X = X + update_layer(torch.cat([X, messages, global_rows], dim=-1))
-            mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
-            mean_pool.index_add_(0, row_snapshot_idx, X)
-            count = torch.bincount(
+            row_count_by_snapshot = torch.bincount(
                 row_snapshot_idx,
                 minlength=snapshot_count,
-            ).to(X.dtype).unsqueeze(1).clamp_min(1)
-            mean_pool = mean_pool / count
-            max_pool = X.new_full([snapshot_count, self.embedding_width], -torch.inf)
-            max_pool.scatter_reduce_(
-                0,
-                row_snapshot_idx.unsqueeze(1).expand(-1, self.embedding_width),
-                X,
-                reduce="amax",
-                include_self=True,
             )
+            if X.device.type == "cuda":
+                mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
+                mean_pool.index_add_(0, row_snapshot_idx, X)
+                count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)
+                mean_pool = mean_pool / count
+                max_pool = X.new_full([snapshot_count, self.embedding_width], -torch.inf)
+                max_pool.scatter_reduce_(
+                    0,
+                    row_snapshot_idx.unsqueeze(1).expand(-1, self.embedding_width),
+                    X,
+                    reduce="amax",
+                    include_self=True,
+                )
+            else:
+                count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)
+                mean_pool = torch.segment_reduce(
+                    X,
+                    "sum",
+                    lengths=row_count_by_snapshot,
+                    axis=0,
+                ) / count
+                max_pool = torch.segment_reduce(
+                    X,
+                    "max",
+                    lengths=row_count_by_snapshot,
+                    axis=0,
+                )
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
         proposal_score = (
             self.proposal_output(X)
