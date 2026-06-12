@@ -28,38 +28,48 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}m {remaining_seconds}s"
 
 
-def matching_run_hashes(repo) -> tuple[list[str], int]:
+def matching_run_hashes(repo, repo_integrity_error_type) -> tuple[list[str], int, int]:
     run_hashes = []
     skipped_count = 0
+    corrupt_count = 0
     for run in repo.iter_runs():
-        if run.duration >= MAX_DURATION_SECONDS:
+        try:
+            duration = run.duration
+            active = run.active
+        except repo_integrity_error_type as error:
+            print(f"{run.hash} corrupt skipped: {error}", file=sys.stderr, flush=True)
+            corrupt_count += 1
             continue
-        if run.active:
-            print(f"{run.hash} {format_duration(run.duration)} active skipped", flush=True)
+
+        if duration >= MAX_DURATION_SECONDS:
+            continue
+        if active:
+            print(f"{run.hash} {format_duration(duration)} active skipped", flush=True)
             skipped_count += 1
             continue
 
-        print(f"{run.hash} {format_duration(run.duration)} finished", flush=True)
+        print(f"{run.hash} {format_duration(duration)} finished", flush=True)
         run_hashes.append(run.hash)
-    return run_hashes, skipped_count
+    return run_hashes, skipped_count, corrupt_count
 
 
 def main() -> int:
     args = parse_args()
     from aim import Repo
+    from aim.sdk.errors import RepoIntegrityError
 
     repo = Repo.from_path(args.repo)
-    run_hashes, skipped_count = matching_run_hashes(repo)
+    run_hashes, skipped_count, corrupt_count = matching_run_hashes(repo, RepoIntegrityError)
     if not run_hashes:
         print(
             f"No finished Aim runs shorter than 30 minutes found. "
-            f"Skipped {skipped_count} active run(s)."
+            f"Skipped {skipped_count} active run(s) and {corrupt_count} corrupt run(s)."
         )
         return 0
     if not args.yes:
         print(
             f"Would delete {len(run_hashes)} Aim run(s). "
-            f"Skipped {skipped_count} active run(s). "
+            f"Skipped {skipped_count} active run(s) and {corrupt_count} corrupt run(s). "
             "Run again with --yes to delete them."
         )
         return 0
@@ -73,7 +83,10 @@ def main() -> int:
         )
         return 1
 
-    print(f"Deleted {len(run_hashes)} Aim run(s). Skipped {skipped_count} active run(s).")
+    print(
+        f"Deleted {len(run_hashes)} Aim run(s). "
+        f"Skipped {skipped_count} active run(s) and {corrupt_count} corrupt run(s)."
+    )
     return 0
 
 
