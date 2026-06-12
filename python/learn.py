@@ -753,8 +753,8 @@ def train_round(
     episode_outcomes: EpisodeOutcomes,
     proposal_data: ProposalData,
 ) -> tuple[MainLossBreakdown, float]:
-    context.main_optimizer.param_groups[0]["lr"] = context.step_config.optimizer.lr
-    context.balance_optimizer.param_groups[0]["lr"] = context.step_config.balance_optimizer.lr
+    set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
+    set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
 
     total_loss = empty_main_loss_breakdown()
     total_balance_loss = 0.0
@@ -800,3 +800,10 @@ def train_round(
         average_main_loss(total_loss, train_batch_count),
         total_balance_loss / train_batch_count,
     )
+
+
+def set_optimizer_lrs(optimizer, config) -> None:
+    if hasattr(optimizer, "set_lrs"):
+        optimizer.set_lrs(config)
+    else:
+        optimizer.param_groups[0]["lr"] = config.lr

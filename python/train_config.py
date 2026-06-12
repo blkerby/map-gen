@@ -36,20 +36,27 @@ class AdamOptimizerConfig(StrictBaseModel):
     beta2: float
 
 
-class AdEMAMixOptimizerConfig(StrictBaseModel):
-    type: Literal["ademamix"]
+class AdamParamsConfig(StrictBaseModel):
     lr: ScheduleableFloat
     beta1: float
     beta2: float
-    beta3: float
-    alpha: float
-    beta3_warmup_steps: int
-    alpha_warmup_steps: int
-    eps: float
-    weight_decay: float
 
 
-type OptimizerConfig = AdamOptimizerConfig | AdEMAMixOptimizerConfig
+class MuonParamsConfig(StrictBaseModel):
+    lr: ScheduleableFloat
+    momentum: float
+    nesterov: bool
+    backend: Literal["newtonschulz5"]
+    backend_steps: int
+
+
+class MuonOptimizerConfig(StrictBaseModel):
+    type: Literal["muon"]
+    adam: AdamParamsConfig
+    muon: MuonParamsConfig
+
+
+type OptimizerConfig = AdamOptimizerConfig | MuonOptimizerConfig
 
 
 class BalanceModelConfig(StrictBaseModel):
@@ -122,7 +129,7 @@ class Config(StrictBaseModel):
     model: ModelConfig
     optimizer: OptimizerConfig
     balance_model: BalanceModelConfig
-    balance_optimizer: OptimizerConfig
+    balance_optimizer: AdamOptimizerConfig
     generation: GenerationConfig
     features: FeatureConfig
     train: TrainConfig
@@ -279,24 +286,23 @@ def episodes_per_round(config: Config) -> int:
 
 
 def validate_optimizer_config(config: OptimizerConfig, path: str) -> None:
+    if isinstance(config, AdamOptimizerConfig):
+        validate_adam_params(config, path)
+        return
+    validate_adam_params(config.adam, f"{path}.adam")
+    validate_muon_params(config.muon, f"{path}.muon")
+
+
+def validate_adam_params(config: AdamOptimizerConfig | AdamParamsConfig, path: str) -> None:
     validate_beta(config.beta1, f"{path}.beta1")
     validate_beta(config.beta2, f"{path}.beta2")
-    if isinstance(config, AdEMAMixOptimizerConfig):
-        validate_beta(config.beta3, f"{path}.beta3")
-        if config.beta3 <= config.beta1:
-            raise ValueError(f"{path}.beta3 must be greater than {path}.beta1")
-        if config.beta3_warmup_steps > 0 and config.beta1 <= 0.0:
-            raise ValueError(f"{path}.beta1 must be greater than zero when beta3 warmup is enabled")
-        if config.alpha < 0.0:
-            raise ValueError(f"{path}.alpha must be greater than or equal to zero")
-        if config.beta3_warmup_steps < 0:
-            raise ValueError(f"{path}.beta3_warmup_steps must be greater than or equal to zero")
-        if config.alpha_warmup_steps < 0:
-            raise ValueError(f"{path}.alpha_warmup_steps must be greater than or equal to zero")
-        if config.eps <= 0.0:
-            raise ValueError(f"{path}.eps must be greater than zero")
-        if config.weight_decay < 0.0:
-            raise ValueError(f"{path}.weight_decay must be greater than or equal to zero")
+
+
+def validate_muon_params(config: MuonParamsConfig, path: str) -> None:
+    if config.momentum < 0.0 or config.momentum >= 1.0:
+        raise ValueError(f"{path}.momentum must be greater than or equal to zero and less than one")
+    if config.backend_steps <= 0:
+        raise ValueError(f"{path}.backend_steps must be greater than zero")
 
 
 def validate_beta(value: float, path: str) -> None:

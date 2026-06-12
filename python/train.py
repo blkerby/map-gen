@@ -42,10 +42,12 @@ from loss import (
     compute_balance_door_match_ss,
 )
 from model import BalanceModel, FrontierModel
-from optimizers import AdEMAMix
+from optimizers import Muon
 from train_config import (
-    AdEMAMixOptimizerConfig,
+    AdamOptimizerConfig,
+    AdamParamsConfig,
     Config,
+    MuonOptimizerConfig,
     OptimizerConfig,
     episodes_per_round,
     instantiate_scheduleable_config,
@@ -171,10 +173,85 @@ def load_optimizer_checkpoint_state(
     })
 
 
+class MainOptimizerBundle:
+    def __init__(self, adam_optimizer: torch.optim.Optimizer, muon_optimizer: Muon):
+        self.adam_optimizer = adam_optimizer
+        self.muon_optimizer = muon_optimizer
+
+    @property
+    def param_groups(self) -> list[dict[str, Any]]:
+        return self.adam_optimizer.param_groups + self.muon_optimizer.param_groups
+
+    def step(self) -> None:
+        self.adam_optimizer.step()
+        self.muon_optimizer.step()
+
+    def set_lrs(self, config: OptimizerConfig) -> None:
+        if not isinstance(config, MuonOptimizerConfig):
+            raise TypeError("Muon optimizer bundle requires a Muon optimizer config")
+        self.adam_optimizer.param_groups[0]["lr"] = config.adam.lr
+        self.muon_optimizer.param_groups[0]["lr"] = config.muon.lr
+
+    def named_optimizers(self) -> dict[str, torch.optim.Optimizer]:
+        return {
+            "adam": self.adam_optimizer,
+            "muon": self.muon_optimizer,
+        }
+
+
+def named_checkpoint_optimizers(optimizer: Any) -> dict[str, torch.optim.Optimizer]:
+    if isinstance(optimizer, MainOptimizerBundle):
+        return optimizer.named_optimizers()
+    return {"adam": optimizer}
+
+
+def save_named_optimizer_checkpoint_state(
+    tensors: dict[str, torch.Tensor],
+    metadata: dict[str, str],
+    optimizer: Any,
+    prefix: str,
+) -> None:
+    names = []
+    for name, named_optimizer in named_checkpoint_optimizers(optimizer).items():
+        names.append(name)
+        part_prefix = f"{prefix}.{name}"
+        part_tensors, param_groups, scalar_state = optimizer_checkpoint_state(
+            named_optimizer,
+            part_prefix,
+        )
+        tensors.update(part_tensors)
+        metadata[f"{prefix}_{name}_param_groups"] = json.dumps(param_groups)
+        metadata[f"{prefix}_{name}_scalar_state"] = json.dumps(scalar_state)
+    metadata[f"{prefix}_names"] = json.dumps(names)
+
+
+def load_named_optimizer_checkpoint_state(
+    optimizer: Any,
+    tensors: dict[str, torch.Tensor],
+    metadata: dict[str, str],
+    prefix: str,
+) -> None:
+    optimizers = named_checkpoint_optimizers(optimizer)
+    names = json.loads(metadata[f"{prefix}_names"])
+    if set(names) != set(optimizers):
+        raise ValueError(
+            f"checkpoint has {prefix} optimizer part(s) {names}, but config created "
+            f"{list(optimizers)}"
+        )
+    for name in names:
+        load_optimizer_checkpoint_state(
+            optimizers[name],
+            tensors,
+            json.loads(metadata[f"{prefix}_{name}_param_groups"]),
+            json.loads(metadata[f"{prefix}_{name}_scalar_state"]),
+            f"{prefix}.{name}",
+        )
+
+
 def validate_checkpoint_metadata(path: Path, metadata: dict[str, str] | None) -> dict[str, str]:
     if metadata is None:
         raise ValueError(f"checkpoint metadata missing in {path}")
-    if metadata["format"] != "map-gen-training-session-checkpoint-v1":
+    if metadata["format"] != "map-gen-training-session-checkpoint-v2":
         raise ValueError(f"unsupported checkpoint format in {path}")
     return metadata
 
@@ -226,31 +303,90 @@ def create_balance_model(config: Config, rooms: list[dict], device: torch.device
     ).to(device)
 
 
-def create_optimizer(
+def create_adam_optimizer(
     parameters,
-    config: OptimizerConfig,
-    initial_config: OptimizerConfig,
+    config: AdamOptimizerConfig | AdamParamsConfig,
+    initial_config: AdamOptimizerConfig | AdamParamsConfig,
 ) -> torch.optim.Optimizer:
-    if isinstance(config, AdEMAMixOptimizerConfig):
-        if not isinstance(initial_config, AdEMAMixOptimizerConfig):
-            raise TypeError("initial optimizer config must have the same type as optimizer config")
-        return AdEMAMix(
-            parameters,
-            lr=initial_config.lr,
-            beta1=config.beta1,
-            beta2=config.beta2,
-            beta3=config.beta3,
-            alpha=config.alpha,
-            beta3_warmup_steps=config.beta3_warmup_steps,
-            alpha_warmup_steps=config.alpha_warmup_steps,
-            eps=config.eps,
-            weight_decay=config.weight_decay,
-        )
     return torch.optim.Adam(
         parameters,
         lr=initial_config.lr,
         betas=(config.beta1, config.beta2),
     )
+
+
+def unwrap_compiled_module(model: torch.nn.Module) -> torch.nn.Module:
+    return getattr(model, "_orig_mod", model)
+
+
+def split_muon_parameters(
+    model: torch.nn.Module,
+) -> tuple[list[torch.nn.Parameter], list[torch.nn.Parameter]]:
+    model = unwrap_compiled_module(model)
+    muon_params = []
+    muon_param_ids = set()
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        weight = module.weight
+        if not weight.requires_grad or id(weight) in muon_param_ids:
+            continue
+        muon_params.append(weight)
+        muon_param_ids.add(id(weight))
+
+    adam_params = [
+        param
+        for param in model.parameters()
+        if param.requires_grad and id(param) not in muon_param_ids
+    ]
+    trainable_param_ids = {id(param) for param in model.parameters() if param.requires_grad}
+    assigned_param_ids = {id(param) for param in adam_params} | muon_param_ids
+    if assigned_param_ids != trainable_param_ids:
+        raise ValueError("Muon optimizer parameter split omitted or duplicated trainable parameters")
+    if not muon_params:
+        raise ValueError("Muon optimizer requires at least one Linear weight parameter")
+    return adam_params, muon_params
+
+
+def create_main_optimizer(
+    model: torch.nn.Module,
+    config: OptimizerConfig,
+    initial_config: OptimizerConfig,
+) -> Any:
+    if isinstance(config, MuonOptimizerConfig):
+        if not isinstance(initial_config, MuonOptimizerConfig):
+            raise TypeError("initial optimizer config must have the same type as optimizer config")
+        adam_params, muon_params = split_muon_parameters(model)
+        logging.info(
+            "Using Muon for %s Linear weight parameter(s) and Adam for %s other parameter(s).",
+            len(muon_params),
+            len(adam_params),
+        )
+        return MainOptimizerBundle(
+            create_adam_optimizer(adam_params, config.adam, initial_config.adam),
+            Muon(
+                muon_params,
+                lr=initial_config.muon.lr,
+                momentum=config.muon.momentum,
+                nesterov=config.muon.nesterov,
+                backend=config.muon.backend,
+                backend_steps=config.muon.backend_steps,
+            ),
+        )
+    return create_adam_optimizer(
+        model.parameters(),
+        config,
+        initial_config,
+    )
+
+
+def optimizer_metric_values(config: OptimizerConfig) -> dict[str, float]:
+    if isinstance(config, MuonOptimizerConfig):
+        return {
+            "adam_lr": config.adam.lr,
+            "muon_lr": config.muon.lr,
+        }
+    return {"lr": config.lr}
 
 
 def create_generation_environment_groups_for_device(
@@ -436,7 +572,7 @@ class TrainingSession:
     main_model: torch.nn.Module
     ema_model: torch.nn.Module
     balance_model: torch.nn.Module
-    main_optimizer: torch.optim.Optimizer
+    main_optimizer: Any
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
     experience: ExperienceStorage
@@ -513,26 +649,24 @@ class TrainingSession:
         tensors.update(prefixed_state_dict("main_model", self.main_model))
         tensors.update(prefixed_state_dict("ema_model", self.ema_model))
         tensors.update(prefixed_state_dict("balance_model", self.balance_model))
-        optimizer_tensors, optimizer_param_groups, optimizer_scalar_state = optimizer_checkpoint_state(
-            self.main_optimizer,
-            "optimizer",
-        )
-        balance_optimizer_tensors, balance_optimizer_param_groups, balance_optimizer_scalar_state = optimizer_checkpoint_state(
-            self.balance_optimizer,
-            "balance_optimizer",
-        )
-        tensors.update(optimizer_tensors)
-        tensors.update(balance_optimizer_tensors)
         metadata = {
-            "format": "map-gen-training-session-checkpoint-v1",
+            "format": "map-gen-training-session-checkpoint-v2",
             "aim_run_hash": self.aim_run.hash,
             "num_episodes": str(self.num_episodes),
             "experience_num_files": str(self.experience.num_files),
-            "optimizer_param_groups": json.dumps(optimizer_param_groups),
-            "optimizer_scalar_state": json.dumps(optimizer_scalar_state),
-            "balance_optimizer_param_groups": json.dumps(balance_optimizer_param_groups),
-            "balance_optimizer_scalar_state": json.dumps(balance_optimizer_scalar_state),
         }
+        save_named_optimizer_checkpoint_state(
+            tensors,
+            metadata,
+            self.main_optimizer,
+            "optimizer",
+        )
+        save_named_optimizer_checkpoint_state(
+            tensors,
+            metadata,
+            self.balance_optimizer,
+            "balance_optimizer",
+        )
         temp_path = path.with_suffix(f"{path.suffix}.tmp")
         safetensors.torch.save_file(tensors, temp_path, metadata=metadata)
         os.replace(temp_path, path)
@@ -546,18 +680,16 @@ class TrainingSession:
         self.main_model.load_state_dict(without_prefix(tensors, "main_model"))
         self.ema_model.load_state_dict(without_prefix(tensors, "ema_model"))
         self.balance_model.load_state_dict(without_prefix(tensors, "balance_model"))
-        load_optimizer_checkpoint_state(
+        load_named_optimizer_checkpoint_state(
             self.main_optimizer,
             tensors,
-            json.loads(metadata["optimizer_param_groups"]),
-            json.loads(metadata["optimizer_scalar_state"]),
+            metadata,
             "optimizer",
         )
-        load_optimizer_checkpoint_state(
+        load_named_optimizer_checkpoint_state(
             self.balance_optimizer,
             tensors,
-            json.loads(metadata["balance_optimizer_param_groups"]),
-            json.loads(metadata["balance_optimizer_scalar_state"]),
+            metadata,
             "balance_optimizer",
         )
         self.num_episodes = int(metadata["num_episodes"])
@@ -836,7 +968,7 @@ class TrainingSession:
             "min_door": min_door,
             "min_conn": min_conn,
             "num_episodes": self.num_episodes,
-            "lr": step_config.optimizer.lr,
+            **optimizer_metric_values(step_config.optimizer),
             "temperature": step_config.generation.temperature,
             "recommended_candidates": step_config.generation.recommended_candidates,
             "shortlist_candidates": step_config.generation.shortlist_candidates,
@@ -1232,12 +1364,12 @@ def build_session(args: Args) -> TrainingSession:
         args.profile,
     )
     initial_config = instantiate_scheduleable_config(config, 0)
-    main_optimizer = create_optimizer(
-        main_model.parameters(),
+    main_optimizer = create_main_optimizer(
+        main_model,
         config.optimizer,
         initial_config.optimizer,
     )
-    balance_optimizer = create_optimizer(
+    balance_optimizer = create_adam_optimizer(
         balance_model.parameters(),
         config.balance_optimizer,
         initial_config.balance_optimizer,

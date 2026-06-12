@@ -16,10 +16,19 @@
     "num_layers": 2
   },
   "optimizer": {
-    "type": "adam",
-    "lr": {"log": [0.0005, 0.0004, 0.0003, 0.0002, 0.0001]},
-    "beta1": 0.95,
-    "beta2": 0.99
+    "type": "muon",
+    "muon": {
+      "lr": 0.0002,
+      "momentum": 0.95,
+      "nesterov": true,
+      "backend": "newtonschulz5",
+      "backend_steps": 5
+    },
+    "adam": {
+      "lr": 0.005,
+      "beta1": 0.95,
+      "beta2": 0.99
+    }
   },
   "balance_model": {
     "hidden_width": 64,

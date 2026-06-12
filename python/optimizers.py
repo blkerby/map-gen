@@ -1,97 +1,76 @@
-import math
-from typing import Iterable
-
 import torch
-from torch.optim import Optimizer
 
 
-def linear_warmup_value(step: int, target: float, warmup_steps: int) -> float:
-    if warmup_steps == 0:
-        return target
-    return target * min(step / warmup_steps, 1.0)
+@torch.compile
+def zeropower_via_newtonschulz5(G, steps, eps=1e-7):
+    """
+    Newton-Schulz iteration to compute the zeroth power / orthogonalization of G. We opt to use a
+    quintic iteration whose coefficients are selected to maximize the slope at zero. For the purpose
+    of minimizing steps, it turns out to be empirically effective to keep increasing the slope at
+    zero even beyond the point where the iteration no longer converges all the way to one everywhere
+    on the interval. This iteration therefore does not produce UV^T but rather something like US'V^T
+    where S' is diagonal with S_{ii}' \\sim Uniform(0.5, 1.5), which turns out not to hurt model
+    performance at all relative to UV^T, where USV^T = G is the SVD.
+    """
+    assert len(G.shape) == 2
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.bfloat16() / (G.norm() + eps)  # ensure top singular value <= 1
+    if G.size(0) > G.size(1):
+        X = X.T
+    for _ in range(steps):
+        A = X @ X.T
+        B = A @ X
+        X = a * X + b * B + c * A @ B
+    if G.size(0) > G.size(1):
+        X = X.T
+    return X.to(G.dtype)
 
+class Muon(torch.optim.Optimizer):
+    """
+    Muon: MomentUm Orthogonalized by Newton-schulz
 
-def beta3_warmup_value(step: int, start: float, target: float, warmup_steps: int) -> float:
-    if warmup_steps == 0:
-        return target
-    progress = min(step / warmup_steps, 1.0)
-    start_half_life = math.log(0.5) / math.log(start)
-    target_half_life = math.log(0.5) / math.log(target)
-    half_life = start_half_life + progress * (target_half_life - start_half_life)
-    return math.exp(math.log(0.5) / half_life)
+    Muon internally runs standard SGD-momentum, and then performs an orthogonalization post-
+    processing step, in which each 2D parameter's update is replaced with the nearest orthogonal
+    matrix. To efficiently orthogonalize each update, we use a Newton-Schulz iteration, which has
+    the advantage that it can be stably run in bfloat16 on the GPU.
 
+    Some warnings:
+    - This optimizer assumes that all parameters passed in are 2D.
+    - It should not be used for the embedding layer, the final fully connected layer, or any {0,1}-D
+    parameters; those should all be optimized by a standard method (e.g., AdamW).
+    - To use it with 4D convolutional filters, it works well to just flatten their last 3 dimensions.
+    - We believe it is unlikely to work well for training with small batch size.
+    - We believe it may not work well for finetuning pretrained models, but we haven't tested this.
+    - We have not yet tried this optimizer for training scenarios larger than NanoGPT (124M).
 
-class AdEMAMix(Optimizer):
-    def __init__(
-        self,
-        params: Iterable[torch.nn.Parameter],
-        lr: float,
-        beta1: float,
-        beta2: float,
-        beta3: float,
-        alpha: float,
-        beta3_warmup_steps: int,
-        alpha_warmup_steps: int,
-        eps: float,
-        weight_decay: float,
-    ):
-        defaults = {
-            "lr": lr,
-            "beta1": beta1,
-            "beta2": beta2,
-            "beta3": beta3,
-            "alpha": alpha,
-            "beta3_warmup_steps": beta3_warmup_steps,
-            "alpha_warmup_steps": alpha_warmup_steps,
-            "eps": eps,
-            "weight_decay": weight_decay,
-        }
+    Arguments:
+        lr: The learning rate used by the internal SGD.
+        momentum: The momentum used by the internal SGD.
+        nesterov: Whether to use Nesterov-style momentum in the internal SGD. (recommended)
+        backend: The chosen backend for the orthogonalization step. (recommended: 'newtonschulz5')
+        backend_steps: The number of iteration steps to use in the backend, if it is iterative.
+    """
+
+    def __init__(self, params, lr=3e-4, momentum=0.95, nesterov=True, backend='newtonschulz5', backend_steps=5):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend, backend_steps=backend_steps)
         super().__init__(params, defaults)
 
-    @torch.no_grad()
-    def step(self) -> None:
+    def step(self):
         for group in self.param_groups:
-            lr = group["lr"]
-            beta1 = group["beta1"]
-            beta2 = group["beta2"]
-            beta3_target = group["beta3"]
-            alpha_target = group["alpha"]
-            beta3_warmup_steps = group["beta3_warmup_steps"]
-            alpha_warmup_steps = group["alpha_warmup_steps"]
-            eps = group["eps"]
-            weight_decay = group["weight_decay"]
-
-            for param in group["params"]:
-                if param.grad is None:
+            lr = group['lr']
+            momentum = group['momentum']
+            for p in group['params']:
+                g = p.grad
+                if g is None:
                     continue
-                if param.grad.is_sparse:
-                    raise RuntimeError("AdEMAMix does not support sparse gradients")
+                state = self.state[p]
+                if 'momentum_buffer' not in state:
+                    state['momentum_buffer'] = torch.zeros_like(g)
+                buf = state['momentum_buffer']
+                buf.mul_(momentum).add_(g)
+                if group['nesterov']:
+                    g = g.add(buf, alpha=momentum)
+                g = zeropower_via_newtonschulz5(g, steps=group['backend_steps'])
+                scale = max(g.size(0), g.size(1)) ** 0.5  # scale to have update.square().mean() == 1
+                p.data.add_(g, alpha=-lr * scale)
 
-                state = self.state[param]
-                if len(state) == 0:
-                    state["step"] = 0
-                    state["m1"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-                    state["m2"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-                    state["nu"] = torch.zeros_like(param, memory_format=torch.preserve_format)
-
-                state["step"] += 1
-                step = state["step"]
-                m1 = state["m1"]
-                m2 = state["m2"]
-                nu = state["nu"]
-                grad = param.grad
-
-                alpha = linear_warmup_value(step, alpha_target, alpha_warmup_steps)
-                beta3 = beta3_warmup_value(step, beta1, beta3_target, beta3_warmup_steps)
-
-                m1.mul_(beta1).add_(grad, alpha=1.0 - beta1)
-                m2.mul_(beta3).add_(grad, alpha=1.0 - beta3)
-                nu.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
-
-                bias_correction1 = 1.0 - beta1 ** step
-                bias_correction2 = 1.0 - beta2 ** step
-                denom = nu.sqrt().div_(math.sqrt(bias_correction2)).add_(eps)
-                update = m1.div(bias_correction1).add(m2, alpha=alpha).div_(denom)
-                if weight_decay != 0.0:
-                    update.add_(param, alpha=weight_decay)
-                param.add_(update, alpha=-lr)
