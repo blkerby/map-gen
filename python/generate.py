@@ -360,6 +360,8 @@ class SparseProposalCache:
     state: torch.Tensor
     row_start_idx: torch.Tensor
     row_count: torch.Tensor
+    action_index: torch.Tensor
+    candidate_count: int
 
 
 @dataclass
@@ -819,25 +821,17 @@ def select_candidate_actions(
         selected_proposal_scores = None
         if include_proposal:
             proposal_row_snapshot_idx = preds.proposal_row_snapshot_idx
-            row_environment_idx = torch.div(
+            row_count_by_snapshot = torch.bincount(
                 proposal_row_snapshot_idx,
-                candidate_count,
-                rounding_mode="floor",
+                minlength=environment_count * candidate_count,
             )
-            row_candidate_idx = proposal_row_snapshot_idx - (
-                row_environment_idx * candidate_count
-            )
-            row_selected = row_candidate_idx == action_index[row_environment_idx]
-            selected_state = preds.proposal_state[row_selected]
-            row_count_by_environment = torch.bincount(
-                row_environment_idx[row_selected],
-                minlength=environment_count,
-            )
-            row_start_idx = row_count_by_environment.cumsum(0) - row_count_by_environment
+            row_start_idx = row_count_by_snapshot.cumsum(0) - row_count_by_snapshot
             selected_proposal_scores = SparseProposalCache(
-                selected_state,
+                preds.proposal_state,
                 row_start_idx,
-                row_count_by_environment,
+                row_count_by_snapshot,
+                action_index,
+                candidate_count,
             )
             sync_profile_device(device, profile)
         profiler.add("python.score.cache_proposal", profile_time)
@@ -877,23 +871,27 @@ def compute_cached_proposal_scores(
     proposal_mask: ProposalCandidateMask,
     device: torch.device,
 ) -> torch.Tensor:
-    proposal_frontier_idx = proposal_mask.proposal_frontier_idx.to(device)
+    proposal_frontier_idx = proposal_mask.proposal_frontier_idx.to(
+        device=device,
+        dtype=torch.int64,
+    )
     door_variant_count = model.proposal_output.out_features
     if cache.state.shape[0] == 0:
-        return torch.full(
+        return cache.state.new_zeros(
             (proposal_frontier_idx.shape[0], door_variant_count),
-            float("-inf"),
-            dtype=cache.state.dtype,
-            device=device,
         )
     row_start_idx = cache.row_start_idx.to(device)
     row_count = cache.row_count.to(device)
-    row_valid = (
-        (proposal_frontier_idx >= 0)
-        & (proposal_frontier_idx < row_count)
+    action_index = cache.action_index.to(device)
+    selected_snapshot_idx = (
+        torch.arange(proposal_frontier_idx.shape[0], device=device)
+        * cache.candidate_count
+        + action_index
     )
+    row_start_idx = row_start_idx[selected_snapshot_idx]
+    row_count = row_count[selected_snapshot_idx]
     safe_frontier_idx = torch.minimum(
-        proposal_frontier_idx.clamp_min(0).to(torch.int64),
+        proposal_frontier_idx.clamp_min(0),
         row_count.clamp_min(1) - 1,
     )
     row_idx = (row_start_idx + safe_frontier_idx).clamp_max(cache.state.shape[0] - 1)
@@ -902,12 +900,7 @@ def compute_cached_proposal_scores(
         dtype=torch.bfloat16,
         enabled=device.type == "cuda" and group.config.autocast,
     ):
-        scores = model.proposal_output(cache.state[row_idx])
-    return torch.where(
-        row_valid.unsqueeze(1),
-        scores,
-        torch.full_like(scores, float("-inf")),
-    )
+        return model.proposal_output(cache.state[row_idx])
 
 
 def verify_and_step(
