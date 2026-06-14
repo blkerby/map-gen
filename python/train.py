@@ -40,6 +40,7 @@ from learn import (
 )
 from loss import (
     LossConfig,
+    compute_balance_toilet_crossed_room_ss,
     compute_balance_door_match_ss,
 )
 from model import BalanceModel, FrontierModel
@@ -300,6 +301,7 @@ def create_balance_model(config: Config, rooms: list[dict], device: torch.device
         right_count=count_room_doors_by_direction(rooms, "right"),
         up_count=count_room_doors_by_direction(rooms, "up"),
         down_count=count_room_doors_by_direction(rooms, "down"),
+        num_rooms=len(rooms),
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,
     ).to(device)
@@ -391,6 +393,29 @@ def optimizer_metric_values(config: OptimizerConfig) -> dict[str, float]:
     return {"lr": config.lr}
 
 
+def topk_or_zeros(values: torch.Tensor, k0: int) -> torch.Tensor:
+    if values.numel() == 0:
+        return torch.zeros([k0], dtype=torch.float32)
+    k = min(k0, values.numel())
+    top = torch.topk(values.flatten(), k=k).values.to(torch.float32)
+    if k == k0:
+        return top
+    return torch.cat([top, top.new_zeros([k0 - k])])
+
+
+def toilet_crossed_room_distribution(
+    toilet_crossed_room_idx: torch.Tensor,
+    num_rooms: int,
+) -> torch.Tensor:
+    valid = toilet_crossed_room_idx >= 0
+    counts = torch.bincount(
+        toilet_crossed_room_idx[valid].to(torch.int64),
+        minlength=num_rooms,
+    ).to(torch.float32)
+    total = torch.sum(counts)
+    return counts / total.clamp_min(1.0)
+
+
 def create_generation_environment_groups_for_device(
     config: Config,
     engine: Engine,
@@ -445,6 +470,7 @@ def create_generate_config(
         reward_connection=config.generation.reward_connection,
         reward_toilet=config.generation.reward_toilet,
         reward_balance=config.generation.reward_balance,
+        reward_toilet_balance=config.generation.reward_toilet_balance,
         reward_frontier=config.generation.reward_frontier,
         autocast=config.model.generation_autocast,
     )
@@ -801,6 +827,9 @@ class TrainingSession:
                         outcomes.validity.door_match for outcomes in outcome_iterations
                     ]),
                 ),
+                toilet_crossed_room_idx=torch.cat([
+                    outcomes.toilet_crossed_room_idx for outcomes in outcome_iterations
+                ]),
                 avg_frontiers=torch.cat([
                     outcomes.avg_frontiers for outcomes in outcome_iterations
                 ]),
@@ -935,6 +964,12 @@ class TrainingSession:
             + compute_door_match_count_ss(vertical_door_match_counts, dim=1)
             + compute_door_match_count_ss(vertical_door_match_counts, dim=0)
         )
+        toilet_crossed_room_p = toilet_crossed_room_distribution(
+            episode_outcomes.toilet_crossed_room_idx,
+            self.num_rooms,
+        )
+        toilet_crossed_room_topk = topk_or_zeros(toilet_crossed_room_p, 4)
+        toilet_crossed_room_ss = torch.sum(toilet_crossed_room_p.square())
         with torch.no_grad():
             generate_config = create_generate_config(
                 step_config,
@@ -944,11 +979,20 @@ class TrainingSession:
             )
             balance_preds = self.balance_model(torch.log(generate_config.temperature))
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
+            balance_toilet_crossed_room_p = torch.softmax(
+                balance_preds.toilet_crossed_room,
+                dim=-1,
+            ).squeeze(0)
+            balance_toilet_crossed_room_topk = topk_or_zeros(balance_toilet_crossed_room_p, 4)
+            balance_toilet_crossed_room_ss = compute_balance_toilet_crossed_room_ss(balance_preds)
         loss_denominator = loss.total + 1e-15
         door_loss_pct = 100.0 * loss.door_contribution / loss_denominator
         connection_loss_pct = 100.0 * loss.connection_contribution / loss_denominator
         toilet_loss_pct = 100.0 * loss.toilet_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
+        main_toilet_balance_loss_pct = (
+            100.0 * loss.toilet_balance_contribution / loss_denominator
+        )
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
         proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
 
@@ -962,6 +1006,8 @@ class TrainingSession:
             "toilet_loss_pct": toilet_loss_pct,
             "main_balance_loss": loss.balance,
             "main_balance_loss_pct": main_balance_loss_pct,
+            "main_toilet_balance_loss": loss.toilet_balance,
+            "main_toilet_balance_loss_pct": main_toilet_balance_loss_pct,
             "avg_frontiers_loss": loss.avg_frontiers,
             "avg_frontiers_loss_pct": avg_frontiers_loss_pct,
             "proposal_loss": loss.proposal,
@@ -992,9 +1038,11 @@ class TrainingSession:
             "reward_connection": step_config.generation.reward_connection,
             "reward_toilet": step_config.generation.reward_toilet,
             "reward_balance": step_config.generation.reward_balance,
+            "reward_toilet_balance": step_config.generation.reward_toilet_balance,
             "reward_frontier": step_config.generation.reward_frontier,
             "ema_decay": step_config.train.ema_decay,
             "toilet_weight": step_config.train.toilet_weight,
+            "toilet_balance_weight": step_config.train.toilet_balance_weight,
             "avg_frontiers_weight": step_config.train.avg_frontiers_weight,
             "door_match_left_top1": left_topk[0],
             "door_match_left_top2": left_topk[1],
@@ -1004,6 +1052,16 @@ class TrainingSession:
             "door_match_up_top3": up_topk[2],
             "door_match_ss": door_match_ss,
             "balance_door_match_ss": balance_door_match_ss,
+            "toilet_crossed_room_top1": toilet_crossed_room_topk[0],
+            "toilet_crossed_room_top2": toilet_crossed_room_topk[1],
+            "toilet_crossed_room_top3": toilet_crossed_room_topk[2],
+            "toilet_crossed_room_top4": toilet_crossed_room_topk[3],
+            "toilet_crossed_room_ss": toilet_crossed_room_ss,
+            "balance_toilet_crossed_room_top1": balance_toilet_crossed_room_topk[0],
+            "balance_toilet_crossed_room_top2": balance_toilet_crossed_room_topk[1],
+            "balance_toilet_crossed_room_top3": balance_toilet_crossed_room_topk[2],
+            "balance_toilet_crossed_room_top4": balance_toilet_crossed_room_topk[3],
+            "balance_toilet_crossed_room_ss": balance_toilet_crossed_room_ss,
             **generation_stats,
         }
         for name, value in metrics.items():
@@ -1015,7 +1073,7 @@ class TrainingSession:
         schedule_progress = min(self.num_episodes / self.config.knot_episodes[-1], 1.0)
         logging.info(
             "round %s, loss %.4f (door %.4f %.1f%%, conn %.4f %.1f%%, tube %.4f %.1f%%, "
-            "bal %.4f %.1f%%, front %.2f %.1f%%, prop %.4f %.1f%%), "
+            "bal %.4f %.1f%%, tube-bal %.4f %.1f%%, front %.2f %.1f%%, prop %.4f %.1f%%), "
             "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), tube %.2f, front %.2f, ss %.3f, "
             "p %.4f, "
@@ -1030,6 +1088,8 @@ class TrainingSession:
             toilet_loss_pct,
             loss.balance,
             main_balance_loss_pct,
+            loss.toilet_balance,
+            main_toilet_balance_loss_pct,
             loss.avg_frontiers,
             avg_frontiers_loss_pct,
             loss.proposal,
@@ -1428,6 +1488,7 @@ def build_session(args: Args) -> TrainingSession:
             connection_weight=config.train.connection_weight,
             toilet_weight=config.train.toilet_weight,
             balance_weight=config.train.balance_weight,
+            toilet_balance_weight=config.train.toilet_balance_weight,
             avg_frontiers_weight=config.train.avg_frontiers_weight,
         ),
         experience=ExperienceStorage(

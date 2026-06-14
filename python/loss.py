@@ -14,6 +14,7 @@ class LossConfig:
     connection_weight: float
     toilet_weight: float
     balance_weight: float
+    toilet_balance_weight: float
     avg_frontiers_weight: float
 
 
@@ -24,11 +25,13 @@ class LossBreakdown:
     connection: torch.Tensor
     toilet: torch.Tensor
     balance: torch.Tensor
+    toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
     door_contribution: torch.Tensor
     connection_contribution: torch.Tensor
     toilet_contribution: torch.Tensor
     balance_contribution: torch.Tensor
+    toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
 
 
@@ -70,6 +73,8 @@ def compute_loss_breakdown(
     mask: torch.Tensor,
     balance_score_target_logits: torch.Tensor,
     balance_score_mask: torch.Tensor,
+    toilet_balance_score_target_logits: torch.Tensor,
+    toilet_balance_score_mask: torch.Tensor,
     avg_frontiers_target: torch.Tensor,
     avg_frontiers_mask: torch.Tensor,
     config: LossConfig,
@@ -86,6 +91,12 @@ def compute_loss_breakdown(
         mask & balance_score_mask,
         config.balance_weight,
     )
+    toilet_balance_loss, toilet_balance_wt = masked_bernoulli_kl_loss(
+        preds.toilet_balance_score,
+        toilet_balance_score_target_logits,
+        mask.squeeze(-1) & toilet_balance_score_mask,
+        config.toilet_balance_weight,
+    )
     avg_frontiers_mask = avg_frontiers_mask.to(torch.float32)
     avg_frontiers_error = (
         preds.avg_frontiers.to(torch.float32) - avg_frontiers_target.to(torch.float32)
@@ -94,17 +105,27 @@ def compute_loss_breakdown(
         avg_frontiers_error.square() * avg_frontiers_mask
     )
     avg_frontiers_wt = config.avg_frontiers_weight * torch.sum(avg_frontiers_mask)
-    total_weight = door_wt + conn_wt + toilet_wt + balance_wt + avg_frontiers_wt + 1e-15
+    total_weight = (
+        door_wt
+        + conn_wt
+        + toilet_wt
+        + balance_wt
+        + toilet_balance_wt
+        + avg_frontiers_wt
+        + 1e-15
+    )
     door_contribution = door_loss / total_weight
     connection_contribution = conn_loss / total_weight
     toilet_contribution = toilet_loss / total_weight
     balance_contribution = balance_loss / total_weight
+    toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
     mean_loss = (
         door_contribution
         + connection_contribution
         + toilet_contribution
         + balance_contribution
+        + toilet_balance_contribution
         + avg_frontiers_contribution
     )
     return LossBreakdown(
@@ -113,11 +134,13 @@ def compute_loss_breakdown(
         connection=conn_loss / (conn_wt + 1e-15),
         toilet=toilet_loss / (toilet_wt + 1e-15),
         balance=balance_loss / (balance_wt + 1e-15),
+        toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
         door_contribution=door_contribution,
         connection_contribution=connection_contribution,
         toilet_contribution=toilet_contribution,
         balance_contribution=balance_contribution,
+        toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,
     )
 
@@ -132,13 +155,21 @@ def direction_balance_loss(logits: torch.Tensor, targets: torch.Tensor) -> tuple
     )
 
 
-def compute_balance_loss(preds: BalancePredictions, door_matches: DoorMatches) -> torch.Tensor:
+def compute_balance_loss(
+    preds: BalancePredictions,
+    door_matches: DoorMatches,
+    toilet_crossed_room_idx: torch.Tensor,
+) -> torch.Tensor:
     left_loss, left_weight = direction_balance_loss(preds.left, door_matches.left)
     right_loss, right_weight = direction_balance_loss(preds.right, door_matches.right)
     up_loss, up_weight = direction_balance_loss(preds.up, door_matches.up)
     down_loss, down_weight = direction_balance_loss(preds.down, door_matches.down)
-    total_loss = left_loss + right_loss + up_loss + down_loss
-    total_weight = left_weight + right_weight + up_weight + down_weight
+    toilet_loss, toilet_weight = direction_balance_loss(
+        preds.toilet_crossed_room,
+        toilet_crossed_room_idx,
+    )
+    total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss
+    total_weight = left_weight + right_weight + up_weight + down_weight + toilet_weight
     return total_loss / (total_weight + 1e-15)
 
 
@@ -149,6 +180,10 @@ def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
         + torch.sum(torch.softmax(preds.up, dim=-1).square())
         + torch.sum(torch.softmax(preds.down, dim=-1).square())
     )
+
+
+def compute_balance_toilet_crossed_room_ss(preds: BalancePredictions) -> torch.Tensor:
+    return torch.sum(torch.softmax(preds.toilet_crossed_room, dim=-1).square())
 
 
 def direction_balance_score_target_logits(
@@ -189,4 +224,14 @@ def compute_balance_score_target_logits(
     return (
         torch.cat([left_values, right_values, up_values, down_values], dim=-1),
         torch.cat([left_mask, right_mask, up_mask, down_mask], dim=-1),
+    )
+
+
+def compute_toilet_balance_score_target_logits(
+    preds: BalancePredictions,
+    toilet_crossed_room_idx: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return direction_balance_score_target_logits(
+        preds.toilet_crossed_room,
+        toilet_crossed_room_idx,
     )

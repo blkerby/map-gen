@@ -230,6 +230,8 @@ pub struct PreliminaryOutcomes {
     pub connections_valid: Vec<DoorValidOutcome>,
     // Whether the Toilet crosses exactly one room.
     pub toilet_valid: DoorValidOutcome,
+    // Concrete room crossed by the Toilet when exactly one non-Toilet room crosses it.
+    pub toilet_crossed_room_idx: i16,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1651,6 +1653,7 @@ impl Environment {
             door_valid: door_valid.clone(),
             connections_valid: connections_valid.clone(),
             toilet_valid,
+            toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
         };
         let profile = profile_start();
         let door_match = self.door_match_feature(common, &outcomes);
@@ -2346,6 +2349,7 @@ impl Environment {
             door_valid,
             connections_valid,
             toilet_valid: self.toilet_outcome(common),
+            toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
         }
     }
 
@@ -2385,6 +2389,31 @@ impl Environment {
         } else {
             DoorValidOutcome::Unknown
         }
+    }
+
+    fn toilet_crossed_room_idx(&self, common: &CommonData) -> i16 {
+        let Some(toilet_room_idx) = common.toilet_room_idx() else {
+            return -1;
+        };
+        if !self.room_used[toilet_room_idx as usize] {
+            return -1;
+        }
+
+        let toilet_x = self.room_x[toilet_room_idx as usize];
+        let toilet_y = self.room_y[toilet_room_idx as usize];
+        let mut crossed_room_idx = -1;
+        for action in &self.actions {
+            if action.room_idx == toilet_room_idx {
+                continue;
+            }
+            if room_crosses_toilet(common, *action, toilet_x, toilet_y) {
+                if crossed_room_idx >= 0 {
+                    return -1;
+                }
+                crossed_room_idx = action.room_idx as i16;
+            }
+        }
+        crossed_room_idx
     }
 
     fn door_outcome(&self, common: &CommonData, dir: usize, i: usize) -> DoorValidOutcome {
@@ -2494,6 +2523,7 @@ fn merge_known_outcomes(
             &current.connections_valid,
         ),
         toilet_valid: merge_known_outcome_value(known.toilet_valid, current.toilet_valid),
+        toilet_crossed_room_idx: current.toilet_crossed_room_idx,
     }
 }
 
@@ -2934,11 +2964,13 @@ mod tests {
                 door_valid: vec![Unknown],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
+                toilet_crossed_room_idx: -1,
             },
             &PreliminaryOutcomes {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
+                toilet_crossed_room_idx: -1,
             },
         ));
         assert!(!introduces_invalid_outcome(
@@ -2946,11 +2978,13 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Unknown],
                 toilet_valid: Unknown,
+                toilet_crossed_room_idx: -1,
             },
             &PreliminaryOutcomes {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Unknown,
+                toilet_crossed_room_idx: -1,
             },
         ));
     }
@@ -3882,6 +3916,7 @@ mod tests {
         let env = Environment::new(&common, (8, 12), 0);
 
         assert_eq!(env.outcomes(&common).toilet_valid, DoorValidOutcome::Valid);
+        assert_eq!(env.outcomes(&common).toilet_crossed_room_idx, -1);
     }
 
     #[test]
@@ -3928,7 +3963,9 @@ mod tests {
             DoorValidOutcome::Unknown
         );
         env.finish();
-        assert_eq!(env.outcomes(&common).toilet_valid, DoorValidOutcome::Valid);
+        let outcomes = env.outcomes(&common);
+        assert_eq!(outcomes.toilet_valid, DoorValidOutcome::Valid);
+        assert_eq!(outcomes.toilet_crossed_room_idx, 0);
     }
 
     #[test]
@@ -3974,6 +4011,7 @@ mod tests {
             env.outcomes(&common).toilet_valid,
             DoorValidOutcome::Invalid
         );
+        assert_eq!(env.outcomes(&common).toilet_crossed_room_idx, -1);
     }
 
     #[test]
@@ -3998,5 +4036,6 @@ mod tests {
             },
         );
         assert_eq!(outcomes.toilet_valid, DoorValidOutcome::Invalid);
+        assert_eq!(outcomes.toilet_crossed_room_idx, -1);
     }
 }

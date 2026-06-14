@@ -26,6 +26,8 @@ class Predictions:
     toilet_invalid: torch.Tensor
     # Predicted balance-model log-odds for the matched target door:
     balance_score: torch.Tensor
+    # Predicted balance-model log-odds for the room crossed by the Toilet:
+    toilet_balance_score: torch.Tensor
     # Predicted average live frontier count across the full episode:
     avg_frontiers: torch.Tensor
     # Frontier-local proposal logits for door variants:
@@ -42,6 +44,7 @@ class BalancePredictions:
     right: torch.Tensor
     up: torch.Tensor
     down: torch.Tensor
+    toilet_crossed_room: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -56,6 +59,7 @@ def get_predictions(raw_preds, output_sizes):
         connection_invalid=preds[1],
         toilet_invalid=preds[2].squeeze(-1),
         balance_score=preds[3],
+        toilet_balance_score=preds[4].squeeze(-1),
         avg_frontiers=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         proposal_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_state=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
@@ -150,6 +154,7 @@ class FrontierModel(torch.nn.Module):
             connection_output_size,
             1,
             door_output_size,
+            1,
         )
         if sum(door_counts) != door_output_size:
             raise ValueError("door_counts must sum to the door output size")
@@ -334,6 +339,7 @@ class FrontierModel(torch.nn.Module):
         self.toilet_output = torch.nn.Linear(embedding_width, 1)
         self.balance_score_output = FactorizedOutcomeHead(
             output_metadata.door, output_metadata.num_door_variants, embedding_width)
+        self.toilet_balance_score_output = torch.nn.Linear(embedding_width, 1)
         self.avg_frontiers_output = torch.nn.Linear(embedding_width, 1)
         self.proposal_output = torch.nn.Linear(
             embedding_width,
@@ -675,13 +681,18 @@ class FrontierModel(torch.nn.Module):
             self.pos_embedding_x,
             self.pos_embedding_y,
         )
+        toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
-        preds = get_predictions(torch.cat([door, connection, toilet, balance_score], dim=-1), self.output_sizes)
+        preds = get_predictions(
+            torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
+            self.output_sizes,
+        )
         return Predictions(
             preds.door_invalid,
             preds.connection_invalid,
             preds.toilet_invalid,
             preds.balance_score,
+            preds.toilet_balance_score,
             avg_frontiers,
             proposal_score,
             proposal_state,
@@ -697,6 +708,7 @@ class BalanceModel(torch.nn.Module):
         right_count: int,
         up_count: int,
         down_count: int,
+        num_rooms: int,
         hidden_width: int,
         num_layers: int,
     ):
@@ -709,11 +721,13 @@ class BalanceModel(torch.nn.Module):
         self.right_count = right_count
         self.up_count = up_count
         self.down_count = down_count
+        self.num_rooms = num_rooms
         self.output_width = (
             left_count * right_count
             + right_count * left_count
             + up_count * down_count
             + down_count * up_count
+            + num_rooms
         )
 
         layers: list[torch.nn.Module] = []
@@ -756,4 +770,6 @@ class BalanceModel(torch.nn.Module):
         down = raw[:, offset:offset + down_size].reshape(
             log_temperature.shape[0], self.down_count, self.up_count
         )
-        return BalancePredictions(left, right, up, down)
+        offset += down_size
+        toilet_crossed_room = raw[:, offset:offset + self.num_rooms]
+        return BalancePredictions(left, right, up, down, toilet_crossed_room)

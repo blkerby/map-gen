@@ -283,6 +283,7 @@ enum WorkerCommand {
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
         toilet_valid: OutputShard<i8>,
+        toilet_crossed_room_idx: OutputShard<i16>,
         avg_frontiers: OutputShard<f32>,
     },
     GetOutcomesAfterCandidates {
@@ -634,6 +635,7 @@ fn worker_loop(
                                 connection_outcome_count
                             ],
                             toilet_valid: DoorValidOutcome::Unknown,
+                            toilet_crossed_room_idx: -1,
                         })
                     } else {
                         None
@@ -894,6 +896,7 @@ fn worker_loop(
                                 connection_outcome_count
                             ],
                             toilet_valid: DoorValidOutcome::Unknown,
+                            toilet_crossed_room_idx: -1,
                         })
                     } else {
                         None
@@ -1016,6 +1019,7 @@ fn worker_loop(
                 door_valid,
                 connections_valid,
                 toilet_valid,
+                toilet_crossed_room_idx,
                 avg_frontiers,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
@@ -1023,6 +1027,7 @@ fn worker_loop(
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
+                let toilet_crossed_room_idx = unsafe { toilet_crossed_room_idx.into_mut_slice() };
                 let avg_frontiers = unsafe { avg_frontiers.into_mut_slice() };
                 debug_assert_eq!(door_valid.len(), environments.len() * door_outcome_count);
                 debug_assert_eq!(
@@ -1030,6 +1035,7 @@ fn worker_loop(
                     environments.len() * connection_outcome_count
                 );
                 debug_assert_eq!(toilet_valid.len(), environments.len());
+                debug_assert_eq!(toilet_crossed_room_idx.len(), environments.len());
                 debug_assert_eq!(avg_frontiers.len(), environments.len());
 
                 let mut consistency_error = None;
@@ -1072,6 +1078,7 @@ fn worker_loop(
                         };
                     }
                     toilet_valid[env_idx] = outcome_to_i8(outcomes.toilet_valid);
+                    toilet_crossed_room_idx[env_idx] = outcomes.toilet_crossed_room_idx;
                 }
                 match consistency_error {
                     Some(err) => WorkerResponse::Error(err),
@@ -1459,6 +1466,7 @@ pub struct EpisodeOutcomes {
     door_valid: Py<PyArray2<i8>>,
     connections_valid: Py<PyArray2<i8>>,
     toilet_valid: Py<PyArray1<i8>>,
+    toilet_crossed_room_idx: Py<PyArray1<i16>>,
     avg_frontiers: Py<PyArray1<f32>>,
 }
 
@@ -1477,6 +1485,11 @@ impl EpisodeOutcomes {
     #[getter]
     fn toilet_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
         self.toilet_valid.clone_ref(py)
+    }
+
+    #[getter]
+    fn toilet_crossed_room_idx(&self, py: Python<'_>) -> Py<PyArray1<i16>> {
+        self.toilet_crossed_room_idx.clone_ref(py)
     }
 
     #[getter]
@@ -2936,6 +2949,7 @@ impl EnvironmentGroup {
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
         let mut toilet_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
+        let mut toilet_crossed_room_idx = vec![-1i16; self.num_environments];
         let mut avg_frontiers = vec![0.0; self.num_environments];
 
         py.detach(|| {
@@ -2962,6 +2976,9 @@ impl EnvironmentGroup {
                     ),
                     toilet_valid: OutputShard::from_slice(
                         &mut toilet_valid[worker.start..worker.end()],
+                    ),
+                    toilet_crossed_room_idx: OutputShard::from_slice(
+                        &mut toilet_crossed_room_idx[worker.start..worker.end()],
                     ),
                     avg_frontiers: OutputShard::from_slice(
                         &mut avg_frontiers[avg_frontiers_start..avg_frontiers_end],
@@ -2992,6 +3009,7 @@ impl EnvironmentGroup {
             )?
             .unbind(),
             toilet_valid: toilet_valid.into_pyarray(py).unbind(),
+            toilet_crossed_room_idx: toilet_crossed_room_idx.into_pyarray(py).unbind(),
             avg_frontiers: avg_frontiers.into_pyarray(py).unbind(),
         })
     }

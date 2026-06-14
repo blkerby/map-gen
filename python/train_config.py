@@ -79,6 +79,7 @@ class GenerationConfig(StrictBaseModel):
     reward_connection: ScheduleableFloat
     reward_toilet: ScheduleableFloat
     reward_balance: ScheduleableFloat
+    reward_toilet_balance: ScheduleableFloat
     reward_frontier: ScheduleableFloat
     frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"]
     frontier_neighbor_count: int
@@ -116,6 +117,7 @@ class TrainConfig(StrictBaseModel):
     connection_weight: float
     toilet_weight: float
     balance_weight: float
+    toilet_balance_weight: float
     avg_frontiers_weight: float
     proposal_weight: float
     ema_decay: ScheduleableFloat
@@ -237,6 +239,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("generation.frontier_neighbor_count must be greater than or equal to zero")
     if config.generation.frontier_window_size < 0:
         raise ValueError("generation.frontier_window_size must be greater than or equal to zero")
+    validate_nonnegative_scheduleable_float(
+        config.generation.reward_toilet_balance,
+        "generation.reward_toilet_balance",
+    )
     if config.generation.num_threads is not None and config.generation.num_threads <= 0:
         raise ValueError("generation.num_threads must be greater than zero")
     if (
@@ -256,6 +262,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.proposal_weight must be greater than or equal to zero")
     if config.train.toilet_weight < 0:
         raise ValueError("train.toilet_weight must be greater than or equal to zero")
+    if config.train.toilet_balance_weight < 0:
+        raise ValueError("train.toilet_balance_weight must be greater than or equal to zero")
     if config.train.avg_frontiers_weight < 0:
         raise ValueError("train.avg_frontiers_weight must be greater than or equal to zero")
     validate_ema_decay_config(config.train.ema_decay, "train.ema_decay", config.knot_episodes)
@@ -320,6 +328,19 @@ def validate_muon_params(config: MuonParamsConfig, path: str) -> None:
 def validate_beta(value: float, path: str) -> None:
     if value < 0.0 or value >= 1.0:
         raise ValueError(f"{path} must be greater than or equal to zero and less than one")
+
+
+def validate_nonnegative_scheduleable_float(value: ScheduleableFloat, path: str) -> None:
+    if isinstance(value, Schedule):
+        values = value.linear if value.linear is not None else value.log
+        if values is None:
+            return
+        for index, item in enumerate(values):
+            if item < 0:
+                raise ValueError(f"{path}[{index}] must be greater than or equal to zero")
+        return
+    if value < 0:
+        raise ValueError(f"{path} must be greater than or equal to zero")
 
 
 def validate_ema_decay(value: float, path: str) -> None:

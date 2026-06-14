@@ -108,6 +108,27 @@ def balance_reward(
     return torch.where(known_invalid == 0, known_reward, model_reward)
 
 
+def toilet_balance_reward(
+    toilet_balance_score: torch.Tensor,
+    toilet_invalid: torch.Tensor,
+    known_invalid: torch.Tensor,
+) -> torch.Tensor:
+    if known_invalid.ndim == toilet_balance_score.ndim - 1:
+        known_invalid = known_invalid.unsqueeze(1)
+    valid_probability = torch.sigmoid(-toilet_invalid)
+    known_valid_probability = torch.where(
+        known_invalid == 0,
+        torch.ones_like(valid_probability),
+        torch.zeros_like(valid_probability),
+    )
+    valid_probability = torch.where(
+        known_invalid < 0,
+        valid_probability,
+        known_valid_probability,
+    )
+    return -toilet_balance_score * valid_probability
+
+
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
 # preds.toilet_invalid: [batch_size, max_candidates]
@@ -127,11 +148,17 @@ def compute_expected_reward(
         preds.door_invalid,
         outcomes.door_invalid,
     )
+    toilet_balance_scores = toilet_balance_reward(
+        preds.toilet_balance_score,
+        preds.toilet_invalid,
+        outcomes.toilet_invalid,
+    )
     return (
         config.reward_door * torch.sum(door_logprobs, dim=2)
         + config.reward_connection * torch.sum(connection_logprobs, dim=2)
         + config.reward_toilet * toilet_logprobs
         + config.reward_balance * torch.sum(balance_scores, dim=2)
+        + config.reward_toilet_balance * toilet_balance_scores
         - config.reward_frontier * preds.avg_frontiers.to(torch.float32)
     )
 
@@ -795,6 +822,10 @@ def select_candidate_actions(
                 ),
                 toilet_invalid=preds.toilet_invalid.view(environment_count, candidate_count),
                 balance_score=preds.balance_score.view(environment_count, candidate_count, -1),
+                toilet_balance_score=preds.toilet_balance_score.view(
+                    environment_count,
+                    candidate_count,
+                ),
                 avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
                 proposal_score=preds.proposal_score,
                 proposal_state=preds.proposal_state,
@@ -1098,6 +1129,10 @@ def merge_generation_results(
                     for name in vars(results[0][1].validity)
                 )
             ),
+            toilet_crossed_room_idx=torch.cat([
+                episode_outcomes.toilet_crossed_room_idx
+                for _, episode_outcomes, _, _ in results
+            ]),
             avg_frontiers=torch.cat([
                 episode_outcomes.avg_frontiers
                 for _, episode_outcomes, _, _ in results

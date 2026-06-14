@@ -24,6 +24,7 @@ class GenerateConfig:
     reward_connection: float
     reward_toilet: float
     reward_balance: float
+    reward_toilet_balance: float
     reward_frontier: float
     autocast: bool
 
@@ -131,11 +132,13 @@ class PreliminaryOutcomes:
 @dataclass
 class EpisodeOutcomes:
     validity: PreliminaryOutcomes
+    toilet_crossed_room_idx: torch.Tensor
     avg_frontiers: torch.Tensor
 
     def to(self, device: torch.device) -> "EpisodeOutcomes":
         return EpisodeOutcomes(
             self.validity.to(device),
+            self.toilet_crossed_room_idx.to(device),
             self.avg_frontiers.to(device),
         )
 
@@ -522,6 +525,10 @@ class EnvironmentGroup:
                     dtype=torch.int16,
                     device=device,
                 ),
+            ),
+            toilet_crossed_room_idx=torch.from_numpy(result.toilet_crossed_room_idx).to(
+                device=device,
+                dtype=torch.int64,
             ),
             avg_frontiers=torch.from_numpy(result.avg_frontiers).to(device),
         )

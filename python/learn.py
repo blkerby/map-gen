@@ -19,6 +19,7 @@ from loss import (
     LossConfig,
     compute_balance_loss,
     compute_balance_score_target_logits,
+    compute_toilet_balance_score_target_logits,
     compute_loss_breakdown,
 )
 from train_config import Config, episodes_per_round
@@ -45,6 +46,7 @@ class PreparedTrainBatch:
     kind: Literal["fresh", "replay"]
     episode_data: EpisodeData
     outcomes: PreliminaryOutcomes
+    toilet_crossed_room_idx: torch.Tensor
     avg_frontiers: torch.Tensor
     door_matches: DoorMatches
     prefix_count: int
@@ -58,12 +60,14 @@ class MainLossBreakdown:
     connection: float
     toilet: float
     balance: float
+    toilet_balance: float
     avg_frontiers: float
     proposal: float
     door_contribution: float
     connection_contribution: float
     toilet_contribution: float
     balance_contribution: float
+    toilet_balance_contribution: float
     avg_frontiers_contribution: float
     proposal_contribution: float
 
@@ -100,12 +104,14 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         connection=0.0,
         toilet=0.0,
         balance=0.0,
+        toilet_balance=0.0,
         avg_frontiers=0.0,
         proposal=0.0,
         door_contribution=0.0,
         connection_contribution=0.0,
         toilet_contribution=0.0,
         balance_contribution=0.0,
+        toilet_balance_contribution=0.0,
         avg_frontiers_contribution=0.0,
         proposal_contribution=0.0,
     )
@@ -117,12 +123,14 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.connection += source.connection
     target.toilet += source.toilet
     target.balance += source.balance
+    target.toilet_balance += source.toilet_balance
     target.avg_frontiers += source.avg_frontiers
     target.proposal += source.proposal
     target.door_contribution += source.door_contribution
     target.connection_contribution += source.connection_contribution
     target.toilet_contribution += source.toilet_contribution
     target.balance_contribution += source.balance_contribution
+    target.toilet_balance_contribution += source.toilet_balance_contribution
     target.avg_frontiers_contribution += source.avg_frontiers_contribution
     target.proposal_contribution += source.proposal_contribution
 
@@ -134,12 +142,14 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         connection=total_loss.connection / count,
         toilet=total_loss.toilet / count,
         balance=total_loss.balance / count,
+        toilet_balance=total_loss.toilet_balance / count,
         avg_frontiers=total_loss.avg_frontiers / count,
         proposal=total_loss.proposal / count,
         door_contribution=total_loss.door_contribution / count,
         connection_contribution=total_loss.connection_contribution / count,
         toilet_contribution=total_loss.toilet_contribution / count,
         balance_contribution=total_loss.balance_contribution / count,
+        toilet_balance_contribution=total_loss.toilet_balance_contribution / count,
         avg_frontiers_contribution=total_loss.avg_frontiers_contribution / count,
         proposal_contribution=total_loss.proposal_contribution / count,
     )
@@ -210,9 +220,10 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
 def select_batch(
     episode_data: EpisodeData,
     outcomes: PreliminaryOutcomes,
+    toilet_crossed_room_idx: torch.Tensor,
     start: int,
     batch_size: int,
-) -> tuple[EpisodeData, PreliminaryOutcomes]:
+) -> tuple[EpisodeData, PreliminaryOutcomes, torch.Tensor]:
     end = start + batch_size
     return (
         episode_data.slice(start, end),
@@ -222,6 +233,7 @@ def select_batch(
             toilet_invalid=outcomes.toilet_invalid[start:end],
             door_match=outcomes.door_match[start:end],
         ),
+        toilet_crossed_room_idx[start:end],
     )
 
 
@@ -358,6 +370,7 @@ def prepare_feature_batch(
     kind: Literal["fresh", "replay"],
     train_episode_data: EpisodeData,
     train_outcomes: PreliminaryOutcomes,
+    toilet_crossed_room_idx: torch.Tensor,
     avg_frontiers: torch.Tensor,
     proposal_data: ProposalData | None,
     env,
@@ -377,6 +390,7 @@ def prepare_feature_batch(
         kind,
         train_episode_data,
         train_outcomes,
+        toilet_crossed_room_idx,
         avg_frontiers,
         door_matches,
         prefix_count=prefix_count,
@@ -395,9 +409,10 @@ def prepare_train_batch_task(
     if task.kind == "fresh":
         if task.start is None:
             raise ValueError("fresh train batch task requires a start index")
-        train_episode_data, train_outcomes = select_batch(
+        train_episode_data, train_outcomes, toilet_crossed_room_idx = select_batch(
             fresh_episode_data,
             fresh_outcomes.validity,
+            fresh_outcomes.toilet_crossed_room_idx,
             task.start,
             context.config.train.batch_size,
         )
@@ -414,6 +429,7 @@ def prepare_train_batch_task(
             task.kind,
             train_episode_data,
             train_outcomes,
+            toilet_crossed_room_idx,
             avg_frontiers,
             train_proposal_data,
             env,
@@ -442,6 +458,7 @@ def prepare_train_batch_task(
         task.kind,
         replay_episode_data,
         replay_outcomes.validity,
+        replay_outcomes.toilet_crossed_room_idx,
         replay_outcomes.avg_frontiers,
         replay_door_matches,
         prefix_count=prefix_count,
@@ -456,7 +473,11 @@ def train_balance_batch_backward(
 ) -> torch.Tensor:
     log_temperature = torch.log(prepared_batch.episode_data.temperature)
     preds = balance_model(log_temperature)
-    balance_loss = compute_balance_loss(preds, prepared_batch.door_matches)
+    balance_loss = compute_balance_loss(
+        preds,
+        prepared_batch.door_matches,
+        prepared_batch.toilet_crossed_room_idx,
+    )
     (balance_loss * loss_scale).backward()
     return balance_loss
 
@@ -586,8 +607,16 @@ def train_feature_batch_backward(
             balance_preds,
             prepared_batch.door_matches,
         )
+        toilet_balance_score_target_logits, toilet_balance_score_mask = (
+            compute_toilet_balance_score_target_logits(
+                balance_preds,
+                prepared_batch.toilet_crossed_room_idx,
+            )
+        )
     repeated_balance_score_target_logits = balance_score_target_logits.unsqueeze(1)
     repeated_balance_score_mask = balance_score_mask.unsqueeze(1)
+    repeated_toilet_balance_score_target_logits = toilet_balance_score_target_logits.unsqueeze(1)
+    repeated_toilet_balance_score_mask = toilet_balance_score_mask.unsqueeze(1)
     batch_size = prepared_batch.episode_data.actions.room_idx.shape[0]
     avg_frontiers_target = prepared_batch.avg_frontiers.to(context.device).unsqueeze(1)
     avg_frontiers_mask = torch.ones(
@@ -624,6 +653,8 @@ def train_feature_batch_backward(
             mask,
             repeated_balance_score_target_logits,
             repeated_balance_score_mask,
+            repeated_toilet_balance_score_target_logits,
+            repeated_toilet_balance_score_mask,
             avg_frontiers_target,
             avg_frontiers_mask,
             context.loss_config,
@@ -634,6 +665,7 @@ def train_feature_batch_backward(
         total_loss.connection += prefix_loss.connection.item() * prefix_weight
         total_loss.toilet += prefix_loss.toilet.item() * prefix_weight
         total_loss.balance += prefix_loss.balance.item() * prefix_weight
+        total_loss.toilet_balance += prefix_loss.toilet_balance.item() * prefix_weight
         total_loss.avg_frontiers += prefix_loss.avg_frontiers.item() * prefix_weight
         total_loss.door_contribution += prefix_loss.door_contribution.item() * prefix_weight
         total_loss.connection_contribution += (
@@ -644,6 +676,9 @@ def train_feature_batch_backward(
         )
         total_loss.balance_contribution += (
             prefix_loss.balance_contribution.item() * prefix_weight
+        )
+        total_loss.toilet_balance_contribution += (
+            prefix_loss.toilet_balance_contribution.item() * prefix_weight
         )
         total_loss.avg_frontiers_contribution += (
             prefix_loss.avg_frontiers_contribution.item() * prefix_weight
