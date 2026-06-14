@@ -1162,6 +1162,7 @@ impl Environment {
     ) {
         let room = &common.room[room_idx as usize];
         let graph_size = common.room_part.len();
+        let old_active_room_parts_len = self.active_room_parts.len();
         for from_part in 0..room.door_group_count {
             let from_room_part = room.door_group_offset + from_part;
             self.active_room_parts.push(from_room_part as RoomPartIdx);
@@ -1176,7 +1177,13 @@ impl Environment {
             }
         }
         if let [(room_part, attached_part)] = external_edges {
-            self.add_single_attachment_room_distances(common, room_idx, *room_part, *attached_part);
+            self.add_single_attachment_room_distances(
+                common,
+                room_idx,
+                *room_part,
+                *attached_part,
+                old_active_room_parts_len,
+            );
             return;
         }
         for &(room_part, attached_part) in external_edges {
@@ -1191,27 +1198,21 @@ impl Environment {
         room_idx: RoomIdx,
         room_part: RoomPartIdx,
         attached_part: RoomPartIdx,
+        old_active_room_parts_len: usize,
     ) {
         let room = &common.room[room_idx as usize];
         let graph_size = common.room_part.len();
         let room_start = room.door_group_offset;
-        let room_end = room_start + room.door_group_count;
         let local_attachment = room_part as usize - room_start;
         let attached_part = attached_part as usize;
-        let old_room_parts = self
-            .active_room_parts
-            .iter()
-            .copied()
-            .map(usize::from)
-            .filter(|&part| !(room_start..room_end).contains(&part))
-            .collect::<Vec<_>>();
 
         for local_from in 0..room.door_group_count {
             let from_part = room_start + local_from;
             let to_attachment =
                 room.part_distances[local_from * room.door_group_count + local_attachment];
             if to_attachment != UNREACHABLE_DISTANCE {
-                for &to_part in &old_room_parts {
+                for to_part_idx in 0..old_active_room_parts_len {
+                    let to_part = self.active_room_parts[to_part_idx] as usize;
                     let old_distance = self.graph_distance[attached_part * graph_size + to_part];
                     if let Some(distance) = graph_distance_sum(&[to_attachment, 1, old_distance]) {
                         self.set_graph_distance_min(graph_size, from_part, to_part, distance);
@@ -1222,7 +1223,8 @@ impl Environment {
             let from_attachment =
                 room.part_distances[local_attachment * room.door_group_count + local_from];
             if from_attachment != UNREACHABLE_DISTANCE {
-                for &from_old_part in &old_room_parts {
+                for from_old_part_idx in 0..old_active_room_parts_len {
+                    let from_old_part = self.active_room_parts[from_old_part_idx] as usize;
                     let old_distance =
                         self.graph_distance[from_old_part * graph_size + attached_part];
                     if let Some(distance) = graph_distance_sum(&[old_distance, 1, from_attachment])
@@ -1266,13 +1268,8 @@ impl Environment {
             self.set_graph_distance(graph_size, from_part, to_part, cost);
         }
 
-        let active_room_parts = self
-            .active_room_parts
-            .iter()
-            .copied()
-            .map(usize::from)
-            .collect::<Vec<_>>();
-        for &source in &active_room_parts {
+        for source_idx in 0..self.active_room_parts.len() {
+            let source = self.active_room_parts[source_idx] as usize;
             let source_distance = self.graph_distance[source * graph_size + from_part];
             if source_distance == UNREACHABLE_DISTANCE {
                 continue;
@@ -1280,7 +1277,8 @@ impl Environment {
             let Some(prefix_distance) = graph_distance_sum(&[source_distance, cost]) else {
                 continue;
             };
-            for &destination in &active_room_parts {
+            for destination_idx in 0..self.active_room_parts.len() {
+                let destination = self.active_room_parts[destination_idx] as usize;
                 let destination_distance = self.graph_distance[to_part * graph_size + destination];
                 let Some(distance) = graph_distance_sum(&[prefix_distance, destination_distance])
                 else {
