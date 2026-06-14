@@ -139,6 +139,20 @@ fn profile_end(metric_idx: usize, start: Option<Instant>) {
     }
 }
 
+fn graph_distance_sum(distances: &[GraphDistance]) -> Option<GraphDistance> {
+    let mut total: GraphDistance = 0;
+    for &distance in distances {
+        if distance == UNREACHABLE_DISTANCE {
+            return None;
+        }
+        total = total.checked_add(distance)?;
+        if total == UNREACHABLE_DISTANCE {
+            return None;
+        }
+    }
+    Some(total)
+}
+
 fn check_outcome_transition_consistency(
     before: &[DoorValidOutcome],
     after: &[DoorValidOutcome],
@@ -959,8 +973,6 @@ impl Environment {
                 let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
                 let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
                     .room_part_idx;
-                self.add_graph_distance_edge(common, p1, p2, 1);
-                self.add_graph_distance_edge(common, p2, p1, 1);
                 self.add_component_edge(
                     self.room_part_component[p1 as usize],
                     self.room_part_component[p2 as usize],
@@ -1081,8 +1093,8 @@ impl Environment {
     fn add_room_components_and_edges(&mut self, action: Action, common: &CommonData) {
         let room_idx = action.room_idx;
         let room = &common.room[room_idx as usize];
-        self.add_room_part_distances(common, room_idx);
         let mut attached_room_parts = vec![Vec::new(); room.door_group_count];
+        let mut external_distance_edges = Vec::new();
         for door in &room.doors {
             let door_loc = DoorLocation::new(door, action.x, action.y);
             if let Some(frontier) = self.frontier.get(&door_loc) {
@@ -1090,8 +1102,13 @@ impl Environment {
                     [frontier.dir_door_idx as usize]
                     .room_part_idx;
                 attached_room_parts[door.part_idx as usize].push(attached_room_part);
+                external_distance_edges.push((
+                    Self::room_part_idx(common, room_idx, door.part_idx),
+                    attached_room_part,
+                ));
             }
         }
+        self.add_room_part_distances(common, room_idx, &external_distance_edges);
 
         for (part_idx, attached_parts) in attached_room_parts.iter().enumerate() {
             let room_part_idx = (room.door_group_offset + part_idx) as RoomPartIdx;
@@ -1126,7 +1143,12 @@ impl Environment {
         }
     }
 
-    fn add_room_part_distances(&mut self, common: &CommonData, room_idx: RoomIdx) {
+    fn add_room_part_distances(
+        &mut self,
+        common: &CommonData,
+        room_idx: RoomIdx,
+        external_edges: &[(RoomPartIdx, RoomPartIdx)],
+    ) {
         let room = &common.room[room_idx as usize];
         let graph_size = common.room_part.len();
         for from_part in 0..room.door_group_count {
@@ -1135,6 +1157,79 @@ impl Environment {
                 let to_room_part = room.door_group_offset + to_part;
                 self.graph_distance[from_room_part * graph_size + to_room_part] =
                     room.part_distances[from_part * room.door_group_count + to_part];
+            }
+        }
+        if let [(room_part, attached_part)] = external_edges {
+            self.add_single_attachment_room_distances(common, room_idx, *room_part, *attached_part);
+            return;
+        }
+        for &(room_part, attached_part) in external_edges {
+            self.add_graph_distance_edge(common, room_part, attached_part, 1);
+            self.add_graph_distance_edge(common, attached_part, room_part, 1);
+        }
+    }
+
+    fn add_single_attachment_room_distances(
+        &mut self,
+        common: &CommonData,
+        room_idx: RoomIdx,
+        room_part: RoomPartIdx,
+        attached_part: RoomPartIdx,
+    ) {
+        let room = &common.room[room_idx as usize];
+        let graph_size = common.room_part.len();
+        let room_start = room.door_group_offset;
+        let room_end = room_start + room.door_group_count;
+        let local_attachment = room_part as usize - room_start;
+        let attached_part = attached_part as usize;
+
+        for local_from in 0..room.door_group_count {
+            let from_part = room_start + local_from;
+            let to_attachment =
+                room.part_distances[local_from * room.door_group_count + local_attachment];
+            if to_attachment != UNREACHABLE_DISTANCE {
+                for to_part in 0..graph_size {
+                    if (room_start..room_end).contains(&to_part) {
+                        continue;
+                    }
+                    let old_distance = self.graph_distance[attached_part * graph_size + to_part];
+                    if let Some(distance) = graph_distance_sum(&[to_attachment, 1, old_distance]) {
+                        self.set_graph_distance_min(graph_size, from_part, to_part, distance);
+                    }
+                }
+            }
+
+            let from_attachment =
+                room.part_distances[local_attachment * room.door_group_count + local_from];
+            if from_attachment != UNREACHABLE_DISTANCE {
+                for from_old_part in 0..graph_size {
+                    if (room_start..room_end).contains(&from_old_part) {
+                        continue;
+                    }
+                    let old_distance =
+                        self.graph_distance[from_old_part * graph_size + attached_part];
+                    if let Some(distance) = graph_distance_sum(&[old_distance, 1, from_attachment])
+                    {
+                        self.set_graph_distance_min(graph_size, from_old_part, from_part, distance);
+                    }
+                }
+            }
+        }
+
+        for local_from in 0..room.door_group_count {
+            let from_part = room_start + local_from;
+            let to_attachment =
+                room.part_distances[local_from * room.door_group_count + local_attachment];
+            if to_attachment == UNREACHABLE_DISTANCE {
+                continue;
+            }
+            for local_to in 0..room.door_group_count {
+                let to_part = room_start + local_to;
+                let from_attachment =
+                    room.part_distances[local_attachment * room.door_group_count + local_to];
+                if let Some(distance) = graph_distance_sum(&[to_attachment, 2, from_attachment]) {
+                    self.set_graph_distance_min(graph_size, from_part, to_part, distance);
+                }
             }
         }
     }
@@ -1159,24 +1254,30 @@ impl Environment {
             if source_distance == UNREACHABLE_DISTANCE {
                 continue;
             }
-            let Some(prefix_distance) = source_distance.checked_add(cost) else {
+            let Some(prefix_distance) = graph_distance_sum(&[source_distance, cost]) else {
                 continue;
             };
-            if prefix_distance == UNREACHABLE_DISTANCE {
-                continue;
-            }
             for destination in 0..graph_size {
                 let destination_distance = self.graph_distance[to_part * graph_size + destination];
-                if destination_distance == UNREACHABLE_DISTANCE {
-                    continue;
-                }
-                let Some(distance) = prefix_distance.checked_add(destination_distance) else {
+                let Some(distance) = graph_distance_sum(&[prefix_distance, destination_distance])
+                else {
                     continue;
                 };
-                if distance < self.graph_distance[source * graph_size + destination] {
-                    self.graph_distance[source * graph_size + destination] = distance;
-                }
+                self.set_graph_distance_min(graph_size, source, destination, distance);
             }
+        }
+    }
+
+    fn set_graph_distance_min(
+        &mut self,
+        graph_size: usize,
+        from_part: usize,
+        to_part: usize,
+        distance: GraphDistance,
+    ) {
+        let idx = from_part * graph_size + to_part;
+        if distance < self.graph_distance[idx] {
+            self.graph_distance[idx] = distance;
         }
     }
 
@@ -3370,6 +3471,60 @@ mod tests {
             env.graph_distance(&common, room0_part1, room2_part0),
             GraphDistance::MAX
         );
+    }
+
+    #[test]
+    fn single_attachment_distance_fast_path_matches_full_relaxation() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1]],
+                "missing_connections": [[1, 0]]
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut fast_env = Environment::new(&common, (4, 4), 0);
+        let mut full_env = Environment::new(&common, (4, 4), 0);
+        let first_action = Action {
+            room_idx: 0,
+            x: 0,
+            y: 0,
+        };
+        fast_env.step(first_action, &common);
+        full_env.step(first_action, &common);
+
+        fast_env.step(
+            Action {
+                room_idx: 1,
+                x: 1,
+                y: 0,
+            },
+            &common,
+        );
+        let room_part = Environment::room_part_idx(&common, 1, 0);
+        let attached_part = Environment::room_part_idx(&common, 0, 0);
+        full_env.add_room_part_distances(&common, 1, &[]);
+        full_env.add_graph_distance_edge(&common, room_part, attached_part, 1);
+        full_env.add_graph_distance_edge(&common, attached_part, room_part, 1);
+
+        assert_eq!(fast_env.graph_distance, full_env.graph_distance);
     }
 
     #[test]
