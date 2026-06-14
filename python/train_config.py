@@ -96,6 +96,7 @@ class FeatureConfig(StrictBaseModel):
     lookahead_outcomes: bool
     room_position: bool
     global_room_position: bool
+    room_part_graph_distance: bool
     frontier_mask: bool
     frontier_position: bool
     frontier_orientation: bool

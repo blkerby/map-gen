@@ -16,9 +16,11 @@
 - Maintain clean, readable code. When there is an opportunity to improve code
   quality by refactoring, suggest this, even if not required for the current
   task.
-- For PyO3 bindings, prefer returning named `#[pyclass]` result objects when a
-  function needs to return many values. Avoid creating complex or deeply nested
-  tuple return types just to stay within PyO3 tuple arity limits.
+- For PyO3 bindings, return named `#[pyclass]` result objects when a function
+  needs to return many values. Do not work around PyO3 tuple arity limits by
+  returning `PyTuple`, deeply nested tuples, or other positional containers. If
+  adding fields pushes an existing tuple-returning API past a comfortable arity,
+  convert that API to a named result object with explicit getters instead.
 - Avoid defining functions inside of other function definitions.
 - The training script `train.py` may be run on a different machine, so do not
   make assumptions based on the local development environment.

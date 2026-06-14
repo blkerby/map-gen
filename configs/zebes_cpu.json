@@ -70,6 +70,7 @@
     "lookahead_outcomes": true,
     "room_position": true,
     "global_room_position": true,
+    "room_part_graph_distance": true,
     "frontier_mask": true,
     "frontier_position": true,
     "frontier_orientation": true,

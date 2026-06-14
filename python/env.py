@@ -214,6 +214,8 @@ class Features:
     room_x: torch.Tensor
     room_y: torch.Tensor
     room_placed: torch.Tensor
+    room_part_furthest_destination: torch.Tensor
+    room_part_furthest_source: torch.Tensor
     log_temperature: torch.Tensor
     log_recommended_candidates: torch.Tensor
     lookahead_door_invalid: torch.Tensor
@@ -244,6 +246,8 @@ class SparseFeatures:
     room_x: torch.Tensor
     room_y: torch.Tensor
     room_placed: torch.Tensor
+    room_part_furthest_destination: torch.Tensor
+    room_part_furthest_source: torch.Tensor
     log_temperature: torch.Tensor
     log_recommended_candidates: torch.Tensor
     lookahead_door_invalid: torch.Tensor
@@ -271,6 +275,8 @@ class SparseFeatures:
             self.room_x.flatten(0, 1),
             self.room_y.flatten(0, 1),
             self.room_placed.flatten(0, 1),
+            self.room_part_furthest_destination.flatten(0, 1),
+            self.room_part_furthest_source.flatten(0, 1),
             self.log_temperature.flatten(0, 1),
             self.log_recommended_candidates.flatten(0, 1),
             self.lookahead_door_invalid.flatten(0, 1),
@@ -297,6 +303,7 @@ class OutputMetadata:
     num_connection_variants: int
     room_connection_variant_idx: list[int]
     num_room_connection_variants: int
+    num_room_parts: int
 
     def get_output_sizes(self) -> tuple[int, int]:
         return len(self.door), len(self.connection)
@@ -342,6 +349,7 @@ class Engine:
             num_connection_variants,
             room_connection_variant_idx,
             num_room_connection_variants,
+            num_room_parts,
         ) = (
             self.engine.get_output_metadata()
         )
@@ -352,10 +360,34 @@ class Engine:
             num_connection_variants=num_connection_variants,
             room_connection_variant_idx=room_connection_variant_idx,
             num_room_connection_variants=num_room_connection_variants,
+            num_room_parts=num_room_parts,
         )
 
     def get_feature_sizes(self) -> tuple[int, int, int]:
         return self.engine.get_feature_sizes()
+
+
+FEATURE_RESULT_FIELDS = (
+    "inventory",
+    "room_x",
+    "room_y",
+    "room_placed",
+    "room_part_furthest_destination",
+    "room_part_furthest_source",
+    "frontier",
+    "frontier_occupancy",
+    "frontier_neighbor",
+    "frontier_neighbor_pair",
+    "connection_reachability",
+    "frontier_connection_reachability",
+    "toilet_crossed_room_idx",
+)
+
+SPARSE_FEATURE_RESULT_FIELDS = (
+    *FEATURE_RESULT_FIELDS,
+    "row_snapshot_idx",
+    "row_frontier_idx",
+)
 
 
 class EnvironmentGroup:
@@ -578,6 +610,10 @@ class EnvironmentGroup:
         )
 
     @staticmethod
+    def _result_tensors(result, fields: tuple[str, ...], device: torch.device):
+        return [torch.from_numpy(getattr(result, field)).to(device) for field in fields]
+
+    @staticmethod
     def _features(
         values,
         device: torch.device,
@@ -588,7 +624,11 @@ class EnvironmentGroup:
         lookahead_outcomes: PreliminaryOutcomes,
         include_lookahead_outcomes: bool,
     ) -> Features:
-        tensors = [torch.from_numpy(value).to(device) for value in values]
+        tensors = EnvironmentGroup._result_tensors(
+            result=values,
+            fields=FEATURE_RESULT_FIELDS,
+            device=device,
+        )
         log_temperature = log_temperature.to(device)
         if not include_temperature:
             log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
@@ -620,14 +660,14 @@ class EnvironmentGroup:
                 0,
             ])
         return Features(
-            *tensors[:4],
+            *tensors[:6],
             log_temperature,
             log_recommended_candidates,
             lookahead_door_invalid,
             lookahead_door_match,
             lookahead_connection_invalid,
             lookahead_toilet_invalid,
-            *tensors[4:],
+            *tensors[6:],
         )
 
     def get_features(
@@ -666,7 +706,7 @@ class EnvironmentGroup:
         environment_count: Optional[int] = None,
     ) -> SparseFeatures:
         values = self.env.get_sparse_features(environment_start, environment_count)
-        tensors = [torch.from_numpy(value).to(device) for value in values]
+        tensors = self._result_tensors(values, SPARSE_FEATURE_RESULT_FIELDS, device)
         log_temperature = log_temperature.to(device)
         if not include_temperature:
             log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
@@ -698,14 +738,14 @@ class EnvironmentGroup:
                 0,
             ])
         return SparseFeatures(
-            *tensors[:4],
+            *tensors[:6],
             log_temperature,
             log_recommended_candidates,
             lookahead_door_invalid,
             lookahead_door_match,
             lookahead_connection_invalid,
             lookahead_toilet_invalid,
-            *tensors[4:],
+            *tensors[6:],
         )
 
     def finish(self):

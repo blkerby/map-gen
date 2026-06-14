@@ -261,6 +261,7 @@ pub struct FeatureConfig {
     pub lookahead_outcomes: bool,
     pub room_position: bool,
     pub global_room_position: bool,
+    pub room_part_graph_distance: bool,
     pub frontier_mask: bool,
     pub frontier_position: bool,
     pub frontier_orientation: bool,
@@ -281,6 +282,7 @@ impl FeatureConfig {
             && !self.recommended_candidates
             && !self.room_position
             && !self.global_room_position
+            && !self.room_part_graph_distance
             && !self.connection_reachability
             && !self.toilet_crossed_room
             && !self.has_frontier_features()
@@ -321,6 +323,7 @@ impl FeatureConfig {
             lookahead_outcomes: true,
             room_position: true,
             global_room_position: true,
+            room_part_graph_distance: true,
             frontier_mask: true,
             frontier_position: true,
             frontier_orientation: true,
@@ -344,6 +347,7 @@ impl FeatureConfig {
             lookahead_outcomes: false,
             room_position: false,
             global_room_position: false,
+            room_part_graph_distance: false,
             frontier_mask: false,
             frontier_position: false,
             frontier_orientation: false,
@@ -365,6 +369,8 @@ pub struct Features {
     pub room_x: Vec<Coord>,
     pub room_y: Vec<Coord>,
     pub room_placed: Vec<u8>,
+    pub room_part_furthest_destination: Vec<u8>,
+    pub room_part_furthest_source: Vec<u8>,
     // mask, x, y, vertical, kind
     pub frontier: Vec<i8>,
     // Occupied tiles in a square window centered on each frontier, packed row-major.
@@ -918,6 +924,45 @@ impl Environment {
             .filter(|&distance| distance != UNREACHABLE_DISTANCE)
             .max()
             .unwrap_or(0)
+    }
+
+    fn room_part_graph_distance_features(&self, common: &CommonData) -> (Vec<u8>, Vec<u8>) {
+        fn encode_distance(distance: GraphDistance) -> u8 {
+            if distance == UNREACHABLE_DISTANCE {
+                0
+            } else {
+                distance + 1
+            }
+        }
+
+        let graph_size = common.room_part.len();
+        let mut furthest_destination = vec![UNREACHABLE_DISTANCE; graph_size];
+        let mut furthest_source = vec![UNREACHABLE_DISTANCE; graph_size];
+        for source in 0..graph_size {
+            for destination in 0..graph_size {
+                let distance = self.graph_distance[source * graph_size + destination];
+                if distance == UNREACHABLE_DISTANCE {
+                    continue;
+                }
+                if furthest_destination[source] == UNREACHABLE_DISTANCE
+                    || distance > furthest_destination[source]
+                {
+                    furthest_destination[source] = distance;
+                }
+                if furthest_source[destination] == UNREACHABLE_DISTANCE
+                    || distance > furthest_source[destination]
+                {
+                    furthest_source[destination] = distance;
+                }
+            }
+        }
+        (
+            furthest_destination
+                .into_iter()
+                .map(encode_distance)
+                .collect(),
+            furthest_source.into_iter().map(encode_distance).collect(),
+        )
     }
 
     fn step_for_lookahead(&mut self, action: Action, common: &CommonData) {
@@ -2287,6 +2332,12 @@ impl Environment {
         } else {
             vec![]
         };
+        let (room_part_furthest_destination, room_part_furthest_source) =
+            if config.room_part_graph_distance {
+                self.room_part_graph_distance_features(common)
+            } else {
+                (vec![], vec![])
+            };
         let mut frontier = vec![0; frontier_count * FEATURE_FRONTIER_WIDTH];
         let frontier_window_area = frontier_window_size * frontier_window_size;
         let packed_frontier_window_size = frontier_window_area.div_ceil(8);
@@ -2538,6 +2589,8 @@ impl Environment {
             room_x,
             room_y,
             room_placed,
+            room_part_furthest_destination,
+            room_part_furthest_source,
             frontier,
             frontier_occupancy,
             frontier_neighbor,
@@ -3788,6 +3841,45 @@ mod tests {
             &common,
         );
         assert_eq!(env.graph_diameter(), 2);
+    }
+
+    #[test]
+    fn room_part_graph_distance_features_encode_furthest_finite_distances() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": [[0, 1], [1, 2], [2, 0]]
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (5, 5), 0);
+        env.graph_distance = vec![
+            0,
+            2,
+            UNREACHABLE_DISTANCE,
+            1,
+            0,
+            3,
+            UNREACHABLE_DISTANCE,
+            UNREACHABLE_DISTANCE,
+            UNREACHABLE_DISTANCE,
+        ];
+
+        let (furthest_destination, furthest_source) =
+            env.room_part_graph_distance_features(&common);
+
+        assert_eq!(furthest_destination, vec![3, 4, 0]);
+        assert_eq!(furthest_source, vec![2, 3, 4]);
     }
 
     #[test]
