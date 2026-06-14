@@ -11,6 +11,7 @@
     "generation_autocast": true,
     "embedding_width": 256,
     "global_embedding_width": 256,
+    "global_room_position_embedding_width": 256,
     "hidden_width": 256,
     "door_match_embedding_width": 64,
     "num_layers": 2
@@ -56,6 +57,7 @@
     "recommended_candidates": true,
     "lookahead_outcomes": true,
     "room_position": true,
+    "global_room_position": true,
     "frontier_mask": true,
     "frontier_position": true,
     "frontier_orientation": true,

@@ -243,6 +243,7 @@ pub struct FeatureConfig {
     #[allow(dead_code)]
     pub lookahead_outcomes: bool,
     pub room_position: bool,
+    pub global_room_position: bool,
     pub frontier_mask: bool,
     pub frontier_position: bool,
     pub frontier_orientation: bool,
@@ -261,6 +262,7 @@ impl FeatureConfig {
             && !self.temperature
             && !self.recommended_candidates
             && !self.room_position
+            && !self.global_room_position
             && !self.connection_reachability
             && !self.has_frontier_features()
     }
@@ -285,6 +287,9 @@ impl FeatureConfig {
         {
             return Err("frontier neighbor pair features require frontier_neighbor");
         }
+        if self.global_room_position && !self.room_position {
+            return Err("global_room_position requires room_position");
+        }
         Ok(())
     }
 
@@ -296,6 +301,7 @@ impl FeatureConfig {
             recommended_candidates: true,
             lookahead_outcomes: true,
             room_position: true,
+            global_room_position: true,
             frontier_mask: true,
             frontier_position: true,
             frontier_orientation: true,
@@ -317,6 +323,7 @@ impl FeatureConfig {
             recommended_candidates: false,
             lookahead_outcomes: false,
             room_position: false,
+            global_room_position: false,
             frontier_mask: false,
             frontier_position: false,
             frontier_orientation: false,
@@ -3737,6 +3744,14 @@ mod tests {
         assert!(
             FeatureConfig {
                 frontier_neighbor_position_embedding: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FeatureConfig {
+                global_room_position: true,
                 ..FeatureConfig::all_disabled()
             }
             .validate()

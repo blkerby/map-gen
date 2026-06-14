@@ -269,6 +269,7 @@ def frontier_model_kwargs(
         "map_y": config.map_size[1],
         "embedding_width": config.model.embedding_width,
         "global_embedding_width": config.model.global_embedding_width,
+        "global_room_position_embedding_width": config.model.global_room_position_embedding_width,
         "hidden_width": config.model.hidden_width,
         "door_match_embedding_width": config.model.door_match_embedding_width,
         "num_layers": config.model.num_layers,
@@ -1018,7 +1019,7 @@ class TrainingSession:
             "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), tube %.2f, front %.2f, ss %.3f, "
             "p %.4f, "
-            "ex %.4f, frac %.4f",
+            "frac %.4f",
             round_idx,
             loss.total,
             loss.door,
@@ -1044,7 +1045,6 @@ class TrainingSession:
             scalar(avg_frontiers),
             scalar(door_match_ss),
             scalar(candidate_diagnostics.selected_probability),
-            generation_stats["proposal_exhaustion_rate"],
             schedule_progress,
         )
         # logging.info(

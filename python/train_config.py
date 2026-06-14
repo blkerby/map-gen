@@ -25,6 +25,7 @@ class ModelConfig(StrictBaseModel):
     generation_autocast: bool
     embedding_width: int
     global_embedding_width: int
+    global_room_position_embedding_width: int
     hidden_width: int
     door_match_embedding_width: int
     num_layers: int
@@ -91,6 +92,7 @@ class FeatureConfig(StrictBaseModel):
     recommended_candidates: bool
     lookahead_outcomes: bool
     room_position: bool
+    global_room_position: bool
     frontier_mask: bool
     frontier_position: bool
     frontier_orientation: bool
@@ -195,6 +197,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("visualize must be greater than or equal to zero")
     if config.model.global_embedding_width <= 0:
         raise ValueError("model.global_embedding_width must be greater than zero")
+    if config.model.global_room_position_embedding_width <= 0:
+        raise ValueError("model.global_room_position_embedding_width must be greater than zero")
     validate_optimizer_config(config.optimizer, "optimizer")
     validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
@@ -279,6 +283,8 @@ def validate_config(config: Config) -> None:
         or config.features.frontier_neighbor_flags
     ) and not config.features.frontier_neighbor:
         raise ValueError("frontier neighbor pair features require features.frontier_neighbor")
+    if config.features.global_room_position and not config.features.room_position:
+        raise ValueError("features.global_room_position requires features.room_position")
 
 
 def episodes_per_round(config: Config) -> int:

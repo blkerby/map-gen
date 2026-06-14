@@ -121,6 +121,7 @@ class FrontierModel(torch.nn.Module):
         map_y,
         embedding_width,
         global_embedding_width,
+        global_room_position_embedding_width,
         hidden_width,
         door_match_embedding_width,
         num_layers,
@@ -135,8 +136,11 @@ class FrontierModel(torch.nn.Module):
         self.map_y = map_y
         self.embedding_width = embedding_width
         self.global_embedding_width = global_embedding_width
+        self.global_room_position_embedding_width = global_room_position_embedding_width
         if global_embedding_width <= 0:
             raise ValueError("global_embedding_width must be greater than zero")
+        if global_room_position_embedding_width <= 0:
+            raise ValueError("global_room_position_embedding_width must be greater than zero")
         self.left_count, self.right_count, self.up_count, self.down_count = door_counts
         if self.features.lookahead_outcomes and door_match_embedding_width <= 0:
             raise ValueError("door_match_embedding_width must be greater than zero")
@@ -151,6 +155,12 @@ class FrontierModel(torch.nn.Module):
             raise ValueError("door_counts must sum to the door output size")
         self.num_connection_outputs = len(output_metadata.connection)
         self.include_inventory = self.features.inventory
+        if self.features.global_room_position and not self.features.room_position:
+            raise ValueError("features.global_room_position requires features.room_position")
+        self.register_buffer(
+            "room_connection_variant_idx",
+            torch.tensor(output_metadata.room_connection_variant_idx, dtype=torch.int64),
+        )
         # self.inventory_embedding = torch.nn.Parameter(
         #     torch.randn([output_metadata.num_room_connection_variants, embedding_width]) / math.sqrt(embedding_width)
         # ) if self.features.inventory else None
@@ -215,6 +225,7 @@ class FrontierModel(torch.nn.Module):
             )
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
+            + global_room_position_embedding_width * int(self.features.global_room_position)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -236,6 +247,7 @@ class FrontierModel(torch.nn.Module):
             )
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
+            + global_room_position_embedding_width * int(self.features.global_room_position)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -293,6 +305,24 @@ class FrontierModel(torch.nn.Module):
                 torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width))
             if self.features.frontier_neighbor_position_embedding else None
         )
+        self.global_room_pos_embedding_x = (
+            torch.nn.Parameter(
+                torch.randn([
+                    output_metadata.num_room_connection_variants,
+                    NUM_COORD_VALUES,
+                    global_room_position_embedding_width,
+                ]) / math.sqrt(global_room_position_embedding_width))
+            if self.features.global_room_position else None
+        )
+        self.global_room_pos_embedding_y = (
+            torch.nn.Parameter(
+                torch.randn([
+                    output_metadata.num_room_connection_variants,
+                    NUM_COORD_VALUES,
+                    global_room_position_embedding_width,
+                ]) / math.sqrt(global_room_position_embedding_width))
+            if self.features.global_room_position else None
+        )
         self.pos_embedding_x = torch.nn.Parameter(
             torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
         self.pos_embedding_y = torch.nn.Parameter(
@@ -328,6 +358,28 @@ class FrontierModel(torch.nn.Module):
         x = x.to(torch.int64) + offset
         y = y.to(torch.int64) + offset
         return embedding_x[x].to(dtype) + embedding_y[y].to(dtype)
+
+    def _global_room_position_features(self, features: SparseFeatures, dtype):
+        if not self.features.global_room_position:
+            return None
+        room_x = features.room_x.to(torch.int64) + COORD_OFFSET
+        room_y = features.room_y.to(torch.int64) + COORD_OFFSET
+        room_connection_variant_idx = (
+            self.room_connection_variant_idx
+            .to(room_x.device)
+            .unsqueeze(0)
+            .expand_as(room_x)
+        )
+        room_position = (
+            self.global_room_pos_embedding_x[room_connection_variant_idx, room_x]
+            + self.global_room_pos_embedding_y[room_connection_variant_idx, room_y]
+        ).to(dtype)
+        placed = features.room_placed.to(dtype).unsqueeze(-1)
+        placed_count = placed.sum(dim=1).clamp_min(1)
+        return (
+            room_position
+            * placed
+        ).sum(dim=1) / torch.sqrt(placed_count)
 
     def _pair_features(self, features, dtype):
         values = []
@@ -480,6 +532,7 @@ class FrontierModel(torch.nn.Module):
             self._lookahead_outcome_features(features, X.dtype)
             if self.features.lookahead_outcomes else None
         )
+        global_room_position_features = self._global_room_position_features(features, X.dtype)
         global_inputs = []
         if inventory_features is not None:
             global_inputs.append(inventory_features)
@@ -491,6 +544,8 @@ class FrontierModel(torch.nn.Module):
             global_inputs.append(recommended_candidate_features)
         if lookahead_features is not None:
             global_inputs.append(lookahead_features)
+        if global_room_position_features is not None:
+            global_inputs.append(global_room_position_features)
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None
@@ -592,6 +647,8 @@ class FrontierModel(torch.nn.Module):
             pooled_inputs.append(recommended_candidate_features)
         if lookahead_features is not None:
             pooled_inputs.append(lookahead_features)
+        if global_room_position_features is not None:
+            pooled_inputs.append(global_room_position_features)
         pooled_state = (
             self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
             if self.pooled_mlp is not None
