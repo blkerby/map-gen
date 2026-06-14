@@ -244,7 +244,7 @@ class SparseFeatureSlot:
         self.inventory_width = inventory_count * int(features.inventory)
         self.room_width = room_count * int(features.room_position)
         self.room_part_width = (
-            room_part_count * int(features.room_part_graph_distance)
+            room_part_count * int(features.room_part_furthest_distance)
         )
         self.frontier_occupancy_width = (
             (env.frontier_window_size * env.frontier_window_size + 7) // 8

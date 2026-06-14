@@ -241,7 +241,7 @@ class FrontierModel(torch.nn.Module):
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
             + global_room_position_embedding_width * int(self.features.global_room_position)
-            + 2 * self.num_room_parts * int(self.features.room_part_graph_distance)
+            + 2 * self.num_room_parts * int(self.features.room_part_furthest_distance)
             + (
                 door_match_embedding_width
                 + 2 * connection_output_size
@@ -313,9 +313,9 @@ class FrontierModel(torch.nn.Module):
             torch.nn.Embedding(num_rooms + 1, toilet_crossed_room_embedding_width)
             if self.features.toilet_crossed_room else None
         )
-        self.room_part_graph_distance_embedding = (
+        self.room_part_furthest_distance_embedding = (
             torch.nn.Embedding(256, 1)
-            if self.features.room_part_graph_distance else None
+            if self.features.room_part_furthest_distance else None
         )
         self.frontier_pos_embedding_x = (
             torch.nn.Parameter(
@@ -490,18 +490,18 @@ class FrontierModel(torch.nn.Module):
         )
         return self.toilet_crossed_room_embedding(crossed_room + 1).squeeze(-2).to(dtype)
 
-    def _room_part_graph_distance_features(
+    def _room_part_furthest_distance_features(
         self,
         features: SparseFeatures,
         dtype: torch.dtype,
     ) -> torch.Tensor | None:
-        if self.room_part_graph_distance_embedding is None:
+        if self.room_part_furthest_distance_embedding is None:
             return None
         distances = torch.cat([
             features.room_part_furthest_destination,
             features.room_part_furthest_source,
         ], dim=-1).to(torch.int64)
-        return self.room_part_graph_distance_embedding(distances).flatten(1).to(dtype)
+        return self.room_part_furthest_distance_embedding(distances).flatten(1).to(dtype)
 
     def _relative_position_features(self, features, neighbor):
         if self.frontier_relative_pos_embedding_x is None:
@@ -595,7 +595,7 @@ class FrontierModel(torch.nn.Module):
         )
         toilet_crossed_room_features = self._toilet_crossed_room_features(features, X.dtype)
         global_room_position_features = self._global_room_position_features(features, X.dtype)
-        room_part_graph_distance_features = self._room_part_graph_distance_features(
+        room_part_furthest_distance_features = self._room_part_furthest_distance_features(
             features,
             X.dtype,
         )
@@ -614,8 +614,8 @@ class FrontierModel(torch.nn.Module):
             global_inputs.append(toilet_crossed_room_features)
         if global_room_position_features is not None:
             global_inputs.append(global_room_position_features)
-        if room_part_graph_distance_features is not None:
-            global_inputs.append(room_part_graph_distance_features)
+        if room_part_furthest_distance_features is not None:
+            global_inputs.append(room_part_furthest_distance_features)
         global_state = (
             self.global_mlp(torch.cat(global_inputs, dim=-1))
             if self.global_mlp is not None

@@ -2129,14 +2129,14 @@ impl FeatureBuffers {
                 snapshot_count
                     * common_data.room_part.len()
                     * usize::from(
-                        features.room_part_graph_distance
+                        features.room_part_furthest_distance
                     )
             ],
             room_part_furthest_source: vec![
                 0;
                 snapshot_count
                     * common_data.room_part.len()
-                    * usize::from(features.room_part_graph_distance)
+                    * usize::from(features.room_part_furthest_distance)
             ],
             frontier: vec![0; snapshot_count * frontier_count * FEATURE_FRONTIER_WIDTH],
             frontier_occupancy: vec![
@@ -2201,7 +2201,7 @@ impl FeatureBuffers {
 
         let inventory_count = inventory_count * usize::from(features.inventory);
         let room_count = room_count * usize::from(features.room_position);
-        let room_part_count = room_part_count * usize::from(features.room_part_graph_distance);
+        let room_part_count = room_part_count * usize::from(features.room_part_furthest_distance);
         let inventory_start = snapshot_start * inventory_count;
         let room_start = snapshot_start * room_count;
         let room_part_start = snapshot_start * room_part_count;
@@ -3658,14 +3658,14 @@ impl EnvironmentGroup {
                 py,
                 buffers.room_part_furthest_destination,
                 environment_count,
-                room_part_count * usize::from(self.features.room_part_graph_distance),
+                room_part_count * usize::from(self.features.room_part_furthest_distance),
             )?
             .unbind(),
             room_part_furthest_source: pyarray2_from_flat_vec(
                 py,
                 buffers.room_part_furthest_source,
                 environment_count,
-                room_part_count * usize::from(self.features.room_part_graph_distance),
+                room_part_count * usize::from(self.features.room_part_furthest_distance),
             )?
             .unbind(),
             frontier: pyarray3_from_flat_vec(
@@ -3780,7 +3780,8 @@ impl EnvironmentGroup {
             .collect::<Vec<_>>();
         let inventory_width = inventory_count * usize::from(self.features.inventory);
         let room_width = room_count * usize::from(self.features.room_position);
-        let room_part_width = room_part_count * usize::from(self.features.room_part_graph_distance);
+        let room_part_width =
+            room_part_count * usize::from(self.features.room_part_furthest_distance);
         let frontier_occupancy_width = (self.frontier_window_size * self.frontier_window_size)
             .div_ceil(8)
             * usize::from(self.features.frontier_occupancy);
@@ -4049,7 +4050,8 @@ impl EnvironmentGroup {
         let connection_count = self.common_data.room_connection.len();
         let inventory_width = inventory_count * usize::from(self.features.inventory);
         let room_width = room_count * usize::from(self.features.room_position);
-        let room_part_width = room_part_count * usize::from(self.features.room_part_graph_distance);
+        let room_part_width =
+            room_part_count * usize::from(self.features.room_part_furthest_distance);
         let frontier_occupancy_width = (self.frontier_window_size * self.frontier_window_size)
             .div_ceil(8)
             * usize::from(self.features.frontier_occupancy);
@@ -4348,7 +4350,8 @@ impl EnvironmentGroup {
         let connection_count = self.common_data.room_connection.len();
         let inventory_width = inventory_count * usize::from(self.features.inventory);
         let room_width = room_count * usize::from(self.features.room_position);
-        let room_part_width = room_part_count * usize::from(self.features.room_part_graph_distance);
+        let room_part_width =
+            room_part_count * usize::from(self.features.room_part_furthest_distance);
         let frontier_occupancy_width = (self.frontier_window_size * self.frontier_window_size)
             .div_ceil(8)
             * usize::from(self.features.frontier_occupancy);
