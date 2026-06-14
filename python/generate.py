@@ -160,6 +160,7 @@ def compute_expected_reward(
         + config.reward_balance * torch.sum(balance_scores, dim=2)
         + config.reward_toilet_balance * toilet_balance_scores
         - config.reward_frontier * preds.avg_frontiers.to(torch.float32)
+        - config.reward_graph_diameter * preds.graph_diameter.to(torch.float32)
     )
 
 
@@ -827,6 +828,7 @@ def select_candidate_actions(
                     candidate_count,
                 ),
                 avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
+                graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
                 proposal_score=preds.proposal_score,
                 proposal_state=preds.proposal_state,
                 proposal_row_snapshot_idx=preds.proposal_row_snapshot_idx,
@@ -1135,6 +1137,10 @@ def merge_generation_results(
             ]),
             avg_frontiers=torch.cat([
                 episode_outcomes.avg_frontiers
+                for _, episode_outcomes, _, _ in results
+            ]),
+            graph_diameter=torch.cat([
+                episode_outcomes.graph_diameter
                 for _, episode_outcomes, _, _ in results
             ]),
         ),

@@ -880,6 +880,15 @@ impl Environment {
         Ok(self.frontier_count_sum as f32 / self.frontier_count_steps as f32)
     }
 
+    pub fn graph_diameter(&self) -> GraphDistance {
+        self.graph_distance
+            .iter()
+            .copied()
+            .filter(|&distance| distance != UNREACHABLE_DISTANCE)
+            .max()
+            .unwrap_or(0)
+    }
+
     fn step_for_lookahead(&mut self, action: Action, common: &CommonData) {
         self.step_impl(action, common, StepMode::Lookahead);
     }
@@ -3438,6 +3447,75 @@ mod tests {
             env.graph_distance(&common, right_part, left_part),
             GraphDistance::MAX
         );
+    }
+
+    #[test]
+    fn graph_diameter_ignores_unreachable_pairs_and_zero_cost_room_edges() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1]],
+                "missing_connections": [[1, 0]]
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1]],
+                "missing_connections": [[1, 0]]
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (5, 5), 0);
+
+        assert_eq!(env.graph_diameter(), 0);
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+            },
+            &common,
+        );
+        assert_eq!(env.graph_diameter(), 0);
+        env.step(
+            Action {
+                room_idx: 1,
+                x: 1,
+                y: 0,
+            },
+            &common,
+        );
+        assert_eq!(env.graph_diameter(), 1);
+        env.step(
+            Action {
+                room_idx: 2,
+                x: 2,
+                y: 0,
+            },
+            &common,
+        );
+        assert_eq!(env.graph_diameter(), 2);
     }
 
     #[test]

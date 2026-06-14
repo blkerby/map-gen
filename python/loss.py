@@ -16,6 +16,7 @@ class LossConfig:
     balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
+    graph_diameter_weight: float
 
 
 @dataclass
@@ -27,12 +28,14 @@ class LossBreakdown:
     balance: torch.Tensor
     toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
+    graph_diameter: torch.Tensor
     door_contribution: torch.Tensor
     connection_contribution: torch.Tensor
     toilet_contribution: torch.Tensor
     balance_contribution: torch.Tensor
     toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
+    graph_diameter_contribution: torch.Tensor
 
 
 def masked_binary_cross_entropy_loss(preds: torch.Tensor, outcomes: torch.Tensor, mask: torch.Tensor, weight: float) -> torch.Tensor:
@@ -77,6 +80,8 @@ def compute_loss_breakdown(
     toilet_balance_score_mask: torch.Tensor,
     avg_frontiers_target: torch.Tensor,
     avg_frontiers_mask: torch.Tensor,
+    graph_diameter_target: torch.Tensor,
+    graph_diameter_mask: torch.Tensor,
     config: LossConfig,
 ) -> LossBreakdown:
     door_loss, door_wt = masked_binary_cross_entropy_loss(
@@ -105,6 +110,14 @@ def compute_loss_breakdown(
         avg_frontiers_error.square() * avg_frontiers_mask
     )
     avg_frontiers_wt = config.avg_frontiers_weight * torch.sum(avg_frontiers_mask)
+    graph_diameter_mask = graph_diameter_mask.to(torch.float32)
+    graph_diameter_error = (
+        preds.graph_diameter.to(torch.float32) - graph_diameter_target.to(torch.float32)
+    )
+    graph_diameter_loss = config.graph_diameter_weight * torch.sum(
+        graph_diameter_error.square() * graph_diameter_mask
+    )
+    graph_diameter_wt = config.graph_diameter_weight * torch.sum(graph_diameter_mask)
     total_weight = (
         door_wt
         + conn_wt
@@ -112,6 +125,7 @@ def compute_loss_breakdown(
         + balance_wt
         + toilet_balance_wt
         + avg_frontiers_wt
+        + graph_diameter_wt
         + 1e-15
     )
     door_contribution = door_loss / total_weight
@@ -120,6 +134,7 @@ def compute_loss_breakdown(
     balance_contribution = balance_loss / total_weight
     toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
+    graph_diameter_contribution = graph_diameter_loss / total_weight
     mean_loss = (
         door_contribution
         + connection_contribution
@@ -127,6 +142,7 @@ def compute_loss_breakdown(
         + balance_contribution
         + toilet_balance_contribution
         + avg_frontiers_contribution
+        + graph_diameter_contribution
     )
     return LossBreakdown(
         total=mean_loss,
@@ -136,12 +152,14 @@ def compute_loss_breakdown(
         balance=balance_loss / (balance_wt + 1e-15),
         toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
+        graph_diameter=graph_diameter_loss / (graph_diameter_wt + 1e-15),
         door_contribution=door_contribution,
         connection_contribution=connection_contribution,
         toilet_contribution=toilet_contribution,
         balance_contribution=balance_contribution,
         toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,
+        graph_diameter_contribution=graph_diameter_contribution,
     )
 
 

@@ -48,6 +48,7 @@ class PreparedTrainBatch:
     outcomes: PreliminaryOutcomes
     toilet_crossed_room_idx: torch.Tensor
     avg_frontiers: torch.Tensor
+    graph_diameter: torch.Tensor
     door_matches: DoorMatches
     prefix_count: int
     feature_batches: list[FeatureTrainBatch]
@@ -62,6 +63,7 @@ class MainLossBreakdown:
     balance: float
     toilet_balance: float
     avg_frontiers: float
+    graph_diameter: float
     proposal: float
     door_contribution: float
     connection_contribution: float
@@ -69,6 +71,7 @@ class MainLossBreakdown:
     balance_contribution: float
     toilet_balance_contribution: float
     avg_frontiers_contribution: float
+    graph_diameter_contribution: float
     proposal_contribution: float
 
 
@@ -106,6 +109,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         balance=0.0,
         toilet_balance=0.0,
         avg_frontiers=0.0,
+        graph_diameter=0.0,
         proposal=0.0,
         door_contribution=0.0,
         connection_contribution=0.0,
@@ -113,6 +117,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         balance_contribution=0.0,
         toilet_balance_contribution=0.0,
         avg_frontiers_contribution=0.0,
+        graph_diameter_contribution=0.0,
         proposal_contribution=0.0,
     )
 
@@ -125,6 +130,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.balance += source.balance
     target.toilet_balance += source.toilet_balance
     target.avg_frontiers += source.avg_frontiers
+    target.graph_diameter += source.graph_diameter
     target.proposal += source.proposal
     target.door_contribution += source.door_contribution
     target.connection_contribution += source.connection_contribution
@@ -132,6 +138,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.balance_contribution += source.balance_contribution
     target.toilet_balance_contribution += source.toilet_balance_contribution
     target.avg_frontiers_contribution += source.avg_frontiers_contribution
+    target.graph_diameter_contribution += source.graph_diameter_contribution
     target.proposal_contribution += source.proposal_contribution
 
 
@@ -144,6 +151,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         balance=total_loss.balance / count,
         toilet_balance=total_loss.toilet_balance / count,
         avg_frontiers=total_loss.avg_frontiers / count,
+        graph_diameter=total_loss.graph_diameter / count,
         proposal=total_loss.proposal / count,
         door_contribution=total_loss.door_contribution / count,
         connection_contribution=total_loss.connection_contribution / count,
@@ -151,6 +159,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         balance_contribution=total_loss.balance_contribution / count,
         toilet_balance_contribution=total_loss.toilet_balance_contribution / count,
         avg_frontiers_contribution=total_loss.avg_frontiers_contribution / count,
+        graph_diameter_contribution=total_loss.graph_diameter_contribution / count,
         proposal_contribution=total_loss.proposal_contribution / count,
     )
 
@@ -372,6 +381,7 @@ def prepare_feature_batch(
     train_outcomes: PreliminaryOutcomes,
     toilet_crossed_room_idx: torch.Tensor,
     avg_frontiers: torch.Tensor,
+    graph_diameter: torch.Tensor,
     proposal_data: ProposalData | None,
     env,
     num_rooms: int,
@@ -392,6 +402,7 @@ def prepare_feature_batch(
         train_outcomes,
         toilet_crossed_room_idx,
         avg_frontiers,
+        graph_diameter,
         door_matches,
         prefix_count=prefix_count,
         feature_batches=feature_batches,
@@ -419,6 +430,9 @@ def prepare_train_batch_task(
         avg_frontiers = fresh_outcomes.avg_frontiers[
             task.start:task.start + context.config.train.batch_size
         ]
+        graph_diameter = fresh_outcomes.graph_diameter[
+            task.start:task.start + context.config.train.batch_size
+        ]
         train_proposal_data = fresh_proposal_data.slice(
             task.start,
             task.start + context.config.train.batch_size,
@@ -431,6 +445,7 @@ def prepare_train_batch_task(
             train_outcomes,
             toilet_crossed_room_idx,
             avg_frontiers,
+            graph_diameter,
             train_proposal_data,
             env,
             context.num_rooms,
@@ -460,6 +475,7 @@ def prepare_train_batch_task(
         replay_outcomes.validity,
         replay_outcomes.toilet_crossed_room_idx,
         replay_outcomes.avg_frontiers,
+        replay_outcomes.graph_diameter,
         replay_door_matches,
         prefix_count=prefix_count,
         feature_batches=feature_batches,
@@ -624,6 +640,12 @@ def train_feature_batch_backward(
         dtype=torch.bool,
         device=context.device,
     )
+    graph_diameter_target = prepared_batch.graph_diameter.to(context.device).unsqueeze(1)
+    graph_diameter_mask = torch.ones(
+        [batch_size, 1],
+        dtype=torch.bool,
+        device=context.device,
+    )
     mask = torch.ones(
         [batch_size, 1, 1],
         dtype=torch.bool,
@@ -657,6 +679,8 @@ def train_feature_batch_backward(
             repeated_toilet_balance_score_mask,
             avg_frontiers_target,
             avg_frontiers_mask,
+            graph_diameter_target,
+            graph_diameter_mask,
             context.loss_config,
         )
         backward_loss = prefix_loss.total * prefix_weight
@@ -667,6 +691,7 @@ def train_feature_batch_backward(
         total_loss.balance += prefix_loss.balance.item() * prefix_weight
         total_loss.toilet_balance += prefix_loss.toilet_balance.item() * prefix_weight
         total_loss.avg_frontiers += prefix_loss.avg_frontiers.item() * prefix_weight
+        total_loss.graph_diameter += prefix_loss.graph_diameter.item() * prefix_weight
         total_loss.door_contribution += prefix_loss.door_contribution.item() * prefix_weight
         total_loss.connection_contribution += (
             prefix_loss.connection_contribution.item() * prefix_weight
@@ -682,6 +707,9 @@ def train_feature_batch_backward(
         )
         total_loss.avg_frontiers_contribution += (
             prefix_loss.avg_frontiers_contribution.item() * prefix_weight
+        )
+        total_loss.graph_diameter_contribution += (
+            prefix_loss.graph_diameter_contribution.item() * prefix_weight
         )
         if include_proposal:
             proposal_score = proposal_scores_for_frontier(

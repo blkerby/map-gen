@@ -285,6 +285,7 @@ enum WorkerCommand {
         toilet_valid: OutputShard<i8>,
         toilet_crossed_room_idx: OutputShard<i16>,
         avg_frontiers: OutputShard<f32>,
+        graph_diameter: OutputShard<f32>,
     },
     GetOutcomesAfterCandidates {
         environment_start: usize,
@@ -1021,6 +1022,7 @@ fn worker_loop(
                 toilet_valid,
                 toilet_crossed_room_idx,
                 avg_frontiers,
+                graph_diameter,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the output slices remain valid and that no other thread accesses them.
@@ -1029,6 +1031,7 @@ fn worker_loop(
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
                 let toilet_crossed_room_idx = unsafe { toilet_crossed_room_idx.into_mut_slice() };
                 let avg_frontiers = unsafe { avg_frontiers.into_mut_slice() };
+                let graph_diameter = unsafe { graph_diameter.into_mut_slice() };
                 debug_assert_eq!(door_valid.len(), environments.len() * door_outcome_count);
                 debug_assert_eq!(
                     connections_valid.len(),
@@ -1037,6 +1040,7 @@ fn worker_loop(
                 debug_assert_eq!(toilet_valid.len(), environments.len());
                 debug_assert_eq!(toilet_crossed_room_idx.len(), environments.len());
                 debug_assert_eq!(avg_frontiers.len(), environments.len());
+                debug_assert_eq!(graph_diameter.len(), environments.len());
 
                 let mut consistency_error = None;
                 for (env_idx, env) in environments.iter_mut().enumerate() {
@@ -1061,6 +1065,7 @@ fn worker_loop(
                     debug_assert_eq!(outcomes.door_valid.len(), door_outcome_count);
                     debug_assert_eq!(outcomes.connections_valid.len(), connection_outcome_count);
                     avg_frontiers[env_idx] = avg_frontier_count;
+                    graph_diameter[env_idx] = f32::from(env.graph_diameter());
                     let door_row_start = env_idx * door_outcome_count;
                     for (outcome_idx, outcome) in outcomes.door_valid.iter().enumerate() {
                         door_valid[door_row_start + outcome_idx] = match outcome {
@@ -1468,6 +1473,7 @@ pub struct EpisodeOutcomes {
     toilet_valid: Py<PyArray1<i8>>,
     toilet_crossed_room_idx: Py<PyArray1<i16>>,
     avg_frontiers: Py<PyArray1<f32>>,
+    graph_diameter: Py<PyArray1<f32>>,
 }
 
 #[pymethods]
@@ -1495,6 +1501,11 @@ impl EpisodeOutcomes {
     #[getter]
     fn avg_frontiers(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
         self.avg_frontiers.clone_ref(py)
+    }
+
+    #[getter]
+    fn graph_diameter(&self, py: Python<'_>) -> Py<PyArray1<f32>> {
+        self.graph_diameter.clone_ref(py)
     }
 }
 
@@ -2951,6 +2962,7 @@ impl EnvironmentGroup {
         let mut toilet_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut toilet_crossed_room_idx = vec![-1i16; self.num_environments];
         let mut avg_frontiers = vec![0.0; self.num_environments];
+        let mut graph_diameter = vec![0.0; self.num_environments];
 
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -2963,6 +2975,8 @@ impl EnvironmentGroup {
                     connection_output_start + worker.len * connection_outcome_count;
                 let avg_frontiers_start = worker.start;
                 let avg_frontiers_end = worker.end();
+                let graph_diameter_start = worker.start;
+                let graph_diameter_end = worker.end();
 
                 if let Err(err) = worker.send(WorkerCommand::GetOutcomes {
                     door_outcome_count,
@@ -2982,6 +2996,9 @@ impl EnvironmentGroup {
                     ),
                     avg_frontiers: OutputShard::from_slice(
                         &mut avg_frontiers[avg_frontiers_start..avg_frontiers_end],
+                    ),
+                    graph_diameter: OutputShard::from_slice(
+                        &mut graph_diameter[graph_diameter_start..graph_diameter_end],
                     ),
                 }) {
                     set_first_error(&mut first_error, err);
@@ -3011,6 +3028,7 @@ impl EnvironmentGroup {
             toilet_valid: toilet_valid.into_pyarray(py).unbind(),
             toilet_crossed_room_idx: toilet_crossed_room_idx.into_pyarray(py).unbind(),
             avg_frontiers: avg_frontiers.into_pyarray(py).unbind(),
+            graph_diameter: graph_diameter.into_pyarray(py).unbind(),
         })
     }
 
