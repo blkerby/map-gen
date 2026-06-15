@@ -200,6 +200,7 @@ def extract_candidate_features(
         feature_slot.room_part_furthest_destination.numpy(),
         feature_slot.room_part_furthest_source.numpy(),
         feature_slot.room_part_save_distance.numpy(),
+        feature_slot.room_part_refill_distance.numpy(),
         feature_slot.room_part_frontier_distance.numpy(),
         feature_slot.frontier.numpy(),
         feature_slot.frontier_occupancy.numpy(),
@@ -256,6 +257,9 @@ class SparseFeatureSlot:
         self.room_part_save_distance_width = (
             room_part_count * int(features.room_part_save_distance)
         )
+        self.room_part_refill_distance_width = (
+            room_part_count * int(features.room_part_refill_distance)
+        )
         self.room_part_frontier_distance_width = (
             room_part_count * int(features.room_part_frontier_distance)
         )
@@ -287,6 +291,7 @@ class SparseFeatureSlot:
         self.room_part_furthest_destination = None
         self.room_part_furthest_source = None
         self.room_part_save_distance = None
+        self.room_part_refill_distance = None
         self.room_part_frontier_distance = None
         self.frontier = None
         self.frontier_occupancy = None
@@ -325,6 +330,9 @@ class SparseFeatureSlot:
         )
         self.room_part_save_distance = self._empty(
             (self.snapshot_capacity, self.room_part_save_distance_width), torch.uint8
+        )
+        self.room_part_refill_distance = self._empty(
+            (self.snapshot_capacity, self.room_part_refill_distance_width), torch.uint8
         )
         self.room_part_frontier_distance = self._empty(
             (self.snapshot_capacity, self.room_part_frontier_distance_width), torch.uint8
@@ -413,6 +421,9 @@ class SparseFeatureSlot:
             ),
             self.room_part_save_distance[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_save_distance_width
+            ),
+            self.room_part_refill_distance[:snapshot_count].view(
+                environment_count, candidate_count, self.room_part_refill_distance_width
             ),
             self.room_part_frontier_distance[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_frontier_distance_width
