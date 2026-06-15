@@ -129,6 +129,13 @@ def toilet_balance_reward(
     return -toilet_balance_score * valid_probability
 
 
+def mean_distance_penalty(distance: torch.Tensor) -> torch.Tensor:
+    distance = distance.to(torch.float32)
+    if distance.shape[2] == 0:
+        return torch.sum(distance, dim=2)
+    return torch.mean(distance, dim=2)
+
+
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
 # preds.toilet_invalid: [batch_size, max_candidates]
@@ -161,10 +168,11 @@ def compute_expected_reward(
         + config.reward_toilet_balance * toilet_balance_scores
         - config.reward_frontier * preds.avg_frontiers.to(torch.float32)
         - config.reward_graph_diameter * preds.graph_diameter.to(torch.float32)
-        - config.reward_save_distance * torch.mean(preds.save_distance.to(torch.float32), dim=2)
+        - config.reward_save_distance * mean_distance_penalty(preds.save_distance)
+        - config.reward_refill_distance * mean_distance_penalty(preds.refill_distance)
         - (
-            config.reward_refill_distance
-            * torch.mean(preds.refill_distance.to(torch.float32), dim=2)
+            config.reward_missing_connect_distance
+            * mean_distance_penalty(preds.missing_connect_distance)
         )
     )
 
@@ -907,6 +915,11 @@ def select_candidate_actions(
                     candidate_count,
                     -1,
                 ),
+                missing_connect_distance=preds.missing_connect_distance.view(
+                    environment_count,
+                    candidate_count,
+                    -1,
+                ),
                 proposal_score=preds.proposal_score,
                 proposal_state=preds.proposal_state,
                 proposal_row_snapshot_idx=preds.proposal_row_snapshot_idx,
@@ -1235,6 +1248,14 @@ def merge_generation_results(
             ]),
             refill_distance_mask=torch.cat([
                 episode_outcomes.refill_distance_mask
+                for _, episode_outcomes, _, _ in results
+            ]),
+            missing_connect_distance=torch.cat([
+                episode_outcomes.missing_connect_distance
+                for _, episode_outcomes, _, _ in results
+            ]),
+            missing_connect_distance_mask=torch.cat([
+                episode_outcomes.missing_connect_distance_mask
                 for _, episode_outcomes, _, _ in results
             ]),
         ),

@@ -36,6 +36,8 @@ class Predictions:
     save_distance: torch.Tensor
     # Predicted refill distance for each global room part:
     refill_distance: torch.Tensor
+    # Predicted distance for each required missing connection:
+    missing_connect_distance: torch.Tensor
     # Frontier-local proposal logits for door variants:
     proposal_score: torch.Tensor
     # Optional frontier-local state before global pooling:
@@ -70,6 +72,7 @@ def get_predictions(raw_preds, output_sizes):
         graph_diameter=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         save_distance=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         refill_distance=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
+        missing_connect_distance=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_state=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_row_snapshot_idx=raw_preds.new_empty([0], dtype=torch.int64),
@@ -392,6 +395,10 @@ class FrontierModel(torch.nn.Module):
         self.graph_diameter_output = torch.nn.Linear(embedding_width, 1)
         self.save_distance_output = torch.nn.Linear(embedding_width, self.num_room_parts)
         self.refill_distance_output = torch.nn.Linear(embedding_width, self.num_room_parts)
+        self.missing_connect_distance_output = torch.nn.Linear(
+            embedding_width,
+            self.num_connection_outputs,
+        )
         self.proposal_output = torch.nn.Linear(
             embedding_width,
             output_metadata.num_door_variants,
@@ -823,6 +830,7 @@ class FrontierModel(torch.nn.Module):
         graph_diameter = self.graph_diameter_output(X).squeeze(-1).to(torch.float32)
         save_distance = self.save_distance_output(X).to(torch.float32)
         refill_distance = self.refill_distance_output(X).to(torch.float32)
+        missing_connect_distance = self.missing_connect_distance_output(X).to(torch.float32)
         preds = get_predictions(
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
             self.output_sizes,
@@ -837,6 +845,7 @@ class FrontierModel(torch.nn.Module):
             graph_diameter,
             save_distance,
             refill_distance,
+            missing_connect_distance,
             proposal_score,
             proposal_state,
             row_snapshot_idx if return_proposal_state or include_proposal else row_snapshot_idx.new_empty([0]),

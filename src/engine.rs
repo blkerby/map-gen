@@ -290,6 +290,8 @@ enum WorkerCommand {
         save_distance_mask: OutputShard<u8>,
         refill_distance: OutputShard<f32>,
         refill_distance_mask: OutputShard<u8>,
+        missing_connect_distance: OutputShard<f32>,
+        missing_connect_distance_mask: OutputShard<u8>,
     },
     GetOutcomesAfterCandidates {
         environment_start: usize,
@@ -1031,6 +1033,8 @@ fn worker_loop(
                 save_distance_mask,
                 refill_distance,
                 refill_distance_mask,
+                missing_connect_distance,
+                missing_connect_distance_mask,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the output slices remain valid and that no other thread accesses them.
@@ -1044,6 +1048,9 @@ fn worker_loop(
                 let save_distance_mask = unsafe { save_distance_mask.into_mut_slice() };
                 let refill_distance = unsafe { refill_distance.into_mut_slice() };
                 let refill_distance_mask = unsafe { refill_distance_mask.into_mut_slice() };
+                let missing_connect_distance = unsafe { missing_connect_distance.into_mut_slice() };
+                let missing_connect_distance_mask =
+                    unsafe { missing_connect_distance_mask.into_mut_slice() };
                 debug_assert_eq!(door_valid.len(), environments.len() * door_outcome_count);
                 debug_assert_eq!(
                     connections_valid.len(),
@@ -1068,6 +1075,14 @@ fn worker_loop(
                 debug_assert_eq!(
                     refill_distance_mask.len(),
                     environments.len() * common_data.room_part.len()
+                );
+                debug_assert_eq!(
+                    missing_connect_distance.len(),
+                    environments.len() * connection_outcome_count
+                );
+                debug_assert_eq!(
+                    missing_connect_distance_mask.len(),
+                    environments.len() * connection_outcome_count
                 );
 
                 let mut consistency_error = None;
@@ -1108,6 +1123,14 @@ fn worker_loop(
                         .copy_from_slice(&env_refill_distance);
                     refill_distance_mask[save_distance_start..save_distance_end]
                         .copy_from_slice(&env_refill_distance_mask);
+                    let (env_missing_connect_distance, env_missing_connect_distance_mask) =
+                        env.missing_connect_distances(&common_data);
+                    let connection_row_start = env_idx * connection_outcome_count;
+                    let connection_row_end = connection_row_start + connection_outcome_count;
+                    missing_connect_distance[connection_row_start..connection_row_end]
+                        .copy_from_slice(&env_missing_connect_distance);
+                    missing_connect_distance_mask[connection_row_start..connection_row_end]
+                        .copy_from_slice(&env_missing_connect_distance_mask);
                     let door_row_start = env_idx * door_outcome_count;
                     for (outcome_idx, outcome) in outcomes.door_valid.iter().enumerate() {
                         door_valid[door_row_start + outcome_idx] = match outcome {
@@ -1116,7 +1139,6 @@ fn worker_loop(
                             DoorValidOutcome::Invalid => 1,
                         };
                     }
-                    let connection_row_start = env_idx * connection_outcome_count;
                     for (outcome_idx, outcome) in outcomes.connections_valid.iter().enumerate() {
                         connections_valid[connection_row_start + outcome_idx] = match outcome {
                             DoorValidOutcome::Unknown => -1,
@@ -1520,6 +1542,8 @@ pub struct EpisodeOutcomes {
     save_distance_mask: Py<PyArray2<u8>>,
     refill_distance: Py<PyArray2<f32>>,
     refill_distance_mask: Py<PyArray2<u8>>,
+    missing_connect_distance: Py<PyArray2<f32>>,
+    missing_connect_distance_mask: Py<PyArray2<u8>>,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1614,6 +1638,16 @@ impl EpisodeOutcomes {
     #[getter]
     fn refill_distance_mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.refill_distance_mask.clone_ref(py)
+    }
+
+    #[getter]
+    fn missing_connect_distance(&self, py: Python<'_>) -> Py<PyArray2<f32>> {
+        self.missing_connect_distance.clone_ref(py)
+    }
+
+    #[getter]
+    fn missing_connect_distance_mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
+        self.missing_connect_distance_mask.clone_ref(py)
     }
 }
 
@@ -3432,6 +3466,10 @@ impl EnvironmentGroup {
         let mut save_distance_mask = vec![0; self.num_environments * room_part_count];
         let mut refill_distance = vec![0.0; self.num_environments * room_part_count];
         let mut refill_distance_mask = vec![0; self.num_environments * room_part_count];
+        let mut missing_connect_distance =
+            vec![0.0; self.num_environments * connection_outcome_count];
+        let mut missing_connect_distance_mask =
+            vec![0; self.num_environments * connection_outcome_count];
 
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -3482,6 +3520,14 @@ impl EnvironmentGroup {
                     ),
                     refill_distance_mask: OutputShard::from_slice(
                         &mut refill_distance_mask[save_distance_start..save_distance_end],
+                    ),
+                    missing_connect_distance: OutputShard::from_slice(
+                        &mut missing_connect_distance
+                            [connection_output_start..connection_output_end],
+                    ),
+                    missing_connect_distance_mask: OutputShard::from_slice(
+                        &mut missing_connect_distance_mask
+                            [connection_output_start..connection_output_end],
                     ),
                 }) {
                     set_first_error(&mut first_error, err);
@@ -3538,6 +3584,20 @@ impl EnvironmentGroup {
                 refill_distance_mask,
                 self.num_environments,
                 room_part_count,
+            )?
+            .unbind(),
+            missing_connect_distance: pyarray2_from_flat_vec(
+                py,
+                missing_connect_distance,
+                self.num_environments,
+                connection_outcome_count,
+            )?
+            .unbind(),
+            missing_connect_distance_mask: pyarray2_from_flat_vec(
+                py,
+                missing_connect_distance_mask,
+                self.num_environments,
+                connection_outcome_count,
             )?
             .unbind(),
         })

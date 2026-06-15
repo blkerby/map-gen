@@ -1348,6 +1348,26 @@ impl Environment {
         self.room_distances(common, |room| room.refill)
     }
 
+    pub fn missing_connect_distances(&self, common: &CommonData) -> (Vec<f32>, Vec<u8>) {
+        let graph_size = common.room_part.len();
+        let mut values = vec![0.0; common.room_connection.len()];
+        let mut mask = vec![0; common.room_connection.len()];
+        for (connection_idx, connection) in common.room_connection.iter().enumerate() {
+            let source_part =
+                Self::room_part_idx(common, connection.room_idx, connection.from_part);
+            let destination_part =
+                Self::room_part_idx(common, connection.room_idx, connection.to_part);
+            let source_part = usize::from(source_part);
+            let destination_part = usize::from(destination_part);
+            let distance = self.graph_distance[source_part * graph_size + destination_part];
+            if distance != UNREACHABLE_DISTANCE {
+                values[connection_idx] = f32::from(distance);
+                mask[connection_idx] = 1;
+            }
+        }
+        (values, mask)
+    }
+
     fn room_part_furthest_distance_features(&self, common: &CommonData) -> (Vec<u8>, Vec<u8>) {
         fn encode_distance(distance: GraphDistance) -> u8 {
             if distance == UNREACHABLE_DISTANCE {
@@ -5215,6 +5235,37 @@ mod tests {
             outcomes.connections_valid.as_slice(),
             [DoorValidOutcome::Invalid]
         ));
+    }
+
+    #[test]
+    fn missing_connect_distances_mask_unreachable_connections() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": [[0, 1], [1, 2], [2, 0]]
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 4), 0);
+        let part0 = usize::from(Environment::room_part_idx(&common, 0, 0));
+        let part1 = usize::from(Environment::room_part_idx(&common, 0, 1));
+        let graph_size = common.room_part.len();
+        env.graph_distance[part0 * graph_size + part1] = 7;
+
+        let (distance, mask) = env.missing_connect_distances(&common);
+
+        assert_eq!(distance, vec![7.0, 0.0, 0.0]);
+        assert_eq!(mask, vec![1, 0, 0]);
     }
 
     #[test]

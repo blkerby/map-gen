@@ -478,6 +478,7 @@ def create_generate_config(
         reward_graph_diameter=config.generation.reward_graph_diameter,
         reward_save_distance=config.generation.reward_save_distance,
         reward_refill_distance=config.generation.reward_refill_distance,
+        reward_missing_connect_distance=config.generation.reward_missing_connect_distance,
         autocast=config.model.generation_autocast,
     )
 
@@ -854,6 +855,12 @@ class TrainingSession:
                 refill_distance_mask=torch.cat([
                     outcomes.refill_distance_mask for outcomes in outcome_iterations
                 ]),
+                missing_connect_distance=torch.cat([
+                    outcomes.missing_connect_distance for outcomes in outcome_iterations
+                ]),
+                missing_connect_distance_mask=torch.cat([
+                    outcomes.missing_connect_distance_mask for outcomes in outcome_iterations
+                ]),
             ),
             DoorMatchCounts(
                 horizontal=torch.sum(
@@ -977,6 +984,18 @@ class TrainingSession:
             / (refill_distance_mask_count + 1e-15)
         )
         refill_distance_mask_fraction = torch.mean(refill_distance_mask)
+        missing_connect_distance_mask = (
+            episode_outcomes.missing_connect_distance_mask.to(torch.float32)
+        )
+        missing_connect_distance_mask_count = torch.sum(missing_connect_distance_mask)
+        missing_connect_distance = (
+            torch.sum(
+                episode_outcomes.missing_connect_distance.to(torch.float32)
+                * missing_connect_distance_mask
+            )
+            / (missing_connect_distance_mask_count + 1e-15)
+        )
+        missing_connect_distance_mask_fraction = torch.mean(missing_connect_distance_mask)
 
         success = total_invalid == 0
         success_rate = torch.mean(success.to(torch.float32))
@@ -1043,6 +1062,9 @@ class TrainingSession:
         refill_distance_loss_pct = (
             100.0 * loss.refill_distance_contribution / loss_denominator
         )
+        missing_connect_distance_loss_pct = (
+            100.0 * loss.missing_connect_distance_contribution / loss_denominator
+        )
         proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
 
         metrics = {
@@ -1065,6 +1087,8 @@ class TrainingSession:
             "save_distance_loss_pct": save_distance_loss_pct,
             "refill_distance_loss": loss.refill_distance,
             "refill_distance_loss_pct": refill_distance_loss_pct,
+            "missing_connect_distance_loss": loss.missing_connect_distance,
+            "missing_connect_distance_loss_pct": missing_connect_distance_loss_pct,
             "proposal_loss": loss.proposal,
             "proposal_loss_pct": proposal_loss_pct,
             "candidate_target_entropy": candidate_diagnostics.target_entropy,
@@ -1082,6 +1106,8 @@ class TrainingSession:
             "save_distance_mask_fraction": save_distance_mask_fraction,
             "refill_distance": refill_distance,
             "refill_distance_mask_fraction": refill_distance_mask_fraction,
+            "missing_connect_distance": missing_connect_distance,
+            "missing_connect_distance_mask_fraction": missing_connect_distance_mask_fraction,
             "avg_door": avg_door,
             "avg_conn": avg_conn,
             "avg_toilet": avg_toilet,
@@ -1103,6 +1129,9 @@ class TrainingSession:
             "reward_graph_diameter": step_config.generation.reward_graph_diameter,
             "reward_save_distance": step_config.generation.reward_save_distance,
             "reward_refill_distance": step_config.generation.reward_refill_distance,
+            "reward_missing_connect_distance": (
+                step_config.generation.reward_missing_connect_distance
+            ),
             "ema_decay": step_config.train.ema_decay,
             "toilet_weight": step_config.train.toilet_weight,
             "toilet_balance_weight": step_config.train.toilet_balance_weight,
@@ -1110,6 +1139,9 @@ class TrainingSession:
             "graph_diameter_weight": step_config.train.graph_diameter_weight,
             "save_distance_weight": step_config.train.save_distance_weight,
             "refill_distance_weight": step_config.train.refill_distance_weight,
+            "missing_connect_distance_weight": (
+                step_config.train.missing_connect_distance_weight
+            ),
             "door_match_left_top1": left_topk[0],
             "door_match_left_top2": left_topk[1],
             "door_match_left_top3": left_topk[2],
@@ -1572,6 +1604,7 @@ def build_session(args: Args) -> TrainingSession:
             graph_diameter_weight=config.train.graph_diameter_weight,
             save_distance_weight=config.train.save_distance_weight,
             refill_distance_weight=config.train.refill_distance_weight,
+            missing_connect_distance_weight=config.train.missing_connect_distance_weight,
         ),
         experience=ExperienceStorage(
             len(rooms),
