@@ -804,6 +804,7 @@
     {
         "room_id": 319,
         "name": "Sloaters Refill",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -1025,6 +1026,7 @@
     {
         "room_id": 316,
         "name": "Green Brinstar Missile Refill",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -1211,6 +1213,7 @@
     {
         "room_id": 317,
         "name": "Dachora Energy Refill",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -1492,6 +1495,7 @@
     {
         "room_id": 301,
         "name": "Kraid Recharge Station",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -1943,6 +1947,7 @@
     {
         "room_id": 188,
         "name": "Maridia Missile Refill Room",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -1991,6 +1996,7 @@
     {
         "room_id": 191,
         "name": "Maridia Health Refill Room",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -2913,6 +2919,7 @@
     {
         "room_id": 152,
         "name": "Golden Torizo Energy Recharge",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -3424,6 +3431,7 @@
     {
         "room_id": 308,
         "name": "Nutella Refill",
+        "refill": true,
         "map": [
             [1]
         ],
@@ -4272,6 +4280,7 @@
     {
         "room_id": 234,
         "name": "Tourian Recharge Room",
+        "refill": true,
         "map": [
             [1]
         ],
