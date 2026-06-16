@@ -60,7 +60,7 @@
     "reward_graph_diameter": 0.2,
     "reward_save_distance": 1.0,
     "reward_refill_distance": 1.0,
-    "reward_missing_connect_distance": 1.0,
+    "reward_missing_connect_distance": 0.0,
     "frontier_neighbor_algorithm": "nearest-exclusive",
     "frontier_neighbor_count": 1,
     "frontier_window_size": 8,
@@ -90,7 +90,7 @@
     "toilet_crossed_room": true
   },
   "train": {
-    "batch_size": 1024,
+    "batch_size": 1,
     "fresh_pass_factor": 0.0,
     "replay_pass_factor": 0.0,
     "sample_period": 16,
@@ -106,7 +106,7 @@
     "graph_diameter_weight": 0.1,
     "save_distance_weight": 0.001,
     "refill_distance_weight": 0.001,
-    "missing_connect_distance_weight": 0.001,
+    "missing_connect_distance_weight": 0.0,
     "proposal_weight": 0.005,
     "pipeline_groups": 1,
     "gradient_accumulation_steps": 1,
