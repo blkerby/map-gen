@@ -25,6 +25,7 @@ def zeropower_via_newtonschulz5(G, steps, eps=1e-7):
         X = X.T
     return X.to(G.dtype)
 
+
 class Muon(torch.optim.Optimizer):
     """
     Muon: MomentUm Orthogonalized by Newton-schulz
@@ -51,26 +52,41 @@ class Muon(torch.optim.Optimizer):
         backend_steps: The number of iteration steps to use in the backend, if it is iterative.
     """
 
-    def __init__(self, params, lr=3e-4, momentum=0.95, nesterov=True, backend='newtonschulz5', backend_steps=5):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, backend=backend, backend_steps=backend_steps)
+    def __init__(
+        self,
+        params,
+        lr=3e-4,
+        momentum=0.95,
+        nesterov=True,
+        backend="newtonschulz5",
+        backend_steps=5,
+    ):
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            backend=backend,
+            backend_steps=backend_steps,
+        )
         super().__init__(params, defaults)
 
     def step(self):
         for group in self.param_groups:
-            lr = group['lr']
-            momentum = group['momentum']
-            for p in group['params']:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            for p in group["params"]:
                 g = p.grad
                 if g is None:
                     continue
                 state = self.state[p]
-                if 'momentum_buffer' not in state:
-                    state['momentum_buffer'] = torch.zeros_like(g)
-                buf = state['momentum_buffer']
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
                 buf.mul_(momentum).add_(g)
-                if group['nesterov']:
+                if group["nesterov"]:
                     g = g.add(buf, alpha=momentum)
-                g = zeropower_via_newtonschulz5(g, steps=group['backend_steps'])
-                scale = max(g.size(0), g.size(1)) ** 0.5  # scale to have update.square().mean() == 1
+                g = zeropower_via_newtonschulz5(g, steps=group["backend_steps"])
+                scale = (
+                    max(g.size(0), g.size(1)) ** 0.5
+                )  # scale to have update.square().mean() == 1
                 p.data.add_(g, alpha=-lr * scale)
-

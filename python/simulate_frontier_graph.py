@@ -52,10 +52,7 @@ def sample_clustered(
     cluster_count: int,
     cluster_sigma: float,
 ) -> list[Point]:
-    centers = [
-        (rng.uniform(0, width), rng.uniform(0, height))
-        for _ in range(cluster_count)
-    ]
+    centers = [(rng.uniform(0, width), rng.uniform(0, height)) for _ in range(cluster_count)]
     points: set[Point] = set()
     max_attempts = count * 100
     for _ in range(max_attempts):
@@ -76,8 +73,7 @@ def sample_clustered(
         points.add(point)
     if len(points) != count:
         raise ValueError(
-            f"could not sample {count} unique clustered door locations; "
-            "increase the map size or cluster sigma"
+            f"could not sample {count} unique clustered door locations; increase the map size or cluster sigma"
         )
     return sorted(points)
 
@@ -123,7 +119,9 @@ def prune_edges(points: list[Point], initial_edges: set[Edge], max_degree: int) 
         neighbors[b].add(a)
 
     while True:
-        excess_vertices = [vertex for vertex, adjacent in enumerate(neighbors) if len(adjacent) > max_degree]
+        excess_vertices = [
+            vertex for vertex, adjacent in enumerate(neighbors) if len(adjacent) > max_degree
+        ]
         if not excess_vertices:
             return edges
         vertex = min(excess_vertices, key=lambda value: (-len(neighbors[value]), value))
@@ -194,7 +192,9 @@ def mean(values: list[float]) -> float:
     return sum(values) / len(values)
 
 
-def print_summary(distribution: str, point_count: int, max_degree: int, metrics: list[TrialMetrics]) -> None:
+def print_summary(
+    distribution: str, point_count: int, max_degree: int, metrics: list[TrialMetrics]
+) -> None:
     failures = sum(not metric.connected for metric in metrics)
     print(
         f"{distribution:9} n={point_count:3} K={max_degree:2} "
@@ -218,9 +218,16 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--map-width", type=int, default=72)
     parser.add_argument("--map-height", type=int, default=72)
-    parser.add_argument("--point-counts", type=parse_int_list, default=parse_int_list("8,16,32,64,128"))
+    parser.add_argument(
+        "--point-counts", type=parse_int_list, default=parse_int_list("8,16,32,64,128")
+    )
     parser.add_argument("--degrees", type=parse_int_list, default=parse_int_list("2,3,4,5,6,8"))
-    parser.add_argument("--distributions", choices=["uniform", "clustered"], nargs="+", default=["uniform", "clustered"])
+    parser.add_argument(
+        "--distributions",
+        choices=["uniform", "clustered"],
+        nargs="+",
+        default=["uniform", "clustered"],
+    )
     parser.add_argument("--cluster-count", type=int, default=4)
     parser.add_argument("--cluster-sigma", type=float, default=4.0)
     args = parser.parse_args()

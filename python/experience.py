@@ -64,9 +64,9 @@ class ExperienceStorage:
                 room_y=torch.cat([data.actions.room_y for data in data_list], dim=0),
             ),
             temperature=torch.cat([data.temperature for data in data_list], dim=0),
-            recommended_candidates=torch.cat([
-                data.recommended_candidates for data in data_list
-            ], dim=0),
+            recommended_candidates=torch.cat(
+                [data.recommended_candidates for data in data_list], dim=0
+            ),
         )
 
     def sample(self, batch_size, episodes_per_file, hist_c) -> EpisodeData:
@@ -75,6 +75,8 @@ class ExperienceStorage:
         num_files = (n + episodes_per_file - 1) // episodes_per_file
 
         t = torch.pow(torch.rand([num_files]), 1 / (1 + hist_c))
-        file_num_list = torch.floor(t * self.num_files).to(torch.int64).clamp_max(self.num_files - 1).tolist()
+        file_num_list = (
+            torch.floor(t * self.num_files).to(torch.int64).clamp_max(self.num_files - 1).tolist()
+        )
 
         return self.read_files(file_num_list, episodes_per_file).slice(0, n)

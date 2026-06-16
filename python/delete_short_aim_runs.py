@@ -77,8 +77,7 @@ def main() -> int:
     deleted, remaining = repo.delete_runs(run_hashes)
     if not deleted:
         print(
-            f"Deleted {len(run_hashes) - len(remaining)} Aim run(s); "
-            f"{len(remaining)} failed: {', '.join(remaining)}",
+            f"Deleted {len(run_hashes) - len(remaining)} Aim run(s); {len(remaining)} failed: {', '.join(remaining)}",
             file=sys.stderr,
         )
         return 1

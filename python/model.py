@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 NUM_COORD_VALUES = 256
 COORD_OFFSET = 128
 
+
 # These tensors are all f32 with shape
 #    [batch, time, output]  during training,
 #    [batch, candidate, output]  during generation
@@ -59,7 +60,7 @@ def get_predictions(raw_preds, output_sizes):
     preds = []
     col = 0
     for size in output_sizes:
-        preds.append(raw_preds[:, :, col:(col + size)])
+        preds.append(raw_preds[:, :, col : (col + size)])
         col += size
 
     return Predictions(
@@ -99,9 +100,12 @@ class FactorizedOutcomeHead(torch.nn.Module):
         self.register_buffer("room_idx", metadata[:, 0])
         self.register_buffer("geometry_outcome_idx", metadata[:, 1])
         self.geometry_outcome_embedding = torch.nn.Parameter(
-            torch.randn([num_geometry_outcomes, embedding_width]) / math.sqrt(embedding_width))
+            torch.randn([num_geometry_outcomes, embedding_width]) / math.sqrt(embedding_width)
+        )
         self.state = torch.nn.Linear(embedding_width, embedding_width, bias=False)
-        self.logit_scale = torch.nn.Parameter(torch.tensor(math.log(math.sqrt(embedding_width) / 2)))
+        self.logit_scale = torch.nn.Parameter(
+            torch.tensor(math.log(math.sqrt(embedding_width) / 2))
+        )
 
     def forward(self, X, room_x, room_y, room_placed, pos_embedding_x, pos_embedding_y):
         if self.num_outputs == 0:
@@ -113,9 +117,14 @@ class FactorizedOutcomeHead(torch.nn.Module):
         with torch.amp.autocast(X.device.type, enabled=False):
             state = torch.nn.functional.normalize(state.to(torch.float32), dim=-1)
             geometry_outcome_embedding = torch.nn.functional.normalize(
-                self.geometry_outcome_embedding.to(torch.float32), dim=-1)
-            pos_embedding_x = torch.nn.functional.normalize(pos_embedding_x.to(torch.float32), dim=-1)
-            pos_embedding_y = torch.nn.functional.normalize(pos_embedding_y.to(torch.float32), dim=-1)
+                self.geometry_outcome_embedding.to(torch.float32), dim=-1
+            )
+            pos_embedding_x = torch.nn.functional.normalize(
+                pos_embedding_x.to(torch.float32), dim=-1
+            )
+            pos_embedding_y = torch.nn.functional.normalize(
+                pos_embedding_y.to(torch.float32), dim=-1
+            )
             base_query = geometry_outcome_embedding[self.geometry_outcome_idx]
             base_logits = torch.matmul(state, base_query.transpose(0, 1))
             x_logits = torch.matmul(state, pos_embedding_x.transpose(0, 1))
@@ -162,10 +171,7 @@ class FrontierModel(torch.nn.Module):
         self.left_count, self.right_count, self.up_count, self.down_count = door_counts
         if self.features.lookahead_outcomes and door_match_embedding_width <= 0:
             raise ValueError("door_match_embedding_width must be greater than zero")
-        if (
-            self.features.toilet_crossed_room
-            and toilet_crossed_room_embedding_width <= 0
-        ):
+        if self.features.toilet_crossed_room and toilet_crossed_room_embedding_width <= 0:
             raise ValueError("toilet_crossed_room_embedding_width must be greater than zero")
         door_output_size, connection_output_size = output_metadata.get_output_sizes()
         self.output_sizes = (
@@ -189,12 +195,10 @@ class FrontierModel(torch.nn.Module):
         #     torch.randn([output_metadata.num_room_connection_variants, embedding_width]) / math.sqrt(embedding_width)
         # ) if self.features.inventory else None
         self.orientation_embedding = (
-            torch.nn.Embedding(2, embedding_width)
-            if self.features.frontier_orientation else None
+            torch.nn.Embedding(2, embedding_width) if self.features.frontier_orientation else None
         )
         self.kind_embedding = (
-            torch.nn.Embedding(256, embedding_width)
-            if self.features.frontier_kind else None
+            torch.nn.Embedding(256, embedding_width) if self.features.frontier_kind else None
         )
         node_numeric_width = (
             frontier_window_size**2 * self.features.frontier_occupancy
@@ -202,7 +206,8 @@ class FrontierModel(torch.nn.Module):
         )
         self.node_numeric = (
             torch.nn.Linear(node_numeric_width, embedding_width, bias=False)
-            if node_numeric_width > 0 else None
+            if node_numeric_width > 0
+            else None
         )
         self.frontier_window_area = frontier_window_size**2
         self.register_buffer(
@@ -212,41 +217,49 @@ class FrontierModel(torch.nn.Module):
         )
         pair_width = 3 * self.features.frontier_neighbor_flags
         use_neighbors = self.features.frontier_neighbor
-        self.source_message_layers = torch.nn.ModuleList([
-            torch.nn.Linear(embedding_width, hidden_width, bias=False)
-            for _ in range(num_layers if use_neighbors else 0)
-        ])
-        self.pair_message_layers = (
-            torch.nn.ModuleList([
-                torch.nn.Linear(pair_width, hidden_width, bias=False)
+        self.source_message_layers = torch.nn.ModuleList(
+            [
+                torch.nn.Linear(embedding_width, hidden_width, bias=False)
                 for _ in range(num_layers if use_neighbors else 0)
-            ])
-            if pair_width > 0 else [None] * (num_layers if use_neighbors else 0)
+            ]
         )
-        self.message_output_layers = torch.nn.ModuleList([
-            torch.nn.Sequential(
-                torch.nn.GELU(),
-                torch.nn.Linear(hidden_width, embedding_width, bias=False),
+        self.pair_message_layers = (
+            torch.nn.ModuleList(
+                [
+                    torch.nn.Linear(pair_width, hidden_width, bias=False)
+                    for _ in range(num_layers if use_neighbors else 0)
+                ]
             )
-            for _ in range(num_layers if use_neighbors else 0)
-        ])
-        self.update_layers = torch.nn.ModuleList([
-            torch.nn.Sequential(
-                torch.nn.Linear(
-                    embedding_width * 2 + global_embedding_width,
-                    hidden_width,
-                    bias=False,
-                ),
-                torch.nn.GELU(),
-                torch.nn.Linear(hidden_width, embedding_width, bias=False),
-            ) for _ in range(num_layers if use_neighbors else 0)
-        ])
+            if pair_width > 0
+            else [None] * (num_layers if use_neighbors else 0)
+        )
+        self.message_output_layers = torch.nn.ModuleList(
+            [
+                torch.nn.Sequential(
+                    torch.nn.GELU(),
+                    torch.nn.Linear(hidden_width, embedding_width, bias=False),
+                )
+                for _ in range(num_layers if use_neighbors else 0)
+            ]
+        )
+        self.update_layers = torch.nn.ModuleList(
+            [
+                torch.nn.Sequential(
+                    torch.nn.Linear(
+                        embedding_width * 2 + global_embedding_width,
+                        hidden_width,
+                        bias=False,
+                    ),
+                    torch.nn.GELU(),
+                    torch.nn.Linear(hidden_width, embedding_width, bias=False),
+                )
+                for _ in range(num_layers if use_neighbors else 0)
+            ]
+        )
         global_width = (
             output_metadata.num_room_connection_variants * self.features.inventory
-            + embedding_width * (
-                self.features.connection_reachability
-                and self.num_connection_outputs > 0
-            )
+            + embedding_width
+            * (self.features.connection_reachability and self.num_connection_outputs > 0)
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
             + global_room_position_embedding_width * int(self.features.global_room_position)
@@ -254,47 +267,38 @@ class FrontierModel(torch.nn.Module):
             + self.num_room_parts * int(self.features.room_part_save_distance)
             + self.num_room_parts * int(self.features.room_part_refill_distance)
             + self.num_room_parts * int(self.features.room_part_frontier_distance)
-            + (
-                door_match_embedding_width
-                + 2 * connection_output_size
-                + 2
-            ) * int(self.features.lookahead_outcomes)
-            + (
-                toilet_crossed_room_embedding_width
-                * int(self.features.toilet_crossed_room)
-            )
+            + (door_match_embedding_width + 2 * connection_output_size + 2)
+            * int(self.features.lookahead_outcomes)
+            + (toilet_crossed_room_embedding_width * int(self.features.toilet_crossed_room))
         )
         self.global_mlp = (
             torch.nn.Linear(global_width, global_embedding_width, bias=False)
-            if global_width > 0 else None
+            if global_width > 0
+            else None
         )
         pooled_width = (
             output_metadata.num_room_connection_variants * self.features.inventory
-            + embedding_width * (
+            + embedding_width
+            * (
                 2 * self.features.frontier_mask
-                + (
-                    self.features.connection_reachability
-                    and self.num_connection_outputs > 0
-                )
+                + (self.features.connection_reachability and self.num_connection_outputs > 0)
             )
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
             + global_room_position_embedding_width * int(self.features.global_room_position)
-            + (
-                door_match_embedding_width
-                + 2 * connection_output_size
-                + 2
-            ) * int(self.features.lookahead_outcomes)
-            + (
-                toilet_crossed_room_embedding_width
-                * int(self.features.toilet_crossed_room)
-            )
+            + (door_match_embedding_width + 2 * connection_output_size + 2)
+            * int(self.features.lookahead_outcomes)
+            + (toilet_crossed_room_embedding_width * int(self.features.toilet_crossed_room))
         )
-        self.pooled_mlp = torch.nn.Sequential(
-            torch.nn.Linear(pooled_width, hidden_width, bias=False),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_width, embedding_width, bias=False),
-        ) if pooled_width > 0 else None
+        self.pooled_mlp = (
+            torch.nn.Sequential(
+                torch.nn.Linear(pooled_width, hidden_width, bias=False),
+                torch.nn.GELU(),
+                torch.nn.Linear(hidden_width, embedding_width, bias=False),
+            )
+            if pooled_width > 0
+            else None
+        )
         self.door_match_embedding_width = door_match_embedding_width
         self.left_door_match_embedding = self._door_match_embedding(
             self.left_count,
@@ -318,78 +322,98 @@ class FrontierModel(torch.nn.Module):
         )
         self.connection_reachability_embedding = (
             torch.nn.Linear(self.num_connection_outputs, embedding_width, bias=False)
-            if self.features.connection_reachability
-            and self.num_connection_outputs > 0 else None
+            if self.features.connection_reachability and self.num_connection_outputs > 0
+            else None
         )
         self.toilet_crossed_room_embedding = (
             torch.nn.Embedding(num_rooms + 1, toilet_crossed_room_embedding_width)
-            if self.features.toilet_crossed_room else None
+            if self.features.toilet_crossed_room
+            else None
         )
         self.room_part_furthest_distance_embedding = (
-            torch.nn.Embedding(256, 1)
-            if self.features.room_part_furthest_distance else None
+            torch.nn.Embedding(256, 1) if self.features.room_part_furthest_distance else None
         )
         self.room_part_save_distance_embedding = (
-            torch.nn.Embedding(256, 1)
-            if self.features.room_part_save_distance else None
+            torch.nn.Embedding(256, 1) if self.features.room_part_save_distance else None
         )
         self.room_part_refill_distance_embedding = (
-            torch.nn.Embedding(256, 1)
-            if self.features.room_part_refill_distance else None
+            torch.nn.Embedding(256, 1) if self.features.room_part_refill_distance else None
         )
         self.room_part_frontier_distance_embedding = (
-            torch.nn.Embedding(256, 1)
-            if self.features.room_part_frontier_distance else None
+            torch.nn.Embedding(256, 1) if self.features.room_part_frontier_distance else None
         )
         self.frontier_pos_embedding_x = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
-            if self.features.frontier_position else None
+                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+            )
+            if self.features.frontier_position
+            else None
         )
         self.frontier_pos_embedding_y = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
-            if self.features.frontier_position else None
+                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+            )
+            if self.features.frontier_position
+            else None
         )
         self.frontier_relative_pos_embedding_x = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width))
-            if self.features.frontier_neighbor_position_embedding else None
+                torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width)
+            )
+            if self.features.frontier_neighbor_position_embedding
+            else None
         )
         self.frontier_relative_pos_embedding_y = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width))
-            if self.features.frontier_neighbor_position_embedding else None
+                torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width)
+            )
+            if self.features.frontier_neighbor_position_embedding
+            else None
         )
         self.global_room_pos_embedding_x = (
             torch.nn.Parameter(
-                torch.randn([
-                    output_metadata.num_room_connection_variants,
-                    NUM_COORD_VALUES,
-                    global_room_position_embedding_width,
-                ]) / math.sqrt(global_room_position_embedding_width))
-            if self.features.global_room_position else None
+                torch.randn(
+                    [
+                        output_metadata.num_room_connection_variants,
+                        NUM_COORD_VALUES,
+                        global_room_position_embedding_width,
+                    ]
+                )
+                / math.sqrt(global_room_position_embedding_width)
+            )
+            if self.features.global_room_position
+            else None
         )
         self.global_room_pos_embedding_y = (
             torch.nn.Parameter(
-                torch.randn([
-                    output_metadata.num_room_connection_variants,
-                    NUM_COORD_VALUES,
-                    global_room_position_embedding_width,
-                ]) / math.sqrt(global_room_position_embedding_width))
-            if self.features.global_room_position else None
+                torch.randn(
+                    [
+                        output_metadata.num_room_connection_variants,
+                        NUM_COORD_VALUES,
+                        global_room_position_embedding_width,
+                    ]
+                )
+                / math.sqrt(global_room_position_embedding_width)
+            )
+            if self.features.global_room_position
+            else None
         )
         self.pos_embedding_x = torch.nn.Parameter(
-            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
+            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+        )
         self.pos_embedding_y = torch.nn.Parameter(
-            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width))
+            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+        )
         self.door_output = FactorizedOutcomeHead(
-            output_metadata.door, output_metadata.num_door_variants, embedding_width)
+            output_metadata.door, output_metadata.num_door_variants, embedding_width
+        )
         self.connection_output = FactorizedOutcomeHead(
-            output_metadata.connection, output_metadata.num_connection_variants, embedding_width)
+            output_metadata.connection, output_metadata.num_connection_variants, embedding_width
+        )
         self.toilet_output = torch.nn.Linear(embedding_width, 1)
         self.balance_score_output = FactorizedOutcomeHead(
-            output_metadata.door, output_metadata.num_door_variants, embedding_width)
+            output_metadata.door, output_metadata.num_door_variants, embedding_width
+        )
         self.toilet_balance_score_output = torch.nn.Linear(embedding_width, 1)
         self.avg_frontiers_output = torch.nn.Linear(embedding_width, 1)
         self.graph_diameter_output = torch.nn.Linear(embedding_width, 1)
@@ -429,10 +453,7 @@ class FrontierModel(torch.nn.Module):
         room_x = features.room_x.to(torch.int64) + COORD_OFFSET
         room_y = features.room_y.to(torch.int64) + COORD_OFFSET
         room_connection_variant_idx = (
-            self.room_connection_variant_idx
-            .to(room_x.device)
-            .unsqueeze(0)
-            .expand_as(room_x)
+            self.room_connection_variant_idx.to(room_x.device).unsqueeze(0).expand_as(room_x)
         )
         room_position = (
             self.global_room_pos_embedding_x[room_connection_variant_idx, room_x]
@@ -440,20 +461,22 @@ class FrontierModel(torch.nn.Module):
         ).to(dtype)
         placed = features.room_placed.to(dtype).unsqueeze(-1)
         placed_count = placed.sum(dim=1).clamp_min(1)
-        return (
-            room_position
-            * placed
-        ).sum(dim=1) / torch.sqrt(placed_count)
+        return (room_position * placed).sum(dim=1) / torch.sqrt(placed_count)
 
     def _pair_features(self, features, dtype):
         values = []
         if self.features.frontier_neighbor_flags:
             flags = features.frontier_neighbor_pair
-            values.append(torch.stack([
-                (flags & 1 != 0).to(dtype),
-                (flags & 2 != 0).to(dtype),
-                (flags & 4 != 0).to(dtype),
-            ], dim=-1))
+            values.append(
+                torch.stack(
+                    [
+                        (flags & 1 != 0).to(dtype),
+                        (flags & 2 != 0).to(dtype),
+                        (flags & 4 != 0).to(dtype),
+                    ],
+                    dim=-1,
+                )
+            )
         return torch.cat(values, dim=-1) if values else None
 
     def _activation_dtype(self, device: torch.device) -> torch.dtype:
@@ -496,14 +519,20 @@ class FrontierModel(torch.nn.Module):
             + self._direction_door_match_features(up, self.up_door_match_embedding, dtype)
             + self._direction_door_match_features(down, self.down_door_match_embedding, dtype)
         )
-        connection_features = torch.stack([
-            (features.lookahead_connection_invalid == 0).to(dtype),
-            (features.lookahead_connection_invalid == 1).to(dtype),
-        ], dim=-1).flatten(1)
-        toilet_features = torch.stack([
-            (features.lookahead_toilet_invalid == 0).to(dtype),
-            (features.lookahead_toilet_invalid == 1).to(dtype),
-        ], dim=-1).flatten(1)
+        connection_features = torch.stack(
+            [
+                (features.lookahead_connection_invalid == 0).to(dtype),
+                (features.lookahead_connection_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        toilet_features = torch.stack(
+            [
+                (features.lookahead_toilet_invalid == 0).to(dtype),
+                (features.lookahead_toilet_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
         return torch.cat([door_match_features, connection_features, toilet_features], dim=-1)
 
     def _toilet_crossed_room_features(
@@ -527,10 +556,13 @@ class FrontierModel(torch.nn.Module):
     ) -> torch.Tensor | None:
         if self.room_part_furthest_distance_embedding is None:
             return None
-        distances = torch.cat([
-            features.room_part_furthest_destination,
-            features.room_part_furthest_source,
-        ], dim=-1).to(torch.int64)
+        distances = torch.cat(
+            [
+                features.room_part_furthest_destination,
+                features.room_part_furthest_source,
+            ],
+            dim=-1,
+        ).to(torch.int64)
         return self.room_part_furthest_distance_embedding(distances).flatten(1).to(dtype)
 
     def _room_part_save_distance_features(
@@ -601,15 +633,20 @@ class FrontierModel(torch.nn.Module):
                 features.frontier_occupancy.unsqueeze(-1)
                 .bitwise_and(self.frontier_occupancy_bits)
                 .ne(0)
-                .flatten(-2)[..., :self.frontier_window_area]
+                .flatten(-2)[..., : self.frontier_window_area]
                 .to(dtype)
             )
         if self.features.frontier_connection_reachability:
             flags = features.frontier_connection_reachability
-            numeric.append(torch.stack([
-                (flags & 1 != 0).to(dtype),
-                (flags & 2 != 0).to(dtype),
-            ], dim=-1).flatten(-2))
+            numeric.append(
+                torch.stack(
+                    [
+                        (flags & 1 != 0).to(dtype),
+                        (flags & 2 != 0).to(dtype),
+                    ],
+                    dim=-1,
+                ).flatten(-2)
+            )
         # X: [r, e]
         X = node.new_zeros([row_count, self.embedding_width], dtype=dtype)
         if self.node_numeric is not None:
@@ -636,22 +673,24 @@ class FrontierModel(torch.nn.Module):
         #     ).unsqueeze(1)
         inventory_features = features.inventory.to(X.dtype) if self.include_inventory else None
         connection_features = (
-            self.connection_reachability_embedding(
-                features.connection_reachability.to(X.dtype)
-            )
-            if self.connection_reachability_embedding is not None else None
+            self.connection_reachability_embedding(features.connection_reachability.to(X.dtype))
+            if self.connection_reachability_embedding is not None
+            else None
         )
         temperature_features = (
             features.log_temperature.to(X.dtype).unsqueeze(-1)
-            if self.features.temperature else None
+            if self.features.temperature
+            else None
         )
         recommended_candidate_features = (
             features.log_recommended_candidates.to(X.dtype).unsqueeze(-1)
-            if self.features.recommended_candidates else None
+            if self.features.recommended_candidates
+            else None
         )
         lookahead_features = (
             self._lookahead_outcome_features(features, X.dtype)
-            if self.features.lookahead_outcomes else None
+            if self.features.lookahead_outcomes
+            else None
         )
         toilet_crossed_room_features = self._toilet_crossed_room_features(features, X.dtype)
         global_room_position_features = self._global_room_position_features(features, X.dtype)
@@ -761,12 +800,15 @@ class FrontierModel(torch.nn.Module):
                 )
             else:
                 count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)
-                mean_pool = torch.segment_reduce(
-                    X,
-                    "sum",
-                    lengths=row_count_by_snapshot,
-                    axis=0,
-                ) / count
+                mean_pool = (
+                    torch.segment_reduce(
+                        X,
+                        "sum",
+                        lengths=row_count_by_snapshot,
+                        axis=0,
+                    )
+                    / count
+                )
                 max_pool = torch.segment_reduce(
                     X,
                     "max",
@@ -775,9 +817,7 @@ class FrontierModel(torch.nn.Module):
                 )
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
         proposal_score = (
-            self.proposal_output(X)
-            if include_proposal
-            else X.new_empty([row_count, 0])
+            self.proposal_output(X) if include_proposal else X.new_empty([row_count, 0])
         )
         proposal_state = X if return_proposal_state else X.new_empty([row_count, 0])
         # mean_pool, max_pool, pooled_state: [s, e]
@@ -809,13 +849,24 @@ class FrontierModel(torch.nn.Module):
             room_y = (features.room_y.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_placed = features.room_placed.to(torch.bool).unsqueeze(1)
         else:
-            room_x = torch.full([snapshot_count, 1, self.num_rooms], COORD_OFFSET, dtype=torch.int64, device=X.device)
+            room_x = torch.full(
+                [snapshot_count, 1, self.num_rooms],
+                COORD_OFFSET,
+                dtype=torch.int64,
+                device=X.device,
+            )
             room_y = room_x
-            room_placed = torch.zeros([snapshot_count, 1, self.num_rooms], dtype=torch.bool, device=X.device)
+            room_placed = torch.zeros(
+                [snapshot_count, 1, self.num_rooms], dtype=torch.bool, device=X.device
+            )
         # X: [s, 1, e]
         X = pooled_state.unsqueeze(1)
-        door = self.door_output(X, room_x, room_y, room_placed, self.pos_embedding_x, self.pos_embedding_y)
-        connection = self.connection_output(X, room_x, room_y, room_placed, self.pos_embedding_x, self.pos_embedding_y)
+        door = self.door_output(
+            X, room_x, room_y, room_placed, self.pos_embedding_x, self.pos_embedding_y
+        )
+        connection = self.connection_output(
+            X, room_x, room_y, room_placed, self.pos_embedding_x, self.pos_embedding_y
+        )
         toilet = self.toilet_output(X)
         balance_score = self.balance_score_output(
             X,
@@ -893,10 +944,12 @@ class BalanceModel(torch.nn.Module):
         layers: list[torch.nn.Module] = []
         input_width = 1
         for _ in range(num_layers):
-            layers.extend([
-                torch.nn.Linear(input_width, hidden_width),
-                torch.nn.GELU(),
-            ])
+            layers.extend(
+                [
+                    torch.nn.Linear(input_width, hidden_width),
+                    torch.nn.GELU(),
+                ]
+            )
             input_width = hidden_width
         output_layer = torch.nn.Linear(input_width, self.output_width)
         output_layer.weight.data.zero_()
@@ -915,23 +968,23 @@ class BalanceModel(torch.nn.Module):
         right_size = self.right_count * self.left_count
         up_size = self.up_count * self.down_count
         down_size = self.down_count * self.up_count
-        left = raw[:, offset:offset + left_size].reshape(
+        left = raw[:, offset : offset + left_size].reshape(
             log_temperature.shape[0], self.left_count, self.right_count
         )
         offset += left_size
-        right = raw[:, offset:offset + right_size].reshape(
+        right = raw[:, offset : offset + right_size].reshape(
             log_temperature.shape[0], self.right_count, self.left_count
         )
         offset += right_size
-        up = raw[:, offset:offset + up_size].reshape(
+        up = raw[:, offset : offset + up_size].reshape(
             log_temperature.shape[0], self.up_count, self.down_count
         )
         offset += up_size
-        down = raw[:, offset:offset + down_size].reshape(
+        down = raw[:, offset : offset + down_size].reshape(
             log_temperature.shape[0], self.down_count, self.up_count
         )
         offset += down_size
-        toilet_crossed_room = raw[:, offset:offset + self.num_rooms]
+        toilet_crossed_room = raw[:, offset : offset + self.num_rooms]
         return BalancePredictions(
             left=left,
             right=right,

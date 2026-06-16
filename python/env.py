@@ -13,6 +13,7 @@ import map_gen
 if TYPE_CHECKING:
     from train_config import FeatureConfig
 
+
 @dataclass
 class GenerateConfig:
     episode_length: int
@@ -140,6 +141,7 @@ class PreliminaryOutcomes:
             toilet_invalid=self.toilet_invalid[start:end],
             door_match=self.door_match[start:end],
         )
+
 
 @dataclass
 class EpisodeOutcomes:
@@ -424,9 +426,7 @@ class SparseFeatures:
             lookahead_door_invalid=self.lookahead_door_invalid.to(
                 device, non_blocking=non_blocking
             ),
-            lookahead_door_match=self.lookahead_door_match.to(
-                device, non_blocking=non_blocking
-            ),
+            lookahead_door_match=self.lookahead_door_match.to(device, non_blocking=non_blocking),
             lookahead_connection_invalid=self.lookahead_connection_invalid.to(
                 device, non_blocking=non_blocking
             ),
@@ -434,9 +434,7 @@ class SparseFeatures:
                 device, non_blocking=non_blocking
             ),
             frontier=self.frontier.to(device, non_blocking=non_blocking),
-            frontier_occupancy=self.frontier_occupancy.to(
-                device, non_blocking=non_blocking
-            ),
+            frontier_occupancy=self.frontier_occupancy.to(device, non_blocking=non_blocking),
             frontier_neighbor=self.frontier_neighbor.to(device, non_blocking=non_blocking),
             frontier_neighbor_pair=self.frontier_neighbor_pair.to(
                 device, non_blocking=non_blocking
@@ -514,13 +512,20 @@ class Engine:
         frontier_neighbor_count: int = 4,
         frontier_window_size: int = 16,
         num_threads: Optional[int] = None,
-        frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"] = "delaunay",
+        frontier_neighbor_algorithm: Literal[
+            "delaunay", "nearest", "nearest-exclusive"
+        ] = "delaunay",
     ) -> "EnvironmentGroup":
         if seed is None:
             seed = int(torch.randint(0, 2**31 - 1, ()).item())
         env = self.engine.create_environment_group(
-            map_size, num_envs, seed, frontier_neighbor_count, frontier_window_size, num_threads,
-            frontier_neighbor_algorithm
+            map_size,
+            num_envs,
+            seed,
+            frontier_neighbor_count,
+            frontier_window_size,
+            num_threads,
+            frontier_neighbor_algorithm,
         )
         return EnvironmentGroup(
             self, env, map_size, num_envs, frontier_neighbor_count, frontier_window_size
@@ -538,9 +543,7 @@ class Engine:
             room_connection_variant_idx,
             num_room_connection_variants,
             num_room_parts,
-        ) = (
-            self.engine.get_output_metadata()
-        )
+        ) = self.engine.get_output_metadata()
         return OutputMetadata(
             door=door,
             connection=connection,
@@ -613,7 +616,9 @@ class EnvironmentGroup:
         return ProposalCandidateMask(
             proposal_frontier_idx=torch.from_numpy(result.proposal_frontier_idx).to(device),
             mask=torch.from_numpy(result.mask).to(device),
-            valid_counts=torch.from_numpy(result.valid_counts).to(device=device, dtype=torch.int64),
+            valid_counts=torch.from_numpy(result.valid_counts).to(
+                device=device, dtype=torch.int64
+            ),
             door_variant_count=result.door_variant_count,
         )
 
@@ -638,21 +643,21 @@ class EnvironmentGroup:
             sampled_frontier_idx.contiguous().cpu().numpy(),
             sampled_door_variant_idx.contiguous().cpu().numpy(),
             recommended_candidates,
-            candidate_slot.room_idx[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.room_x[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.room_y[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.proposal_frontier_idx[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.proposal_door_variant_idx[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.pre_door_invalid[:self.num_envs].numpy(),
-            candidate_slot.pre_connection_invalid[:self.num_envs].numpy(),
-            candidate_slot.pre_toilet_invalid[:self.num_envs].numpy(),
-            candidate_slot.door_invalid[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.connection_invalid[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.toilet_invalid[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.door_match[:self.num_envs, :candidate_count].numpy(),
-            candidate_slot.clean_counts[:self.num_envs].numpy(),
-            candidate_slot.evaluated_counts[:self.num_envs].numpy(),
-            candidate_slot.rejected_counts[:self.num_envs].numpy(),
+            candidate_slot.room_idx[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.room_x[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.room_y[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.proposal_frontier_idx[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.proposal_door_variant_idx[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.pre_door_invalid[: self.num_envs].numpy(),
+            candidate_slot.pre_connection_invalid[: self.num_envs].numpy(),
+            candidate_slot.pre_toilet_invalid[: self.num_envs].numpy(),
+            candidate_slot.door_invalid[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.connection_invalid[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.toilet_invalid[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.door_match[: self.num_envs, :candidate_count].numpy(),
+            candidate_slot.clean_counts[: self.num_envs].numpy(),
+            candidate_slot.evaluated_counts[: self.num_envs].numpy(),
+            candidate_slot.rejected_counts[: self.num_envs].numpy(),
         )
         return self._candidate_slot_result(candidate_slot, candidate_count, result)
 
@@ -706,9 +711,7 @@ class EnvironmentGroup:
             save_distance_mask=torch.from_numpy(result.save_distance_mask).to(device),
             refill_distance=torch.from_numpy(result.refill_distance).to(device),
             refill_distance_mask=torch.from_numpy(result.refill_distance_mask).to(device),
-            missing_connect_distance=torch.from_numpy(
-                result.missing_connect_distance
-            ).to(device),
+            missing_connect_distance=torch.from_numpy(result.missing_connect_distance).to(device),
             missing_connect_distance_mask=torch.from_numpy(
                 result.missing_connect_distance_mask
             ).to(device),
@@ -833,29 +836,29 @@ class SparseFeatureSlot:
         self.inventory_width = inventory_count * int(features.inventory)
         self.room_width = room_count * int(features.room_position)
         self.room_part_width = room_part_count * int(features.room_part_furthest_distance)
-        self.room_part_save_distance_width = (
-            room_part_count * int(features.room_part_save_distance)
+        self.room_part_save_distance_width = room_part_count * int(
+            features.room_part_save_distance
         )
-        self.room_part_refill_distance_width = (
-            room_part_count * int(features.room_part_refill_distance)
+        self.room_part_refill_distance_width = room_part_count * int(
+            features.room_part_refill_distance
         )
-        self.room_part_frontier_distance_width = (
-            room_part_count * int(features.room_part_frontier_distance)
+        self.room_part_frontier_distance_width = room_part_count * int(
+            features.room_part_frontier_distance
         )
         self.frontier_occupancy_width = (
             (env.frontier_window_size * env.frontier_window_size + 7) // 8
         ) * int(features.frontier_occupancy)
-        self.frontier_neighbor_width = (
-            env.frontier_neighbor_count * int(features.frontier_neighbor)
+        self.frontier_neighbor_width = env.frontier_neighbor_count * int(
+            features.frontier_neighbor
         )
-        self.frontier_neighbor_pair_width = (
-            env.frontier_neighbor_count * int(features.frontier_neighbor_flags)
+        self.frontier_neighbor_pair_width = env.frontier_neighbor_count * int(
+            features.frontier_neighbor_flags
         )
-        self.connection_reachability_width = (
-            connection_count * int(features.connection_reachability)
+        self.connection_reachability_width = connection_count * int(
+            features.connection_reachability
         )
-        self.frontier_connection_reachability_width = (
-            connection_count * int(features.frontier_connection_reachability)
+        self.frontier_connection_reachability_width = connection_count * int(
+            features.frontier_connection_reachability
         )
         self.toilet_crossed_room_width = int(features.toilet_crossed_room)
         self.pin_memory = pin_memory
@@ -885,21 +888,17 @@ class SparseFeatureSlot:
 
     def ensure(self, snapshot_count: int, sparse_row_count: int):
         if (
-            self.inventory is not None and
-            self.snapshot_capacity >= snapshot_count
+            self.inventory is not None
+            and self.snapshot_capacity >= snapshot_count
             and self.sparse_row_capacity >= sparse_row_count
         ):
             return
         self.snapshot_capacity = max(self.snapshot_capacity, snapshot_count)
         self.sparse_row_capacity = max(self.sparse_row_capacity, sparse_row_count)
-        self.inventory = self._empty(
-            (self.snapshot_capacity, self.inventory_width), torch.uint8
-        )
+        self.inventory = self._empty((self.snapshot_capacity, self.inventory_width), torch.uint8)
         self.room_x = self._empty((self.snapshot_capacity, self.room_width), torch.int8)
         self.room_y = self._empty((self.snapshot_capacity, self.room_width), torch.int8)
-        self.room_placed = self._empty(
-            (self.snapshot_capacity, self.room_width), torch.uint8
-        )
+        self.room_placed = self._empty((self.snapshot_capacity, self.room_width), torch.uint8)
         self.room_part_furthest_destination = self._empty(
             (self.snapshot_capacity, self.room_part_width), torch.uint8
         )
@@ -953,31 +952,41 @@ class SparseFeatureSlot:
         if not include_temperature:
             log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
         if not include_recommended_candidates:
-            log_recommended_candidates = log_recommended_candidates.new_empty([
-                *log_recommended_candidates.shape,
-                0,
-            ])
+            log_recommended_candidates = log_recommended_candidates.new_empty(
+                [
+                    *log_recommended_candidates.shape,
+                    0,
+                ]
+            )
         lookahead_door_invalid = lookahead_outcomes.door_invalid
         lookahead_door_match = lookahead_outcomes.door_match
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         if not include_lookahead_outcomes:
-            lookahead_door_invalid = lookahead_door_invalid.new_empty([
-                *lookahead_door_invalid.shape[:-1],
-                0,
-            ])
-            lookahead_door_match = lookahead_door_match.new_empty([
-                *lookahead_door_match.shape[:-1],
-                0,
-            ])
-            lookahead_connection_invalid = lookahead_connection_invalid.new_empty([
-                *lookahead_connection_invalid.shape[:-1],
-                0,
-            ])
-            lookahead_toilet_invalid = lookahead_toilet_invalid.new_empty([
-                *lookahead_toilet_invalid.shape,
-                0,
-            ])
+            lookahead_door_invalid = lookahead_door_invalid.new_empty(
+                [
+                    *lookahead_door_invalid.shape[:-1],
+                    0,
+                ]
+            )
+            lookahead_door_match = lookahead_door_match.new_empty(
+                [
+                    *lookahead_door_match.shape[:-1],
+                    0,
+                ]
+            )
+            lookahead_connection_invalid = lookahead_connection_invalid.new_empty(
+                [
+                    *lookahead_connection_invalid.shape[:-1],
+                    0,
+                ]
+            )
+            lookahead_toilet_invalid = lookahead_toilet_invalid.new_empty(
+                [
+                    *lookahead_toilet_invalid.shape,
+                    0,
+                ]
+            )
         return SparseFeatures(
             inventory=self.inventory[:environment_count],
             room_x=self.room_x[:environment_count],
@@ -999,7 +1008,9 @@ class SparseFeatureSlot:
             frontier_neighbor=self.frontier_neighbor[:sparse_row_count],
             frontier_neighbor_pair=self.frontier_neighbor_pair[:sparse_row_count],
             connection_reachability=self.connection_reachability[:environment_count],
-            frontier_connection_reachability=self.frontier_connection_reachability[:sparse_row_count],
+            frontier_connection_reachability=self.frontier_connection_reachability[
+                :sparse_row_count
+            ],
             toilet_crossed_room_idx=self.toilet_crossed_room_idx[:environment_count],
             row_snapshot_idx=self.row_snapshot_idx[:sparse_row_count],
             row_frontier_idx=self.row_frontier_idx[:sparse_row_count],
@@ -1019,9 +1030,7 @@ class SparseFeatureSlot:
     ) -> SparseFeatures:
         snapshot_count = environment_count * candidate_count
         if not include_temperature:
-            log_temperature = log_temperature.new_empty(
-                [environment_count, candidate_count, 0]
-            )
+            log_temperature = log_temperature.new_empty([environment_count, candidate_count, 0])
         if not include_recommended_candidates:
             log_recommended_candidates = log_recommended_candidates.new_empty(
                 [environment_count, candidate_count, 0]
@@ -1047,14 +1056,18 @@ class SparseFeatureSlot:
             inventory=self.inventory[:snapshot_count].view(
                 environment_count, candidate_count, self.inventory_width
             ),
-            room_x=self.room_x[:snapshot_count].view(environment_count, candidate_count, self.room_width),
-            room_y=self.room_y[:snapshot_count].view(environment_count, candidate_count, self.room_width),
+            room_x=self.room_x[:snapshot_count].view(
+                environment_count, candidate_count, self.room_width
+            ),
+            room_y=self.room_y[:snapshot_count].view(
+                environment_count, candidate_count, self.room_width
+            ),
             room_placed=self.room_placed[:snapshot_count].view(
                 environment_count, candidate_count, self.room_width
             ),
-            room_part_furthest_destination=self.room_part_furthest_destination[:snapshot_count].view(
-                environment_count, candidate_count, self.room_part_width
-            ),
+            room_part_furthest_destination=self.room_part_furthest_destination[
+                :snapshot_count
+            ].view(environment_count, candidate_count, self.room_part_width),
             room_part_furthest_source=self.room_part_furthest_source[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_width
             ),
@@ -1080,7 +1093,9 @@ class SparseFeatureSlot:
             connection_reachability=self.connection_reachability[:snapshot_count].view(
                 environment_count, candidate_count, self.connection_reachability_width
             ),
-            frontier_connection_reachability=self.frontier_connection_reachability[:sparse_row_count],
+            frontier_connection_reachability=self.frontier_connection_reachability[
+                :sparse_row_count
+            ],
             toilet_crossed_room_idx=self.toilet_crossed_room_idx[:snapshot_count].view(
                 environment_count, candidate_count, self.toilet_crossed_room_width
             ),

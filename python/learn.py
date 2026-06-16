@@ -161,9 +161,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.graph_diameter_contribution += source.graph_diameter_contribution
     target.save_distance_contribution += source.save_distance_contribution
     target.refill_distance_contribution += source.refill_distance_contribution
-    target.missing_connect_distance_contribution += (
-        source.missing_connect_distance_contribution
-    )
+    target.missing_connect_distance_contribution += source.missing_connect_distance_contribution
     target.proposal_contribution += source.proposal_contribution
 
 
@@ -202,11 +200,7 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
     frontier_valid = proposal_data.frontier_idx >= 0
     while frontier_valid.ndim < target_logits.ndim:
         frontier_valid = frontier_valid.unsqueeze(-1)
-    valid = (
-        frontier_valid
-        & (proposal_data.door_variant_idx >= 0)
-        & torch.isfinite(target_logits)
-    )
+    valid = frontier_valid & (proposal_data.door_variant_idx >= 0) & torch.isfinite(target_logits)
     candidate_count = target_logits.shape[-1]
     flat_logits = target_logits.reshape(-1, candidate_count)
     flat_valid = valid.reshape(-1, candidate_count)
@@ -242,10 +236,7 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
     uniform_kl = torch.mean(torch.log(valid_counts) - entropy_per_row)
 
     selected_candidate = proposal_data.selected_candidate.reshape(-1)[row_valid].to(torch.int64)
-    selected_in_range = (
-        (selected_candidate >= 0)
-        & (selected_candidate < candidate_count)
-    )
+    selected_in_range = (selected_candidate >= 0) & (selected_candidate < candidate_count)
     safe_selected_candidate = selected_candidate.clamp_min(0).clamp_max(candidate_count - 1)
     selected_valid = selected_in_range & torch.gather(
         row_mask,
@@ -253,11 +244,13 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
         safe_selected_candidate.unsqueeze(1),
     ).squeeze(1)
     if torch.any(selected_valid):
-        selected_probability = torch.mean(torch.gather(
-            target_probs[selected_valid],
-            1,
-            selected_candidate[selected_valid].unsqueeze(1),
-        ).squeeze(1))
+        selected_probability = torch.mean(
+            torch.gather(
+                target_probs[selected_valid],
+                1,
+                selected_candidate[selected_valid].unsqueeze(1),
+            ).squeeze(1)
+        )
     else:
         selected_probability = torch.sum(target_logits) * 0.0
     return CandidateDiagnostics(
@@ -272,11 +265,7 @@ def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> lis
     task_idx = 0
     round_episodes = episodes_per_round(config)
     fresh_batches = int(
-        math.ceil(
-            round_episodes
-            * config.train.fresh_pass_factor
-            / config.train.batch_size
-        )
+        math.ceil(round_episodes * config.train.fresh_pass_factor / config.train.batch_size)
     )
     for batch_idx in range(fresh_batches):
         start = (batch_idx * config.train.batch_size) % round_episodes
@@ -290,11 +279,7 @@ def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> lis
         task_idx += 1
     if experience.num_files > 0:
         replay_batches = int(
-            math.ceil(
-                round_episodes
-                * config.train.replay_pass_factor
-                / config.train.batch_size
-            )
+            math.ceil(round_episodes * config.train.replay_pass_factor / config.train.batch_size)
         )
         for _ in range(replay_batches):
             tasks.append(
@@ -576,8 +561,7 @@ def proposal_batch_loss(
     )
     kl_terms = target_probs * (safe_target_log_probs - safe_proposal_log_probs)
     proposal_loss = (
-        torch.sum(torch.where(row_mask, kl_terms, torch.zeros_like(kl_terms)))
-        / row_mask.shape[0]
+        torch.sum(torch.where(row_mask, kl_terms, torch.zeros_like(kl_terms))) / row_mask.shape[0]
     )
     return proposal_loss
 
@@ -731,12 +715,8 @@ def train_feature_batch_backward(
         total_loss.connection_contribution += (
             prefix_loss.connection_contribution.item() * prefix_weight
         )
-        total_loss.toilet_contribution += (
-            prefix_loss.toilet_contribution.item() * prefix_weight
-        )
-        total_loss.balance_contribution += (
-            prefix_loss.balance_contribution.item() * prefix_weight
-        )
+        total_loss.toilet_contribution += prefix_loss.toilet_contribution.item() * prefix_weight
+        total_loss.balance_contribution += prefix_loss.balance_contribution.item() * prefix_weight
         total_loss.toilet_balance_contribution += (
             prefix_loss.toilet_balance_contribution.item() * prefix_weight
         )
@@ -771,9 +751,7 @@ def train_feature_batch_backward(
                 context.device,
             )
             weighted_proposal_loss = (
-                context.config.train.proposal_weight
-                * batch_proposal_loss
-                * prefix_weight
+                context.config.train.proposal_weight * batch_proposal_loss * prefix_weight
             )
             backward_loss = backward_loss + weighted_proposal_loss
             total_loss.total += weighted_proposal_loss.item()

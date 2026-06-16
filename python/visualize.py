@@ -57,12 +57,7 @@ def _normalize_actions(actions: Any, environment_index: int) -> List[Action]:
 
 
 def _occupied_cells(room: dict) -> Set[Tuple[int, int]]:
-    return {
-        (x, y)
-        for y, row in enumerate(room["map"])
-        for x, value in enumerate(row)
-        if value
-    }
+    return {(x, y) for y, row in enumerate(room["map"]) for x, value in enumerate(row) if value}
 
 
 def _door_sides(room: dict) -> Set[Tuple[int, int, str]]:
@@ -126,7 +121,11 @@ def _placement_elements(
     room_x: int,
     room_y: int,
     fill: str,
-) -> Tuple[List[Tuple[Tuple[int, int], ...]], List[str], List[Tuple[Tuple[float, float], Tuple[float, float]]]]:
+) -> Tuple[
+    List[Tuple[Tuple[int, int], ...]],
+    List[str],
+    List[Tuple[Tuple[float, float], Tuple[float, float]]],
+]:
     room_polygons = []
     room_colors = []
     wall_segments = []

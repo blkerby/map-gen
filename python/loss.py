@@ -47,10 +47,13 @@ class LossBreakdown:
     missing_connect_distance_contribution: torch.Tensor
 
 
-def masked_binary_cross_entropy_loss(preds: torch.Tensor, outcomes: torch.Tensor, mask: torch.Tensor, weight: float) -> torch.Tensor:
+def masked_binary_cross_entropy_loss(
+    preds: torch.Tensor, outcomes: torch.Tensor, mask: torch.Tensor, weight: float
+) -> torch.Tensor:
     mask = (mask & (outcomes >= 0)).to(preds.dtype)
     binary_loss = torch.nn.functional.binary_cross_entropy_with_logits(
-        preds, outcomes.to(preds.dtype), reduction='none')
+        preds, outcomes.to(preds.dtype), reduction="none"
+    )
     return weight * torch.sum(binary_loss * mask), weight * torch.sum(mask)
 
 
@@ -111,11 +114,14 @@ def compute_loss_breakdown(
     config: LossConfig,
 ) -> LossBreakdown:
     door_loss, door_wt = masked_binary_cross_entropy_loss(
-        preds.door_invalid, outcomes.door_invalid, mask, config.door_weight)
+        preds.door_invalid, outcomes.door_invalid, mask, config.door_weight
+    )
     conn_loss, conn_wt = masked_binary_cross_entropy_loss(
-        preds.connection_invalid, outcomes.connection_invalid, mask, config.connection_weight)
+        preds.connection_invalid, outcomes.connection_invalid, mask, config.connection_weight
+    )
     toilet_loss, toilet_wt = masked_binary_cross_entropy_loss(
-        preds.toilet_invalid, outcomes.toilet_invalid, mask.squeeze(-1), config.toilet_weight)
+        preds.toilet_invalid, outcomes.toilet_invalid, mask.squeeze(-1), config.toilet_weight
+    )
     balance_loss, balance_wt = masked_bernoulli_kl_loss(
         preds.balance_score,
         balance_score_target_logits,
@@ -129,8 +135,8 @@ def compute_loss_breakdown(
         config.toilet_balance_weight,
     )
     avg_frontiers_mask = avg_frontiers_mask.to(torch.float32)
-    avg_frontiers_error = (
-        preds.avg_frontiers.to(torch.float32) - avg_frontiers_target.to(torch.float32)
+    avg_frontiers_error = preds.avg_frontiers.to(torch.float32) - avg_frontiers_target.to(
+        torch.float32
     )
     avg_frontiers_loss = config.avg_frontiers_weight * torch.sum(
         avg_frontiers_error.square() * avg_frontiers_mask
@@ -222,7 +228,9 @@ def compute_loss_breakdown(
     )
 
 
-def direction_balance_loss(logits: torch.Tensor, targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+def direction_balance_loss(
+    logits: torch.Tensor, targets: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     mask = targets >= 0
     if not torch.any(mask):
         return torch.sum(logits) * 0.0, logits.new_tensor(0.0)
@@ -295,7 +303,9 @@ def compute_balance_score_target_logits(
     door_matches: DoorMatches,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     left_values, left_mask = direction_balance_score_target_logits(preds.left, door_matches.left)
-    right_values, right_mask = direction_balance_score_target_logits(preds.right, door_matches.right)
+    right_values, right_mask = direction_balance_score_target_logits(
+        preds.right, door_matches.right
+    )
     up_values, up_mask = direction_balance_score_target_logits(preds.up, door_matches.up)
     down_values, down_mask = direction_balance_score_target_logits(preds.down, door_matches.down)
     return (

@@ -191,8 +191,7 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
             x = value.linear if value.linear is not None else value.log
             if len(x) != len(knot_episodes):
                 raise ValueError(
-                    f"{path} has {len(x)} schedule value(s), but knot_episodes has "
-                    f"{len(knot_episodes)} knot(s)"
+                    f"{path} has {len(x)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
                 )
             if value.linear is not None:
                 return float(np.interp(num_episodes, knot_episodes, x))
@@ -219,9 +218,7 @@ def validate_config(config: Config) -> None:
         config.features.toilet_crossed_room
         and config.model.toilet_crossed_room_embedding_width <= 0
     ):
-        raise ValueError(
-            "model.toilet_crossed_room_embedding_width must be greater than zero"
-        )
+        raise ValueError("model.toilet_crossed_room_embedding_width must be greater than zero")
     validate_optimizer_config(config.optimizer, "optimizer")
     validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
@@ -248,16 +245,15 @@ def validate_config(config: Config) -> None:
         raise ValueError("generation.shortlist_candidates must be at least recommended_candidates")
     if config.generation.num_devices > config.generation.num_environments:
         raise ValueError("generation.num_devices must not exceed generation.num_environments")
-    num_generation_groups = (
-        config.generation.num_devices * config.generation.pipeline_groups
-    )
+    num_generation_groups = config.generation.num_devices * config.generation.pipeline_groups
     if config.generation.num_environments % num_generation_groups != 0:
         raise ValueError(
-            "generation.num_environments must be divisible by "
-            "generation.num_devices * generation.pipeline_groups"
+            "generation.num_environments must be divisible by generation.num_devices * generation.pipeline_groups"
         )
     if config.generation.frontier_neighbor_count < 0:
-        raise ValueError("generation.frontier_neighbor_count must be greater than or equal to zero")
+        raise ValueError(
+            "generation.frontier_neighbor_count must be greater than or equal to zero"
+        )
     if config.generation.frontier_window_size < 0:
         raise ValueError("generation.frontier_window_size must be greater than or equal to zero")
     validate_nonnegative_scheduleable_float(
@@ -329,8 +325,7 @@ def validate_config(config: Config) -> None:
     ) and not config.features.frontier_mask:
         raise ValueError("frontier features require features.frontier_mask")
     if (
-        config.features.inventory
-        or config.features.connection_reachability
+        config.features.inventory or config.features.connection_reachability
     ) and not config.features.frontier_mask:
         raise ValueError("start-of-network features require features.frontier_mask")
     if (
@@ -367,7 +362,9 @@ def validate_adam_params(config: AdamOptimizerConfig | AdamParamsConfig, path: s
 
 def validate_muon_params(config: MuonParamsConfig, path: str) -> None:
     if config.momentum < 0.0 or config.momentum >= 1.0:
-        raise ValueError(f"{path}.momentum must be greater than or equal to zero and less than one")
+        raise ValueError(
+            f"{path}.momentum must be greater than or equal to zero and less than one"
+        )
     if config.backend_steps <= 0:
         raise ValueError(f"{path}.backend_steps must be greater than zero")
 
@@ -392,18 +389,21 @@ def validate_nonnegative_scheduleable_float(value: ScheduleableFloat, path: str)
 
 def validate_ema_decay(value: float, path: str) -> None:
     if not math.isfinite(value) or value < 0.0 or value >= 1.0:
-        raise ValueError(f"{path} must be finite, greater than or equal to zero, and less than one")
+        raise ValueError(
+            f"{path} must be finite, greater than or equal to zero, and less than one"
+        )
 
 
-def validate_ema_decay_config(value: ScheduleableFloat, path: str, knot_episodes: list[int]) -> None:
+def validate_ema_decay_config(
+    value: ScheduleableFloat, path: str, knot_episodes: list[int]
+) -> None:
     if isinstance(value, Schedule):
         if (value.linear is None) == (value.log is None):
             raise ValueError(f"{path} must have exactly one schedule value: 'linear' or 'log'")
         values = value.linear if value.linear is not None else value.log
         if len(values) != len(knot_episodes):
             raise ValueError(
-                f"{path} has {len(values)} schedule value(s), but knot_episodes has "
-                f"{len(knot_episodes)} knot(s)"
+                f"{path} has {len(values)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
             )
         for index, knot_value in enumerate(values):
             validate_ema_decay(knot_value, f"{path}[{index}]")

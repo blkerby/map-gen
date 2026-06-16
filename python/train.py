@@ -129,9 +129,9 @@ def without_prefix(
     compiled_prefix = f"{full_prefix}_orig_mod."
     return {
         (
-            name[len(compiled_prefix):]
+            name[len(compiled_prefix) :]
             if name.startswith(compiled_prefix)
-            else name[len(full_prefix):]
+            else name[len(full_prefix) :]
         ): value
         for name, value in tensors.items()
         if name.startswith(full_prefix)
@@ -169,15 +169,17 @@ def load_optimizer_checkpoint_state(
     for key, value in tensors.items():
         if not key.startswith(state_prefix):
             continue
-        suffix = key[len(state_prefix):]
+        suffix = key[len(state_prefix) :]
         param_id_text, state_name = suffix.split(".", 1)
         state.setdefault(int(param_id_text), {})[state_name] = value
     for param_id_text, param_scalar_state in scalar_state.items():
         state.setdefault(int(param_id_text), {}).update(param_scalar_state)
-    optimizer.load_state_dict({
-        "state": state,
-        "param_groups": param_groups,
-    })
+    optimizer.load_state_dict(
+        {
+            "state": state,
+            "param_groups": param_groups,
+        }
+    )
 
 
 class MainOptimizerBundle:
@@ -242,8 +244,7 @@ def load_named_optimizer_checkpoint_state(
     names = json.loads(metadata[f"{prefix}_names"])
     if set(names) != set(optimizers):
         raise ValueError(
-            f"checkpoint has {prefix} optimizer part(s) {names}, but config created "
-            f"{list(optimizers)}"
+            f"checkpoint has {prefix} optimizer part(s) {names}, but config created {list(optimizers)}"
         )
     for name in names:
         load_optimizer_checkpoint_state(
@@ -278,9 +279,7 @@ def frontier_model_kwargs(
         "global_room_position_embedding_width": config.model.global_room_position_embedding_width,
         "hidden_width": config.model.hidden_width,
         "door_match_embedding_width": config.model.door_match_embedding_width,
-        "toilet_crossed_room_embedding_width": (
-            config.model.toilet_crossed_room_embedding_width
-        ),
+        "toilet_crossed_room_embedding_width": (config.model.toilet_crossed_room_embedding_width),
         "num_layers": config.model.num_layers,
         "door_counts": (
             count_room_doors_by_direction(rooms, "left"),
@@ -303,7 +302,9 @@ def count_room_doors_by_direction(rooms: list[dict], direction: str) -> int:
     )
 
 
-def create_balance_model(config: Config, rooms: list[dict], device: torch.device) -> torch.nn.Module:
+def create_balance_model(
+    config: Config, rooms: list[dict], device: torch.device
+) -> torch.nn.Module:
     return BalanceModel(
         left_count=count_room_doors_by_direction(rooms, "left"),
         right_count=count_room_doors_by_direction(rooms, "right"),
@@ -354,7 +355,9 @@ def split_muon_parameters(
     trainable_param_ids = {id(param) for param in model.parameters() if param.requires_grad}
     assigned_param_ids = {id(param) for param in adam_params} | muon_param_ids
     if assigned_param_ids != trainable_param_ids:
-        raise ValueError("Muon optimizer parameter split omitted or duplicated trainable parameters")
+        raise ValueError(
+            "Muon optimizer parameter split omitted or duplicated trainable parameters"
+        )
     if not muon_params:
         raise ValueError("Muon optimizer requires at least one Linear weight parameter")
     return adam_params, muon_params
@@ -429,9 +432,7 @@ def create_generation_environment_groups_for_device(
     engine: Engine,
     device_index: int,
 ):
-    num_generation_groups = (
-        config.generation.num_devices * config.generation.pipeline_groups
-    )
+    num_generation_groups = config.generation.num_devices * config.generation.pipeline_groups
     generation_group_environments = config.generation.num_environments // num_generation_groups
     generation_group_threads = (
         None
@@ -541,7 +542,9 @@ def run_generation_process_task(
     model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
-) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, RustProfileReport]:
+) -> tuple[
+    EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, RustProfileReport
+]:
     if GENERATION_PROCESS_STATE is None:
         raise RuntimeError("generation process was not initialized")
     state = GENERATION_PROCESS_STATE
@@ -573,11 +576,7 @@ def run_generation_process_task(
         verify_outcome_consistency=verify_outcome_consistency,
         profile=state.profile,
     )
-    profile_report = (
-        map_gen.profile_report() + python_profile_report
-        if state.profile
-        else []
-    )
+    profile_report = map_gen.profile_report() + python_profile_report if state.profile else []
     return (
         episode_data.to(torch.device("cpu")),
         outcomes.to(torch.device("cpu")),
@@ -594,10 +593,7 @@ def merge_profile_reports(reports: list[RustProfileReport]) -> RustProfileReport
         for name, count, nanos in report:
             merged_count, merged_nanos = merged.get(name, (0, 0))
             merged[name] = (merged_count + count, merged_nanos + nanos)
-    return [
-        (name, count, nanos)
-        for name, (count, nanos) in merged.items()
-    ]
+    return [(name, count, nanos) for name, (count, nanos) in merged.items()]
 
 
 @dataclass
@@ -672,8 +668,7 @@ class TrainingSession:
             left_idx = flat_idx // column_count
             right_idx = flat_idx % column_count
             pairs.append(
-                f"top{rank}: {left_door_labels[left_idx]} -> {right_door_labels[right_idx]} "
-                f"({value:.4f})"
+                f"top{rank}: {left_door_labels[left_idx]} -> {right_door_labels[right_idx]} ({value:.4f})"
             )
         return "; ".join(pairs)
 
@@ -756,12 +751,21 @@ class TrainingSession:
 
     def update_ema_model(self, ema_decay: float) -> None:
         with torch.no_grad():
-            for ema_param, main_param in zip(self.ema_model.parameters(), self.main_model.parameters()):
+            for ema_param, main_param in zip(
+                self.ema_model.parameters(), self.main_model.parameters()
+            ):
                 ema_param.lerp_(main_param, 1.0 - ema_decay)
 
     def generate_round(
         self,
-    ) -> tuple[EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, RustProfileReport]:
+    ) -> tuple[
+        EpisodeData,
+        EpisodeOutcomes,
+        DoorMatchCounts,
+        ProposalData,
+        GenerationStats,
+        RustProfileReport,
+    ]:
         episode_data_iterations = []
         outcome_iterations = []
         door_match_count_iterations = []
@@ -812,66 +816,68 @@ class TrainingSession:
         return (
             EpisodeData(
                 actions=Actions(
-                    room_idx=torch.cat([
-                        episode_data.actions.room_idx for episode_data in episode_data_iterations
-                    ]),
-                    room_x=torch.cat([
-                        episode_data.actions.room_x for episode_data in episode_data_iterations
-                    ]),
-                    room_y=torch.cat([
-                        episode_data.actions.room_y for episode_data in episode_data_iterations
-                    ]),
+                    room_idx=torch.cat(
+                        [episode_data.actions.room_idx for episode_data in episode_data_iterations]
+                    ),
+                    room_x=torch.cat(
+                        [episode_data.actions.room_x for episode_data in episode_data_iterations]
+                    ),
+                    room_y=torch.cat(
+                        [episode_data.actions.room_y for episode_data in episode_data_iterations]
+                    ),
                 ),
-                temperature=torch.cat([
-                    episode_data.temperature for episode_data in episode_data_iterations
-                ]),
-                recommended_candidates=torch.cat([
-                    episode_data.recommended_candidates
-                    for episode_data in episode_data_iterations
-                ]),
+                temperature=torch.cat(
+                    [episode_data.temperature for episode_data in episode_data_iterations]
+                ),
+                recommended_candidates=torch.cat(
+                    [
+                        episode_data.recommended_candidates
+                        for episode_data in episode_data_iterations
+                    ]
+                ),
             ),
             EpisodeOutcomes(
                 validity=PreliminaryOutcomes(
-                    door_invalid=torch.cat([
-                        outcomes.validity.door_invalid for outcomes in outcome_iterations
-                    ]),
+                    door_invalid=torch.cat(
+                        [outcomes.validity.door_invalid for outcomes in outcome_iterations]
+                    ),
                     connection_invalid=torch.cat(
                         [outcomes.validity.connection_invalid for outcomes in outcome_iterations]
                     ),
-                    toilet_invalid=torch.cat([
-                        outcomes.validity.toilet_invalid for outcomes in outcome_iterations
-                    ]),
-                    door_match=torch.cat([
-                        outcomes.validity.door_match for outcomes in outcome_iterations
-                    ]),
+                    toilet_invalid=torch.cat(
+                        [outcomes.validity.toilet_invalid for outcomes in outcome_iterations]
+                    ),
+                    door_match=torch.cat(
+                        [outcomes.validity.door_match for outcomes in outcome_iterations]
+                    ),
                 ),
-                toilet_crossed_room_idx=torch.cat([
-                    outcomes.toilet_crossed_room_idx for outcomes in outcome_iterations
-                ]),
-                avg_frontiers=torch.cat([
-                    outcomes.avg_frontiers for outcomes in outcome_iterations
-                ]),
-                graph_diameter=torch.cat([
-                    outcomes.graph_diameter for outcomes in outcome_iterations
-                ]),
-                save_distance=torch.cat([
-                    outcomes.save_distance for outcomes in outcome_iterations
-                ]),
-                save_distance_mask=torch.cat([
-                    outcomes.save_distance_mask for outcomes in outcome_iterations
-                ]),
-                refill_distance=torch.cat([
-                    outcomes.refill_distance for outcomes in outcome_iterations
-                ]),
-                refill_distance_mask=torch.cat([
-                    outcomes.refill_distance_mask for outcomes in outcome_iterations
-                ]),
-                missing_connect_distance=torch.cat([
-                    outcomes.missing_connect_distance for outcomes in outcome_iterations
-                ]),
-                missing_connect_distance_mask=torch.cat([
-                    outcomes.missing_connect_distance_mask for outcomes in outcome_iterations
-                ]),
+                toilet_crossed_room_idx=torch.cat(
+                    [outcomes.toilet_crossed_room_idx for outcomes in outcome_iterations]
+                ),
+                avg_frontiers=torch.cat(
+                    [outcomes.avg_frontiers for outcomes in outcome_iterations]
+                ),
+                graph_diameter=torch.cat(
+                    [outcomes.graph_diameter for outcomes in outcome_iterations]
+                ),
+                save_distance=torch.cat(
+                    [outcomes.save_distance for outcomes in outcome_iterations]
+                ),
+                save_distance_mask=torch.cat(
+                    [outcomes.save_distance_mask for outcomes in outcome_iterations]
+                ),
+                refill_distance=torch.cat(
+                    [outcomes.refill_distance for outcomes in outcome_iterations]
+                ),
+                refill_distance_mask=torch.cat(
+                    [outcomes.refill_distance_mask for outcomes in outcome_iterations]
+                ),
+                missing_connect_distance=torch.cat(
+                    [outcomes.missing_connect_distance for outcomes in outcome_iterations]
+                ),
+                missing_connect_distance_mask=torch.cat(
+                    [outcomes.missing_connect_distance_mask for outcomes in outcome_iterations]
+                ),
             ),
             DoorMatchCounts(
                 horizontal=torch.sum(
@@ -884,22 +890,21 @@ class TrainingSession:
                 ),
             ),
             ProposalData(
-                frontier_idx=torch.cat([
-                    proposal_data.frontier_idx
-                    for proposal_data in proposal_data_iterations
-                ]),
-                door_variant_idx=torch.cat([
-                    proposal_data.door_variant_idx
-                    for proposal_data in proposal_data_iterations
-                ]),
-                selected_candidate=torch.cat([
-                    proposal_data.selected_candidate
-                    for proposal_data in proposal_data_iterations
-                ]),
-                target_logits=torch.cat([
-                    proposal_data.target_logits
-                    for proposal_data in proposal_data_iterations
-                ]),
+                frontier_idx=torch.cat(
+                    [proposal_data.frontier_idx for proposal_data in proposal_data_iterations]
+                ),
+                door_variant_idx=torch.cat(
+                    [proposal_data.door_variant_idx for proposal_data in proposal_data_iterations]
+                ),
+                selected_candidate=torch.cat(
+                    [
+                        proposal_data.selected_candidate
+                        for proposal_data in proposal_data_iterations
+                    ]
+                ),
+                target_logits=torch.cat(
+                    [proposal_data.target_logits for proposal_data in proposal_data_iterations]
+                ),
             ),
             generation_stats,
             merge_profile_reports(profile_reports),
@@ -983,29 +988,24 @@ class TrainingSession:
         graph_diameter = torch.mean(episode_outcomes.graph_diameter.to(torch.float32))
         save_distance_mask = episode_outcomes.save_distance_mask.to(torch.float32)
         save_distance_mask_count = torch.sum(save_distance_mask)
-        save_distance = (
-            torch.sum(episode_outcomes.save_distance.to(torch.float32) * save_distance_mask)
-            / (save_distance_mask_count + 1e-15)
-        )
+        save_distance = torch.sum(
+            episode_outcomes.save_distance.to(torch.float32) * save_distance_mask
+        ) / (save_distance_mask_count + 1e-15)
         save_distance_mask_fraction = torch.mean(save_distance_mask)
         refill_distance_mask = episode_outcomes.refill_distance_mask.to(torch.float32)
         refill_distance_mask_count = torch.sum(refill_distance_mask)
-        refill_distance = (
-            torch.sum(episode_outcomes.refill_distance.to(torch.float32) * refill_distance_mask)
-            / (refill_distance_mask_count + 1e-15)
-        )
+        refill_distance = torch.sum(
+            episode_outcomes.refill_distance.to(torch.float32) * refill_distance_mask
+        ) / (refill_distance_mask_count + 1e-15)
         refill_distance_mask_fraction = torch.mean(refill_distance_mask)
-        missing_connect_distance_mask = (
-            episode_outcomes.missing_connect_distance_mask.to(torch.float32)
+        missing_connect_distance_mask = episode_outcomes.missing_connect_distance_mask.to(
+            torch.float32
         )
         missing_connect_distance_mask_count = torch.sum(missing_connect_distance_mask)
-        missing_connect_distance = (
-            torch.sum(
-                episode_outcomes.missing_connect_distance.to(torch.float32)
-                * missing_connect_distance_mask
-            )
-            / (missing_connect_distance_mask_count + 1e-15)
-        )
+        missing_connect_distance = torch.sum(
+            episode_outcomes.missing_connect_distance.to(torch.float32)
+            * missing_connect_distance_mask
+        ) / (missing_connect_distance_mask_count + 1e-15)
         missing_connect_distance_mask_fraction = torch.mean(missing_connect_distance_mask)
 
         success = total_invalid == 0
@@ -1016,11 +1016,11 @@ class TrainingSession:
 
         horizontal_door_match_counts = door_match_counts.horizontal[:-1, :-1].to(torch.float64)
         vertical_door_match_counts = door_match_counts.vertical[:-1, :-1].to(torch.float64)
-        left_door_match_p = (
-            horizontal_door_match_counts / torch.sum(horizontal_door_match_counts, dim=1, keepdim=True)
+        left_door_match_p = horizontal_door_match_counts / torch.sum(
+            horizontal_door_match_counts, dim=1, keepdim=True
         )
-        up_door_match_p = (
-            vertical_door_match_counts / torch.sum(vertical_door_match_counts, dim=1, keepdim=True)
+        up_door_match_p = vertical_door_match_counts / torch.sum(
+            vertical_door_match_counts, dim=1, keepdim=True
         )
         left_topk = torch.topk(left_door_match_p.flatten(), k=3).values
         up_topk = torch.topk(up_door_match_p.flatten(), k=3).values
@@ -1064,15 +1064,11 @@ class TrainingSession:
         connection_loss_pct = 100.0 * loss.connection_contribution / loss_denominator
         toilet_loss_pct = 100.0 * loss.toilet_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
-        main_toilet_balance_loss_pct = (
-            100.0 * loss.toilet_balance_contribution / loss_denominator
-        )
+        main_toilet_balance_loss_pct = 100.0 * loss.toilet_balance_contribution / loss_denominator
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
         graph_diameter_loss_pct = 100.0 * loss.graph_diameter_contribution / loss_denominator
         save_distance_loss_pct = 100.0 * loss.save_distance_contribution / loss_denominator
-        refill_distance_loss_pct = (
-            100.0 * loss.refill_distance_contribution / loss_denominator
-        )
+        refill_distance_loss_pct = 100.0 * loss.refill_distance_contribution / loss_denominator
         missing_connect_distance_loss_pct = (
             100.0 * loss.missing_connect_distance_contribution / loss_denominator
         )
@@ -1150,9 +1146,7 @@ class TrainingSession:
             "graph_diameter_weight": step_config.train.graph_diameter_weight,
             "save_distance_weight": step_config.train.save_distance_weight,
             "refill_distance_weight": step_config.train.refill_distance_weight,
-            "missing_connect_distance_weight": (
-                step_config.train.missing_connect_distance_weight
-            ),
+            "missing_connect_distance_weight": (step_config.train.missing_connect_distance_weight),
             "door_match_left_top1": left_topk[0],
             "door_match_left_top2": left_topk[1],
             "door_match_left_top3": left_topk[2],
@@ -1239,11 +1233,7 @@ class TrainingSession:
         # )
 
     def log_profile_report(self, report: RustProfileReport, round_idx: int) -> None:
-        rows = [
-            (name, count, nanos)
-            for name, count, nanos in report
-            if count > 0 or nanos > 0
-        ]
+        rows = [(name, count, nanos) for name, count, nanos in report if count > 0 or nanos > 0]
         if not rows:
             logging.info("round %s Rust profile: no samples recorded", round_idx)
             return
@@ -1388,7 +1378,9 @@ def select_devices(args: Args, config: Config) -> tuple[torch.device, list[torch
                 raise ValueError(f"invalid --device value: {args.device}") from error
             if (
                 not generation_devices
-                or any(generation_device.type != "cuda" for generation_device in generation_devices)
+                or any(
+                    generation_device.type != "cuda" for generation_device in generation_devices
+                )
                 or any(generation_device.index is None for generation_device in generation_devices)
             ):
                 raise ValueError(
@@ -1437,7 +1429,9 @@ def setup_logging(config: Config, args: Args) -> str:
     start_time = datetime.now()
     if args.load_checkpoint is not None:
         if args.load_checkpoint.parent.name != "checkpoints":
-            raise ValueError("--load-checkpoint must point to a file in a run's checkpoints directory")
+            raise ValueError(
+                "--load-checkpoint must point to a file in a run's checkpoints directory"
+            )
         run_path = f"{args.load_checkpoint.parent.parent}/"
     else:
         run_path = f"runs/{start_time.isoformat()}-{config.experiment_name}/"
@@ -1485,7 +1479,9 @@ def create_train_batch_environment_groups(config: Config, engine: Engine):
     ]
 
 
-def create_models(config: Config, rooms: list[dict], engine: Engine, device: torch.device, generation_devices):
+def create_models(
+    config: Config, rooms: list[dict], engine: Engine, device: torch.device, generation_devices
+):
     main_model = FrontierModel(**frontier_model_kwargs(config, rooms, engine)).to(device)
     num_params = sum(p.numel() for p in main_model.parameters())
     logging.info(f"Main model parameters: {num_params}")
@@ -1552,9 +1548,13 @@ def build_session(args: Args) -> TrainingSession:
     rooms = json.loads(config.room_set.read_text())
     device, generation_devices = select_devices(args, config)
 
-    train_precision = "bfloat16 autocast" if device.type == "cuda" and config.model.autocast else "float32"
+    train_precision = (
+        "bfloat16 autocast" if device.type == "cuda" and config.model.autocast else "float32"
+    )
     generation_precision = (
-        "bfloat16 autocast" if device.type == "cuda" and config.model.generation_autocast else "float32"
+        "bfloat16 autocast"
+        if device.type == "cuda" and config.model.generation_autocast
+        else "float32"
     )
     logging.info(
         "Using device %s with %s training and %s generation across %s device(s): %s.",

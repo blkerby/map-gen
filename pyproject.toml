@@ -1,5 +1,5 @@
 [tool.ruff]
-line-length = 120
+line-length = 99
 
 [build-system]
 requires = ["maturin>=1.7,<2.0"]
