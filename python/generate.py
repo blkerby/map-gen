@@ -6,11 +6,12 @@ from env import (
     CandidateSlot,
     DoorMatchCounts,
     Engine,
+    EndOutcomes,
     EnvironmentGroup,
     EpisodeData,
     EpisodeOutcomes,
     GenerateConfig,
-    PreliminaryOutcomes,
+    StepOutcomes,
     ProposalData,
     ProposalCandidateMask,
     FeatureRequirements,
@@ -217,7 +218,7 @@ class GenerationGroup:
     step: int
     feature_slot: FeatureSlot
     candidate_slot: CandidateSlot
-    previous_lookahead_outcomes: PreliminaryOutcomes | None
+    previous_lookahead_outcomes: StepOutcomes | None
     previous_proposal_scores: ProposalCache | None
 
 
@@ -235,8 +236,8 @@ class CandidateBatch:
     candidates: Actions
     proposal_frontier_idx: torch.Tensor
     proposal_door_variant_idx: torch.Tensor
-    reward_outcomes: PreliminaryOutcomes
-    post_candidate_outcomes: PreliminaryOutcomes
+    reward_outcomes: StepOutcomes
+    post_candidate_outcomes: StepOutcomes
     feature_requirements: FeatureRequirements
     stats: CandidateStats
 
@@ -473,7 +474,7 @@ def state_log_inputs(
     return log_temperature, log_recommended_candidates
 
 
-def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> PreliminaryOutcomes:
+def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes:
     def gather(values: torch.Tensor) -> torch.Tensor:
         gather_index = index.view(-1, 1, 1).expand(-1, 1, values.shape[2])
         return torch.gather(values, 1, gather_index).squeeze(1)
@@ -481,7 +482,7 @@ def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> Preli
     def gather_scalar(values: torch.Tensor) -> torch.Tensor:
         return torch.gather(values, 1, index.view(-1, 1)).squeeze(1)
 
-    return PreliminaryOutcomes(
+    return StepOutcomes(
         door_invalid=gather(outcomes.door_invalid),
         connection_invalid=gather(outcomes.connection_invalid),
         toilet_invalid=gather_scalar(outcomes.toilet_invalid),
@@ -571,7 +572,7 @@ def select_candidate_actions(
     group: GenerationGroup,
     model,
     candidates: Actions,
-    outcomes: PreliminaryOutcomes,
+    outcomes: StepOutcomes,
     features: Features,
     device: torch.device,
     gpu_lock: threading.Lock,
@@ -911,61 +912,87 @@ def merge_generation_results(
             ),
         ),
         EpisodeOutcomes(
-            validity=PreliminaryOutcomes(
+            step_outcomes=StepOutcomes(
                 door_invalid=torch.cat(
                     [
-                        episode_outcomes.validity.door_invalid
+                        episode_outcomes.step_outcomes.door_invalid
                         for _, episode_outcomes, _, _ in results
                     ]
                 ),
                 connection_invalid=torch.cat(
                     [
-                        episode_outcomes.validity.connection_invalid
+                        episode_outcomes.step_outcomes.connection_invalid
                         for _, episode_outcomes, _, _ in results
                     ]
                 ),
                 toilet_invalid=torch.cat(
                     [
-                        episode_outcomes.validity.toilet_invalid
+                        episode_outcomes.step_outcomes.toilet_invalid
                         for _, episode_outcomes, _, _ in results
                     ]
                 ),
                 door_match=torch.cat(
-                    [episode_outcomes.validity.door_match for _, episode_outcomes, _, _ in results]
+                    [
+                        episode_outcomes.step_outcomes.door_match
+                        for _, episode_outcomes, _, _ in results
+                    ]
                 ),
             ),
-            toilet_crossed_room_idx=torch.cat(
-                [episode_outcomes.toilet_crossed_room_idx for _, episode_outcomes, _, _ in results]
-            ),
-            avg_frontiers=torch.cat(
-                [episode_outcomes.avg_frontiers for _, episode_outcomes, _, _ in results]
-            ),
-            graph_diameter=torch.cat(
-                [episode_outcomes.graph_diameter for _, episode_outcomes, _, _ in results]
-            ),
-            save_distance=torch.cat(
-                [episode_outcomes.save_distance for _, episode_outcomes, _, _ in results]
-            ),
-            save_distance_mask=torch.cat(
-                [episode_outcomes.save_distance_mask for _, episode_outcomes, _, _ in results]
-            ),
-            refill_distance=torch.cat(
-                [episode_outcomes.refill_distance for _, episode_outcomes, _, _ in results]
-            ),
-            refill_distance_mask=torch.cat(
-                [episode_outcomes.refill_distance_mask for _, episode_outcomes, _, _ in results]
-            ),
-            missing_connect_distance=torch.cat(
-                [
-                    episode_outcomes.missing_connect_distance
-                    for _, episode_outcomes, _, _ in results
-                ]
-            ),
-            missing_connect_distance_mask=torch.cat(
-                [
-                    episode_outcomes.missing_connect_distance_mask
-                    for _, episode_outcomes, _, _ in results
-                ]
+            end_outcomes=EndOutcomes(
+                toilet_crossed_room_idx=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.toilet_crossed_room_idx
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                avg_frontiers=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.avg_frontiers
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                graph_diameter=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.graph_diameter
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                save_distance=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.save_distance
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                save_distance_mask=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.save_distance_mask
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                refill_distance=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.refill_distance
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                refill_distance_mask=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.refill_distance_mask
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                missing_connect_distance=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.missing_connect_distance
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                missing_connect_distance_mask=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.missing_connect_distance_mask
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
             ),
         ),
         DoorMatchCounts(
@@ -1008,8 +1035,8 @@ def empty_proposal_data(
     )
 
 
-def bootstrap_lookahead_outcomes(outcomes: PreliminaryOutcomes) -> PreliminaryOutcomes:
-    return PreliminaryOutcomes(
+def bootstrap_lookahead_outcomes(outcomes: StepOutcomes) -> StepOutcomes:
+    return StepOutcomes(
         door_invalid=outcomes.door_invalid,
         connection_invalid=outcomes.connection_invalid,
         toilet_invalid=outcomes.toilet_invalid,
@@ -1071,7 +1098,7 @@ def run_generation_groups(
                     group.env.get_outcomes(
                         torch.device("cpu"),
                         verify_consistency=False,
-                    ).validity
+                    ).step_outcomes
                 )
                 group.previous_proposal_scores = None
                 start_generation_step(

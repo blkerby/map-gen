@@ -145,7 +145,7 @@ fn check_outcome_transition_consistency(
 }
 
 #[cfg(test)]
-fn introduces_invalid_outcome(before: &PreliminaryOutcomes, after: &PreliminaryOutcomes) -> bool {
+fn introduces_invalid_outcome(before: &StepOutcomes, after: &StepOutcomes) -> bool {
     before
         .door_valid
         .iter()
@@ -165,7 +165,7 @@ fn introduces_invalid_outcome(before: &PreliminaryOutcomes, after: &PreliminaryO
 }
 
 enum CandidateOutcome {
-    Clean(PreliminaryOutcomes, Vec<i16>, Features),
+    Clean(StepOutcomes, Vec<i16>, Features),
     Rejected,
 }
 
@@ -212,7 +212,7 @@ pub struct CandidateAction {
 }
 
 #[derive(Clone)]
-pub struct PreliminaryOutcomes {
+pub struct StepOutcomes {
     // For each door, whether it is connected to another door.
     pub door_valid: Vec<DoorValidOutcome>,
     // For each connection, whether its destination can reach its source.
@@ -225,7 +225,7 @@ pub struct PreliminaryOutcomes {
 
 #[derive(Clone)]
 pub struct FeatureOutcomes {
-    pub preliminary: PreliminaryOutcomes,
+    pub step_outcomes: StepOutcomes,
     pub door_match: Vec<i16>,
 }
 
@@ -595,7 +595,7 @@ pub struct Environment {
     room_part_refill_distance_cache: RoomPartSaveDistanceCache,
     room_part_frontier_distance_cache: RoomPartFrontierDistanceCache,
     occupancy: Vec<u8>,
-    known_outcomes: Option<PreliminaryOutcomes>,
+    known_outcomes: Option<StepOutcomes>,
     frontier_count_sum: u64,
     frontier_count_steps: u32,
 }
@@ -2149,11 +2149,11 @@ impl Environment {
         frontier_window_size: usize,
     ) -> Result<
         (
-            PreliminaryOutcomes,
+            StepOutcomes,
             Vec<Action>,
             Vec<FrontierIdx>,
             Vec<DoorVariantIdx>,
-            Vec<PreliminaryOutcomes>,
+            Vec<StepOutcomes>,
             Vec<Vec<i16>>,
             Vec<Features>,
             usize,
@@ -2278,7 +2278,7 @@ impl Environment {
     fn evaluate_candidate_outcome(
         &mut self,
         common: &CommonData,
-        pre_candidate_outcomes: &PreliminaryOutcomes,
+        pre_candidate_outcomes: &StepOutcomes,
         candidate: Action,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
@@ -2363,19 +2363,19 @@ impl Environment {
             frontier_window_size,
         );
         profile_end(ProfileMetric::EnvProposalFeatures, profile);
-        let preliminary = PreliminaryOutcomes {
+        let step_outcomes = StepOutcomes {
             door_valid: door_valid.clone(),
             connections_valid: connections_valid.clone(),
             toilet_valid,
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
         };
         let profile = profile_start();
-        let door_match = self.door_match_feature(common, &preliminary);
+        let door_match = self.door_match_feature(common, &step_outcomes);
         profile_end(ProfileMetric::EnvProposalDoorMatch, profile);
         let profile = profile_start();
         self.restore_lookahead_candidate(common, snapshot);
         profile_end(ProfileMetric::EnvProposalRestore, profile);
-        Ok(CandidateOutcome::Clean(preliminary, door_match, features))
+        Ok(CandidateOutcome::Clean(step_outcomes, door_match, features))
     }
 
     fn outcomes_and_features_after_candidate(
@@ -2386,7 +2386,7 @@ impl Environment {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
-    ) -> (PreliminaryOutcomes, Vec<i16>, Features) {
+    ) -> (StepOutcomes, Vec<i16>, Features) {
         let profile = profile_start();
         let snapshot = self.apply_lookahead_candidate(candidate, common);
         profile_end(ProfileMetric::EnvProposalApplyLookahead, profile);
@@ -2405,7 +2405,7 @@ impl Environment {
         self.restore_lookahead_candidate(common, snapshot);
         profile_end(ProfileMetric::EnvProposalRestore, profile);
         (
-            feature_outcomes.preliminary,
+            feature_outcomes.step_outcomes,
             feature_outcomes.door_match,
             features,
         )
@@ -2424,17 +2424,17 @@ impl Environment {
     }
 
     pub fn feature_outcomes(&self, common: &CommonData) -> FeatureOutcomes {
-        let preliminary = self.outcomes(common);
+        let step_outcomes = self.outcomes(common);
         let profile = profile_start();
-        let door_match = self.door_match_feature(common, &preliminary);
+        let door_match = self.door_match_feature(common, &step_outcomes);
         profile_end(ProfileMetric::EnvProposalDoorMatch, profile);
         FeatureOutcomes {
-            preliminary,
+            step_outcomes,
             door_match,
         }
     }
 
-    fn door_match_feature(&self, common: &CommonData, outcomes: &PreliminaryOutcomes) -> Vec<i16> {
+    fn door_match_feature(&self, common: &CommonData, outcomes: &StepOutcomes) -> Vec<i16> {
         let mut result = Vec::with_capacity(outcomes.door_valid.len());
         let mut outcome_idx = 0;
         for dir in 0..NUM_DIRS {
@@ -3104,7 +3104,7 @@ impl Environment {
         write_direction_door_matches(&self.door_matches[Direction::Down as usize], down);
     }
 
-    pub fn outcomes(&self, common: &CommonData) -> PreliminaryOutcomes {
+    pub fn outcomes(&self, common: &CommonData) -> StepOutcomes {
         let mut door_valid = vec![];
         for dir in 0..NUM_DIRS {
             for i in 0..common.room_dir_door[dir].len() {
@@ -3126,7 +3126,7 @@ impl Environment {
             ));
         }
 
-        PreliminaryOutcomes {
+        StepOutcomes {
             door_valid,
             connections_valid,
             toilet_valid: self.toilet_outcome(common),
@@ -3260,7 +3260,7 @@ impl Environment {
         &mut self,
         common: &CommonData,
         stage: &str,
-    ) -> Result<PreliminaryOutcomes, String> {
+    ) -> Result<StepOutcomes, String> {
         let outcomes = self.outcomes(common);
         if let Some(known_outcomes) = &self.known_outcomes {
             check_outcome_transition_consistency(
@@ -3290,14 +3290,11 @@ impl Environment {
     }
 }
 
-fn merge_known_outcomes(
-    known: Option<&PreliminaryOutcomes>,
-    current: &PreliminaryOutcomes,
-) -> PreliminaryOutcomes {
+fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) -> StepOutcomes {
     let Some(known) = known else {
         return current.clone();
     };
-    PreliminaryOutcomes {
+    StepOutcomes {
         door_valid: merge_known_outcome_values(&known.door_valid, &current.door_valid),
         connections_valid: merge_known_outcome_values(
             &known.connections_valid,
@@ -3475,18 +3472,21 @@ mod tests {
     }
 
     fn assert_feature_outcomes_eq(left: &FeatureOutcomes, right: &FeatureOutcomes) {
-        assert_eq!(left.preliminary.door_valid, right.preliminary.door_valid);
         assert_eq!(
-            left.preliminary.connections_valid,
-            right.preliminary.connections_valid
+            left.step_outcomes.door_valid,
+            right.step_outcomes.door_valid
         );
         assert_eq!(
-            left.preliminary.toilet_valid,
-            right.preliminary.toilet_valid
+            left.step_outcomes.connections_valid,
+            right.step_outcomes.connections_valid
         );
         assert_eq!(
-            left.preliminary.toilet_crossed_room_idx,
-            right.preliminary.toilet_crossed_room_idx
+            left.step_outcomes.toilet_valid,
+            right.step_outcomes.toilet_valid
+        );
+        assert_eq!(
+            left.step_outcomes.toilet_crossed_room_idx,
+            right.step_outcomes.toilet_crossed_room_idx
         );
         assert_eq!(left.door_match, right.door_match);
     }
@@ -3739,13 +3739,13 @@ mod tests {
         use DoorValidOutcome::{Invalid, Unknown, Valid};
 
         assert!(introduces_invalid_outcome(
-            &PreliminaryOutcomes {
+            &StepOutcomes {
                 door_valid: vec![Unknown],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
                 toilet_crossed_room_idx: -1,
             },
-            &PreliminaryOutcomes {
+            &StepOutcomes {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
@@ -3753,13 +3753,13 @@ mod tests {
             },
         ));
         assert!(!introduces_invalid_outcome(
-            &PreliminaryOutcomes {
+            &StepOutcomes {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Unknown],
                 toilet_valid: Unknown,
                 toilet_crossed_room_idx: -1,
             },
-            &PreliminaryOutcomes {
+            &StepOutcomes {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Unknown,
@@ -5656,7 +5656,7 @@ mod tests {
                     y: 4,
                 },
             )
-            .preliminary;
+            .step_outcomes;
         assert_eq!(outcomes.toilet_valid, DoorValidOutcome::Invalid);
 
         env.step_known(
@@ -5696,7 +5696,7 @@ mod tests {
                     y: 0,
                 },
             )
-            .preliminary;
+            .step_outcomes;
         assert_eq!(outcomes.toilet_valid, DoorValidOutcome::Invalid);
         assert_eq!(outcomes.toilet_crossed_room_idx, -1);
     }

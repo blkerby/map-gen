@@ -7,7 +7,7 @@ use crate::common::{
 };
 use crate::environment::{
     Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig, Features, FrontierNeighborAlgorithm,
-    PreliminaryOutcomes,
+    StepOutcomes as EnvironmentStepOutcomes,
 };
 use crossbeam_channel as channel;
 use numpy::{Element, IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray1};
@@ -350,9 +350,7 @@ impl WorkerCommand {
             }
             WorkerCommand::GetDoorMatches { .. } => Some(ProfileMetric::WorkerGetDoorMatches),
             WorkerCommand::GetFeatures { .. } => Some(ProfileMetric::WorkerGetFeatures),
-            WorkerCommand::PackFeatures { .. } => {
-                Some(ProfileMetric::WorkerPackFeatures)
-            }
+            WorkerCommand::PackFeatures { .. } => Some(ProfileMetric::WorkerPackFeatures),
             WorkerCommand::StepKnown { .. } => Some(ProfileMetric::WorkerStepKnown),
             WorkerCommand::GetProposalCandidateMask { .. } => {
                 Some(ProfileMetric::WorkerGetProposalCandidateMask)
@@ -680,7 +678,7 @@ fn worker_loop(
                     pre_toilet_valid[env_idx] = outcome_to_i8(pre_candidate_outcomes.toilet_valid);
                     let row_start = env_idx * recommended_candidates;
                     let dummy_outcome = if candidates.len() < recommended_candidates {
-                        Some(PreliminaryOutcomes {
+                        Some(EnvironmentStepOutcomes {
                             door_valid: vec![DoorValidOutcome::Unknown; door_outcome_count],
                             connections_valid: vec![
                                 DoorValidOutcome::Unknown;
@@ -965,7 +963,7 @@ fn worker_loop(
                     .enumerate()
                 {
                     let feature_outcomes = env.feature_outcomes(&common_data);
-                    let outcomes = feature_outcomes.preliminary;
+                    let outcomes = feature_outcomes.step_outcomes;
                     debug_assert_eq!(outcomes.door_valid.len(), door_outcome_count);
                     debug_assert_eq!(outcomes.connections_valid.len(), connection_outcome_count);
                     debug_assert_eq!(feature_outcomes.door_match.len(), door_outcome_count);
@@ -1236,10 +1234,14 @@ pub struct ProposalCandidateMask {
 }
 
 #[pyclass(module = "map_gen")]
-pub struct EpisodeOutcomes {
+pub struct StepOutcomes {
     door_valid: Py<PyArray2<i8>>,
     connections_valid: Py<PyArray2<i8>>,
     toilet_valid: Py<PyArray1<i8>>,
+}
+
+#[pyclass(module = "map_gen")]
+pub struct EndOutcomes {
     toilet_crossed_room_idx: Py<PyArray1<i16>>,
     avg_frontiers: Py<PyArray1<f32>>,
     graph_diameter: Py<PyArray1<f32>>,
@@ -1249,6 +1251,12 @@ pub struct EpisodeOutcomes {
     refill_distance_mask: Py<PyArray2<u8>>,
     missing_connect_distance: Py<PyArray2<f32>>,
     missing_connect_distance_mask: Py<PyArray2<u8>>,
+}
+
+#[pyclass(module = "map_gen")]
+pub struct EpisodeOutcomes {
+    step_outcomes: StepOutcomes,
+    end_outcomes: EndOutcomes,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1380,7 +1388,7 @@ impl FeatureBuffers {
 }
 
 #[pymethods]
-impl EpisodeOutcomes {
+impl StepOutcomes {
     #[getter]
     fn door_valid(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
         self.door_valid.clone_ref(py)
@@ -1395,7 +1403,10 @@ impl EpisodeOutcomes {
     fn toilet_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
         self.toilet_valid.clone_ref(py)
     }
+}
 
+#[pymethods]
+impl EndOutcomes {
     #[getter]
     fn toilet_crossed_room_idx(&self, py: Python<'_>) -> Py<PyArray1<i16>> {
         self.toilet_crossed_room_idx.clone_ref(py)
@@ -1439,6 +1450,36 @@ impl EpisodeOutcomes {
     #[getter]
     fn missing_connect_distance_mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.missing_connect_distance_mask.clone_ref(py)
+    }
+}
+
+#[pymethods]
+impl EpisodeOutcomes {
+    #[getter]
+    fn step_outcomes(&self, py: Python<'_>) -> StepOutcomes {
+        StepOutcomes {
+            door_valid: self.step_outcomes.door_valid.clone_ref(py),
+            connections_valid: self.step_outcomes.connections_valid.clone_ref(py),
+            toilet_valid: self.step_outcomes.toilet_valid.clone_ref(py),
+        }
+    }
+
+    #[getter]
+    fn end_outcomes(&self, py: Python<'_>) -> EndOutcomes {
+        EndOutcomes {
+            toilet_crossed_room_idx: self.end_outcomes.toilet_crossed_room_idx.clone_ref(py),
+            avg_frontiers: self.end_outcomes.avg_frontiers.clone_ref(py),
+            graph_diameter: self.end_outcomes.graph_diameter.clone_ref(py),
+            save_distance: self.end_outcomes.save_distance.clone_ref(py),
+            save_distance_mask: self.end_outcomes.save_distance_mask.clone_ref(py),
+            refill_distance: self.end_outcomes.refill_distance.clone_ref(py),
+            refill_distance_mask: self.end_outcomes.refill_distance_mask.clone_ref(py),
+            missing_connect_distance: self.end_outcomes.missing_connect_distance.clone_ref(py),
+            missing_connect_distance_mask: self
+                .end_outcomes
+                .missing_connect_distance_mask
+                .clone_ref(py),
+        }
     }
 }
 
@@ -2645,66 +2686,70 @@ impl EnvironmentGroup {
         })?;
 
         Ok(EpisodeOutcomes {
-            door_valid: pyarray2_from_flat_vec(
-                py,
-                door_valid,
-                self.num_environments,
-                door_outcome_count,
-            )?
-            .unbind(),
-            connections_valid: pyarray2_from_flat_vec(
-                py,
-                connections_valid,
-                self.num_environments,
-                connection_outcome_count,
-            )?
-            .unbind(),
-            toilet_valid: toilet_valid.into_pyarray(py).unbind(),
-            toilet_crossed_room_idx: toilet_crossed_room_idx.into_pyarray(py).unbind(),
-            avg_frontiers: avg_frontiers.into_pyarray(py).unbind(),
-            graph_diameter: graph_diameter.into_pyarray(py).unbind(),
-            save_distance: pyarray2_from_flat_vec(
-                py,
-                save_distance,
-                self.num_environments,
-                room_part_count,
-            )?
-            .unbind(),
-            save_distance_mask: pyarray2_from_flat_vec(
-                py,
-                save_distance_mask,
-                self.num_environments,
-                room_part_count,
-            )?
-            .unbind(),
-            refill_distance: pyarray2_from_flat_vec(
-                py,
-                refill_distance,
-                self.num_environments,
-                room_part_count,
-            )?
-            .unbind(),
-            refill_distance_mask: pyarray2_from_flat_vec(
-                py,
-                refill_distance_mask,
-                self.num_environments,
-                room_part_count,
-            )?
-            .unbind(),
-            missing_connect_distance: pyarray2_from_flat_vec(
-                py,
-                missing_connect_distance,
-                self.num_environments,
-                connection_outcome_count,
-            )?
-            .unbind(),
-            missing_connect_distance_mask: pyarray2_from_flat_vec(
-                py,
-                missing_connect_distance_mask,
-                self.num_environments,
-                connection_outcome_count,
-            )?
-            .unbind(),
+            step_outcomes: StepOutcomes {
+                door_valid: pyarray2_from_flat_vec(
+                    py,
+                    door_valid,
+                    self.num_environments,
+                    door_outcome_count,
+                )?
+                .unbind(),
+                connections_valid: pyarray2_from_flat_vec(
+                    py,
+                    connections_valid,
+                    self.num_environments,
+                    connection_outcome_count,
+                )?
+                .unbind(),
+                toilet_valid: toilet_valid.into_pyarray(py).unbind(),
+            },
+            end_outcomes: EndOutcomes {
+                toilet_crossed_room_idx: toilet_crossed_room_idx.into_pyarray(py).unbind(),
+                avg_frontiers: avg_frontiers.into_pyarray(py).unbind(),
+                graph_diameter: graph_diameter.into_pyarray(py).unbind(),
+                save_distance: pyarray2_from_flat_vec(
+                    py,
+                    save_distance,
+                    self.num_environments,
+                    room_part_count,
+                )?
+                .unbind(),
+                save_distance_mask: pyarray2_from_flat_vec(
+                    py,
+                    save_distance_mask,
+                    self.num_environments,
+                    room_part_count,
+                )?
+                .unbind(),
+                refill_distance: pyarray2_from_flat_vec(
+                    py,
+                    refill_distance,
+                    self.num_environments,
+                    room_part_count,
+                )?
+                .unbind(),
+                refill_distance_mask: pyarray2_from_flat_vec(
+                    py,
+                    refill_distance_mask,
+                    self.num_environments,
+                    room_part_count,
+                )?
+                .unbind(),
+                missing_connect_distance: pyarray2_from_flat_vec(
+                    py,
+                    missing_connect_distance,
+                    self.num_environments,
+                    connection_outcome_count,
+                )?
+                .unbind(),
+                missing_connect_distance_mask: pyarray2_from_flat_vec(
+                    py,
+                    missing_connect_distance_mask,
+                    self.num_environments,
+                    connection_outcome_count,
+                )?
+                .unbind(),
+            },
         })
     }
 

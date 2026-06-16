@@ -6,7 +6,8 @@ mod environment;
 mod scc_dag;
 
 use engine::{
-    Engine, EnvironmentGroup, EpisodeOutcomes, ProposalCandidateBuffers, FeatureBuffers,
+    EndOutcomes, Engine, EnvironmentGroup, EpisodeOutcomes, FeatureBuffers,
+    ProposalCandidateBuffers, StepOutcomes,
 };
 
 #[pyfunction]
@@ -28,6 +29,8 @@ fn profile_report() -> Vec<(String, u64, u64)> {
 fn map_gen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Engine>()?;
     m.add_class::<EnvironmentGroup>()?;
+    m.add_class::<StepOutcomes>()?;
+    m.add_class::<EndOutcomes>()?;
     m.add_class::<EpisodeOutcomes>()?;
     m.add_class::<ProposalCandidateBuffers>()?;
     m.add_class::<FeatureBuffers>()?;

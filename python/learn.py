@@ -12,7 +12,7 @@ from env import (
     EpisodeOutcomes,
     Features,
     FeatureSlot,
-    PreliminaryOutcomes,
+    StepOutcomes,
     ProposalData,
 )
 from experience import ExperienceStorage
@@ -45,7 +45,7 @@ class FeatureTrainBatch:
 class PreparedTrainBatch:
     kind: Literal["fresh", "replay"]
     episode_data: EpisodeData
-    outcomes: PreliminaryOutcomes
+    outcomes: StepOutcomes
     toilet_crossed_room_idx: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
@@ -364,7 +364,7 @@ def prepare_feature_batch(
     device: torch.device,
     kind: Literal["fresh", "replay"],
     train_episode_data: EpisodeData,
-    train_outcomes: PreliminaryOutcomes,
+    train_outcomes: StepOutcomes,
     toilet_crossed_room_idx: torch.Tensor,
     avg_frontiers: torch.Tensor,
     graph_diameter: torch.Tensor,
@@ -425,16 +425,16 @@ def prepare_train_batch_task(
             context.device,
             task.kind,
             train_episode_data,
-            train_outcomes.validity,
-            train_outcomes.toilet_crossed_room_idx,
-            train_outcomes.avg_frontiers,
-            train_outcomes.graph_diameter,
-            train_outcomes.save_distance,
-            train_outcomes.save_distance_mask,
-            train_outcomes.refill_distance,
-            train_outcomes.refill_distance_mask,
-            train_outcomes.missing_connect_distance,
-            train_outcomes.missing_connect_distance_mask,
+            train_outcomes.step_outcomes,
+            train_outcomes.end_outcomes.toilet_crossed_room_idx,
+            train_outcomes.end_outcomes.avg_frontiers,
+            train_outcomes.end_outcomes.graph_diameter,
+            train_outcomes.end_outcomes.save_distance,
+            train_outcomes.end_outcomes.save_distance_mask,
+            train_outcomes.end_outcomes.refill_distance,
+            train_outcomes.end_outcomes.refill_distance_mask,
+            train_outcomes.end_outcomes.missing_connect_distance,
+            train_outcomes.end_outcomes.missing_connect_distance_mask,
             train_proposal_data,
             env,
             context.episode_length,
@@ -460,16 +460,16 @@ def prepare_train_batch_task(
     return PreparedTrainBatch(
         kind=task.kind,
         episode_data=replay_episode_data,
-        outcomes=replay_outcomes.validity,
-        toilet_crossed_room_idx=replay_outcomes.toilet_crossed_room_idx,
-        avg_frontiers=replay_outcomes.avg_frontiers,
-        graph_diameter=replay_outcomes.graph_diameter,
-        save_distance=replay_outcomes.save_distance,
-        save_distance_mask=replay_outcomes.save_distance_mask,
-        refill_distance=replay_outcomes.refill_distance,
-        refill_distance_mask=replay_outcomes.refill_distance_mask,
-        missing_connect_distance=replay_outcomes.missing_connect_distance,
-        missing_connect_distance_mask=replay_outcomes.missing_connect_distance_mask,
+        outcomes=replay_outcomes.step_outcomes,
+        toilet_crossed_room_idx=replay_outcomes.end_outcomes.toilet_crossed_room_idx,
+        avg_frontiers=replay_outcomes.end_outcomes.avg_frontiers,
+        graph_diameter=replay_outcomes.end_outcomes.graph_diameter,
+        save_distance=replay_outcomes.end_outcomes.save_distance,
+        save_distance_mask=replay_outcomes.end_outcomes.save_distance_mask,
+        refill_distance=replay_outcomes.end_outcomes.refill_distance,
+        refill_distance_mask=replay_outcomes.end_outcomes.refill_distance_mask,
+        missing_connect_distance=replay_outcomes.end_outcomes.missing_connect_distance,
+        missing_connect_distance_mask=replay_outcomes.end_outcomes.missing_connect_distance_mask,
         door_matches=replay_door_matches,
         feature_batches=feature_batches,
     )
@@ -603,7 +603,7 @@ def train_feature_batch_backward(
         raise RuntimeError("feature training batch has no sampled prefixes")
 
     train_outcomes = prepared_batch.outcomes
-    repeated_outcomes = PreliminaryOutcomes(
+    repeated_outcomes = StepOutcomes(
         door_invalid=train_outcomes.door_invalid.unsqueeze(1),
         connection_invalid=train_outcomes.connection_invalid.unsqueeze(1),
         toilet_invalid=train_outcomes.toilet_invalid.unsqueeze(1),

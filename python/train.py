@@ -23,10 +23,11 @@ from env import (
     Actions,
     DoorMatchCounts,
     Engine,
+    EndOutcomes,
     EpisodeData,
     EpisodeOutcomes,
     GenerateConfig,
-    PreliminaryOutcomes,
+    StepOutcomes,
     ProposalData,
 )
 from experience import ExperienceStorage
@@ -837,46 +838,63 @@ class TrainingSession:
                 ),
             ),
             EpisodeOutcomes(
-                validity=PreliminaryOutcomes(
+                step_outcomes=StepOutcomes(
                     door_invalid=torch.cat(
-                        [outcomes.validity.door_invalid for outcomes in outcome_iterations]
+                        [outcomes.step_outcomes.door_invalid for outcomes in outcome_iterations]
                     ),
                     connection_invalid=torch.cat(
-                        [outcomes.validity.connection_invalid for outcomes in outcome_iterations]
+                        [outcomes.step_outcomes.connection_invalid for outcomes in outcome_iterations]
                     ),
                     toilet_invalid=torch.cat(
-                        [outcomes.validity.toilet_invalid for outcomes in outcome_iterations]
+                        [outcomes.step_outcomes.toilet_invalid for outcomes in outcome_iterations]
                     ),
                     door_match=torch.cat(
-                        [outcomes.validity.door_match for outcomes in outcome_iterations]
+                        [outcomes.step_outcomes.door_match for outcomes in outcome_iterations]
                     ),
                 ),
-                toilet_crossed_room_idx=torch.cat(
-                    [outcomes.toilet_crossed_room_idx for outcomes in outcome_iterations]
-                ),
-                avg_frontiers=torch.cat(
-                    [outcomes.avg_frontiers for outcomes in outcome_iterations]
-                ),
-                graph_diameter=torch.cat(
-                    [outcomes.graph_diameter for outcomes in outcome_iterations]
-                ),
-                save_distance=torch.cat(
-                    [outcomes.save_distance for outcomes in outcome_iterations]
-                ),
-                save_distance_mask=torch.cat(
-                    [outcomes.save_distance_mask for outcomes in outcome_iterations]
-                ),
-                refill_distance=torch.cat(
-                    [outcomes.refill_distance for outcomes in outcome_iterations]
-                ),
-                refill_distance_mask=torch.cat(
-                    [outcomes.refill_distance_mask for outcomes in outcome_iterations]
-                ),
-                missing_connect_distance=torch.cat(
-                    [outcomes.missing_connect_distance for outcomes in outcome_iterations]
-                ),
-                missing_connect_distance_mask=torch.cat(
-                    [outcomes.missing_connect_distance_mask for outcomes in outcome_iterations]
+                end_outcomes=EndOutcomes(
+                    toilet_crossed_room_idx=torch.cat(
+                        [
+                            outcomes.end_outcomes.toilet_crossed_room_idx
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
+                    avg_frontiers=torch.cat(
+                        [outcomes.end_outcomes.avg_frontiers for outcomes in outcome_iterations]
+                    ),
+                    graph_diameter=torch.cat(
+                        [outcomes.end_outcomes.graph_diameter for outcomes in outcome_iterations]
+                    ),
+                    save_distance=torch.cat(
+                        [outcomes.end_outcomes.save_distance for outcomes in outcome_iterations]
+                    ),
+                    save_distance_mask=torch.cat(
+                        [
+                            outcomes.end_outcomes.save_distance_mask
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
+                    refill_distance=torch.cat(
+                        [outcomes.end_outcomes.refill_distance for outcomes in outcome_iterations]
+                    ),
+                    refill_distance_mask=torch.cat(
+                        [
+                            outcomes.end_outcomes.refill_distance_mask
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
+                    missing_connect_distance=torch.cat(
+                        [
+                            outcomes.end_outcomes.missing_connect_distance
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
+                    missing_connect_distance_mask=torch.cat(
+                        [
+                            outcomes.end_outcomes.missing_connect_distance_mask
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
                 ),
             ),
             DoorMatchCounts(
@@ -969,7 +987,7 @@ class TrainingSession:
         round_idx: int,
         step_config: Config,
     ) -> None:
-        outcomes = episode_outcomes.validity
+        outcomes = episode_outcomes.step_outcomes
         door_invalid = torch.sum(outcomes.door_invalid != 0, dim=1)
         avg_door = torch.mean(door_invalid.to(torch.float32))
         min_door = torch.min(door_invalid)
@@ -984,27 +1002,27 @@ class TrainingSession:
         total_invalid = door_invalid + conn_invalid + toilet_invalid
         avg_invalid = torch.mean(total_invalid.to(torch.float32))
         min_invalid = torch.min(total_invalid)
-        avg_frontiers = torch.mean(episode_outcomes.avg_frontiers.to(torch.float32))
-        graph_diameter = torch.mean(episode_outcomes.graph_diameter.to(torch.float32))
-        save_distance_mask = episode_outcomes.save_distance_mask.to(torch.float32)
+        end_outcomes = episode_outcomes.end_outcomes
+        avg_frontiers = torch.mean(end_outcomes.avg_frontiers.to(torch.float32))
+        graph_diameter = torch.mean(end_outcomes.graph_diameter.to(torch.float32))
+        save_distance_mask = end_outcomes.save_distance_mask.to(torch.float32)
         save_distance_mask_count = torch.sum(save_distance_mask)
         save_distance = torch.sum(
-            episode_outcomes.save_distance.to(torch.float32) * save_distance_mask
+            end_outcomes.save_distance.to(torch.float32) * save_distance_mask
         ) / (save_distance_mask_count + 1e-15)
         save_distance_mask_fraction = torch.mean(save_distance_mask)
-        refill_distance_mask = episode_outcomes.refill_distance_mask.to(torch.float32)
+        refill_distance_mask = end_outcomes.refill_distance_mask.to(torch.float32)
         refill_distance_mask_count = torch.sum(refill_distance_mask)
         refill_distance = torch.sum(
-            episode_outcomes.refill_distance.to(torch.float32) * refill_distance_mask
+            end_outcomes.refill_distance.to(torch.float32) * refill_distance_mask
         ) / (refill_distance_mask_count + 1e-15)
         refill_distance_mask_fraction = torch.mean(refill_distance_mask)
-        missing_connect_distance_mask = episode_outcomes.missing_connect_distance_mask.to(
+        missing_connect_distance_mask = end_outcomes.missing_connect_distance_mask.to(
             torch.float32
         )
         missing_connect_distance_mask_count = torch.sum(missing_connect_distance_mask)
         missing_connect_distance = torch.sum(
-            episode_outcomes.missing_connect_distance.to(torch.float32)
-            * missing_connect_distance_mask
+            end_outcomes.missing_connect_distance.to(torch.float32) * missing_connect_distance_mask
         ) / (missing_connect_distance_mask_count + 1e-15)
         missing_connect_distance_mask_fraction = torch.mean(missing_connect_distance_mask)
 
@@ -1031,7 +1049,7 @@ class TrainingSession:
             + compute_door_match_count_ss(vertical_door_match_counts, dim=0)
         )
         toilet_crossed_room_p = toilet_crossed_room_distribution(
-            episode_outcomes.toilet_crossed_room_idx,
+            end_outcomes.toilet_crossed_room_idx,
             self.num_rooms,
         )
         toilet_crossed_room_topk = topk_or_zeros(toilet_crossed_room_p, 4)

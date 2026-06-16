@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import torch
 
-from env import DoorMatches, PreliminaryOutcomes
+from env import DoorMatches, StepOutcomes
 from model import BalancePredictions, Predictions
 
 BALANCE_TARGET_LOG_ODDS_LIMIT = 20.0
@@ -95,7 +95,7 @@ def masked_mse_loss(
 
 def compute_loss_breakdown(
     preds: Predictions,
-    outcomes: PreliminaryOutcomes,
+    outcomes: StepOutcomes,
     mask: torch.Tensor,
     balance_score_target_logits: torch.Tensor,
     balance_score_mask: torch.Tensor,

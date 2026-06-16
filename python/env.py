@@ -114,7 +114,7 @@ class ProposalData:
 #    [batch, time, output]  during training,
 #    [batch, candidate, output]  during generation
 @dataclass
-class PreliminaryOutcomes:
+class StepOutcomes:
     # -1 = unknown, 0 = valid (door is connected), 1 = invalid (door is not connected)
     door_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (connection has return path), 1 = invalid (connection does not have return path)
@@ -126,16 +126,16 @@ class PreliminaryOutcomes:
     # door count sentinel.
     door_match: torch.Tensor
 
-    def to(self, device: torch.device, non_blocking: bool = False) -> "PreliminaryOutcomes":
-        return PreliminaryOutcomes(
+    def to(self, device: torch.device, non_blocking: bool = False) -> "StepOutcomes":
+        return StepOutcomes(
             door_invalid=self.door_invalid.to(device, non_blocking=non_blocking),
             connection_invalid=self.connection_invalid.to(device, non_blocking=non_blocking),
             toilet_invalid=self.toilet_invalid.to(device, non_blocking=non_blocking),
             door_match=self.door_match.to(device, non_blocking=non_blocking),
         )
 
-    def slice(self, start: int, end: int) -> "PreliminaryOutcomes":
-        return PreliminaryOutcomes(
+    def slice(self, start: int, end: int) -> "StepOutcomes":
+        return StepOutcomes(
             door_invalid=self.door_invalid[start:end],
             connection_invalid=self.connection_invalid[start:end],
             toilet_invalid=self.toilet_invalid[start:end],
@@ -144,8 +144,7 @@ class PreliminaryOutcomes:
 
 
 @dataclass
-class EpisodeOutcomes:
-    validity: PreliminaryOutcomes
+class EndOutcomes:
     toilet_crossed_room_idx: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
@@ -156,9 +155,8 @@ class EpisodeOutcomes:
     missing_connect_distance: torch.Tensor
     missing_connect_distance_mask: torch.Tensor
 
-    def to(self, device: torch.device) -> "EpisodeOutcomes":
-        return EpisodeOutcomes(
-            validity=self.validity.to(device),
+    def to(self, device: torch.device) -> "EndOutcomes":
+        return EndOutcomes(
             toilet_crossed_room_idx=self.toilet_crossed_room_idx.to(device),
             avg_frontiers=self.avg_frontiers.to(device),
             graph_diameter=self.graph_diameter.to(device),
@@ -170,9 +168,8 @@ class EpisodeOutcomes:
             missing_connect_distance_mask=self.missing_connect_distance_mask.to(device),
         )
 
-    def slice(self, start: int, end: int) -> "EpisodeOutcomes":
-        return EpisodeOutcomes(
-            validity=self.validity.slice(start, end),
+    def slice(self, start: int, end: int) -> "EndOutcomes":
+        return EndOutcomes(
             toilet_crossed_room_idx=self.toilet_crossed_room_idx[start:end],
             avg_frontiers=self.avg_frontiers[start:end],
             graph_diameter=self.graph_diameter[start:end],
@@ -182,6 +179,24 @@ class EpisodeOutcomes:
             refill_distance_mask=self.refill_distance_mask[start:end],
             missing_connect_distance=self.missing_connect_distance[start:end],
             missing_connect_distance_mask=self.missing_connect_distance_mask[start:end],
+        )
+
+
+@dataclass
+class EpisodeOutcomes:
+    step_outcomes: StepOutcomes
+    end_outcomes: EndOutcomes
+
+    def to(self, device: torch.device) -> "EpisodeOutcomes":
+        return EpisodeOutcomes(
+            step_outcomes=self.step_outcomes.to(device),
+            end_outcomes=self.end_outcomes.to(device),
+        )
+
+    def slice(self, start: int, end: int) -> "EpisodeOutcomes":
+        return EpisodeOutcomes(
+            step_outcomes=self.step_outcomes.slice(start, end),
+            end_outcomes=self.end_outcomes.slice(start, end),
         )
 
 
@@ -307,8 +322,8 @@ class CandidateSlot:
     ) -> torch.Tensor:
         return self.proposal_door_variant_idx[:environment_count, :candidate_count]
 
-    def reward_outcomes(self, environment_count: int) -> PreliminaryOutcomes:
-        return PreliminaryOutcomes(
+    def reward_outcomes(self, environment_count: int) -> StepOutcomes:
+        return StepOutcomes(
             door_invalid=self.pre_door_invalid[:environment_count],
             connection_invalid=self.pre_connection_invalid[:environment_count],
             toilet_invalid=self.pre_toilet_invalid[:environment_count],
@@ -319,8 +334,8 @@ class CandidateSlot:
         self,
         environment_count: int,
         candidate_count: int,
-    ) -> PreliminaryOutcomes:
-        return PreliminaryOutcomes(
+    ) -> StepOutcomes:
+        return StepOutcomes(
             door_invalid=self.door_invalid[:environment_count, :candidate_count],
             connection_invalid=self.connection_invalid[:environment_count, :candidate_count],
             toilet_invalid=self.toilet_invalid[:environment_count, :candidate_count],
@@ -651,8 +666,8 @@ class EnvironmentGroup:
         Actions,
         torch.Tensor,
         torch.Tensor,
-        PreliminaryOutcomes,
-        PreliminaryOutcomes,
+        StepOutcomes,
+        StepOutcomes,
         FeatureRequirements,
         CandidateStats,
     ]:
@@ -709,8 +724,8 @@ class EnvironmentGroup:
         Actions,
         torch.Tensor,
         torch.Tensor,
-        PreliminaryOutcomes,
-        PreliminaryOutcomes,
+        StepOutcomes,
+        StepOutcomes,
         FeatureRequirements,
         CandidateStats,
     ]:
@@ -730,30 +745,42 @@ class EnvironmentGroup:
     def get_outcomes(self, device: torch.device, verify_consistency: bool) -> EpisodeOutcomes:
         result = self.env.get_outcomes(verify_consistency)
         return EpisodeOutcomes(
-            validity=PreliminaryOutcomes(
-                door_invalid=torch.from_numpy(result.door_valid).to(device),
-                connection_invalid=torch.from_numpy(result.connections_valid).to(device),
-                toilet_invalid=torch.from_numpy(result.toilet_valid).to(device),
+            step_outcomes=StepOutcomes(
+                door_invalid=torch.from_numpy(result.step_outcomes.door_valid).to(device),
+                connection_invalid=torch.from_numpy(result.step_outcomes.connections_valid).to(
+                    device
+                ),
+                toilet_invalid=torch.from_numpy(result.step_outcomes.toilet_valid).to(device),
                 door_match=torch.empty(
-                    [result.door_valid.shape[0], 0],
+                    [result.step_outcomes.door_valid.shape[0], 0],
                     dtype=torch.int16,
                     device=device,
                 ),
             ),
-            toilet_crossed_room_idx=torch.from_numpy(result.toilet_crossed_room_idx).to(
-                device=device,
-                dtype=torch.int64,
+            end_outcomes=EndOutcomes(
+                toilet_crossed_room_idx=torch.from_numpy(
+                    result.end_outcomes.toilet_crossed_room_idx
+                ).to(
+                    device=device,
+                    dtype=torch.int64,
+                ),
+                avg_frontiers=torch.from_numpy(result.end_outcomes.avg_frontiers).to(device),
+                graph_diameter=torch.from_numpy(result.end_outcomes.graph_diameter).to(device),
+                save_distance=torch.from_numpy(result.end_outcomes.save_distance).to(device),
+                save_distance_mask=torch.from_numpy(result.end_outcomes.save_distance_mask).to(
+                    device
+                ),
+                refill_distance=torch.from_numpy(result.end_outcomes.refill_distance).to(device),
+                refill_distance_mask=torch.from_numpy(result.end_outcomes.refill_distance_mask).to(
+                    device
+                ),
+                missing_connect_distance=torch.from_numpy(
+                    result.end_outcomes.missing_connect_distance
+                ).to(device),
+                missing_connect_distance_mask=torch.from_numpy(
+                    result.end_outcomes.missing_connect_distance_mask
+                ).to(device),
             ),
-            avg_frontiers=torch.from_numpy(result.avg_frontiers).to(device),
-            graph_diameter=torch.from_numpy(result.graph_diameter).to(device),
-            save_distance=torch.from_numpy(result.save_distance).to(device),
-            save_distance_mask=torch.from_numpy(result.save_distance_mask).to(device),
-            refill_distance=torch.from_numpy(result.refill_distance).to(device),
-            refill_distance_mask=torch.from_numpy(result.refill_distance_mask).to(device),
-            missing_connect_distance=torch.from_numpy(result.missing_connect_distance).to(device),
-            missing_connect_distance_mask=torch.from_numpy(
-                result.missing_connect_distance_mask
-            ).to(device),
         )
 
     def get_current_feature_outcomes(
@@ -761,14 +788,14 @@ class EnvironmentGroup:
         device: torch.device,
         environment_start: int,
         environment_count: int,
-    ) -> PreliminaryOutcomes:
+    ) -> StepOutcomes:
         door_invalid, connection_invalid, toilet_invalid, door_match = (
             self.env.get_current_feature_outcomes(
                 environment_start,
                 environment_count,
             )
         )
-        return PreliminaryOutcomes(
+        return StepOutcomes(
             door_invalid=torch.from_numpy(door_invalid).to(device),
             connection_invalid=torch.from_numpy(connection_invalid).to(device),
             toilet_invalid=torch.from_numpy(toilet_invalid).to(device),
@@ -812,7 +839,7 @@ class EnvironmentGroup:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
-        lookahead_outcomes: PreliminaryOutcomes,
+        lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         environment_start: int = 0,
         environment_count: Optional[int] = None,
@@ -988,7 +1015,7 @@ class FeatureSlot:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
-        lookahead_outcomes: PreliminaryOutcomes,
+        lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         frontier_row_count: int,
     ) -> Features:
@@ -1073,7 +1100,7 @@ class FeatureSlot:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
-        lookahead_outcomes: PreliminaryOutcomes,
+        lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         frontier_row_count: int,
     ) -> Features:
@@ -1164,7 +1191,7 @@ def extract_candidate_features(
     include_temperature: bool,
     log_recommended_candidates: torch.Tensor,
     include_recommended_candidates: bool,
-    lookahead_outcomes: PreliminaryOutcomes,
+    lookahead_outcomes: StepOutcomes,
     include_lookahead_outcomes: bool,
     feature_requirements: FeatureRequirements,
     feature_slot: FeatureSlot,
