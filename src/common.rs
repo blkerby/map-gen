@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 pub type RoomIdx = u8; // index into provided room geometry JSON array
 pub type GeometryIdx = u8; // flat index of unique room geometries (map + door layout)
-pub type ConnectionVariantIdx = u8; // flat index of unique room types (map + door layout + connections)
+pub type ConnectionVariantIdx = u8; // flat index of unique room types (map + door layout + connections + room effects)
 pub type FrontierIdx = i16; // index into the sorted frontier feature rows
 pub type DoorVariantIdx = i16; // index into door variants keyed by room type and local door identity
 pub type Coord = i8; // x or y position on the map
@@ -201,6 +201,8 @@ struct GeometryKey {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ConnectionsKey {
+    save: bool,
+    refill: bool,
     connections: Vec<(PartIdx, PartIdx)>,
     missing_connections: Vec<(PartIdx, PartIdx)>,
 }
@@ -282,6 +284,8 @@ impl ConnectionsKey {
         let mut missing_connections = room.missing_connections.clone();
         missing_connections.sort_unstable();
         Self {
+            save: room.save,
+            refill: room.refill,
             connections,
             missing_connections,
         }
@@ -926,6 +930,28 @@ mod tests {
                     ]],
                     "connections": [[0, 0]],
                     "missing_connections": []
+                },
+                {
+                    "save": true,
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [[
+                        {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                        {"direction": "right", "x": 0, "y": 0, "kind": 0}
+                    ]],
+                    "connections": [],
+                    "missing_connections": []
+                },
+                {
+                    "refill": true,
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [[
+                        {"direction": "left", "x": 0, "y": 0, "kind": 0},
+                        {"direction": "right", "x": 0, "y": 0, "kind": 0}
+                    ]],
+                    "connections": [],
+                    "missing_connections": []
                 }
             ]
             "#,
@@ -940,9 +966,20 @@ mod tests {
             .collect();
         assert_eq!(
             door_output,
-            vec![(0, 0), (1, 0), (2, 1), (0, 2), (1, 2), (2, 3)]
+            vec![
+                (0, 0),
+                (1, 0),
+                (2, 1),
+                (3, 2),
+                (4, 3),
+                (0, 4),
+                (1, 4),
+                (2, 5),
+                (3, 6),
+                (4, 7)
+            ]
         );
-        assert_eq!(common.num_door_output_variants, 4);
+        assert_eq!(common.num_door_output_variants, 8);
 
         let connection_output: Vec<_> = common
             .connection_output
@@ -957,8 +994,8 @@ mod tests {
             .iter()
             .map(|room| room.connection_variant_idx)
             .collect();
-        assert_eq!(room_connection_variant_idx, vec![0, 0, 1]);
-        assert_eq!(common.connection_variant_rooms.len(), 2);
+        assert_eq!(room_connection_variant_idx, vec![0, 0, 1, 2, 3]);
+        assert_eq!(common.connection_variant_rooms.len(), 4);
     }
 
     #[test]

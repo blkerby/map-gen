@@ -106,7 +106,7 @@
     "graph_diameter_weight": 0.1,
     "save_distance_weight": 0.001,
     "refill_distance_weight": 0.001,
-    "missing_connect_distance_weight": 0.001,
+    "missing_connect_distance_weight": 0.0,
     "proposal_weight": 0.005,
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 1,
