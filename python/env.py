@@ -32,10 +32,6 @@ class GenerateConfig:
     reward_missing_connect_distance: float
     autocast: bool
 
-    @property
-    def max_candidates(self) -> int:
-        return self.recommended_candidates
-
 
 # Each tensor here is uint8 with shape
 #    [batch, time]  during training,
@@ -47,13 +43,10 @@ class Actions:
     room_y: torch.Tensor
 
     def select(self, index: torch.Tensor) -> "Actions":
-        selected_room_idx = torch.gather(self.room_idx, 1, index.unsqueeze(1)).squeeze(1)
-        selected_room_x = torch.gather(self.room_x, 1, index.unsqueeze(1)).squeeze(1)
-        selected_room_y = torch.gather(self.room_y, 1, index.unsqueeze(1)).squeeze(1)
         return Actions(
-            room_idx=selected_room_idx,
-            room_x=selected_room_x,
-            room_y=selected_room_y,
+            room_idx=torch.gather(self.room_idx, 1, index.unsqueeze(1)).squeeze(1),
+            room_x=torch.gather(self.room_x, 1, index.unsqueeze(1)).squeeze(1),
+            room_y=torch.gather(self.room_y, 1, index.unsqueeze(1)).squeeze(1),
         )
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "Actions":

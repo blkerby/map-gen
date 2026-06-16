@@ -1193,7 +1193,7 @@ def run_generation_groups(
                     )
                 group_index = group_index_by_id[id(step.group)]
                 profile_time = profile_start(profile)
-                max_candidates = step.group.config.max_candidates
+                max_candidates = step.group.config.recommended_candidates
                 candidate_frontier_idx = candidate_batch.proposal_frontier_idx
                 frontier_idx = (
                     candidate_frontier_idx[:, 0]
@@ -1293,7 +1293,7 @@ def run_generation_groups(
                     if group_proposal_frontier_idx[group_index]
                     else empty_proposal_data(
                         group.config.temperature.shape[0],
-                        group.config.max_candidates,
+                        group.config.recommended_candidates,
                         device,
                     )
                 ),
