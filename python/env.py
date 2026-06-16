@@ -50,20 +50,24 @@ class Actions:
         selected_room_idx = torch.gather(self.room_idx, 1, index.unsqueeze(1)).squeeze(1)
         selected_room_x = torch.gather(self.room_x, 1, index.unsqueeze(1)).squeeze(1)
         selected_room_y = torch.gather(self.room_y, 1, index.unsqueeze(1)).squeeze(1)
-        return Actions(selected_room_idx, selected_room_x, selected_room_y)
+        return Actions(
+            room_idx=selected_room_idx,
+            room_x=selected_room_x,
+            room_y=selected_room_y,
+        )
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "Actions":
         return Actions(
-            self.room_idx.to(device, non_blocking=non_blocking),
-            self.room_x.to(device, non_blocking=non_blocking),
-            self.room_y.to(device, non_blocking=non_blocking),
+            room_idx=self.room_idx.to(device, non_blocking=non_blocking),
+            room_x=self.room_x.to(device, non_blocking=non_blocking),
+            room_y=self.room_y.to(device, non_blocking=non_blocking),
         )
 
     def slice(self, start: int, end: int) -> "Actions":
         return Actions(
-            self.room_idx[start:end],
-            self.room_x[start:end],
-            self.room_y[start:end],
+            room_idx=self.room_idx[start:end],
+            room_x=self.room_x[start:end],
+            room_y=self.room_y[start:end],
         )
 
 
@@ -75,16 +79,16 @@ class EpisodeData:
 
     def to(self, device: torch.device) -> "EpisodeData":
         return EpisodeData(
-            self.actions.to(device),
-            self.temperature.to(device),
-            self.recommended_candidates.to(device),
+            actions=self.actions.to(device),
+            temperature=self.temperature.to(device),
+            recommended_candidates=self.recommended_candidates.to(device),
         )
 
     def slice(self, start: int, end: int) -> "EpisodeData":
         return EpisodeData(
-            self.actions.slice(start, end),
-            self.temperature[start:end],
-            self.recommended_candidates[start:end],
+            actions=self.actions.slice(start, end),
+            temperature=self.temperature[start:end],
+            recommended_candidates=self.recommended_candidates[start:end],
         )
 
 
@@ -97,18 +101,18 @@ class ProposalData:
 
     def to(self, device: torch.device) -> "ProposalData":
         return ProposalData(
-            self.frontier_idx.to(device),
-            self.door_variant_idx.to(device),
-            self.selected_candidate.to(device),
-            self.target_logits.to(device),
+            frontier_idx=self.frontier_idx.to(device),
+            door_variant_idx=self.door_variant_idx.to(device),
+            selected_candidate=self.selected_candidate.to(device),
+            target_logits=self.target_logits.to(device),
         )
 
     def slice(self, start: int, end: int) -> "ProposalData":
         return ProposalData(
-            self.frontier_idx[start:end],
-            self.door_variant_idx[start:end],
-            self.selected_candidate[start:end],
-            self.target_logits[start:end],
+            frontier_idx=self.frontier_idx[start:end],
+            door_variant_idx=self.door_variant_idx[start:end],
+            selected_candidate=self.selected_candidate[start:end],
+            target_logits=self.target_logits[start:end],
         )
 
 
@@ -130,18 +134,18 @@ class PreliminaryOutcomes:
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "PreliminaryOutcomes":
         return PreliminaryOutcomes(
-            self.door_invalid.to(device, non_blocking=non_blocking),
-            self.connection_invalid.to(device, non_blocking=non_blocking),
-            self.toilet_invalid.to(device, non_blocking=non_blocking),
-            self.door_match.to(device, non_blocking=non_blocking),
+            door_invalid=self.door_invalid.to(device, non_blocking=non_blocking),
+            connection_invalid=self.connection_invalid.to(device, non_blocking=non_blocking),
+            toilet_invalid=self.toilet_invalid.to(device, non_blocking=non_blocking),
+            door_match=self.door_match.to(device, non_blocking=non_blocking),
         )
 
     def slice(self, start: int, end: int) -> "PreliminaryOutcomes":
         return PreliminaryOutcomes(
-            self.door_invalid[start:end],
-            self.connection_invalid[start:end],
-            self.toilet_invalid[start:end],
-            self.door_match[start:end],
+            door_invalid=self.door_invalid[start:end],
+            connection_invalid=self.connection_invalid[start:end],
+            toilet_invalid=self.toilet_invalid[start:end],
+            door_match=self.door_match[start:end],
         )
 
 @dataclass
@@ -159,30 +163,30 @@ class EpisodeOutcomes:
 
     def to(self, device: torch.device) -> "EpisodeOutcomes":
         return EpisodeOutcomes(
-            self.validity.to(device),
-            self.toilet_crossed_room_idx.to(device),
-            self.avg_frontiers.to(device),
-            self.graph_diameter.to(device),
-            self.save_distance.to(device),
-            self.save_distance_mask.to(device),
-            self.refill_distance.to(device),
-            self.refill_distance_mask.to(device),
-            self.missing_connect_distance.to(device),
-            self.missing_connect_distance_mask.to(device),
+            validity=self.validity.to(device),
+            toilet_crossed_room_idx=self.toilet_crossed_room_idx.to(device),
+            avg_frontiers=self.avg_frontiers.to(device),
+            graph_diameter=self.graph_diameter.to(device),
+            save_distance=self.save_distance.to(device),
+            save_distance_mask=self.save_distance_mask.to(device),
+            refill_distance=self.refill_distance.to(device),
+            refill_distance_mask=self.refill_distance_mask.to(device),
+            missing_connect_distance=self.missing_connect_distance.to(device),
+            missing_connect_distance_mask=self.missing_connect_distance_mask.to(device),
         )
 
     def slice(self, start: int, end: int) -> "EpisodeOutcomes":
         return EpisodeOutcomes(
-            self.validity.slice(start, end),
-            self.toilet_crossed_room_idx[start:end],
-            self.avg_frontiers[start:end],
-            self.graph_diameter[start:end],
-            self.save_distance[start:end],
-            self.save_distance_mask[start:end],
-            self.refill_distance[start:end],
-            self.refill_distance_mask[start:end],
-            self.missing_connect_distance[start:end],
-            self.missing_connect_distance_mask[start:end],
+            validity=self.validity.slice(start, end),
+            toilet_crossed_room_idx=self.toilet_crossed_room_idx[start:end],
+            avg_frontiers=self.avg_frontiers[start:end],
+            graph_diameter=self.graph_diameter[start:end],
+            save_distance=self.save_distance[start:end],
+            save_distance_mask=self.save_distance_mask[start:end],
+            refill_distance=self.refill_distance[start:end],
+            refill_distance_mask=self.refill_distance_mask[start:end],
+            missing_connect_distance=self.missing_connect_distance[start:end],
+            missing_connect_distance_mask=self.missing_connect_distance_mask[start:end],
         )
 
 
@@ -201,10 +205,10 @@ class ProposalCandidateMask:
 
     def to(self, device: torch.device) -> "ProposalCandidateMask":
         return ProposalCandidateMask(
-            self.proposal_frontier_idx.to(device),
-            self.mask.to(device),
-            self.valid_counts.to(device),
-            self.door_variant_count,
+            proposal_frontier_idx=self.proposal_frontier_idx.to(device),
+            mask=self.mask.to(device),
+            valid_counts=self.valid_counts.to(device),
+            door_variant_count=self.door_variant_count,
         )
 
 
@@ -216,9 +220,9 @@ class CandidateStats:
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "CandidateStats":
         return CandidateStats(
-            self.clean_counts.to(device, non_blocking=non_blocking),
-            self.evaluated_counts.to(device, non_blocking=non_blocking),
-            self.rejected_counts.to(device, non_blocking=non_blocking),
+            clean_counts=self.clean_counts.to(device, non_blocking=non_blocking),
+            evaluated_counts=self.evaluated_counts.to(device, non_blocking=non_blocking),
+            rejected_counts=self.rejected_counts.to(device, non_blocking=non_blocking),
         )
 
 
@@ -289,9 +293,9 @@ class CandidateSlot:
 
     def actions(self, environment_count: int, candidate_count: int) -> Actions:
         return Actions(
-            self.room_idx[:environment_count, :candidate_count],
-            self.room_x[:environment_count, :candidate_count],
-            self.room_y[:environment_count, :candidate_count],
+            room_idx=self.room_idx[:environment_count, :candidate_count],
+            room_x=self.room_x[:environment_count, :candidate_count],
+            room_y=self.room_y[:environment_count, :candidate_count],
         )
 
     def proposal_frontiers(
@@ -310,10 +314,10 @@ class CandidateSlot:
 
     def reward_outcomes(self, environment_count: int) -> PreliminaryOutcomes:
         return PreliminaryOutcomes(
-            self.pre_door_invalid[:environment_count],
-            self.pre_connection_invalid[:environment_count],
-            self.pre_toilet_invalid[:environment_count],
-            self.door_match.new_empty((environment_count, 0)),
+            door_invalid=self.pre_door_invalid[:environment_count],
+            connection_invalid=self.pre_connection_invalid[:environment_count],
+            toilet_invalid=self.pre_toilet_invalid[:environment_count],
+            door_match=self.door_match.new_empty((environment_count, 0)),
         )
 
     def post_candidate_outcomes(
@@ -322,17 +326,17 @@ class CandidateSlot:
         candidate_count: int,
     ) -> PreliminaryOutcomes:
         return PreliminaryOutcomes(
-            self.door_invalid[:environment_count, :candidate_count],
-            self.connection_invalid[:environment_count, :candidate_count],
-            self.toilet_invalid[:environment_count, :candidate_count],
-            self.door_match[:environment_count, :candidate_count],
+            door_invalid=self.door_invalid[:environment_count, :candidate_count],
+            connection_invalid=self.connection_invalid[:environment_count, :candidate_count],
+            toilet_invalid=self.toilet_invalid[:environment_count, :candidate_count],
+            door_match=self.door_match[:environment_count, :candidate_count],
         )
 
     def stats(self, environment_count: int) -> CandidateStats:
         return CandidateStats(
-            self.clean_counts[:environment_count],
-            self.evaluated_counts[:environment_count],
-            self.rejected_counts[:environment_count],
+            clean_counts=self.clean_counts[:environment_count],
+            evaluated_counts=self.evaluated_counts[:environment_count],
+            rejected_counts=self.rejected_counts[:environment_count],
         )
 
 
@@ -343,8 +347,8 @@ class DoorMatchCounts:
 
     def to(self, device: torch.device) -> "DoorMatchCounts":
         return DoorMatchCounts(
-            self.horizontal.to(device),
-            self.vertical.to(device),
+            horizontal=self.horizontal.to(device),
+            vertical=self.vertical.to(device),
         )
 
 
@@ -356,10 +360,20 @@ class DoorMatches:
     down: torch.Tensor
 
     def to(self, device: torch.device) -> "DoorMatches":
-        return DoorMatches(*(value.to(device) for value in vars(self).values()))
+        return DoorMatches(
+            left=self.left.to(device),
+            right=self.right.to(device),
+            up=self.up.to(device),
+            down=self.down.to(device),
+        )
 
     def slice(self, start: int, end: int) -> "DoorMatches":
-        return DoorMatches(*(value[start:end] for value in vars(self).values()))
+        return DoorMatches(
+            left=self.left[start:end],
+            right=self.right[start:end],
+            up=self.up[start:end],
+            down=self.down[start:end],
+        )
 
 
 @dataclass
@@ -391,35 +405,88 @@ class SparseFeatures:
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "SparseFeatures":
         return SparseFeatures(
-            *(value.to(device, non_blocking=non_blocking) for value in vars(self).values())
+            inventory=self.inventory.to(device, non_blocking=non_blocking),
+            room_x=self.room_x.to(device, non_blocking=non_blocking),
+            room_y=self.room_y.to(device, non_blocking=non_blocking),
+            room_placed=self.room_placed.to(device, non_blocking=non_blocking),
+            room_part_furthest_destination=self.room_part_furthest_destination.to(
+                device, non_blocking=non_blocking
+            ),
+            room_part_furthest_source=self.room_part_furthest_source.to(
+                device, non_blocking=non_blocking
+            ),
+            room_part_save_distance=self.room_part_save_distance.to(
+                device, non_blocking=non_blocking
+            ),
+            room_part_refill_distance=self.room_part_refill_distance.to(
+                device, non_blocking=non_blocking
+            ),
+            room_part_frontier_distance=self.room_part_frontier_distance.to(
+                device, non_blocking=non_blocking
+            ),
+            log_temperature=self.log_temperature.to(device, non_blocking=non_blocking),
+            log_recommended_candidates=self.log_recommended_candidates.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_door_invalid=self.lookahead_door_invalid.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_door_match=self.lookahead_door_match.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_connection_invalid=self.lookahead_connection_invalid.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_toilet_invalid=self.lookahead_toilet_invalid.to(
+                device, non_blocking=non_blocking
+            ),
+            frontier=self.frontier.to(device, non_blocking=non_blocking),
+            frontier_occupancy=self.frontier_occupancy.to(
+                device, non_blocking=non_blocking
+            ),
+            frontier_neighbor=self.frontier_neighbor.to(device, non_blocking=non_blocking),
+            frontier_neighbor_pair=self.frontier_neighbor_pair.to(
+                device, non_blocking=non_blocking
+            ),
+            connection_reachability=self.connection_reachability.to(
+                device, non_blocking=non_blocking
+            ),
+            frontier_connection_reachability=self.frontier_connection_reachability.to(
+                device, non_blocking=non_blocking
+            ),
+            toilet_crossed_room_idx=self.toilet_crossed_room_idx.to(
+                device, non_blocking=non_blocking
+            ),
+            row_snapshot_idx=self.row_snapshot_idx.to(device, non_blocking=non_blocking),
+            row_frontier_idx=self.row_frontier_idx.to(device, non_blocking=non_blocking),
         )
 
     def flatten_candidates(self) -> "SparseFeatures":
         return SparseFeatures(
-            self.inventory.flatten(0, 1),
-            self.room_x.flatten(0, 1),
-            self.room_y.flatten(0, 1),
-            self.room_placed.flatten(0, 1),
-            self.room_part_furthest_destination.flatten(0, 1),
-            self.room_part_furthest_source.flatten(0, 1),
-            self.room_part_save_distance.flatten(0, 1),
-            self.room_part_refill_distance.flatten(0, 1),
-            self.room_part_frontier_distance.flatten(0, 1),
-            self.log_temperature.flatten(0, 1),
-            self.log_recommended_candidates.flatten(0, 1),
-            self.lookahead_door_invalid.flatten(0, 1),
-            self.lookahead_door_match.flatten(0, 1),
-            self.lookahead_connection_invalid.flatten(0, 1),
-            self.lookahead_toilet_invalid.flatten(0, 1),
-            self.frontier,
-            self.frontier_occupancy,
-            self.frontier_neighbor,
-            self.frontier_neighbor_pair,
-            self.connection_reachability.flatten(0, 1),
-            self.frontier_connection_reachability,
-            self.toilet_crossed_room_idx.flatten(0, 1),
-            self.row_snapshot_idx,
-            self.row_frontier_idx,
+            inventory=self.inventory.flatten(0, 1),
+            room_x=self.room_x.flatten(0, 1),
+            room_y=self.room_y.flatten(0, 1),
+            room_placed=self.room_placed.flatten(0, 1),
+            room_part_furthest_destination=self.room_part_furthest_destination.flatten(0, 1),
+            room_part_furthest_source=self.room_part_furthest_source.flatten(0, 1),
+            room_part_save_distance=self.room_part_save_distance.flatten(0, 1),
+            room_part_refill_distance=self.room_part_refill_distance.flatten(0, 1),
+            room_part_frontier_distance=self.room_part_frontier_distance.flatten(0, 1),
+            log_temperature=self.log_temperature.flatten(0, 1),
+            log_recommended_candidates=self.log_recommended_candidates.flatten(0, 1),
+            lookahead_door_invalid=self.lookahead_door_invalid.flatten(0, 1),
+            lookahead_door_match=self.lookahead_door_match.flatten(0, 1),
+            lookahead_connection_invalid=self.lookahead_connection_invalid.flatten(0, 1),
+            lookahead_toilet_invalid=self.lookahead_toilet_invalid.flatten(0, 1),
+            frontier=self.frontier,
+            frontier_occupancy=self.frontier_occupancy,
+            frontier_neighbor=self.frontier_neighbor,
+            frontier_neighbor_pair=self.frontier_neighbor_pair,
+            connection_reachability=self.connection_reachability.flatten(0, 1),
+            frontier_connection_reachability=self.frontier_connection_reachability,
+            toilet_crossed_room_idx=self.toilet_crossed_room_idx.flatten(0, 1),
+            row_snapshot_idx=self.row_snapshot_idx,
+            row_frontier_idx=self.row_frontier_idx,
         )
 
 
@@ -551,10 +618,10 @@ class EnvironmentGroup:
     ) -> ProposalCandidateMask:
         result = self.env.get_proposal_candidate_mask()
         return ProposalCandidateMask(
-            torch.from_numpy(result.proposal_frontier_idx).to(device),
-            torch.from_numpy(result.mask).to(device),
-            torch.from_numpy(result.valid_counts).to(device=device, dtype=torch.int64),
-            result.door_variant_count,
+            proposal_frontier_idx=torch.from_numpy(result.proposal_frontier_idx).to(device),
+            mask=torch.from_numpy(result.mask).to(device),
+            valid_counts=torch.from_numpy(result.valid_counts).to(device=device, dtype=torch.int64),
+            door_variant_count=result.door_variant_count,
         )
 
     def extract_candidates_from_proposals(
@@ -617,8 +684,8 @@ class EnvironmentGroup:
             candidate_slot.reward_outcomes(self.num_envs),
             candidate_slot.post_candidate_outcomes(self.num_envs, candidate_count),
             SparseFeatureRequirements(
-                feature_requirements.sparse_row_count,
-                feature_requirements.worker_sparse_row_counts,
+                sparse_row_count=feature_requirements.sparse_row_count,
+                worker_sparse_row_counts=feature_requirements.worker_sparse_row_counts,
             ),
             candidate_slot.stats(self.num_envs),
         )
@@ -699,8 +766,8 @@ class EnvironmentGroup:
             environment_count,
         )
         return SparseFeatureRequirements(
-            result.sparse_row_count,
-            result.worker_sparse_row_counts,
+            sparse_row_count=result.sparse_row_count,
+            worker_sparse_row_counts=result.worker_sparse_row_counts,
         )
 
     def extract_sparse_features(
@@ -919,30 +986,30 @@ class SparseFeatureSlot:
                 0,
             ])
         return SparseFeatures(
-            self.inventory[:environment_count],
-            self.room_x[:environment_count],
-            self.room_y[:environment_count],
-            self.room_placed[:environment_count],
-            self.room_part_furthest_destination[:environment_count],
-            self.room_part_furthest_source[:environment_count],
-            self.room_part_save_distance[:environment_count],
-            self.room_part_refill_distance[:environment_count],
-            self.room_part_frontier_distance[:environment_count],
-            log_temperature,
-            log_recommended_candidates,
-            lookahead_door_invalid,
-            lookahead_door_match,
-            lookahead_connection_invalid,
-            lookahead_toilet_invalid,
-            self.frontier[:sparse_row_count],
-            self.frontier_occupancy[:sparse_row_count],
-            self.frontier_neighbor[:sparse_row_count],
-            self.frontier_neighbor_pair[:sparse_row_count],
-            self.connection_reachability[:environment_count],
-            self.frontier_connection_reachability[:sparse_row_count],
-            self.toilet_crossed_room_idx[:environment_count],
-            self.row_snapshot_idx[:sparse_row_count],
-            self.row_frontier_idx[:sparse_row_count],
+            inventory=self.inventory[:environment_count],
+            room_x=self.room_x[:environment_count],
+            room_y=self.room_y[:environment_count],
+            room_placed=self.room_placed[:environment_count],
+            room_part_furthest_destination=self.room_part_furthest_destination[:environment_count],
+            room_part_furthest_source=self.room_part_furthest_source[:environment_count],
+            room_part_save_distance=self.room_part_save_distance[:environment_count],
+            room_part_refill_distance=self.room_part_refill_distance[:environment_count],
+            room_part_frontier_distance=self.room_part_frontier_distance[:environment_count],
+            log_temperature=log_temperature,
+            log_recommended_candidates=log_recommended_candidates,
+            lookahead_door_invalid=lookahead_door_invalid,
+            lookahead_door_match=lookahead_door_match,
+            lookahead_connection_invalid=lookahead_connection_invalid,
+            lookahead_toilet_invalid=lookahead_toilet_invalid,
+            frontier=self.frontier[:sparse_row_count],
+            frontier_occupancy=self.frontier_occupancy[:sparse_row_count],
+            frontier_neighbor=self.frontier_neighbor[:sparse_row_count],
+            frontier_neighbor_pair=self.frontier_neighbor_pair[:sparse_row_count],
+            connection_reachability=self.connection_reachability[:environment_count],
+            frontier_connection_reachability=self.frontier_connection_reachability[:sparse_row_count],
+            toilet_crossed_room_idx=self.toilet_crossed_room_idx[:environment_count],
+            row_snapshot_idx=self.row_snapshot_idx[:sparse_row_count],
+            row_frontier_idx=self.row_frontier_idx[:sparse_row_count],
         )
 
     def features(
@@ -984,48 +1051,48 @@ class SparseFeatureSlot:
                 [environment_count, candidate_count, 0]
             )
         return SparseFeatures(
-            self.inventory[:snapshot_count].view(
+            inventory=self.inventory[:snapshot_count].view(
                 environment_count, candidate_count, self.inventory_width
             ),
-            self.room_x[:snapshot_count].view(environment_count, candidate_count, self.room_width),
-            self.room_y[:snapshot_count].view(environment_count, candidate_count, self.room_width),
-            self.room_placed[:snapshot_count].view(
+            room_x=self.room_x[:snapshot_count].view(environment_count, candidate_count, self.room_width),
+            room_y=self.room_y[:snapshot_count].view(environment_count, candidate_count, self.room_width),
+            room_placed=self.room_placed[:snapshot_count].view(
                 environment_count, candidate_count, self.room_width
             ),
-            self.room_part_furthest_destination[:snapshot_count].view(
+            room_part_furthest_destination=self.room_part_furthest_destination[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_width
             ),
-            self.room_part_furthest_source[:snapshot_count].view(
+            room_part_furthest_source=self.room_part_furthest_source[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_width
             ),
-            self.room_part_save_distance[:snapshot_count].view(
+            room_part_save_distance=self.room_part_save_distance[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_save_distance_width
             ),
-            self.room_part_refill_distance[:snapshot_count].view(
+            room_part_refill_distance=self.room_part_refill_distance[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_refill_distance_width
             ),
-            self.room_part_frontier_distance[:snapshot_count].view(
+            room_part_frontier_distance=self.room_part_frontier_distance[:snapshot_count].view(
                 environment_count, candidate_count, self.room_part_frontier_distance_width
             ),
-            log_temperature,
-            log_recommended_candidates,
-            lookahead_door_invalid,
-            lookahead_door_match,
-            lookahead_connection_invalid,
-            lookahead_toilet_invalid,
-            self.frontier[:sparse_row_count],
-            self.frontier_occupancy[:sparse_row_count],
-            self.frontier_neighbor[:sparse_row_count],
-            self.frontier_neighbor_pair[:sparse_row_count],
-            self.connection_reachability[:snapshot_count].view(
+            log_temperature=log_temperature,
+            log_recommended_candidates=log_recommended_candidates,
+            lookahead_door_invalid=lookahead_door_invalid,
+            lookahead_door_match=lookahead_door_match,
+            lookahead_connection_invalid=lookahead_connection_invalid,
+            lookahead_toilet_invalid=lookahead_toilet_invalid,
+            frontier=self.frontier[:sparse_row_count],
+            frontier_occupancy=self.frontier_occupancy[:sparse_row_count],
+            frontier_neighbor=self.frontier_neighbor[:sparse_row_count],
+            frontier_neighbor_pair=self.frontier_neighbor_pair[:sparse_row_count],
+            connection_reachability=self.connection_reachability[:snapshot_count].view(
                 environment_count, candidate_count, self.connection_reachability_width
             ),
-            self.frontier_connection_reachability[:sparse_row_count],
-            self.toilet_crossed_room_idx[:snapshot_count].view(
+            frontier_connection_reachability=self.frontier_connection_reachability[:sparse_row_count],
+            toilet_crossed_room_idx=self.toilet_crossed_room_idx[:snapshot_count].view(
                 environment_count, candidate_count, self.toilet_crossed_room_width
             ),
-            self.row_snapshot_idx[:sparse_row_count],
-            self.row_frontier_idx[:sparse_row_count],
+            row_snapshot_idx=self.row_snapshot_idx[:sparse_row_count],
+            row_frontier_idx=self.row_frontier_idx[:sparse_row_count],
         )
 
 

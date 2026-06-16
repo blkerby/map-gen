@@ -836,20 +836,28 @@ class FrontierModel(torch.nn.Module):
             self.output_sizes,
         )
         return Predictions(
-            preds.door_invalid,
-            preds.connection_invalid,
-            preds.toilet_invalid,
-            preds.balance_score,
-            preds.toilet_balance_score,
-            avg_frontiers,
-            graph_diameter,
-            save_distance,
-            refill_distance,
-            missing_connect_distance,
-            proposal_score,
-            proposal_state,
-            row_snapshot_idx if return_proposal_state or include_proposal else row_snapshot_idx.new_empty([0]),
-            features.row_frontier_idx if return_proposal_state or include_proposal else features.row_frontier_idx.new_empty([0]),
+            door_invalid=preds.door_invalid,
+            connection_invalid=preds.connection_invalid,
+            toilet_invalid=preds.toilet_invalid,
+            balance_score=preds.balance_score,
+            toilet_balance_score=preds.toilet_balance_score,
+            avg_frontiers=avg_frontiers,
+            graph_diameter=graph_diameter,
+            save_distance=save_distance,
+            refill_distance=refill_distance,
+            missing_connect_distance=missing_connect_distance,
+            proposal_score=proposal_score,
+            proposal_state=proposal_state,
+            proposal_row_snapshot_idx=(
+                row_snapshot_idx
+                if return_proposal_state or include_proposal
+                else row_snapshot_idx.new_empty([0])
+            ),
+            proposal_row_frontier_idx=(
+                features.row_frontier_idx
+                if return_proposal_state or include_proposal
+                else features.row_frontier_idx.new_empty([0])
+            ),
         )
 
 
@@ -924,4 +932,10 @@ class BalanceModel(torch.nn.Module):
         )
         offset += down_size
         toilet_crossed_room = raw[:, offset:offset + self.num_rooms]
-        return BalancePredictions(left, right, up, down, toilet_crossed_room)
+        return BalancePredictions(
+            left=left,
+            right=right,
+            up=up,
+            down=down,
+            toilet_crossed_room=toilet_crossed_room,
+        )

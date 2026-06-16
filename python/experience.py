@@ -37,7 +37,7 @@ class ExperienceStorage:
             file_path = os.path.join(self.data_path, "{}.safetensors".format(file_num))
             tensors = safetensors.torch.load_file(file_path)
             data = EpisodeData(
-                Actions(
+                actions=Actions(
                     room_idx=tensors["room_idx"],
                     room_x=tensors["room_x"],
                     room_y=tensors["room_y"],

@@ -22,6 +22,8 @@
   adding fields pushes an existing tuple-returning API past a comfortable arity,
   convert that API to a named result object with explicit getters instead.
 - Avoid defining functions inside of other function definitions.
+- When constructing dataclasses in Python, use named arguments rather than
+  positional arguments.
 - The training script `train.py` may be run on a different machine, so do not
   make assumptions based on the local development environment.
 - Activate the "map-gen" conda environment before running Python.

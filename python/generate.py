@@ -245,13 +245,19 @@ class CandidateBatch:
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "CandidateBatch":
         return CandidateBatch(
-            self.candidates.to(device, non_blocking=non_blocking),
-            self.proposal_frontier_idx.to(device, non_blocking=non_blocking),
-            self.proposal_door_variant_idx.to(device, non_blocking=non_blocking),
-            self.reward_outcomes.to(device, non_blocking=non_blocking),
-            self.post_candidate_outcomes.to(device, non_blocking=non_blocking),
-            self.feature_requirements,
-            self.stats.to(device, non_blocking=non_blocking),
+            candidates=self.candidates.to(device, non_blocking=non_blocking),
+            proposal_frontier_idx=self.proposal_frontier_idx.to(
+                device, non_blocking=non_blocking
+            ),
+            proposal_door_variant_idx=self.proposal_door_variant_idx.to(
+                device, non_blocking=non_blocking
+            ),
+            reward_outcomes=self.reward_outcomes.to(device, non_blocking=non_blocking),
+            post_candidate_outcomes=self.post_candidate_outcomes.to(
+                device, non_blocking=non_blocking
+            ),
+            feature_requirements=self.feature_requirements,
+            stats=self.stats.to(device, non_blocking=non_blocking),
         )
 
 
@@ -337,13 +343,13 @@ def get_shortlist_candidate_batch(
         group.config.recommended_candidates,
     )
     return CandidateBatch(
-        candidates,
-        proposal_frontier_idx,
-        proposal_door_variant_idx,
-        reward_outcomes,
-        post_candidate_outcomes,
-        feature_requirements,
-        stats,
+        candidates=candidates,
+        proposal_frontier_idx=proposal_frontier_idx,
+        proposal_door_variant_idx=proposal_door_variant_idx,
+        reward_outcomes=reward_outcomes,
+        post_candidate_outcomes=post_candidate_outcomes,
+        feature_requirements=feature_requirements,
+        stats=stats,
     )
 
 
@@ -483,10 +489,10 @@ def select_outcomes(outcomes: PreliminaryOutcomes, index: torch.Tensor) -> Preli
         return torch.gather(values, 1, index.view(-1, 1)).squeeze(1)
 
     return PreliminaryOutcomes(
-        gather(outcomes.door_invalid),
-        gather(outcomes.connection_invalid),
-        gather_scalar(outcomes.toilet_invalid),
-        gather(outcomes.door_match),
+        door_invalid=gather(outcomes.door_invalid),
+        connection_invalid=gather(outcomes.connection_invalid),
+        toilet_invalid=gather_scalar(outcomes.toilet_invalid),
+        door_match=gather(outcomes.door_match),
     )
 
 
@@ -495,7 +501,7 @@ def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
         torch.device("cpu"),
     )
     if group.previous_proposal_scores is not None:
-        return ProposalInputs(None, proposal_mask)
+        return ProposalInputs(features=None, mask=proposal_mask)
     if group.previous_lookahead_outcomes is None:
         raise ValueError("proposal features require previous lookahead outcomes")
     environment_count = group.config.temperature.shape[0]
@@ -504,7 +510,7 @@ def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
         log_recommended_candidates,
     ) = state_log_inputs(group.config, environment_count)
     return ProposalInputs(
-        group.env.extract_sparse_features(
+        features=group.env.extract_sparse_features(
             group.feature_slot,
             log_temperature,
             group.env.engine.features.temperature,
@@ -513,7 +519,7 @@ def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
             group.previous_lookahead_outcomes,
             group.env.engine.features.lookahead_outcomes,
         ),
-        proposal_mask,
+        mask=proposal_mask,
     )
 
 
@@ -525,7 +531,7 @@ def prepare_candidate_features(
 ) -> PreparedGenerationStep:
     candidates = candidate_batch.candidates
     if candidates.room_idx.shape[1] == 1:
-        return PreparedGenerationStep(candidate_batch, None)
+        return PreparedGenerationStep(candidate_batch=candidate_batch, features=None)
     (
         candidate_log_temperature,
         candidate_log_recommended_candidates,
@@ -534,8 +540,8 @@ def prepare_candidate_features(
         candidates.room_idx.shape,
     )
     return PreparedGenerationStep(
-        candidate_batch,
-        extract_candidate_features(
+        candidate_batch=candidate_batch,
+        features=extract_candidate_features(
             env,
             candidates,
             candidate_log_temperature,
@@ -681,11 +687,11 @@ def select_candidate_actions(
             )
             row_start_idx = row_count_by_snapshot.cumsum(0) - row_count_by_snapshot
             selected_proposal_scores = SparseProposalCache(
-                preds.proposal_state,
-                row_start_idx,
-                row_count_by_snapshot,
-                action_index,
-                candidate_count,
+                state=preds.proposal_state,
+                row_start_idx=row_start_idx,
+                row_count=row_count_by_snapshot,
+                action_index=action_index,
+                candidate_count=candidate_count,
             )
             sync_profile_device(device, profile)
         profiler.add("python.score.cache_proposal", profile_time)
@@ -777,8 +783,8 @@ def start_generation_step(
         return
     pending_proposals.append(
         PendingProposalStep(
-            group,
-            executor.submit(
+            group=group,
+            future=executor.submit(
                 prepare_proposal_inputs,
                 group,
             )
@@ -796,14 +802,14 @@ def start_candidate_step(
 ) -> None:
     pending_candidates.append(
         PendingCandidateStep(
-            group,
-            executor.submit(
+            group=group,
+            future=executor.submit(
                 prepare_shortlist_generation_step,
                 group,
                 sampled_frontier_idx,
                 sampled_door_variant_idx,
             ),
-            shortlist_limited,
+            shortlist_limited=shortlist_limited,
         )
     )
 
@@ -901,10 +907,15 @@ def merge_generation_results(
     return (
         EpisodeData(
             actions=Actions(
-                *(
-                    torch.cat([getattr(episode_data.actions, name) for episode_data, _, _, _ in results])
-                    for name in vars(results[0][0].actions)
-                )
+                room_idx=torch.cat([
+                    episode_data.actions.room_idx for episode_data, _, _, _ in results
+                ]),
+                room_x=torch.cat([
+                    episode_data.actions.room_x for episode_data, _, _, _ in results
+                ]),
+                room_y=torch.cat([
+                    episode_data.actions.room_y for episode_data, _, _, _ in results
+                ]),
             ),
             temperature=torch.cat([episode_data.temperature for episode_data, _, _, _ in results]),
             recommended_candidates=torch.cat([
@@ -913,13 +924,22 @@ def merge_generation_results(
         ),
         EpisodeOutcomes(
             validity=PreliminaryOutcomes(
-                *(
-                    torch.cat([
-                        getattr(episode_outcomes.validity, name)
-                        for _, episode_outcomes, _, _ in results
-                    ])
-                    for name in vars(results[0][1].validity)
-                )
+                door_invalid=torch.cat([
+                    episode_outcomes.validity.door_invalid
+                    for _, episode_outcomes, _, _ in results
+                ]),
+                connection_invalid=torch.cat([
+                    episode_outcomes.validity.connection_invalid
+                    for _, episode_outcomes, _, _ in results
+                ]),
+                toilet_invalid=torch.cat([
+                    episode_outcomes.validity.toilet_invalid
+                    for _, episode_outcomes, _, _ in results
+                ]),
+                door_match=torch.cat([
+                    episode_outcomes.validity.door_match
+                    for _, episode_outcomes, _, _ in results
+                ]),
             ),
             toilet_crossed_room_idx=torch.cat([
                 episode_outcomes.toilet_crossed_room_idx
@@ -959,19 +979,24 @@ def merge_generation_results(
             ]),
         ),
         DoorMatchCounts(
-            *(
-                torch.sum(
-                    torch.stack([getattr(counts, name) for _, _, counts, _ in results]),
-                    dim=0,
-                )
-                for name in vars(results[0][2])
-            )
+            horizontal=torch.sum(
+                torch.stack([counts.horizontal for _, _, counts, _ in results]),
+                dim=0,
+            ),
+            vertical=torch.sum(
+                torch.stack([counts.vertical for _, _, counts, _ in results]),
+                dim=0,
+            ),
         ),
         ProposalData(
-            *(
-                torch.cat([getattr(proposal, name) for _, _, _, proposal in results])
-                for name in vars(results[0][3])
-            )
+            frontier_idx=torch.cat([proposal.frontier_idx for _, _, _, proposal in results]),
+            door_variant_idx=torch.cat([
+                proposal.door_variant_idx for _, _, _, proposal in results
+            ]),
+            selected_candidate=torch.cat([
+                proposal.selected_candidate for _, _, _, proposal in results
+            ]),
+            target_logits=torch.cat([proposal.target_logits for _, _, _, proposal in results]),
         ),
     )
 
@@ -982,19 +1007,25 @@ def empty_proposal_data(
     device: torch.device,
 ) -> ProposalData:
     return ProposalData(
-        torch.empty((environment_count, 0), dtype=torch.int16, device=device),
-        torch.empty((environment_count, 0, max_candidates), dtype=torch.int16, device=device),
-        torch.empty((environment_count, 0), dtype=torch.int64, device=device),
-        torch.empty((environment_count, 0, max_candidates), dtype=torch.float32, device=device),
+        frontier_idx=torch.empty((environment_count, 0), dtype=torch.int16, device=device),
+        door_variant_idx=torch.empty(
+            (environment_count, 0, max_candidates), dtype=torch.int16, device=device
+        ),
+        selected_candidate=torch.empty(
+            (environment_count, 0), dtype=torch.int64, device=device
+        ),
+        target_logits=torch.empty(
+            (environment_count, 0, max_candidates), dtype=torch.float32, device=device
+        ),
     )
 
 
 def bootstrap_lookahead_outcomes(outcomes: PreliminaryOutcomes) -> PreliminaryOutcomes:
     return PreliminaryOutcomes(
-        outcomes.door_invalid,
-        outcomes.connection_invalid,
-        outcomes.toilet_invalid,
-        torch.full_like(outcomes.door_invalid, -1, dtype=torch.int16),
+        door_invalid=outcomes.door_invalid,
+        connection_invalid=outcomes.connection_invalid,
+        toilet_invalid=outcomes.toilet_invalid,
+        door_match=torch.full_like(outcomes.door_invalid, -1, dtype=torch.int16),
     )
 
 
@@ -1014,13 +1045,13 @@ def run_generation_groups(
     num_rooms = len(envs[0].engine.rooms)
     groups = [
         GenerationGroup(
-            env,
-            config,
-            0,
-            SparseFeatureSlot(env, pin_memory=device.type == "cuda"),
-            CandidateSlot(env, pin_memory=device.type == "cuda"),
-            None,
-            None,
+            env=env,
+            config=config,
+            step=0,
+            feature_slot=SparseFeatureSlot(env, pin_memory=device.type == "cuda"),
+            candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
+            previous_lookahead_outcomes=None,
+            previous_proposal_scores=None,
         )
         for env, config in zip(envs, configs)
     ]
@@ -1234,9 +1265,9 @@ def run_generation_groups(
             door_match_counts = group.env.get_door_match_counts(device)
             results.append((
                 EpisodeData(
-                    actions,
-                    group.config.temperature,
-                    torch.full_like(
+                    actions=actions,
+                    temperature=group.config.temperature,
+                    recommended_candidates=torch.full_like(
                         group.config.temperature,
                         group.config.recommended_candidates,
                         dtype=torch.float32,
@@ -1246,10 +1277,18 @@ def run_generation_groups(
                 door_match_counts,
                 (
                     ProposalData(
-                        torch.stack(group_proposal_frontier_idx[group_index], dim=1),
-                        torch.stack(group_proposal_door_variant_idx[group_index], dim=1),
-                        torch.stack(group_selected_candidate[group_index], dim=1),
-                        torch.stack(group_proposal_target_logits[group_index], dim=1),
+                        frontier_idx=torch.stack(
+                            group_proposal_frontier_idx[group_index], dim=1
+                        ),
+                        door_variant_idx=torch.stack(
+                            group_proposal_door_variant_idx[group_index], dim=1
+                        ),
+                        selected_candidate=torch.stack(
+                            group_selected_candidate[group_index], dim=1
+                        ),
+                        target_logits=torch.stack(
+                            group_proposal_target_logits[group_index], dim=1
+                        ),
                     )
                     if group_proposal_frontier_idx[group_index]
                     else empty_proposal_data(

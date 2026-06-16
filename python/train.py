@@ -528,12 +528,12 @@ def initialize_generation_process(
         model = torch.compile(model, dynamic=True)
     map_gen.set_profile_enabled(profile)
     GENERATION_PROCESS_STATE = GenerationProcessState(
-        config,
-        len(rooms),
-        device,
-        envs,
-        model,
-        profile,
+        config=config,
+        episode_length=len(rooms),
+        device=device,
+        envs=envs,
+        model=model,
+        profile=profile,
     )
 
 

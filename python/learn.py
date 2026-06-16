@@ -213,7 +213,11 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
     row_valid = torch.any(flat_valid, dim=1)
     if not torch.any(row_valid):
         zero = torch.sum(target_logits) * 0.0
-        return CandidateDiagnostics(zero, zero, zero)
+        return CandidateDiagnostics(
+            target_entropy=zero,
+            uniform_kl=zero,
+            selected_probability=zero,
+        )
 
     row_logits = torch.where(
         flat_valid[row_valid],
@@ -256,7 +260,11 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
         ).squeeze(1))
     else:
         selected_probability = torch.sum(target_logits) * 0.0
-    return CandidateDiagnostics(target_entropy, uniform_kl, selected_probability)
+    return CandidateDiagnostics(
+        target_entropy=target_entropy,
+        uniform_kl=uniform_kl,
+        selected_probability=selected_probability,
+    )
 
 
 def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> list[TrainBatchTask]:
@@ -272,7 +280,13 @@ def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> lis
     )
     for batch_idx in range(fresh_batches):
         start = (batch_idx * config.train.batch_size) % round_episodes
-        tasks.append(TrainBatchTask("fresh", start, task_idx % config.train.pipeline_groups))
+        tasks.append(
+            TrainBatchTask(
+                kind="fresh",
+                start=start,
+                env_index=task_idx % config.train.pipeline_groups,
+            )
+        )
         task_idx += 1
     if experience.num_files > 0:
         replay_batches = int(
@@ -283,7 +297,13 @@ def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> lis
             )
         )
         for _ in range(replay_batches):
-            tasks.append(TrainBatchTask("replay", None, task_idx % config.train.pipeline_groups))
+            tasks.append(
+                TrainBatchTask(
+                    kind="replay",
+                    start=None,
+                    env_index=task_idx % config.train.pipeline_groups,
+                )
+            )
             task_idx += 1
     return tasks
 
@@ -307,9 +327,9 @@ def prepare_feature_batches(
     feature_batches = []
     for step in range(episode_length):
         next_actions = Actions(
-            train_actions_cpu.room_idx[:, step],
-            train_actions_cpu.room_x[:, step],
-            train_actions_cpu.room_y[:, step],
+            room_idx=train_actions_cpu.room_idx[:, step],
+            room_x=train_actions_cpu.room_x[:, step],
+            room_y=train_actions_cpu.room_y[:, step],
         )
         sample_step = step % config.train.sample_period == offset
         if config.features.lookahead_outcomes:
@@ -335,7 +355,7 @@ def prepare_feature_batches(
             feature_slot = SparseFeatureSlot(env, pin_memory=pin_memory)
             feature_batches.append(
                 FeatureTrainBatch(
-                    env.extract_sparse_features(
+                    features=env.extract_sparse_features(
                         feature_slot,
                         log_temperature,
                         config.features.temperature,
@@ -346,9 +366,9 @@ def prepare_feature_batches(
                         0,
                         train_actions.room_idx.shape[0],
                     ),
-                    proposal_frontier_idx,
-                    proposal_door_variant_idx,
-                    proposal_target_logits,
+                    proposal_frontier_idx=proposal_frontier_idx,
+                    proposal_door_variant_idx=proposal_door_variant_idx,
+                    proposal_target_logits=proposal_target_logits,
                 )
             )
     return feature_batches
@@ -383,19 +403,19 @@ def prepare_feature_batch(
     )
     door_matches = env.get_door_matches(device)
     return PreparedTrainBatch(
-        kind,
-        train_episode_data,
-        train_outcomes,
-        toilet_crossed_room_idx,
-        avg_frontiers,
-        graph_diameter,
-        save_distance,
-        save_distance_mask,
-        refill_distance,
-        refill_distance_mask,
-        missing_connect_distance,
-        missing_connect_distance_mask,
-        door_matches,
+        kind=kind,
+        episode_data=train_episode_data,
+        outcomes=train_outcomes,
+        toilet_crossed_room_idx=toilet_crossed_room_idx,
+        avg_frontiers=avg_frontiers,
+        graph_diameter=graph_diameter,
+        save_distance=save_distance,
+        save_distance_mask=save_distance_mask,
+        refill_distance=refill_distance,
+        refill_distance_mask=refill_distance_mask,
+        missing_connect_distance=missing_connect_distance,
+        missing_connect_distance_mask=missing_connect_distance_mask,
+        door_matches=door_matches,
         feature_batches=feature_batches,
     )
 
@@ -453,19 +473,19 @@ def prepare_train_batch_task(
     replay_episode_data = replay_episode_data.to(context.device)
     replay_outcomes = env.get_outcomes(context.device, verify_consistency=False)
     return PreparedTrainBatch(
-        task.kind,
-        replay_episode_data,
-        replay_outcomes.validity,
-        replay_outcomes.toilet_crossed_room_idx,
-        replay_outcomes.avg_frontiers,
-        replay_outcomes.graph_diameter,
-        replay_outcomes.save_distance,
-        replay_outcomes.save_distance_mask,
-        replay_outcomes.refill_distance,
-        replay_outcomes.refill_distance_mask,
-        replay_outcomes.missing_connect_distance,
-        replay_outcomes.missing_connect_distance_mask,
-        replay_door_matches,
+        kind=task.kind,
+        episode_data=replay_episode_data,
+        outcomes=replay_outcomes.validity,
+        toilet_crossed_room_idx=replay_outcomes.toilet_crossed_room_idx,
+        avg_frontiers=replay_outcomes.avg_frontiers,
+        graph_diameter=replay_outcomes.graph_diameter,
+        save_distance=replay_outcomes.save_distance,
+        save_distance_mask=replay_outcomes.save_distance_mask,
+        refill_distance=replay_outcomes.refill_distance,
+        refill_distance_mask=replay_outcomes.refill_distance_mask,
+        missing_connect_distance=replay_outcomes.missing_connect_distance,
+        missing_connect_distance_mask=replay_outcomes.missing_connect_distance_mask,
+        door_matches=replay_door_matches,
         feature_batches=feature_batches,
     )
 
