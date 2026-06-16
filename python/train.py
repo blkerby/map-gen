@@ -117,7 +117,7 @@ def as_checkpoint_tensor(value: torch.Tensor) -> torch.Tensor:
 def prefixed_state_dict(prefix: str, module: torch.nn.Module) -> dict[str, torch.Tensor]:
     return {
         f"{prefix}.{name}": as_checkpoint_tensor(value)
-        for name, value in module.state_dict().items()
+        for name, value in unwrap_compiled_module(module).state_dict().items()
     }
 
 
@@ -126,8 +126,13 @@ def without_prefix(
     prefix: str,
 ) -> dict[str, torch.Tensor]:
     full_prefix = f"{prefix}."
+    compiled_prefix = f"{full_prefix}_orig_mod."
     return {
-        name[len(full_prefix):]: value
+        (
+            name[len(compiled_prefix):]
+            if name.startswith(compiled_prefix)
+            else name[len(full_prefix):]
+        ): value
         for name, value in tensors.items()
         if name.startswith(full_prefix)
     }
@@ -542,7 +547,7 @@ def run_generation_process_task(
     state = GENERATION_PROCESS_STATE
     if state.profile:
         map_gen.reset_profile()
-    state.model.load_state_dict(model_state)
+    unwrap_compiled_module(state.model).load_state_dict(model_state)
     generation_config = Config.model_validate_json(generation_config_json)
     gen_configs = [
         create_generate_config(
@@ -713,9 +718,15 @@ class TrainingSession:
             metadata = validate_checkpoint_metadata(path, checkpoint.metadata())
             tensors = {name: checkpoint.get_tensor(name) for name in checkpoint.keys()}
 
-        self.main_model.load_state_dict(without_prefix(tensors, "main_model"))
-        self.ema_model.load_state_dict(without_prefix(tensors, "ema_model"))
-        self.balance_model.load_state_dict(without_prefix(tensors, "balance_model"))
+        unwrap_compiled_module(self.main_model).load_state_dict(
+            without_prefix(tensors, "main_model")
+        )
+        unwrap_compiled_module(self.ema_model).load_state_dict(
+            without_prefix(tensors, "ema_model")
+        )
+        unwrap_compiled_module(self.balance_model).load_state_dict(
+            without_prefix(tensors, "balance_model")
+        )
         load_named_optimizer_checkpoint_state(
             self.main_optimizer,
             tensors,
@@ -759,7 +770,7 @@ class TrainingSession:
         profile_reports = []
         model_state = {
             name: as_checkpoint_tensor(value)
-            for name, value in self.ema_model.state_dict().items()
+            for name, value in unwrap_compiled_module(self.ema_model).state_dict().items()
         }
         generation_config = instantiate_scheduleable_config(
             self.config,
