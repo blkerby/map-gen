@@ -814,6 +814,22 @@ impl RoomPartFurthestDistanceCache {
         }
     }
 
+    fn add_distance(&mut self, from_part: usize, to_part: usize, distance: GraphDistance) {
+        if distance == UNREACHABLE_DISTANCE {
+            return;
+        }
+        if self.furthest_destination[from_part] == UNREACHABLE_DISTANCE
+            || distance > self.furthest_destination[from_part]
+        {
+            self.furthest_destination[from_part] = distance;
+        }
+        if self.furthest_source[to_part] == UNREACHABLE_DISTANCE
+            || distance > self.furthest_source[to_part]
+        {
+            self.furthest_source[to_part] = distance;
+        }
+    }
+
     fn furthest_destination_for_source(
         graph_distance: &[GraphDistance],
         graph_size: usize,
@@ -914,6 +930,23 @@ impl RoomPartSaveDistanceCache {
             self.nearest_save_source[to_part] =
                 self.nearest_save_source_for_part(graph_distance, graph_size, to_part);
         }
+    }
+
+    fn initialize_single_attachment_room_part(
+        &mut self,
+        part: usize,
+        attached_part: usize,
+        to_attached_part: GraphDistance,
+        from_attached_part: GraphDistance,
+    ) {
+        self.nearest_save_destination[part] = graph_distance_sum(&[
+            to_attached_part,
+            self.nearest_save_destination[attached_part],
+        ])
+        .unwrap_or(UNREACHABLE_DISTANCE);
+        self.nearest_save_source[part] =
+            graph_distance_sum(&[self.nearest_save_source[attached_part], from_attached_part])
+                .unwrap_or(UNREACHABLE_DISTANCE);
     }
 
     fn nearest_save_destination_for_part(
@@ -1057,6 +1090,25 @@ impl RoomPartFrontierDistanceCache {
             self.nearest_frontier_source[to_part] =
                 self.nearest_frontier_source_for_part(graph_distance, graph_size, to_part);
         }
+    }
+
+    fn initialize_single_attachment_room_part(
+        &mut self,
+        part: usize,
+        attached_part: usize,
+        to_attached_part: GraphDistance,
+        from_attached_part: GraphDistance,
+    ) {
+        self.nearest_frontier_destination[part] = graph_distance_sum(&[
+            to_attached_part,
+            self.nearest_frontier_destination[attached_part],
+        ])
+        .unwrap_or(UNREACHABLE_DISTANCE);
+        self.nearest_frontier_source[part] = graph_distance_sum(&[
+            self.nearest_frontier_source[attached_part],
+            from_attached_part,
+        ])
+        .unwrap_or(UNREACHABLE_DISTANCE);
     }
 
     fn nearest_frontier_destination_for_part(
@@ -1967,18 +2019,9 @@ impl Environment {
         let room = &common.room[room_idx as usize];
         let graph_size = common.room_part.len();
         let old_active_room_parts_len = self.active_room_parts.len();
-        for from_part in 0..room.door_group_count {
-            let from_room_part = room.door_group_offset + from_part;
-            self.active_room_parts.push(from_room_part as RoomPartIdx);
-            for to_part in 0..room.door_group_count {
-                let to_room_part = room.door_group_offset + to_part;
-                self.set_graph_distance(
-                    graph_size,
-                    from_room_part,
-                    to_room_part,
-                    room.part_distances[from_part * room.door_group_count + to_part],
-                );
-            }
+        for local_part in 0..room.door_group_count {
+            self.active_room_parts
+                .push((room.door_group_offset + local_part) as RoomPartIdx);
         }
         if let [(room_part, attached_part)] = external_edges {
             self.add_single_attachment_room_distances(
@@ -1989,6 +2032,7 @@ impl Environment {
                 old_active_room_parts_len,
             );
         } else {
+            self.add_room_local_distances(common, room_idx);
             for &(room_part, attached_part) in external_edges {
                 self.add_graph_distance_edge(common, room_part, attached_part, 1);
                 self.add_graph_distance_edge(common, attached_part, room_part, 1);
@@ -2016,6 +2060,23 @@ impl Environment {
         }
     }
 
+    fn add_room_local_distances(&mut self, common: &CommonData, room_idx: RoomIdx) {
+        let room = &common.room[room_idx as usize];
+        let graph_size = common.room_part.len();
+        for from_part in 0..room.door_group_count {
+            let from_room_part = room.door_group_offset + from_part;
+            for to_part in 0..room.door_group_count {
+                let to_room_part = room.door_group_offset + to_part;
+                self.set_graph_distance(
+                    graph_size,
+                    from_room_part,
+                    to_room_part,
+                    room.part_distances[from_part * room.door_group_count + to_part],
+                );
+            }
+        }
+    }
+
     fn add_single_attachment_room_distances(
         &mut self,
         common: &CommonData,
@@ -2030,6 +2091,32 @@ impl Environment {
         let local_attachment = room_part as usize - room_start;
         let attached_part = attached_part as usize;
 
+        let write_distance = |graph_distance: &mut [GraphDistance],
+                              furthest_cache: &mut RoomPartFurthestDistanceCache,
+                              from_part: usize,
+                              to_part: usize,
+                              distance: GraphDistance| {
+            let idx = from_part * graph_size + to_part;
+            if distance < graph_distance[idx] {
+                graph_distance[idx] = distance;
+                furthest_cache.add_distance(from_part, to_part, distance);
+            }
+        };
+
+        for local_from in 0..room.door_group_count {
+            let from_part = room_start + local_from;
+            for local_to in 0..room.door_group_count {
+                let to_part = room_start + local_to;
+                write_distance(
+                    &mut self.graph_distance,
+                    &mut self.room_part_furthest_distance_cache,
+                    from_part,
+                    to_part,
+                    room.part_distances[local_from * room.door_group_count + local_to],
+                );
+            }
+        }
+
         for local_from in 0..room.door_group_count {
             let from_part = room_start + local_from;
             let to_attachment =
@@ -2039,7 +2126,13 @@ impl Environment {
                     let to_part = self.active_room_parts[to_part_idx] as usize;
                     let old_distance = self.graph_distance[attached_part * graph_size + to_part];
                     if let Some(distance) = graph_distance_sum(&[to_attachment, 1, old_distance]) {
-                        self.set_graph_distance_min(graph_size, from_part, to_part, distance);
+                        write_distance(
+                            &mut self.graph_distance,
+                            &mut self.room_part_furthest_distance_cache,
+                            from_part,
+                            to_part,
+                            distance,
+                        );
                     }
                 }
             }
@@ -2053,7 +2146,13 @@ impl Environment {
                         self.graph_distance[from_old_part * graph_size + attached_part];
                     if let Some(distance) = graph_distance_sum(&[old_distance, 1, from_attachment])
                     {
-                        self.set_graph_distance_min(graph_size, from_old_part, from_part, distance);
+                        write_distance(
+                            &mut self.graph_distance,
+                            &mut self.room_part_furthest_distance_cache,
+                            from_old_part,
+                            from_part,
+                            distance,
+                        );
                     }
                 }
             }
@@ -2071,9 +2170,42 @@ impl Environment {
                 let from_attachment =
                     room.part_distances[local_attachment * room.door_group_count + local_to];
                 if let Some(distance) = graph_distance_sum(&[to_attachment, 2, from_attachment]) {
-                    self.set_graph_distance_min(graph_size, from_part, to_part, distance);
+                    write_distance(
+                        &mut self.graph_distance,
+                        &mut self.room_part_furthest_distance_cache,
+                        from_part,
+                        to_part,
+                        distance,
+                    );
                 }
             }
+        }
+
+        for local_part in 0..room.door_group_count {
+            let part = room_start + local_part;
+            let to_attached_part = self.graph_distance[part * graph_size + attached_part];
+            let from_attached_part = self.graph_distance[attached_part * graph_size + part];
+            self.room_part_save_distance_cache
+                .initialize_single_attachment_room_part(
+                    part,
+                    attached_part,
+                    to_attached_part,
+                    from_attached_part,
+                );
+            self.room_part_refill_distance_cache
+                .initialize_single_attachment_room_part(
+                    part,
+                    attached_part,
+                    to_attached_part,
+                    from_attached_part,
+                );
+            self.room_part_frontier_distance_cache
+                .initialize_single_attachment_room_part(
+                    part,
+                    attached_part,
+                    to_attached_part,
+                    from_attached_part,
+                );
         }
     }
 
@@ -4332,6 +4464,8 @@ mod tests {
                 "missing_connections": []
             },
             {
+                "save": true,
+                "refill": true,
                 "map": [[1]],
                 "toilet_crossing_x": [],
                 "doors": [
@@ -4370,6 +4504,9 @@ mod tests {
         full_env.add_graph_distance_edge(&common, attached_part, room_part, 1);
 
         assert_eq!(fast_env.graph_distance, full_env.graph_distance);
+        fast_env.assert_room_part_furthest_distance_cache_matches_slow(&common);
+        fast_env.assert_room_part_save_distance_cache_matches_slow(&common);
+        fast_env.assert_room_part_frontier_distance_cache_matches_slow(&common);
     }
 
     #[test]
