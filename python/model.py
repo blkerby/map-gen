@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 NUM_COORD_VALUES = 256
 COORD_OFFSET = 128
+DETERMINISTIC_INVALID_LOGIT = 20.0
 
 
 # These tensors are all f32 with shape
@@ -79,6 +80,27 @@ def get_predictions(raw_preds, output_sizes):
         proposal_row_snapshot_idx=raw_preds.new_empty([0], dtype=torch.int64),
         proposal_row_frontier_idx=raw_preds.new_empty([0], dtype=torch.int16),
     )
+
+
+def apply_known_invalid_logits(
+    invalid_logits: torch.Tensor,
+    known_invalid: torch.Tensor,
+    outcome_name: str,
+) -> torch.Tensor:
+    if known_invalid.shape[-1] == 0:
+        return invalid_logits
+    torch._assert(
+        known_invalid.shape[-1] == invalid_logits.shape[-1],
+        f"known {outcome_name} outcomes must match {outcome_name} prediction width",
+    )
+    while known_invalid.ndim < invalid_logits.ndim:
+        known_invalid = known_invalid.unsqueeze(1)
+    deterministic_logits = torch.where(
+        known_invalid == 0,
+        -DETERMINISTIC_INVALID_LOGIT,
+        DETERMINISTIC_INVALID_LOGIT,
+    ).to(invalid_logits.dtype)
+    return torch.where(known_invalid >= 0, deterministic_logits, invalid_logits)
 
 
 def normalize(x: torch.Tensor):
@@ -886,9 +908,19 @@ class FrontierModel(torch.nn.Module):
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
             self.output_sizes,
         )
+        door_invalid = apply_known_invalid_logits(
+            preds.door_invalid,
+            features.global_features.lookahead_door_invalid,
+            "door",
+        )
+        connection_invalid = apply_known_invalid_logits(
+            preds.connection_invalid,
+            features.global_features.lookahead_connection_invalid,
+            "connection",
+        )
         return Predictions(
-            door_invalid=preds.door_invalid,
-            connection_invalid=preds.connection_invalid,
+            door_invalid=door_invalid,
+            connection_invalid=connection_invalid,
             toilet_invalid=preds.toilet_invalid,
             balance_score=preds.balance_score,
             toilet_balance_score=preds.toilet_balance_score,

@@ -1217,32 +1217,23 @@ class TrainingSession:
 
         schedule_progress = min(self.num_episodes / self.config.knot_episodes[-1], 1.0)
         logging.info(
-            "round %s, loss %.4f (d %.4f %.1f%%, c %.4f %.1f%%, t %.4f %.1f%%, "
-            "b %.4f %.1f%%, tb %.4f %.1f%%, d %.2f %.1f%%, "
-            "s %.2f %.1f%%, r %.2f %.1f%%, p %.3f %.1f%%), "
+            "round %s, loss %.4f (d %.1f%%, c %.1f%%, t %.1f%%, "
+            "b %.1f%%, tb %.1f%%, d %.1f%%, "
+            "s %.1f%%, r %.1f%%, p %.1f%%), "
             "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), tube %.2f, diam %.2f, save %.2f, refill %.2f, ss %.3f, "
             "p %.4f, "
             "frac %.4f",
             round_idx,
             loss.total,
-            loss.door,
             door_loss_pct,
-            loss.connection,
             connection_loss_pct,
-            loss.toilet,
             toilet_loss_pct,
-            loss.balance,
             main_balance_loss_pct,
-            loss.toilet_balance,
             main_toilet_balance_loss_pct,
-            loss.graph_diameter,
             graph_diameter_loss_pct,
-            loss.save_distance,
             save_distance_loss_pct,
-            loss.refill_distance,
             refill_distance_loss_pct,
-            loss.proposal,
             proposal_loss_pct,
             scalar(success_rate),
             scalar(avg_invalid),
