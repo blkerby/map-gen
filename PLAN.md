@@ -1,140 +1,235 @@
-# Local Outcome Prediction Plan
+# Local Outcome Architecture Plan
 
 ## Goal
 
-Move outcomes that are naturally local to rooms, doors, frontiers, or room parts
-away from purely pooled/global prediction. Use the most local valid information
-available at each generation state:
+Put local outcomes on a sounder modeling footing while keeping generation cost
+predictable.
 
-- Unplaced entities are predicted from the post-pooling global embedding.
-- Placed entities are predicted from local node embeddings when the relevant
-  local node exists.
-- Outcomes that are already known are wired directly into the prediction output
-  so generation reward uses the known value and training gradients are masked
-  for that entry.
+The model should use local representations for outcomes whose truth depends on
+specific room parts, missing connections, and nearby frontiers. This local
+information must enter the shared frontier representation used for proposal
+scores, not only the final output heads, because generation fully scores only a
+small number of proposed candidates.
 
-## Current Step
+## Guiding Design
 
-Add known-finalized overrides for directed save/refill proximity utilities.
-The model already predicts four directed proximity utilities for save/refill
-reachability quality; this step adds deterministic overrides for values that
-are known from the current graph state.
+- Improve proposal-visible local representations before hard-wiring local
+  rewards into model outputs. Prior experiments with deterministic
+  finalized-known save/refill overrides regressed generation quality, likely by
+  making short-term reward fulfillment too attractive before the model could
+  represent long-term consequences accurately.
+- Add graph nodes only for unresolved placed room parts. A placed room part is
+  included as a local node when at least one attached local outcome can still be
+  affected by future placements.
+- Keep unplaced room-part outcomes routed through the global state.
+- Use bounded, fixed-width neighbor tensors for the first implementation. Rust
+  may generate dynamic candidate edges, but Python should receive top-k padded
+  tensors so message-passing cost remains predictable.
+- Let frontier and room-part nodes exchange messages in both directions at each
+  layer. The final frontier node state remains the proposal state.
 
-## Known Directed Distance Outcomes
+## Step 1: Directed Save/Refill/Frontier Features
 
-A directed save/refill distance can be finalized before episode end when future
-steps cannot improve it.
+Refine the existing room-part distance features so they expose directional
+information instead of round-trip/compressed distances.
 
-For room part `p`:
+The current save/refill/frontier room-part features are based on round-trip
+distance encodings. That loses directional structure even though the training
+targets and rewards distinguish both directions. The near-term soundness change
+should split these into explicit directed feature channels without
+deterministic output overrides.
+
+Per room part, expose:
+
+- distance from room part to nearest save
+- distance from nearest save to room part
+- distance from room part to nearest refill
+- distance from nearest refill to room part
+- distance from room part to nearest frontier
+- distance from nearest frontier to room part
+- furthest destination distance
+- furthest source distance
+
+Use the existing compact distance encoding convention:
+
+- `0` for unreachable or absent
+- `distance + 1` for finite distances, saturated as needed
+
+Implementation work:
+
+- Split Rust feature computation for save/refill/frontier distance features
+  into directed source/destination channels.
+- Carry required fields through PyO3 bindings and Python dataclasses.
+- Replace the current single-channel save/refill/frontier embedding paths with
+  directional channels.
+- Keep the current global-feature route initially.
+- Do not substitute finalized-known utilities into model outputs in this step.
+- Keep existing save/refill reward and loss weights and directed targets.
+
+## Step 2: Unresolved Room-Part Nodes
+
+Add a second sparse node type for placed room parts whose local outcomes are not
+fully determined.
+
+A room part should get a node when any of these are true:
+
+- at least one directed save/refill outcome for that part is not finalized
+- the part is an endpoint of an unresolved missing-connect outcome
+- a future frontier can still affect a local outcome attached to the part
+
+Room-part node identity:
+
+- Each node stores the global room-part index.
+- Python receives row-to-snapshot and row-to-room-part tensors, analogous to
+  frontier row metadata.
+- Outputs route from room-part rows back to global room-part output indices.
+
+Room-part node features:
+
+- room/part identity embedding
+- active/placed state
+- directed distance from room part to nearest save
+- directed distance from nearest save to room part
+- directed distance from room part to nearest refill
+- directed distance from nearest refill to room part
+- directed distance from room part to nearest frontier
+- directed distance from nearest frontier to room part
+- directed furthest-part distances
+- unresolved objective flags
+
+## Deferred: Finalized-Known Directed Overrides
+
+Finalized-known directed save/refill overrides remain a plausible later
+optimization, but should be deferred until proposal-visible local structure is
+stronger.
+
+For room part `p`, the candidate rules are:
 
 - `p -> nearest save` is finalized when the current finite `p -> save` distance
   is less than or equal to the current `p -> nearest frontier` distance.
 - `nearest save -> p` is finalized when the current finite `save -> p` distance
   is less than or equal to the current `nearest frontier -> p` distance.
 - The same rules apply for refill distances.
+- Unreachable outcomes are finalized when neither the objective nor any frontier
+  is reachable in the relevant direction.
 
-Unreachable outcomes can also be finalized:
+If reintroduced, known values should use the same numeric scale as the target:
 
-- `p -> save` is finalized as unreachable when there is no current path from
-  `p` to any save and no current path from `p` to any frontier.
-- `save -> p` is finalized as unreachable when there is no current path from
-  any save to `p` and no current path from any frontier to `p`.
-- The same rules apply for refill distances.
+- finite finalized distances: `scale / (d + scale)`
+- finalized unreachable distances: `0`
 
-Known values should be substituted in model forward as proximity utilities,
-using the same numeric scale as the target. Finite finalized distances use
-`scale / (d + scale)`. Finalized unreachable distances use `0`. This makes
-generation and training consume the same model output, while cutting gradients
-through finalized entries.
+Before enabling these overrides for generation, validate that the proposal
+representation can model long-term tradeoffs well enough that deterministic
+short-term reward improvements do not dominate candidate selection.
 
-The model should predict expected proximity utility, not expected distance
-conditioned on reachability. This keeps unreachable states well-defined without
-turning save/refill reachability into a separate validity objective.
+## Step 3: Bounded Part-Frontier Message Passing
 
-The existing save/refill reward and loss weights continue to apply to both
-directions for each category.
+Add bidirectional sparse edges between unresolved room-part nodes and relevant
+frontier nodes.
 
-## Implementation Sequence
+Use separate top-k bounds for each direction:
 
-1. Add direction-specific finalized masks and known values.
-   - Compute finalized-known state in Rust.
-   - Use active save/refill room-part lists and frontier distance information.
-   - Preserve required fields across Python/Rust bindings.
+- `part <- frontier`: nearest or most relevant frontiers for each unresolved
+  room part, including both graph directions where applicable.
+- `frontier <- part`: most relevant unresolved room parts for each frontier,
+  ranked by local objective pressure or potential improvement.
 
-2. Split current room-part distance features.
-   - Replace combined save/refill feature encodings with directed feature
-     encodings.
-   - Split frontier distance features into `room_part -> frontier` and
-     `frontier -> room_part`.
-   - Keep the existing global-feature path initially; do not introduce
-     room-part nodes in this step.
+Rust should build candidate edge lists from graph-distance caches, rank them,
+and pack the selected top-k edges into fixed-width tensors with `-1` padding.
+Python should consume those tensors with the same gather-and-mask style as the
+current frontier-neighbor message passing.
 
-3. Update Python data plumbing.
-   - Extend `EndOutcomes`, feature dataclasses, buffer allocation, and transfer
-     code to carry finalized-known fields.
-   - Update training batch construction and generated outcome concatenation.
-   - Use named dataclass construction throughout.
+Edge features should include:
 
-4. Update model forward override.
-   - In forward, substitute finalized known utilities with `torch.where`.
-   - Use `0` for finalized unreachable utilities.
-   - Ensure substituted entries cut gradients to learned predictions.
+- directed graph distances for the edge
+- same-component/reachability flags where useful
+- local objective flags: save, refill, missing-connect endpoint
+- improvement margin against the current finalized-known threshold where
+  applicable
 
-5. Test and validate.
-   - Add Rust tests for finalized masks.
-   - Add Python smoke tests for shape compatibility and model forward.
-   - Run `cargo test`, `maturin develop`, and Python compile/smoke checks in
-     the `map-gen` conda environment.
+At each message-passing layer:
 
-## Later Room-Part Node Architecture
+- frontier nodes receive frontier-neighbor messages
+- frontier nodes receive room-part messages
+- room-part nodes receive frontier messages
+- both node types update from their current state, incoming messages, and global
+  state
 
-Add a second sparse node type for placed room parts.
+The final frontier node state remains `proposal_state`, so proposal scoring
+automatically benefits from unresolved local-outcome information.
 
-Node types:
+Track truncation diagnostics:
 
-- Frontier nodes use the current larger frontier embedding.
-- Placed room-part nodes use a smaller room-part embedding.
+- unresolved room-part node count
+- candidate part-frontier edge count before top-k
+- fraction of part rows and frontier rows hitting each cap
+- average and max selected fan-in/fan-out
 
-Message passing:
+If truncation is frequent and appears quality-limiting, raise caps or consider a
+COO/segment-reduce representation for only the affected edge direction.
 
-- Frontier nodes exchange messages with neighboring frontier nodes.
-- Room-part nodes exchange messages with neighboring frontier nodes.
-- Frontier nodes receive messages from neighboring room-part nodes.
-- Room-part nodes do not exchange messages directly with other room-part nodes.
+## Step 4: Local Outcome Heads
 
-Prediction routing:
+Route local outcomes through local node/query representations.
 
-- Placed room-part outcomes are predicted from room-part node embeddings.
-- Unplaced room-part outcomes are predicted from the post-pooling global
-  embedding and routed to the corresponding output indices.
-- Finalized known outcomes override learned predictions.
+Save/refill utilities:
 
-Room-part node features:
+- For placed room parts with unresolved nodes, predict directed save/refill
+  utilities from the room-part node state.
+- For finalized entries, initially keep learned predictions unless a later
+  experiment re-enables deterministic finalized-known overrides.
+- For unplaced room parts, keep using the global pooled state.
 
-- distance from nearest save
-- distance to nearest save
-- distance from nearest refill
-- distance to nearest refill
-- distance from furthest room part
-- distance to furthest room part
+Missing-connect outcomes:
 
-Room-part/frontier pair features:
+- Treat each missing connection as a directed local query:
+  `source_part -> destination_part`.
+- Predict missing-connect validity and distance from endpoint states plus
+  directed pair features and global state.
+- If endpoints have room-part nodes, use those node states.
+- If an endpoint is placed but omitted because all attached outcomes are
+  finalized, use deterministic known values where available or a compact
+  non-message-passed endpoint embedding.
+- If the room is unplaced, route through the global state as today.
 
-- distance from room part to frontier
-- distance from frontier to room part
+Door/frontier proposal outcomes:
 
-Frontier/frontier pair features:
+- Keep proposal scoring on final frontier node states.
+- Do not add a separate proposal-only integration path unless diagnostics show
+  the final frontier state is not carrying local information effectively.
 
-- graph distance from source frontier to destination frontier
-- graph distance from destination frontier to source frontier
+## Step 5: Tests And Validation
 
-The existing combined `room_part_frontier_distance` feature should be removed
-when the pair-feature route is introduced.
+Rust tests:
+
+- directed save/refill/frontier feature encodings
+- unresolved room-part node selection
+- part-frontier top-k edge packing and cap/truncation diagnostics
+- missing-connect endpoint/query metadata
+
+Python tests:
+
+- dataclass and PyO3 shape compatibility
+- model forward with zero room-part nodes
+- model forward with room-part nodes and part-frontier edges
+- output routing for placed, unplaced, finalized, and missing-connect outcomes
+
+Validation commands:
+
+- `cargo test`
+- `conda run -n map-gen maturin develop`
+- Python compile/smoke checks in the `map-gen` conda environment
 
 ## Open Design Checks
 
-- Decide the sparse room-part row identity scheme before implementing
-  room-part nodes.
-- Check the cost of frontier/frontier graph-distance pair features before
-  enabling dense all-pairs features; prefer sparse edges if dense pairs are too
-  expensive.
+- Choose initial top-k caps for `part <- frontier` and `frontier <- part`.
+- Define the exact ranking score for `frontier <- part` edges so proposal states
+  receive the most useful unresolved local pressure.
+- Decide whether missing-connect validity and missing-connect distance should
+  share one directed query representation or use separate heads from the same
+  query state.
+- Revisit frontier-neighbor count after local nodes are added; extra
+  frontier-frontier neighbors may become more useful late in training but should
+  be evaluated separately from the room-part-node change.
+- Decide when, if ever, to re-enable finalized-known deterministic overrides
+  after proposal-visible local architecture is in place.
