@@ -223,6 +223,77 @@ class ProposalOutput(torch.nn.Module):
         return self.layers(x)
 
 
+class BoundedMessagePassingLayer(torch.nn.Module):
+    def __init__(
+        self,
+        source_width: int,
+        target_width: int,
+        global_width: int,
+        message_hidden_width: int,
+        update_hidden_width: int,
+        edge_width: int,
+    ):
+        super().__init__()
+        if source_width <= 0:
+            raise ValueError("source_width must be greater than zero")
+        if target_width <= 0:
+            raise ValueError("target_width must be greater than zero")
+        if global_width <= 0:
+            raise ValueError("global_width must be greater than zero")
+        if message_hidden_width <= 0:
+            raise ValueError("message_hidden_width must be greater than zero")
+        if update_hidden_width <= 0:
+            raise ValueError("update_hidden_width must be greater than zero")
+        if edge_width < 0:
+            raise ValueError("edge_width must be greater than or equal to zero")
+        self.source_layer = torch.nn.Linear(source_width, message_hidden_width, bias=False)
+        self.edge_layer = (
+            torch.nn.Linear(edge_width, message_hidden_width, bias=False)
+            if edge_width > 0
+            else None
+        )
+        self.message_output_layer = torch.nn.Sequential(
+            torch.nn.GELU(),
+            torch.nn.Linear(message_hidden_width, target_width, bias=False),
+        )
+        self.update_layer = torch.nn.Sequential(
+            torch.nn.Linear(
+                target_width * 2 + global_width,
+                update_hidden_width,
+                bias=False,
+            ),
+            torch.nn.GELU(),
+            torch.nn.Linear(update_hidden_width, target_width, bias=False),
+        )
+
+    def forward(
+        self,
+        target_state: torch.Tensor,
+        source_state: torch.Tensor,
+        neighbor: torch.Tensor,
+        neighbor_mask: torch.Tensor,
+        target_global_state: torch.Tensor,
+        edge_features: torch.Tensor | None,
+        extra_message_features: torch.Tensor | None,
+    ) -> torch.Tensor:
+        source = self.source_layer(source_state)
+        source = source[neighbor]
+        messages = source
+        if self.edge_layer is not None:
+            if edge_features is None:
+                raise ValueError("edge_features are required when edge_width is greater than zero")
+            messages = messages + self.edge_layer(edge_features)
+        if extra_message_features is not None:
+            messages = messages + extra_message_features
+        messages = self.message_output_layer(messages) * neighbor_mask
+        if neighbor.ndim != 1:
+            neighbor_count = neighbor_mask.sum(1).clamp_min(1)
+            messages = messages.sum(1) / neighbor_count
+        return target_state + self.update_layer(
+            torch.cat([target_state, messages, target_global_state], dim=-1)
+        )
+
+
 class FrontierModel(torch.nn.Module):
     def __init__(
         self,
@@ -304,41 +375,15 @@ class FrontierModel(torch.nn.Module):
         )
         pair_width = 3 * self.features.frontier_neighbor_flags
         use_neighbors = self.features.frontier_neighbor
-        self.source_message_layers = torch.nn.ModuleList(
+        self.frontier_message_layers = torch.nn.ModuleList(
             [
-                torch.nn.Linear(embedding_width, hidden_width, bias=False)
-                for _ in range(num_layers if use_neighbors else 0)
-            ]
-        )
-        self.pair_message_layers = (
-            torch.nn.ModuleList(
-                [
-                    torch.nn.Linear(pair_width, hidden_width, bias=False)
-                    for _ in range(num_layers if use_neighbors else 0)
-                ]
-            )
-            if pair_width > 0
-            else [None] * (num_layers if use_neighbors else 0)
-        )
-        self.message_output_layers = torch.nn.ModuleList(
-            [
-                torch.nn.Sequential(
-                    torch.nn.GELU(),
-                    torch.nn.Linear(hidden_width, embedding_width, bias=False),
-                )
-                for _ in range(num_layers if use_neighbors else 0)
-            ]
-        )
-        self.update_layers = torch.nn.ModuleList(
-            [
-                torch.nn.Sequential(
-                    torch.nn.Linear(
-                        embedding_width * 2 + global_embedding_width,
-                        hidden_width,
-                        bias=False,
-                    ),
-                    torch.nn.GELU(),
-                    torch.nn.Linear(hidden_width, embedding_width, bias=False),
+                BoundedMessagePassingLayer(
+                    source_width=embedding_width,
+                    target_width=embedding_width,
+                    global_width=global_embedding_width,
+                    message_hidden_width=hidden_width,
+                    update_hidden_width=hidden_width,
+                    edge_width=pair_width,
                 )
                 for _ in range(num_layers if use_neighbors else 0)
             ]
@@ -896,28 +941,17 @@ class FrontierModel(torch.nn.Module):
                     pair = pair[:, 0]
                 if relative_position is not None:
                     relative_position = relative_position[:, 0]
-            else:
-                pair_count = pair_mask.sum(1).clamp_min(1)
             global_rows = global_state[row_snapshot_idx]
-            for source_layer, pair_layer, output_layer, update_layer in zip(
-                self.source_message_layers,
-                self.pair_message_layers,
-                self.message_output_layers,
-                self.update_layers,
-            ):
-                # source: [r, h]
-                source = source_layer(X)
-                # Gather each frontier's neighbors: source: [r, k, h]
-                source = source[neighbor]
-                messages = source if pair_layer is None else source + pair_layer(pair)
-                if relative_position is not None:
-                    messages = messages + relative_position
-                messages = output_layer(messages) * pair_mask
-                if not single_neighbor:
-                    # messages: [r, k, e]
-                    messages = messages.sum(1) / pair_count
-                # messages [r, e]
-                X = X + update_layer(torch.cat([X, messages, global_rows], dim=-1))
+            for layer in self.frontier_message_layers:
+                X = layer(
+                    target_state=X,
+                    source_state=X,
+                    neighbor=neighbor,
+                    neighbor_mask=pair_mask,
+                    target_global_state=global_rows,
+                    edge_features=pair,
+                    extra_message_features=relative_position,
+                )
             if X.device.type == "cuda":
                 mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
                 mean_pool.index_add_(0, row_snapshot_idx, X)
