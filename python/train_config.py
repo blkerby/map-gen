@@ -24,9 +24,14 @@ class ModelConfig(StrictBaseModel):
     autocast: bool
     generation_autocast: bool
     embedding_width: int
+    frontier_embedding_width: int
+    room_part_embedding_width: int
     global_embedding_width: int
     global_room_position_embedding_width: int
-    hidden_width: int
+    pooling_hidden_width: int
+    frontier_message_hidden_width: int
+    part_from_frontier_message_hidden_width: int
+    frontier_from_part_message_hidden_width: int
     proposal_hidden_width: int
     door_match_embedding_width: int
     toilet_crossed_room_embedding_width: int
@@ -219,10 +224,28 @@ def validate_config(config: Config) -> None:
         raise ValueError("visualize must be greater than or equal to zero")
     if config.distance_proximity_scale <= 0:
         raise ValueError("distance_proximity_scale must be greater than zero")
+    if config.model.embedding_width <= 0:
+        raise ValueError("model.embedding_width must be greater than zero")
+    if config.model.frontier_embedding_width <= 0:
+        raise ValueError("model.frontier_embedding_width must be greater than zero")
+    if config.model.room_part_embedding_width <= 0:
+        raise ValueError("model.room_part_embedding_width must be greater than zero")
     if config.model.global_embedding_width <= 0:
         raise ValueError("model.global_embedding_width must be greater than zero")
     if config.model.global_room_position_embedding_width <= 0:
         raise ValueError("model.global_room_position_embedding_width must be greater than zero")
+    if config.model.pooling_hidden_width <= 0:
+        raise ValueError("model.pooling_hidden_width must be greater than zero")
+    if config.model.frontier_message_hidden_width <= 0:
+        raise ValueError("model.frontier_message_hidden_width must be greater than zero")
+    if config.model.part_from_frontier_message_hidden_width <= 0:
+        raise ValueError(
+            "model.part_from_frontier_message_hidden_width must be greater than zero"
+        )
+    if config.model.frontier_from_part_message_hidden_width <= 0:
+        raise ValueError(
+            "model.frontier_from_part_message_hidden_width must be greater than zero"
+        )
     if config.model.proposal_hidden_width <= 0:
         raise ValueError("model.proposal_hidden_width must be greater than zero")
     if (

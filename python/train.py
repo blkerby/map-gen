@@ -280,9 +280,18 @@ def frontier_model_kwargs(
         "map_x": config.map_size[0],
         "map_y": config.map_size[1],
         "embedding_width": config.model.embedding_width,
+        "frontier_embedding_width": config.model.frontier_embedding_width,
+        "room_part_embedding_width": config.model.room_part_embedding_width,
         "global_embedding_width": config.model.global_embedding_width,
         "global_room_position_embedding_width": config.model.global_room_position_embedding_width,
-        "hidden_width": config.model.hidden_width,
+        "pooling_hidden_width": config.model.pooling_hidden_width,
+        "frontier_message_hidden_width": config.model.frontier_message_hidden_width,
+        "part_from_frontier_message_hidden_width": (
+            config.model.part_from_frontier_message_hidden_width
+        ),
+        "frontier_from_part_message_hidden_width": (
+            config.model.frontier_from_part_message_hidden_width
+        ),
         "proposal_hidden_width": config.model.proposal_hidden_width,
         "door_match_embedding_width": config.model.door_match_embedding_width,
         "toilet_crossed_room_embedding_width": (config.model.toilet_crossed_room_embedding_width),

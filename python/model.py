@@ -302,9 +302,14 @@ class FrontierModel(torch.nn.Module):
         map_x,
         map_y,
         embedding_width,
+        frontier_embedding_width,
+        room_part_embedding_width,
         global_embedding_width,
         global_room_position_embedding_width,
-        hidden_width,
+        pooling_hidden_width,
+        frontier_message_hidden_width,
+        part_from_frontier_message_hidden_width,
+        frontier_from_part_message_hidden_width,
         proposal_hidden_width,
         door_match_embedding_width,
         toilet_crossed_room_embedding_width,
@@ -319,14 +324,27 @@ class FrontierModel(torch.nn.Module):
         self.map_x = map_x
         self.map_y = map_y
         self.embedding_width = embedding_width
+        self.frontier_embedding_width = frontier_embedding_width
+        self.room_part_embedding_width = room_part_embedding_width
         self.global_embedding_width = global_embedding_width
         self.global_room_position_embedding_width = global_room_position_embedding_width
         self.num_room_parts = output_metadata.num_room_parts
         self.room_part_node_flag_width = 5
-        if global_embedding_width <= 0:
-            raise ValueError("global_embedding_width must be greater than zero")
-        if global_room_position_embedding_width <= 0:
-            raise ValueError("global_room_position_embedding_width must be greater than zero")
+        width_checks = {
+            "embedding_width": embedding_width,
+            "frontier_embedding_width": frontier_embedding_width,
+            "room_part_embedding_width": room_part_embedding_width,
+            "global_embedding_width": global_embedding_width,
+            "global_room_position_embedding_width": global_room_position_embedding_width,
+            "pooling_hidden_width": pooling_hidden_width,
+            "frontier_message_hidden_width": frontier_message_hidden_width,
+            "part_from_frontier_message_hidden_width": part_from_frontier_message_hidden_width,
+            "frontier_from_part_message_hidden_width": frontier_from_part_message_hidden_width,
+            "proposal_hidden_width": proposal_hidden_width,
+        }
+        for name, width in width_checks.items():
+            if width <= 0:
+                raise ValueError(f"{name} must be greater than zero")
         self.left_count, self.right_count, self.up_count, self.down_count = door_counts
         if self.features.lookahead_outcomes and door_match_embedding_width <= 0:
             raise ValueError("door_match_embedding_width must be greater than zero")
@@ -354,17 +372,21 @@ class FrontierModel(torch.nn.Module):
         #     torch.randn([output_metadata.num_room_connection_variants, embedding_width]) / math.sqrt(embedding_width)
         # ) if self.features.inventory else None
         self.orientation_embedding = (
-            torch.nn.Embedding(2, embedding_width) if self.features.frontier_orientation else None
+            torch.nn.Embedding(2, frontier_embedding_width)
+            if self.features.frontier_orientation
+            else None
         )
         self.kind_embedding = (
-            torch.nn.Embedding(256, embedding_width) if self.features.frontier_kind else None
+            torch.nn.Embedding(256, frontier_embedding_width)
+            if self.features.frontier_kind
+            else None
         )
         node_numeric_width = (
             frontier_window_size**2 * self.features.frontier_occupancy
             + 2 * self.num_connection_outputs * self.features.frontier_connection_reachability
         )
         self.node_numeric = (
-            torch.nn.Linear(node_numeric_width, embedding_width, bias=False)
+            torch.nn.Linear(node_numeric_width, frontier_embedding_width, bias=False)
             if node_numeric_width > 0
             else None
         )
@@ -378,12 +400,12 @@ class FrontierModel(torch.nn.Module):
         use_neighbors = self.features.frontier_neighbor
         self.frontier_message_layers = torch.nn.ModuleList(
             [
-                BoundedMessagePassingLayer(
-                    source_width=embedding_width,
-                    target_width=embedding_width,
+                    BoundedMessagePassingLayer(
+                    source_width=frontier_embedding_width,
+                    target_width=frontier_embedding_width,
                     global_width=global_embedding_width,
-                    message_hidden_width=hidden_width,
-                    update_hidden_width=hidden_width,
+                    message_hidden_width=frontier_message_hidden_width,
+                    update_hidden_width=frontier_message_hidden_width,
                     edge_width=pair_width,
                 )
                 for _ in range(num_layers if use_neighbors else 0)
@@ -393,11 +415,11 @@ class FrontierModel(torch.nn.Module):
         self.part_from_frontier_message_layers = torch.nn.ModuleList(
             [
                 BoundedMessagePassingLayer(
-                    source_width=embedding_width,
-                    target_width=embedding_width,
+                    source_width=frontier_embedding_width,
+                    target_width=room_part_embedding_width,
                     global_width=global_embedding_width,
-                    message_hidden_width=hidden_width,
-                    update_hidden_width=hidden_width,
+                    message_hidden_width=part_from_frontier_message_hidden_width,
+                    update_hidden_width=part_from_frontier_message_hidden_width,
                     edge_width=10,
                 )
                 for _ in range(num_layers if use_part_frontier else 0)
@@ -406,11 +428,11 @@ class FrontierModel(torch.nn.Module):
         self.frontier_from_part_message_layers = torch.nn.ModuleList(
             [
                 BoundedMessagePassingLayer(
-                    source_width=embedding_width,
-                    target_width=embedding_width,
+                    source_width=room_part_embedding_width,
+                    target_width=frontier_embedding_width,
                     global_width=global_embedding_width,
-                    message_hidden_width=hidden_width,
-                    update_hidden_width=hidden_width,
+                    message_hidden_width=frontier_from_part_message_hidden_width,
+                    update_hidden_width=frontier_from_part_message_hidden_width,
                     edge_width=10,
                 )
                 for _ in range(num_layers if use_part_frontier else 0)
@@ -439,11 +461,9 @@ class FrontierModel(torch.nn.Module):
         )
         pooled_width = (
             output_metadata.num_room_connection_variants * self.features.inventory
+            + 2 * frontier_embedding_width * self.features.frontier_mask
             + embedding_width
-            * (
-                2 * self.features.frontier_mask
-                + (self.features.connection_reachability and self.num_connection_outputs > 0)
-            )
+            * (self.features.connection_reachability and self.num_connection_outputs > 0)
             + int(self.features.temperature)
             + int(self.features.recommended_candidates)
             + global_room_position_embedding_width * int(self.features.global_room_position)
@@ -454,9 +474,9 @@ class FrontierModel(torch.nn.Module):
         )
         self.pooled_mlp = (
             torch.nn.Sequential(
-                torch.nn.Linear(pooled_width, hidden_width, bias=False),
+                torch.nn.Linear(pooled_width, pooling_hidden_width, bias=False),
                 torch.nn.GELU(),
-                torch.nn.Linear(hidden_width, embedding_width, bias=False),
+                torch.nn.Linear(pooling_hidden_width, embedding_width, bias=False),
             )
             if pooled_width > 0
             else None
@@ -506,44 +526,48 @@ class FrontierModel(torch.nn.Module):
         )
         self.known_distance_embedding = torch.nn.Embedding(256, 1)
         self.room_part_node_identity_embedding = (
-            torch.nn.Embedding(self.num_room_parts, embedding_width)
+            torch.nn.Embedding(self.num_room_parts, room_part_embedding_width)
             if self.features.room_part_nodes
             else None
         )
         self.room_part_node_flag_linear = (
-            torch.nn.Linear(self.room_part_node_flag_width, embedding_width, bias=False)
+            torch.nn.Linear(self.room_part_node_flag_width, room_part_embedding_width, bias=False)
             if self.features.room_part_nodes
             else None
         )
         self.room_part_node_distance_embedding = (
-            torch.nn.Embedding(256, embedding_width)
+            torch.nn.Embedding(256, room_part_embedding_width)
             if self.features.room_part_nodes
             else None
         )
         self.frontier_pos_embedding_x = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+                torch.randn([NUM_COORD_VALUES, frontier_embedding_width])
+                / math.sqrt(frontier_embedding_width)
             )
             if self.features.frontier_position
             else None
         )
         self.frontier_pos_embedding_y = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+                torch.randn([NUM_COORD_VALUES, frontier_embedding_width])
+                / math.sqrt(frontier_embedding_width)
             )
             if self.features.frontier_position
             else None
         )
         self.frontier_relative_pos_embedding_x = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width)
+                torch.randn([NUM_COORD_VALUES, frontier_message_hidden_width])
+                / math.sqrt(frontier_message_hidden_width)
             )
             if self.features.frontier_neighbor_position_embedding
             else None
         )
         self.frontier_relative_pos_embedding_y = (
             torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width)
+                torch.randn([NUM_COORD_VALUES, frontier_message_hidden_width])
+                / math.sqrt(frontier_message_hidden_width)
             )
             if self.features.frontier_neighbor_position_embedding
             else None
@@ -588,7 +612,7 @@ class FrontierModel(torch.nn.Module):
         )
         self.register_buffer("door_variant_outcome_idx", door_output_metadata[:, 1])
         self.door_output = torch.nn.Linear(embedding_width, output_metadata.num_door_variants)
-        self.frontier_door_invalid_output = torch.nn.Linear(embedding_width, 1)
+        self.frontier_door_invalid_output = torch.nn.Linear(frontier_embedding_width, 1)
         self.connection_output = FactorizedOutcomeHead(
             output_metadata.connection, output_metadata.num_connection_variants, embedding_width
         )
@@ -611,7 +635,7 @@ class FrontierModel(torch.nn.Module):
             self.num_connection_outputs,
         )
         self.proposal_output = ProposalOutput(
-            embedding_width,
+            frontier_embedding_width,
             proposal_hidden_width,
             output_metadata.num_door_variants,
         )
@@ -854,7 +878,7 @@ class FrontierModel(torch.nn.Module):
         room_part_idx = features.room_part_features.row_room_part_idx.to(torch.int64)
         row_count = room_part_idx.shape[0]
         if self.room_part_node_identity_embedding is None:
-            return room_part_idx.new_zeros([row_count, self.embedding_width], dtype=dtype)
+            return room_part_idx.new_zeros([row_count, self.room_part_embedding_width], dtype=dtype)
         snapshot_idx = features.room_part_features.row_snapshot_idx.to(torch.int64)
         state = self.room_part_node_identity_embedding(room_part_idx).to(dtype)
         flags = features.room_part_features.row_flags
@@ -962,7 +986,7 @@ class FrontierModel(torch.nn.Module):
                 ).flatten(-2)
             )
         # X: [r, e]
-        X = node.new_zeros([row_count, self.embedding_width], dtype=dtype)
+        X = node.new_zeros([row_count, self.frontier_embedding_width], dtype=dtype)
         if self.node_numeric is not None:
             X = X + self.node_numeric(torch.cat(numeric, dim=-1))
         if self.frontier_pos_embedding_x is not None:
@@ -1055,7 +1079,7 @@ class FrontierModel(torch.nn.Module):
             else X.new_zeros([snapshot_count, self.global_embedding_width])
         )
         if row_count == 0:
-            mean_pool = max_pool = X.new_zeros([snapshot_count, self.embedding_width])
+            mean_pool = max_pool = X.new_zeros([snapshot_count, self.frontier_embedding_width])
         else:
             row_count_by_snapshot = torch.bincount(
                 row_snapshot_idx,
@@ -1154,14 +1178,14 @@ class FrontierModel(torch.nn.Module):
                         extra_message_features=None,
                     )
             if X.device.type == "cuda":
-                mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
+                mean_pool = X.new_zeros([snapshot_count, self.frontier_embedding_width])
                 mean_pool.index_add_(0, row_snapshot_idx, X)
                 count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)
                 mean_pool = mean_pool / count
-                max_pool = X.new_full([snapshot_count, self.embedding_width], -torch.inf)
+                max_pool = X.new_full([snapshot_count, self.frontier_embedding_width], -torch.inf)
                 max_pool.scatter_reduce_(
                     0,
-                    row_snapshot_idx.unsqueeze(1).expand(-1, self.embedding_width),
+                    row_snapshot_idx.unsqueeze(1).expand(-1, self.frontier_embedding_width),
                     X,
                     reduce="amax",
                     include_self=True,
