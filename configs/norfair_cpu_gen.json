@@ -48,7 +48,7 @@
     "num_iterations": 1,
     "num_devices": 1,
     "pipeline_groups": 1,
-    "recommended_candidates": 1,
+    "recommended_candidates": 4,
     "shortlist_candidates": 16,
     "temperature": {"log": [10.0, 1.0, 0.03, 0.03, 0.03]},
     "proposal_temperature": 0.1,
