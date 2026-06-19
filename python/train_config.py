@@ -89,6 +89,9 @@ class GenerationConfig(StrictBaseModel):
     reward_missing_connect_distance: ScheduleableFloat
     frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"]
     frontier_neighbor_count: int
+    part_frontier_neighbor_count: int
+    frontier_room_part_neighbor_count: int
+    frontier_room_part_missing_connect_reserved_count: int
     frontier_window_size: int
     candidate_spatial_cell_size: int
     num_threads: int | None
@@ -261,6 +264,25 @@ def validate_config(config: Config) -> None:
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError(
             "generation.frontier_neighbor_count must be greater than or equal to zero"
+        )
+    if config.generation.part_frontier_neighbor_count < 0:
+        raise ValueError(
+            "generation.part_frontier_neighbor_count must be greater than or equal to zero"
+        )
+    if config.generation.frontier_room_part_neighbor_count < 0:
+        raise ValueError(
+            "generation.frontier_room_part_neighbor_count must be greater than or equal to zero"
+        )
+    if config.generation.frontier_room_part_missing_connect_reserved_count < 0:
+        raise ValueError(
+            "generation.frontier_room_part_missing_connect_reserved_count must be greater than or equal to zero"
+        )
+    if (
+        config.generation.frontier_room_part_missing_connect_reserved_count
+        > config.generation.frontier_room_part_neighbor_count
+    ):
+        raise ValueError(
+            "generation.frontier_room_part_missing_connect_reserved_count must not exceed generation.frontier_room_part_neighbor_count"
         )
     if config.generation.frontier_window_size < 0:
         raise ValueError("generation.frontier_window_size must be greater than or equal to zero")

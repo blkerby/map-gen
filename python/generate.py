@@ -324,6 +324,11 @@ def create_generation_environment_groups(
                 seed=device_index * config.generation.pipeline_groups + group_index,
                 frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
                 frontier_neighbor_count=config.generation.frontier_neighbor_count,
+                part_frontier_neighbor_count=config.generation.part_frontier_neighbor_count,
+                frontier_room_part_neighbor_count=config.generation.frontier_room_part_neighbor_count,
+                frontier_room_part_missing_connect_reserved_count=(
+                    config.generation.frontier_room_part_missing_connect_reserved_count
+                ),
                 frontier_window_size=config.generation.frontier_window_size,
                 num_threads=generation_group_threads,
             )
@@ -1178,6 +1183,14 @@ def run_generation_groups(
             "unresolved_room_part_refill_from_room": 0.0,
             "unresolved_room_part_refill_to_room": 0.0,
             "unresolved_room_part_missing_connect": 0.0,
+            "part_frontier_edges": 0.0,
+            "part_frontier_cap_hits": 0.0,
+            "frontier_room_part_edges": 0.0,
+            "frontier_room_part_missing_edges": 0.0,
+            "frontier_room_part_general_edges": 0.0,
+            "frontier_room_part_missing_cap_hits": 0.0,
+            "frontier_room_part_general_cap_hits": 0.0,
+            "frontier_room_part_target_rows": 0.0,
         }
         with torch.no_grad():
             for group in groups:
@@ -1300,6 +1313,30 @@ def run_generation_groups(
                     )
                     stat_totals["unresolved_room_part_missing_connect"] += float(
                         candidate_batch.feature_requirements.room_part_missing_connect_count
+                    )
+                    stat_totals["part_frontier_edges"] += float(
+                        candidate_batch.feature_requirements.part_frontier_edge_count
+                    )
+                    stat_totals["part_frontier_cap_hits"] += float(
+                        candidate_batch.feature_requirements.part_frontier_cap_hit_count
+                    )
+                    stat_totals["frontier_room_part_edges"] += float(
+                        candidate_batch.feature_requirements.frontier_room_part_edge_count
+                    )
+                    stat_totals["frontier_room_part_missing_edges"] += float(
+                        candidate_batch.feature_requirements.frontier_room_part_missing_edge_count
+                    )
+                    stat_totals["frontier_room_part_general_edges"] += float(
+                        candidate_batch.feature_requirements.frontier_room_part_general_edge_count
+                    )
+                    stat_totals["frontier_room_part_missing_cap_hits"] += float(
+                        candidate_batch.feature_requirements.frontier_room_part_missing_cap_hit_count
+                    )
+                    stat_totals["frontier_room_part_general_cap_hits"] += float(
+                        candidate_batch.feature_requirements.frontier_room_part_general_cap_hit_count
+                    )
+                    stat_totals["frontier_room_part_target_rows"] += float(
+                        candidate_batch.feature_requirements.frontier_row_count
                     )
                     stat_totals["proposal_clean_candidates"] += float(
                         stats.clean_counts.sum().item()
@@ -1447,6 +1484,11 @@ def run_generation_groups(
     proposal_rows = max(stat_totals["proposal_mask_rows"], 1.0)
     evaluated = max(stat_totals["proposal_evaluated_candidates"], 1.0)
     node_snapshots = max(stat_totals["unresolved_room_part_node_snapshots"], 1.0)
+    unresolved_room_part_rows = max(stat_totals["unresolved_room_part_nodes"], 1.0)
+    frontier_room_part_target_rows = max(
+        stat_totals["frontier_room_part_target_rows"],
+        1.0,
+    )
     generation_stats = {
         "proposal_valid_cells": stat_totals["proposal_valid_cells"] / proposal_rows,
         "proposal_full_set_rate": stat_totals["proposal_full_set_rows"] / proposal_rows,
@@ -1470,6 +1512,29 @@ def run_generation_groups(
         ),
         "avg_unresolved_room_part_missing_connect_nodes": (
             stat_totals["unresolved_room_part_missing_connect"] / node_snapshots
+        ),
+        "avg_part_frontier_selected_fan_in": (
+            stat_totals["part_frontier_edges"] / unresolved_room_part_rows
+        ),
+        "part_frontier_cap_hit_rate": (
+            stat_totals["part_frontier_cap_hits"] / unresolved_room_part_rows
+        ),
+        "avg_frontier_room_part_selected_fan_in": (
+            stat_totals["frontier_room_part_edges"] / frontier_room_part_target_rows
+        ),
+        "avg_frontier_room_part_missing_fan_in": (
+            stat_totals["frontier_room_part_missing_edges"] / frontier_room_part_target_rows
+        ),
+        "avg_frontier_room_part_general_fan_in": (
+            stat_totals["frontier_room_part_general_edges"] / frontier_room_part_target_rows
+        ),
+        "frontier_room_part_missing_cap_hit_rate": (
+            stat_totals["frontier_room_part_missing_cap_hits"]
+            / frontier_room_part_target_rows
+        ),
+        "frontier_room_part_general_cap_hit_rate": (
+            stat_totals["frontier_room_part_general_cap_hits"]
+            / frontier_room_part_target_rows
         ),
     }
     return (

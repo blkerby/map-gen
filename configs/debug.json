@@ -56,6 +56,9 @@
     "reward_missing_connect_distance": 0.0,
     "frontier_neighbor_algorithm": "nearest-exclusive",
     "frontier_neighbor_count": 1,
+    "part_frontier_neighbor_count": 2,
+    "frontier_room_part_neighbor_count": 8,
+    "frontier_room_part_missing_connect_reserved_count": 2,
     "frontier_window_size": 16,
     "candidate_spatial_cell_size": 8,
     "num_threads": 32

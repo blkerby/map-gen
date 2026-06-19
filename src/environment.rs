@@ -4,7 +4,7 @@ use hashbrown::HashMap;
 use rand::SeedableRng;
 use rand::prelude::*;
 use serde::Deserialize;
-use std::cmp::Reverse;
+use std::cmp::{Reverse, max, min};
 use std::collections::BinaryHeap;
 use std::time::Instant;
 
@@ -22,11 +22,91 @@ const UNREACHABLE_DISTANCE: GraphDistance = GraphDistance::MAX;
 const KNOWN_DISTANCE_UNKNOWN: u8 = 0;
 const KNOWN_DISTANCE_UNREACHABLE: u8 = 1;
 pub const FEATURE_FRONTIER_WIDTH: usize = 5;
+pub const PART_FRONTIER_EDGE_WIDTH: usize = 10;
 pub const ROOM_PART_FLAG_SAVE_FROM_ROOM: u8 = 1 << 0;
 pub const ROOM_PART_FLAG_SAVE_TO_ROOM: u8 = 1 << 1;
 pub const ROOM_PART_FLAG_REFILL_FROM_ROOM: u8 = 1 << 2;
 pub const ROOM_PART_FLAG_REFILL_TO_ROOM: u8 = 1 << 3;
 pub const ROOM_PART_FLAG_MISSING_CONNECT: u8 = 1 << 4;
+
+#[derive(Clone, Copy)]
+struct PartFrontierCandidate {
+    part_row_idx: usize,
+    frontier_row_idx: usize,
+    part_to_frontier: GraphDistance,
+    frontier_to_part: GraphDistance,
+    flags: u8,
+    same_component: bool,
+}
+
+fn encode_part_frontier_distance(distance: GraphDistance) -> u8 {
+    if distance == UNREACHABLE_DISTANCE {
+        0
+    } else {
+        distance.saturating_add(1)
+    }
+}
+
+fn part_frontier_distance_rank(distance: GraphDistance) -> u16 {
+    if distance == UNREACHABLE_DISTANCE {
+        u16::MAX
+    } else {
+        distance as u16
+    }
+}
+
+fn part_frontier_min_rank(candidate: PartFrontierCandidate) -> u16 {
+    min(
+        part_frontier_distance_rank(candidate.part_to_frontier),
+        part_frontier_distance_rank(candidate.frontier_to_part),
+    )
+}
+
+fn part_frontier_max_rank(candidate: PartFrontierCandidate) -> u16 {
+    max(
+        part_frontier_distance_rank(candidate.part_to_frontier),
+        part_frontier_distance_rank(candidate.frontier_to_part),
+    )
+}
+
+fn frontier_room_part_general_rank(candidate: PartFrontierCandidate) -> u16 {
+    let mut best = u16::MAX;
+    if candidate.flags & (ROOM_PART_FLAG_SAVE_FROM_ROOM | ROOM_PART_FLAG_REFILL_FROM_ROOM) != 0 {
+        best = min(
+            best,
+            part_frontier_distance_rank(candidate.part_to_frontier),
+        );
+    }
+    if candidate.flags & (ROOM_PART_FLAG_SAVE_TO_ROOM | ROOM_PART_FLAG_REFILL_TO_ROOM) != 0 {
+        best = min(
+            best,
+            part_frontier_distance_rank(candidate.frontier_to_part),
+        );
+    }
+    if candidate.flags & ROOM_PART_FLAG_MISSING_CONNECT != 0 {
+        best = min(best, part_frontier_min_rank(candidate));
+    }
+    if best == u16::MAX {
+        part_frontier_min_rank(candidate)
+    } else {
+        best
+    }
+}
+
+fn encode_part_frontier_edge(candidate: PartFrontierCandidate) -> [u8; PART_FRONTIER_EDGE_WIDTH] {
+    [
+        encode_part_frontier_distance(candidate.part_to_frontier),
+        encode_part_frontier_distance(candidate.frontier_to_part),
+        u8::from(candidate.flags & ROOM_PART_FLAG_SAVE_FROM_ROOM != 0),
+        u8::from(candidate.flags & ROOM_PART_FLAG_SAVE_TO_ROOM != 0),
+        u8::from(candidate.flags & ROOM_PART_FLAG_REFILL_FROM_ROOM != 0),
+        u8::from(candidate.flags & ROOM_PART_FLAG_REFILL_TO_ROOM != 0),
+        u8::from(candidate.flags & ROOM_PART_FLAG_MISSING_CONNECT != 0),
+        u8::from(candidate.same_component),
+        u8::from(candidate.part_to_frontier != UNREACHABLE_DISTANCE),
+        u8::from(candidate.frontier_to_part != UNREACHABLE_DISTANCE),
+    ]
+}
 
 fn encode_known_finalized_distance(
     current_distance: GraphDistance,
@@ -402,6 +482,17 @@ pub struct Features {
     pub known_refill_to_room_distance: Vec<u8>,
     pub row_room_part_idx: Vec<i16>,
     pub row_room_part_flags: Vec<u8>,
+    pub part_frontier_neighbor: Vec<i16>,
+    pub part_frontier_edge: Vec<u8>,
+    pub frontier_room_part_neighbor: Vec<i16>,
+    pub frontier_room_part_edge: Vec<u8>,
+    pub part_frontier_selected_count: usize,
+    pub part_frontier_cap_hit_count: usize,
+    pub frontier_room_part_selected_count: usize,
+    pub frontier_room_part_missing_selected_count: usize,
+    pub frontier_room_part_general_selected_count: usize,
+    pub frontier_room_part_missing_cap_hit_count: usize,
+    pub frontier_room_part_general_cap_hit_count: usize,
     // mask, x, y, vertical, kind
     pub frontier: Vec<i8>,
     // Global door output index for each frontier row, or -1 when unavailable.
@@ -2675,6 +2766,9 @@ impl Environment {
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> Result<
         (
@@ -2728,6 +2822,9 @@ impl Environment {
                 config,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
+                part_frontier_neighbor_count,
+                frontier_room_part_neighbor_count,
+                frontier_room_part_missing_connect_reserved_count,
                 frontier_window_size,
             )? {
                 CandidateOutcome::Rejected => {
@@ -2766,6 +2863,9 @@ impl Environment {
                             config,
                             frontier_neighbor_algorithm,
                             frontier_neighbor_count,
+                            part_frontier_neighbor_count,
+                            frontier_room_part_neighbor_count,
+                            frontier_room_part_missing_connect_reserved_count,
                             frontier_window_size,
                         );
                     (candidate, post_candidate_outcomes, door_match, features)
@@ -2812,6 +2912,9 @@ impl Environment {
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> Result<CandidateOutcome, String> {
         let profile = profile_start();
@@ -2889,6 +2992,9 @@ impl Environment {
             config,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
         );
         profile_end(ProfileMetric::EnvProposalFeatures, profile);
@@ -2914,6 +3020,9 @@ impl Environment {
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> (StepOutcomes, Vec<i16>, Features) {
         let profile = profile_start();
@@ -2927,6 +3036,9 @@ impl Environment {
             config,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
         );
         profile_end(ProfileMetric::EnvProposalFeatures, profile);
@@ -2994,6 +3106,9 @@ impl Environment {
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> Features {
         if config.is_empty() {
@@ -3017,6 +3132,9 @@ impl Environment {
             extra_occupied,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
         )
     }
@@ -3234,6 +3352,9 @@ impl Environment {
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> Features {
         self.features_with_occupancy(
@@ -3243,6 +3364,9 @@ impl Environment {
             None,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
         )
     }
@@ -3255,6 +3379,9 @@ impl Environment {
         extra_occupied: Option<(&GeometryData, Coord, Coord)>,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> Features {
         assert!(self.frontier.len() <= Self::max_frontiers(common));
@@ -3554,6 +3681,175 @@ impl Environment {
             }
             profile_end(ProfileMetric::EnvFeaturesFrontierNeighborFlags, profile);
         }
+
+        let mut part_frontier_neighbor =
+            vec![-1; row_room_part_idx.len() * part_frontier_neighbor_count];
+        let mut part_frontier_edge =
+            vec![
+                0;
+                row_room_part_idx.len() * part_frontier_neighbor_count * PART_FRONTIER_EDGE_WIDTH
+            ];
+        let mut frontier_room_part_neighbor =
+            vec![-1; frontier_count * frontier_room_part_neighbor_count];
+        let mut frontier_room_part_edge =
+            vec![0; frontier_count * frontier_room_part_neighbor_count * PART_FRONTIER_EDGE_WIDTH];
+        let mut part_frontier_selected_count = 0;
+        let mut part_frontier_cap_hit_count = 0;
+        let mut frontier_room_part_selected_count = 0;
+        let mut frontier_room_part_missing_selected_count = 0;
+        let mut frontier_room_part_general_selected_count = 0;
+        let mut frontier_room_part_missing_cap_hit_count = 0;
+        let mut frontier_room_part_general_cap_hit_count = 0;
+        if !row_room_part_idx.is_empty() && frontier_count > 0 {
+            let graph_size = common.room_part.len();
+            let mut candidates_by_part = vec![Vec::new(); row_room_part_idx.len()];
+            let mut candidates_by_frontier = vec![Vec::new(); frontier_count];
+            for (part_row_idx, (&part_idx, &flags)) in row_room_part_idx
+                .iter()
+                .zip(row_room_part_flags.iter())
+                .enumerate()
+            {
+                let part_idx = part_idx as usize;
+                let part_component = self.room_part_component[part_idx];
+                for (frontier_row_idx, (_, frontier_data)) in sorted_frontiers.iter().enumerate() {
+                    let frontier_part_idx = frontier_data.room_part_idx as usize;
+                    let part_to_frontier =
+                        self.graph_distance[part_idx * graph_size + frontier_part_idx];
+                    let frontier_to_part =
+                        self.graph_distance[frontier_part_idx * graph_size + part_idx];
+                    let same_component =
+                        part_component != NO_COMPONENT && part_component == frontier_data.component;
+                    if !same_component
+                        && part_to_frontier == UNREACHABLE_DISTANCE
+                        && frontier_to_part == UNREACHABLE_DISTANCE
+                    {
+                        continue;
+                    }
+                    let candidate = PartFrontierCandidate {
+                        part_row_idx,
+                        frontier_row_idx,
+                        part_to_frontier,
+                        frontier_to_part,
+                        flags,
+                        same_component,
+                    };
+                    candidates_by_part[part_row_idx].push(candidate);
+                    candidates_by_frontier[frontier_row_idx].push(candidate);
+                }
+            }
+
+            if part_frontier_neighbor_count > 0 {
+                for (part_row_idx, candidates) in candidates_by_part.iter_mut().enumerate() {
+                    candidates.sort_unstable_by_key(|candidate| {
+                        (
+                            part_frontier_min_rank(*candidate),
+                            part_frontier_max_rank(*candidate),
+                            candidate.frontier_row_idx,
+                        )
+                    });
+                    if candidates.len() > part_frontier_neighbor_count {
+                        part_frontier_cap_hit_count += 1;
+                    }
+                    for (neighbor_idx, candidate) in candidates
+                        .iter()
+                        .take(part_frontier_neighbor_count)
+                        .copied()
+                        .enumerate()
+                    {
+                        part_frontier_selected_count += 1;
+                        part_frontier_neighbor
+                            [part_row_idx * part_frontier_neighbor_count + neighbor_idx] =
+                            candidate.frontier_row_idx as i16;
+                        let edge = encode_part_frontier_edge(candidate);
+                        let edge_start = (part_row_idx * part_frontier_neighbor_count
+                            + neighbor_idx)
+                            * PART_FRONTIER_EDGE_WIDTH;
+                        part_frontier_edge[edge_start..edge_start + PART_FRONTIER_EDGE_WIDTH]
+                            .copy_from_slice(&edge);
+                    }
+                }
+            }
+
+            if frontier_room_part_neighbor_count > 0 {
+                let missing_reserved_count = min(
+                    frontier_room_part_missing_connect_reserved_count,
+                    frontier_room_part_neighbor_count,
+                );
+                for (frontier_row_idx, candidates) in candidates_by_frontier.iter_mut().enumerate()
+                {
+                    let mut missing_candidates = candidates
+                        .iter()
+                        .copied()
+                        .filter(|candidate| candidate.flags & ROOM_PART_FLAG_MISSING_CONNECT != 0)
+                        .collect::<Vec<_>>();
+                    missing_candidates.sort_unstable_by_key(|candidate| {
+                        (
+                            part_frontier_min_rank(*candidate),
+                            part_frontier_max_rank(*candidate),
+                            candidate.part_row_idx,
+                        )
+                    });
+                    if missing_candidates.len() > missing_reserved_count {
+                        frontier_room_part_missing_cap_hit_count += 1;
+                    }
+
+                    let mut selected = Vec::with_capacity(frontier_room_part_neighbor_count);
+                    for candidate in missing_candidates
+                        .iter()
+                        .take(missing_reserved_count)
+                        .copied()
+                    {
+                        selected.push(candidate);
+                        frontier_room_part_missing_selected_count += 1;
+                    }
+
+                    let mut selected_part_rows = selected
+                        .iter()
+                        .map(|candidate| candidate.part_row_idx)
+                        .collect::<Vec<_>>();
+                    selected_part_rows.sort_unstable();
+                    let mut general_candidates = candidates
+                        .iter()
+                        .copied()
+                        .filter(|candidate| {
+                            selected_part_rows
+                                .binary_search(&candidate.part_row_idx)
+                                .is_err()
+                        })
+                        .collect::<Vec<_>>();
+                    general_candidates.sort_unstable_by_key(|candidate| {
+                        (
+                            frontier_room_part_general_rank(*candidate),
+                            part_frontier_min_rank(*candidate),
+                            part_frontier_max_rank(*candidate),
+                            candidate.part_row_idx,
+                        )
+                    });
+                    let general_slots = frontier_room_part_neighbor_count - selected.len();
+                    if general_candidates.len() > general_slots {
+                        frontier_room_part_general_cap_hit_count += 1;
+                    }
+                    for candidate in general_candidates.iter().take(general_slots).copied() {
+                        selected.push(candidate);
+                        frontier_room_part_general_selected_count += 1;
+                    }
+
+                    for (neighbor_idx, candidate) in selected.iter().copied().enumerate() {
+                        frontier_room_part_selected_count += 1;
+                        frontier_room_part_neighbor
+                            [frontier_row_idx * frontier_room_part_neighbor_count + neighbor_idx] =
+                            candidate.part_row_idx as i16;
+                        let edge = encode_part_frontier_edge(candidate);
+                        let edge_start = (frontier_row_idx * frontier_room_part_neighbor_count
+                            + neighbor_idx)
+                            * PART_FRONTIER_EDGE_WIDTH;
+                        frontier_room_part_edge[edge_start..edge_start + PART_FRONTIER_EDGE_WIDTH]
+                            .copy_from_slice(&edge);
+                    }
+                }
+            }
+        }
+
         let profile = profile_start();
         let room_x = if config.room_position {
             self.room_x.clone()
@@ -3593,6 +3889,17 @@ impl Environment {
             known_refill_to_room_distance,
             row_room_part_idx,
             row_room_part_flags,
+            part_frontier_neighbor,
+            part_frontier_edge,
+            frontier_room_part_neighbor,
+            frontier_room_part_edge,
+            part_frontier_selected_count,
+            part_frontier_cap_hit_count,
+            frontier_room_part_selected_count,
+            frontier_room_part_missing_selected_count,
+            frontier_room_part_general_selected_count,
+            frontier_room_part_missing_cap_hit_count,
+            frontier_room_part_general_cap_hit_count,
             frontier,
             row_door_output_idx,
             frontier_occupancy,
@@ -3613,6 +3920,9 @@ impl Environment {
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
     ) -> Features {
         if config.is_empty() {
@@ -3639,6 +3949,9 @@ impl Environment {
             extra_occupied,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
         );
         let profile = profile_start();
@@ -4351,6 +4664,9 @@ mod tests {
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
+                2,
+                8,
+                2,
                 1,
             )
             .unwrap();
@@ -4682,6 +4998,9 @@ mod tests {
             &config,
             FrontierNeighborAlgorithm::Delaunay,
             4,
+            2,
+            8,
+            2,
             4,
         );
         assert_eq!(env.active_save_room_parts, expected_active_save_room_parts);
@@ -5456,6 +5775,9 @@ mod tests {
             },
             FrontierNeighborAlgorithm::Delaunay,
             1,
+            2,
+            8,
+            2,
             1,
         );
 
@@ -5585,6 +5907,9 @@ mod tests {
             &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Nearest,
             1,
+            2,
+            8,
+            2,
             1,
         );
 
@@ -5626,6 +5951,9 @@ mod tests {
             &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Nearest,
             1,
+            2,
+            8,
+            2,
             1,
         );
 
@@ -6372,6 +6700,9 @@ mod tests {
             &config,
             FrontierNeighborAlgorithm::Delaunay,
             4,
+            2,
+            8,
+            2,
             4,
         );
         assert_eq!(
@@ -6395,7 +6726,16 @@ mod tests {
         env.step(candidate, &common);
         assert_eq!(
             simulated,
-            env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+            env.features(
+                &common,
+                &config,
+                FrontierNeighborAlgorithm::Delaunay,
+                4,
+                2,
+                8,
+                2,
+                4,
+            )
         );
         assert_eq!(env.occupancy[0], 1);
         assert_eq!(env.occupancy[1], 1);
@@ -6412,12 +6752,24 @@ mod tests {
             &config,
             FrontierNeighborAlgorithm::Delaunay,
             4,
+            2,
+            8,
+            2,
             4,
         );
         env.step(dummy_candidate, &common);
         assert_eq!(
             simulated,
-            env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+            env.features(
+                &common,
+                &config,
+                FrontierNeighborAlgorithm::Delaunay,
+                4,
+                2,
+                8,
+                2,
+                4,
+            )
         );
     }
 
@@ -6456,7 +6808,16 @@ mod tests {
             },
             &common,
         );
-        let features = env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4);
+        let features = env.features(
+            &common,
+            &config,
+            FrontierNeighborAlgorithm::Delaunay,
+            4,
+            2,
+            8,
+            2,
+            4,
+        );
         assert_eq!(features.frontier.len() / FEATURE_FRONTIER_WIDTH, 1);
         let placed_door_output_idx = common
             .door_output
@@ -6473,7 +6834,16 @@ mod tests {
             },
             &common,
         );
-        let features = env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4);
+        let features = env.features(
+            &common,
+            &config,
+            FrontierNeighborAlgorithm::Delaunay,
+            4,
+            2,
+            8,
+            2,
+            4,
+        );
         assert!(features.row_door_output_idx.is_empty());
     }
 
@@ -6605,8 +6975,26 @@ mod tests {
             full_env.step(action, &common);
             known_env.step_known(action, &common);
             assert_eq!(
-                full_env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4),
-                known_env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 4, 4)
+                full_env.features(
+                    &common,
+                    &config,
+                    FrontierNeighborAlgorithm::Delaunay,
+                    4,
+                    2,
+                    8,
+                    2,
+                    4,
+                ),
+                known_env.features(
+                    &common,
+                    &config,
+                    FrontierNeighborAlgorithm::Delaunay,
+                    4,
+                    2,
+                    8,
+                    2,
+                    4,
+                )
             );
         }
     }
@@ -6758,7 +7146,16 @@ mod tests {
             frontier_connection_reachability: true,
             ..FeatureConfig::all_disabled()
         };
-        let features = env.features(&common, &config, FrontierNeighborAlgorithm::Delaunay, 1, 1);
+        let features = env.features(
+            &common,
+            &config,
+            FrontierNeighborAlgorithm::Delaunay,
+            1,
+            2,
+            8,
+            2,
+            1,
+        );
         assert_eq!(features.connection_reachability, vec![0]);
         assert_eq!(features.frontier_connection_reachability, vec![1, 2]);
     }
@@ -6781,6 +7178,9 @@ mod tests {
             &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Delaunay,
             4,
+            2,
+            8,
+            2,
             4,
         );
         assert_eq!(features, Features::default());

@@ -89,30 +89,30 @@ Before enabling these overrides for generation, validate that the proposal
 representation can model long-term tradeoffs well enough that deterministic
 short-term reward improvements do not dominate candidate selection.
 
-## Step 1: Bounded Part-Frontier Message Passing
+## Current State: Bounded Part-Frontier Message Passing
 
-Add bidirectional sparse edges between unresolved room-part nodes and relevant
-frontier nodes.
+The model now uses bidirectional sparse edges between unresolved room-part nodes
+and relevant frontier nodes.
 
-Use separate top-k bounds for each direction:
+The first implementation uses separate fixed-width top-k bounds for each
+direction:
 
-- `part <- frontier`: nearest or most relevant frontiers for each unresolved
-  room part, including both graph directions where applicable.
-- `frontier <- part`: most relevant unresolved room parts for each frontier,
-  ranked by local objective pressure or potential improvement.
+- `part <- frontier`: 2 frontiers per unresolved room-part node.
+- `frontier <- part`: 8 room-part nodes per frontier.
+- The first 2 `frontier <- part` slots are reserved for missing-connect
+  endpoint pressure. Unused reserved slots are backfilled by the general ranking.
 
-Rust should build candidate edge lists from graph-distance caches, rank them,
-and pack the selected top-k edges into fixed-width tensors with `-1` padding.
-Python should consume those tensors with the same gather-and-mask style as the
-current frontier-neighbor message passing.
+The two directions are selected independently; no edge symmetry is required.
+Rust builds dynamic candidate edge lists from graph distances, ranks them, and
+packs selected top-k edges into fixed-width tensors with `-1` padding. Python
+consumes those tensors with the same gather-and-mask style as the
+frontier-neighbor message passing.
 
-Edge features should include:
+Edge features include:
 
 - directed graph distances for the edge
-- same-component/reachability flags where useful
+- same-component and directional reachability flags
 - local objective flags: save, refill, missing-connect endpoint
-- improvement margin against the current finalized-known threshold where
-  applicable
 
 At each message-passing layer:
 
@@ -125,12 +125,13 @@ At each message-passing layer:
 The final frontier node state remains `proposal_state`, so proposal scoring
 automatically benefits from unresolved local-outcome information.
 
-Track truncation diagnostics:
+Aim diagnostics track:
 
 - unresolved room-part node count
-- candidate part-frontier edge count before top-k
-- fraction of part rows and frontier rows hitting each cap
-- average and max selected fan-in/fan-out
+- average selected fan-in for both directions
+- missing-connect and general selected fan-in for `frontier <- part`
+- cap-hit rates for `part <- frontier`, missing-connect-reserved
+  `frontier <- part`, and general `frontier <- part`
 
 If truncation is frequent and appears quality-limiting, raise caps or consider a
 COO/segment-reduce representation for only the affected edge direction.
@@ -186,12 +187,15 @@ Validation commands:
 
 ## Open Design Checks
 
-- Choose initial top-k caps for `part <- frontier` and `frontier <- part`.
-- Define the exact ranking score for `frontier <- part` edges so proposal states
-  receive the most useful unresolved local pressure.
 - Decide whether missing-connect validity and missing-connect distance should
   share one directed query representation or use separate heads from the same
   query state.
+- Evaluate whether the initial `part <- frontier = 2`,
+  `frontier <- part = 8`, and missing-connect reserved count of 2 have
+  acceptable truncation rates.
+- Refine `frontier <- part` ranking if save/refill pressure still crowds out
+  missing-connect endpoints or if diagnostics show poor use of the general
+  slots.
 - Revisit frontier-neighbor count after local nodes are added; extra
   frontier-frontier neighbors may become more useful late in training but should
   be evaluated separately from the room-part-node change.

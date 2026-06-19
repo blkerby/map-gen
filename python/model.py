@@ -389,6 +389,33 @@ class FrontierModel(torch.nn.Module):
                 for _ in range(num_layers if use_neighbors else 0)
             ]
         )
+        use_part_frontier = self.features.room_part_nodes and self.features.frontier_mask
+        self.part_from_frontier_message_layers = torch.nn.ModuleList(
+            [
+                BoundedMessagePassingLayer(
+                    source_width=embedding_width,
+                    target_width=embedding_width,
+                    global_width=global_embedding_width,
+                    message_hidden_width=hidden_width,
+                    update_hidden_width=hidden_width,
+                    edge_width=10,
+                )
+                for _ in range(num_layers if use_part_frontier else 0)
+            ]
+        )
+        self.frontier_from_part_message_layers = torch.nn.ModuleList(
+            [
+                BoundedMessagePassingLayer(
+                    source_width=embedding_width,
+                    target_width=embedding_width,
+                    global_width=global_embedding_width,
+                    message_hidden_width=hidden_width,
+                    update_hidden_width=hidden_width,
+                    edge_width=10,
+                )
+                for _ in range(num_layers if use_part_frontier else 0)
+            ]
+        )
         global_width = (
             output_metadata.num_room_connection_variants * self.features.inventory
             + embedding_width
@@ -638,6 +665,37 @@ class FrontierModel(torch.nn.Module):
             )
         return torch.cat(values, dim=-1) if values else None
 
+    def _part_frontier_edge_features(self, edge: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        edge = edge.view(edge.shape[0], edge.shape[1] // 10, 10)
+        encoded_distance = edge[..., :2].to(dtype)
+        distance_features = torch.where(
+            encoded_distance > 0,
+            encoded_distance.clamp_min(1).reciprocal(),
+            torch.zeros_like(encoded_distance),
+        )
+        return torch.cat([distance_features, edge[..., 2:].to(dtype)], dim=-1)
+
+    def _snapshot_local_neighbor_indices(
+        self,
+        raw_neighbor: torch.Tensor,
+        target_snapshot_idx: torch.Tensor,
+        source_snapshot_idx: torch.Tensor,
+        snapshot_count: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        local_neighbor = raw_neighbor.clamp_min(0).to(torch.int64)
+        source_count_by_snapshot = torch.bincount(
+            source_snapshot_idx,
+            minlength=snapshot_count,
+        )
+        source_start_by_snapshot = (
+            source_count_by_snapshot.cumsum(0) - source_count_by_snapshot
+        )
+        source_neighbor_count = source_count_by_snapshot[target_snapshot_idx].unsqueeze(1)
+        neighbor_valid = (raw_neighbor >= 0) & (local_neighbor < source_neighbor_count)
+        neighbor = source_start_by_snapshot[target_snapshot_idx].unsqueeze(1) + local_neighbor
+        neighbor = torch.where(neighbor_valid, neighbor, torch.zeros_like(neighbor))
+        return neighbor, neighbor_valid.unsqueeze(-1)
+
     def _activation_dtype(self, device: torch.device) -> torch.dtype:
         return activation_dtype(device, next(self.parameters()).dtype)
 
@@ -883,7 +941,7 @@ class FrontierModel(torch.nn.Module):
         # numeric: [r, numeric_width]
         numeric = []
         dtype = self._activation_dtype(node.device)
-        _ = self._room_part_node_state(features, dtype)
+        room_part_X = self._room_part_node_state(features, dtype)
         if self.features.frontier_occupancy:
             numeric.append(
                 features.frontier_features.frontier_occupancy.unsqueeze(-1)
@@ -1022,16 +1080,79 @@ class FrontierModel(torch.nn.Module):
                 if relative_position is not None:
                     relative_position = relative_position[:, 0]
             global_rows = global_state[row_snapshot_idx]
-            for layer in self.frontier_message_layers:
-                X = layer(
-                    target_state=X,
-                    source_state=X,
-                    neighbor=neighbor,
-                    neighbor_mask=pair_mask,
-                    target_global_state=global_rows,
-                    edge_features=pair,
-                    extra_message_features=relative_position,
-                )
+            room_part_row_count = room_part_X.shape[0]
+            room_part_snapshot_idx = features.room_part_features.row_snapshot_idx.to(torch.int64)
+            part_global_rows = global_state[room_part_snapshot_idx]
+            part_frontier_neighbor = features.room_part_features.part_frontier_neighbor
+            frontier_room_part_neighbor = features.room_part_features.frontier_room_part_neighbor
+            part_frontier_edge = self._part_frontier_edge_features(
+                features.room_part_features.part_frontier_edge,
+                dtype,
+            )
+            frontier_room_part_edge = self._part_frontier_edge_features(
+                features.room_part_features.frontier_room_part_edge,
+                dtype,
+            )
+            layer_count = max(
+                len(self.frontier_message_layers),
+                len(self.part_from_frontier_message_layers),
+                len(self.frontier_from_part_message_layers),
+            )
+            for layer_idx in range(layer_count):
+                if layer_idx < len(self.frontier_message_layers):
+                    X = self.frontier_message_layers[layer_idx](
+                        target_state=X,
+                        source_state=X,
+                        neighbor=neighbor,
+                        neighbor_mask=pair_mask,
+                        target_global_state=global_rows,
+                        edge_features=pair,
+                        extra_message_features=relative_position,
+                    )
+                if (
+                    layer_idx < len(self.part_from_frontier_message_layers)
+                    and row_count > 0
+                    and room_part_row_count > 0
+                    and part_frontier_neighbor.shape[1] > 0
+                ):
+                    part_neighbor, part_neighbor_mask = self._snapshot_local_neighbor_indices(
+                        part_frontier_neighbor,
+                        room_part_snapshot_idx,
+                        row_snapshot_idx,
+                        snapshot_count,
+                    )
+                    room_part_X = self.part_from_frontier_message_layers[layer_idx](
+                        target_state=room_part_X,
+                        source_state=X,
+                        neighbor=part_neighbor,
+                        neighbor_mask=part_neighbor_mask,
+                        target_global_state=part_global_rows,
+                        edge_features=part_frontier_edge,
+                        extra_message_features=None,
+                    )
+                if (
+                    layer_idx < len(self.frontier_from_part_message_layers)
+                    and row_count > 0
+                    and room_part_row_count > 0
+                    and frontier_room_part_neighbor.shape[1] > 0
+                ):
+                    frontier_part_neighbor, frontier_part_neighbor_mask = (
+                        self._snapshot_local_neighbor_indices(
+                            frontier_room_part_neighbor,
+                            row_snapshot_idx,
+                            room_part_snapshot_idx,
+                            snapshot_count,
+                        )
+                    )
+                    X = self.frontier_from_part_message_layers[layer_idx](
+                        target_state=X,
+                        source_state=room_part_X,
+                        neighbor=frontier_part_neighbor,
+                        neighbor_mask=frontier_part_neighbor_mask,
+                        target_global_state=global_rows,
+                        edge_features=frontier_room_part_edge,
+                        extra_message_features=None,
+                    )
             if X.device.type == "cuda":
                 mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
                 mean_pool.index_add_(0, row_snapshot_idx, X)

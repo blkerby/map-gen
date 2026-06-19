@@ -7,8 +7,8 @@ use crate::common::{
 };
 use crate::environment::{
     Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig, Features, FrontierNeighborAlgorithm,
-    ROOM_PART_FLAG_MISSING_CONNECT, ROOM_PART_FLAG_REFILL_FROM_ROOM, ROOM_PART_FLAG_REFILL_TO_ROOM,
-    ROOM_PART_FLAG_SAVE_FROM_ROOM, ROOM_PART_FLAG_SAVE_TO_ROOM,
+    PART_FRONTIER_EDGE_WIDTH, ROOM_PART_FLAG_MISSING_CONNECT, ROOM_PART_FLAG_REFILL_FROM_ROOM,
+    ROOM_PART_FLAG_REFILL_TO_ROOM, ROOM_PART_FLAG_SAVE_FROM_ROOM, ROOM_PART_FLAG_SAVE_TO_ROOM,
     StepOutcomes as EnvironmentStepOutcomes,
 };
 use crossbeam_channel as channel;
@@ -129,6 +129,35 @@ fn room_part_flag_counts(features: &[Features]) -> [usize; ROOM_PART_FLAG_COUNT]
         for (idx, flag) in ROOM_PART_FLAG_VALUES.iter().copied().enumerate() {
             counts[idx] += usize::from(flags & flag != 0);
         }
+    }
+    counts
+}
+
+#[derive(Clone, Copy, Default)]
+struct PartFrontierFeatureCounts {
+    part_frontier_selected_count: usize,
+    part_frontier_cap_hit_count: usize,
+    frontier_room_part_selected_count: usize,
+    frontier_room_part_missing_selected_count: usize,
+    frontier_room_part_general_selected_count: usize,
+    frontier_room_part_missing_cap_hit_count: usize,
+    frontier_room_part_general_cap_hit_count: usize,
+}
+
+fn part_frontier_feature_counts(features: &[Features]) -> PartFrontierFeatureCounts {
+    let mut counts = PartFrontierFeatureCounts::default();
+    for features in features {
+        counts.part_frontier_selected_count += features.part_frontier_selected_count;
+        counts.part_frontier_cap_hit_count += features.part_frontier_cap_hit_count;
+        counts.frontier_room_part_selected_count += features.frontier_room_part_selected_count;
+        counts.frontier_room_part_missing_selected_count +=
+            features.frontier_room_part_missing_selected_count;
+        counts.frontier_room_part_general_selected_count +=
+            features.frontier_room_part_general_selected_count;
+        counts.frontier_room_part_missing_cap_hit_count +=
+            features.frontier_room_part_missing_cap_hit_count;
+        counts.frontier_room_part_general_cap_hit_count +=
+            features.frontier_room_part_general_cap_hit_count;
     }
     counts
 }
@@ -272,6 +301,9 @@ enum WorkerCommand {
     GetCandidatesFromProposals {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
         recommended_candidates: usize,
         shortlist_candidates: usize,
@@ -354,6 +386,9 @@ enum WorkerCommand {
     GetFeatures {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
         environment_start: usize,
         environment_count: usize,
@@ -404,6 +439,7 @@ enum WorkerResponse {
         frontier_row_count: usize,
         room_part_row_count: usize,
         room_part_flag_counts: [usize; ROOM_PART_FLAG_COUNT],
+        part_frontier_counts: PartFrontierFeatureCounts,
     },
 }
 
@@ -579,6 +615,9 @@ fn worker_loop(
             WorkerCommand::GetCandidatesFromProposals {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
+                part_frontier_neighbor_count,
+                frontier_room_part_neighbor_count,
+                frontier_room_part_missing_connect_reserved_count,
                 frontier_window_size,
                 recommended_candidates,
                 shortlist_candidates,
@@ -688,6 +727,9 @@ fn worker_loop(
                         &features,
                         frontier_neighbor_algorithm,
                         frontier_neighbor_count,
+                        part_frontier_neighbor_count,
+                        frontier_room_part_neighbor_count,
+                        frontier_room_part_missing_connect_reserved_count,
                         frontier_window_size,
                     ) {
                         Ok(result) => result,
@@ -767,6 +809,9 @@ fn worker_loop(
                                 &features,
                                 frontier_neighbor_algorithm,
                                 frontier_neighbor_count,
+                                part_frontier_neighbor_count,
+                                frontier_room_part_neighbor_count,
+                                frontier_room_part_missing_connect_reserved_count,
                                 frontier_window_size,
                             ));
                         }
@@ -808,6 +853,7 @@ fn worker_loop(
                             .map(|features| features.row_room_part_idx.len())
                             .sum(),
                         room_part_flag_counts: room_part_flag_counts(&pending_features),
+                        part_frontier_counts: part_frontier_feature_counts(&pending_features),
                     },
                 }
             }
@@ -1173,6 +1219,9 @@ fn worker_loop(
             WorkerCommand::GetFeatures {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
+                part_frontier_neighbor_count,
+                frontier_room_part_neighbor_count,
+                frontier_room_part_missing_connect_reserved_count,
                 frontier_window_size,
                 environment_start,
                 environment_count,
@@ -1187,6 +1236,9 @@ fn worker_loop(
                             &features,
                             frontier_neighbor_algorithm,
                             frontier_neighbor_count,
+                            part_frontier_neighbor_count,
+                            frontier_room_part_neighbor_count,
+                            frontier_room_part_missing_connect_reserved_count,
                             frontier_window_size,
                         )
                     })
@@ -1201,6 +1253,7 @@ fn worker_loop(
                         .map(|features| features.row_room_part_idx.len())
                         .sum(),
                     room_part_flag_counts: room_part_flag_counts(&pending_features),
+                    part_frontier_counts: part_frontier_feature_counts(&pending_features),
                 }
             }
             WorkerCommand::PackFeatures {
@@ -1222,6 +1275,7 @@ fn worker_loop(
                         frontier_row_count: outputs.frontier_row_count,
                         room_part_row_count: outputs.room_part_row_count,
                         room_part_flag_counts: outputs.room_part_flag_counts,
+                        part_frontier_counts: outputs.part_frontier_counts,
                     }
                 }
             }
@@ -1305,18 +1359,21 @@ fn collect_feature_info(
     usize,
     Vec<usize>,
     [usize; ROOM_PART_FLAG_COUNT],
+    PartFrontierFeatureCounts,
 )> {
     let mut frontier_row_count = 0;
     let mut worker_frontier_row_counts = vec![0; workers.len()];
     let mut room_part_row_count = 0;
     let mut worker_room_part_row_counts = vec![0; workers.len()];
     let mut room_part_flag_counts = [0; ROOM_PART_FLAG_COUNT];
+    let mut part_frontier_counts = PartFrontierFeatureCounts::default();
     for worker_idx in sent_workers {
         match workers[worker_idx].recv() {
             Ok(WorkerResponse::FeatureInfo {
                 frontier_row_count: worker_frontier_row_count,
                 room_part_row_count: worker_room_part_row_count,
                 room_part_flag_counts: worker_room_part_flag_counts,
+                part_frontier_counts: worker_part_frontier_counts,
             }) => {
                 frontier_row_count += worker_frontier_row_count;
                 worker_frontier_row_counts[worker_idx] = worker_frontier_row_count;
@@ -1325,6 +1382,20 @@ fn collect_feature_info(
                 for idx in 0..ROOM_PART_FLAG_COUNT {
                     room_part_flag_counts[idx] += worker_room_part_flag_counts[idx];
                 }
+                part_frontier_counts.part_frontier_selected_count +=
+                    worker_part_frontier_counts.part_frontier_selected_count;
+                part_frontier_counts.part_frontier_cap_hit_count +=
+                    worker_part_frontier_counts.part_frontier_cap_hit_count;
+                part_frontier_counts.frontier_room_part_selected_count +=
+                    worker_part_frontier_counts.frontier_room_part_selected_count;
+                part_frontier_counts.frontier_room_part_missing_selected_count +=
+                    worker_part_frontier_counts.frontier_room_part_missing_selected_count;
+                part_frontier_counts.frontier_room_part_general_selected_count +=
+                    worker_part_frontier_counts.frontier_room_part_general_selected_count;
+                part_frontier_counts.frontier_room_part_missing_cap_hit_count +=
+                    worker_part_frontier_counts.frontier_room_part_missing_cap_hit_count;
+                part_frontier_counts.frontier_room_part_general_cap_hit_count +=
+                    worker_part_frontier_counts.frontier_room_part_general_cap_hit_count;
             }
             Ok(WorkerResponse::Done) => set_first_error(
                 &mut first_error,
@@ -1346,6 +1417,7 @@ fn collect_feature_info(
             room_part_row_count,
             worker_room_part_row_counts,
             room_part_flag_counts,
+            part_frontier_counts,
         ))
     }
 }
@@ -1384,6 +1456,9 @@ pub struct EnvironmentGroup {
     num_environments: usize,
     frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
     frontier_neighbor_count: usize,
+    part_frontier_neighbor_count: usize,
+    frontier_room_part_neighbor_count: usize,
+    frontier_room_part_missing_connect_reserved_count: usize,
     frontier_window_size: usize,
     action_count: usize,
 }
@@ -1452,6 +1527,20 @@ pub struct FeatureRequirements {
     room_part_refill_to_room_count: usize,
     #[pyo3(get)]
     room_part_missing_connect_count: usize,
+    #[pyo3(get)]
+    part_frontier_edge_count: usize,
+    #[pyo3(get)]
+    part_frontier_cap_hit_count: usize,
+    #[pyo3(get)]
+    frontier_room_part_edge_count: usize,
+    #[pyo3(get)]
+    frontier_room_part_missing_edge_count: usize,
+    #[pyo3(get)]
+    frontier_room_part_general_edge_count: usize,
+    #[pyo3(get)]
+    frontier_room_part_missing_cap_hit_count: usize,
+    #[pyo3(get)]
+    frontier_room_part_general_cap_hit_count: usize,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1522,6 +1611,10 @@ pub struct FeatureBuffers {
     room_part_row_snapshot_idx: Py<PyArray1<i64>>,
     row_room_part_idx: Py<PyArray1<i16>>,
     row_room_part_flags: Py<PyArray1<u8>>,
+    part_frontier_neighbor: Py<PyArray2<i16>>,
+    part_frontier_edge: Py<PyArray2<u8>>,
+    frontier_room_part_neighbor: Py<PyArray2<i16>>,
+    frontier_room_part_edge: Py<PyArray2<u8>>,
 }
 
 #[pymethods]
@@ -1625,6 +1718,10 @@ impl FeatureBuffers {
             room_part_row_snapshot_idx: required_py_field!(fields, "room_part_row_snapshot_idx"),
             row_room_part_idx: required_py_field!(fields, "row_room_part_idx"),
             row_room_part_flags: required_py_field!(fields, "row_room_part_flags"),
+            part_frontier_neighbor: required_py_field!(fields, "part_frontier_neighbor"),
+            part_frontier_edge: required_py_field!(fields, "part_frontier_edge"),
+            frontier_room_part_neighbor: required_py_field!(fields, "frontier_room_part_neighbor"),
+            frontier_room_part_edge: required_py_field!(fields, "frontier_room_part_edge"),
         })
     }
 }
@@ -1859,10 +1956,19 @@ struct FrontierFeatureOutputShards {
     frontier_occupancy: OutputShard<u8>,
     frontier_neighbor: OutputShard<i16>,
     frontier_neighbor_pair: OutputShard<u8>,
+    frontier_room_part_neighbor: OutputShard<i16>,
+    frontier_room_part_edge: OutputShard<u8>,
     frontier_connection_reachability: OutputShard<u8>,
     frontier_neighbor_count: usize,
+    frontier_room_part_neighbor_count: usize,
     connection_count: usize,
     frontier_window_size: usize,
+}
+
+struct RoomPartFeatureOutputShards {
+    part_frontier_neighbor: OutputShard<i16>,
+    part_frontier_edge: OutputShard<u8>,
+    part_frontier_neighbor_count: usize,
 }
 
 struct GlobalFeatureOutputSlices<'a> {
@@ -1900,10 +2006,19 @@ struct FrontierFeatureOutputSlices<'a> {
     frontier_occupancy: &'a mut [u8],
     frontier_neighbor: &'a mut [i16],
     frontier_neighbor_pair: &'a mut [u8],
+    frontier_room_part_neighbor: &'a mut [i16],
+    frontier_room_part_edge: &'a mut [u8],
     frontier_connection_reachability: &'a mut [u8],
     frontier_neighbor_count: usize,
+    frontier_room_part_neighbor_count: usize,
     connection_count: usize,
     frontier_window_size: usize,
+}
+
+struct RoomPartFeatureOutputSlices<'a> {
+    part_frontier_neighbor: &'a mut [i16],
+    part_frontier_edge: &'a mut [u8],
+    part_frontier_neighbor_count: usize,
 }
 
 impl GlobalFeatureOutputShards {
@@ -1969,12 +2084,27 @@ impl FrontierFeatureOutputShards {
             frontier_occupancy: unsafe { self.frontier_occupancy.into_mut_slice() },
             frontier_neighbor: unsafe { self.frontier_neighbor.into_mut_slice() },
             frontier_neighbor_pair: unsafe { self.frontier_neighbor_pair.into_mut_slice() },
+            frontier_room_part_neighbor: unsafe {
+                self.frontier_room_part_neighbor.into_mut_slice()
+            },
+            frontier_room_part_edge: unsafe { self.frontier_room_part_edge.into_mut_slice() },
             frontier_connection_reachability: unsafe {
                 self.frontier_connection_reachability.into_mut_slice()
             },
             frontier_neighbor_count: self.frontier_neighbor_count,
+            frontier_room_part_neighbor_count: self.frontier_room_part_neighbor_count,
             connection_count: self.connection_count,
             frontier_window_size: self.frontier_window_size,
+        }
+    }
+}
+
+impl RoomPartFeatureOutputShards {
+    unsafe fn into_slices<'a>(self) -> RoomPartFeatureOutputSlices<'a> {
+        RoomPartFeatureOutputSlices {
+            part_frontier_neighbor: unsafe { self.part_frontier_neighbor.into_mut_slice() },
+            part_frontier_edge: unsafe { self.part_frontier_edge.into_mut_slice() },
+            part_frontier_neighbor_count: self.part_frontier_neighbor_count,
         }
     }
 }
@@ -2134,6 +2264,20 @@ impl FrontierFeatureOutputSlices<'_> {
             self.frontier_neighbor_count,
         );
         copy_row(
+            &mut self.frontier_room_part_neighbor,
+            &features.frontier_room_part_neighbor,
+            dst_idx,
+            src_idx,
+            self.frontier_room_part_neighbor_count,
+        );
+        copy_row(
+            &mut self.frontier_room_part_edge,
+            &features.frontier_room_part_edge,
+            dst_idx,
+            src_idx,
+            self.frontier_room_part_neighbor_count * PART_FRONTIER_EDGE_WIDTH,
+        );
+        copy_row(
             &mut self.frontier_connection_reachability,
             &features.frontier_connection_reachability,
             dst_idx,
@@ -2143,9 +2287,43 @@ impl FrontierFeatureOutputSlices<'_> {
     }
 }
 
+impl RoomPartFeatureOutputSlices<'_> {
+    fn write_room_part_row(&mut self, dst_idx: usize, features: &Features, src_idx: usize) {
+        fn copy_row<T: Copy>(
+            dst: &mut [T],
+            src: &[T],
+            dst_idx: usize,
+            src_idx: usize,
+            row_width: usize,
+        ) {
+            if src.is_empty() {
+                return;
+            }
+            dst[dst_idx * row_width..(dst_idx + 1) * row_width]
+                .copy_from_slice(&src[src_idx * row_width..(src_idx + 1) * row_width]);
+        }
+
+        copy_row(
+            &mut self.part_frontier_neighbor,
+            &features.part_frontier_neighbor,
+            dst_idx,
+            src_idx,
+            self.part_frontier_neighbor_count,
+        );
+        copy_row(
+            &mut self.part_frontier_edge,
+            &features.part_frontier_edge,
+            dst_idx,
+            src_idx,
+            self.part_frontier_neighbor_count * PART_FRONTIER_EDGE_WIDTH,
+        );
+    }
+}
+
 struct FeatureOutputShards {
     global: GlobalFeatureOutputShards,
     frontier_rows: FrontierFeatureOutputShards,
+    room_part_rows: RoomPartFeatureOutputShards,
     row_snapshot_idx: OutputShard<i64>,
     row_frontier_idx: OutputShard<FrontierIdx>,
     row_door_output_idx: OutputShard<i16>,
@@ -2158,6 +2336,7 @@ struct FeatureOutputShards {
 struct FeatureOutputSlices<'a> {
     global: GlobalFeatureOutputSlices<'a>,
     frontier_rows: FrontierFeatureOutputSlices<'a>,
+    room_part_rows: RoomPartFeatureOutputSlices<'a>,
     row_snapshot_idx: &'a mut [i64],
     row_frontier_idx: &'a mut [FrontierIdx],
     row_door_output_idx: &'a mut [i16],
@@ -2168,6 +2347,7 @@ struct FeatureOutputSlices<'a> {
     frontier_row_count: usize,
     room_part_row_count: usize,
     room_part_flag_counts: [usize; ROOM_PART_FLAG_COUNT],
+    part_frontier_counts: PartFrontierFeatureCounts,
 }
 
 impl FeatureOutputShards {
@@ -2175,6 +2355,7 @@ impl FeatureOutputShards {
         FeatureOutputSlices {
             global: unsafe { self.global.into_slices() },
             frontier_rows: unsafe { self.frontier_rows.into_slices() },
+            room_part_rows: unsafe { self.room_part_rows.into_slices() },
             row_snapshot_idx: unsafe { self.row_snapshot_idx.into_mut_slice() },
             row_frontier_idx: unsafe { self.row_frontier_idx.into_mut_slice() },
             row_door_output_idx: unsafe { self.row_door_output_idx.into_mut_slice() },
@@ -2185,6 +2366,7 @@ impl FeatureOutputShards {
             frontier_row_count: 0,
             room_part_row_count: 0,
             room_part_flag_counts: [0; ROOM_PART_FLAG_COUNT],
+            part_frontier_counts: PartFrontierFeatureCounts::default(),
         }
     }
 }
@@ -2206,16 +2388,37 @@ impl FeatureOutputSlices<'_> {
                 .write_frontier_row(frontier_row_idx, features, frontier_idx);
             self.frontier_row_count += 1;
         }
-        for (&room_part_idx, &flags) in features
+        self.part_frontier_counts.part_frontier_selected_count +=
+            features.part_frontier_selected_count;
+        self.part_frontier_counts.part_frontier_cap_hit_count +=
+            features.part_frontier_cap_hit_count;
+        self.part_frontier_counts.frontier_room_part_selected_count +=
+            features.frontier_room_part_selected_count;
+        self.part_frontier_counts
+            .frontier_room_part_missing_selected_count +=
+            features.frontier_room_part_missing_selected_count;
+        self.part_frontier_counts
+            .frontier_room_part_general_selected_count +=
+            features.frontier_room_part_general_selected_count;
+        self.part_frontier_counts
+            .frontier_room_part_missing_cap_hit_count +=
+            features.frontier_room_part_missing_cap_hit_count;
+        self.part_frontier_counts
+            .frontier_room_part_general_cap_hit_count +=
+            features.frontier_room_part_general_cap_hit_count;
+        for (src_idx, (&room_part_idx, &flags)) in features
             .row_room_part_idx
             .iter()
             .zip(features.row_room_part_flags.iter())
+            .enumerate()
         {
             let room_part_row_idx = self.room_part_row_count;
             self.room_part_row_snapshot_idx[room_part_row_idx] =
                 (self.snapshot_start + snapshot_idx) as i64;
             self.row_room_part_idx[room_part_row_idx] = room_part_idx;
             self.row_room_part_flags[room_part_row_idx] = flags;
+            self.room_part_rows
+                .write_room_part_row(room_part_row_idx, features, src_idx);
             for (idx, flag) in ROOM_PART_FLAG_VALUES.iter().copied().enumerate() {
                 self.room_part_flag_counts[idx] += usize::from(flags & flag != 0);
             }
@@ -2252,18 +2455,26 @@ impl Engine {
         })
     }
 
-    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, frontier_window_size, candidate_spatial_cell_size, num_threads=None, frontier_neighbor_algorithm="delaunay"))]
+    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, part_frontier_neighbor_count, frontier_room_part_neighbor_count, frontier_room_part_missing_connect_reserved_count, frontier_window_size, candidate_spatial_cell_size, num_threads=None, frontier_neighbor_algorithm="delaunay"))]
     fn create_environment_group(
         &self,
         map_size: (Coord, Coord),
         num_environments: usize,
         seed: u64,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
         candidate_spatial_cell_size: usize,
         num_threads: Option<usize>,
         frontier_neighbor_algorithm: &str,
     ) -> PyResult<EnvironmentGroup> {
+        if frontier_room_part_missing_connect_reserved_count > frontier_room_part_neighbor_count {
+            return Err(PyValueError::new_err(
+                "frontier_room_part_missing_connect_reserved_count must not exceed frontier_room_part_neighbor_count",
+            ));
+        }
         let frontier_neighbor_algorithm = match frontier_neighbor_algorithm {
             "delaunay" => FrontierNeighborAlgorithm::Delaunay,
             "nearest" => FrontierNeighborAlgorithm::Nearest,
@@ -2282,6 +2493,9 @@ impl Engine {
             seed,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
             candidate_spatial_cell_size,
             num_threads,
@@ -2348,6 +2562,9 @@ impl EnvironmentGroup {
         seed: u64,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
+        part_frontier_neighbor_count: usize,
+        frontier_room_part_neighbor_count: usize,
+        frontier_room_part_missing_connect_reserved_count: usize,
         frontier_window_size: usize,
         candidate_spatial_cell_size: usize,
         num_threads: Option<usize>,
@@ -2393,6 +2610,9 @@ impl EnvironmentGroup {
             num_environments,
             frontier_neighbor_algorithm,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
             action_count: 0,
         })
@@ -2508,10 +2728,21 @@ mod tests {
             frontier_occupancy: OutputShard::empty(),
             frontier_neighbor: OutputShard::empty(),
             frontier_neighbor_pair: OutputShard::empty(),
+            frontier_room_part_neighbor: OutputShard::empty(),
+            frontier_room_part_edge: OutputShard::empty(),
             frontier_connection_reachability: OutputShard::empty(),
             frontier_neighbor_count: 1,
+            frontier_room_part_neighbor_count: 0,
             connection_count: 0,
             frontier_window_size: 1,
+        }
+    }
+
+    fn empty_room_part_feature_output_shards() -> RoomPartFeatureOutputShards {
+        RoomPartFeatureOutputShards {
+            part_frontier_neighbor: OutputShard::empty(),
+            part_frontier_edge: OutputShard::empty(),
+            part_frontier_neighbor_count: 0,
         }
     }
 
@@ -2538,6 +2769,7 @@ mod tests {
                 frontier_neighbor: OutputShard::from_slice(&mut frontier_neighbor),
                 ..empty_frontier_feature_output_shards()
             },
+            room_part_rows: empty_room_part_feature_output_shards(),
             row_snapshot_idx: OutputShard::from_slice(&mut row_snapshot_idx),
             row_frontier_idx: OutputShard::from_slice(&mut row_frontier_idx),
             row_door_output_idx: OutputShard::from_slice(&mut row_door_output_idx),
@@ -2935,6 +3167,7 @@ impl EnvironmentGroup {
             room_part_row_count,
             worker_room_part_row_counts,
             room_part_flag_counts,
+            part_frontier_counts,
         ) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
@@ -2975,6 +3208,10 @@ impl EnvironmentGroup {
                     ),
                     frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
+                    part_frontier_neighbor_count: self.part_frontier_neighbor_count,
+                    frontier_room_part_neighbor_count: self.frontier_room_part_neighbor_count,
+                    frontier_room_part_missing_connect_reserved_count: self
+                        .frontier_room_part_missing_connect_reserved_count,
                     frontier_window_size: self.frontier_window_size,
                     door_outcome_count,
                     connection_outcome_count,
@@ -3054,6 +3291,17 @@ impl EnvironmentGroup {
             room_part_refill_from_room_count: room_part_flag_counts[2],
             room_part_refill_to_room_count: room_part_flag_counts[3],
             room_part_missing_connect_count: room_part_flag_counts[4],
+            part_frontier_edge_count: part_frontier_counts.part_frontier_selected_count,
+            part_frontier_cap_hit_count: part_frontier_counts.part_frontier_cap_hit_count,
+            frontier_room_part_edge_count: part_frontier_counts.frontier_room_part_selected_count,
+            frontier_room_part_missing_edge_count: part_frontier_counts
+                .frontier_room_part_missing_selected_count,
+            frontier_room_part_general_edge_count: part_frontier_counts
+                .frontier_room_part_general_selected_count,
+            frontier_room_part_missing_cap_hit_count: part_frontier_counts
+                .frontier_room_part_missing_cap_hit_count,
+            frontier_room_part_general_cap_hit_count: part_frontier_counts
+                .frontier_room_part_general_cap_hit_count,
         })
     }
 
@@ -3543,6 +3791,7 @@ impl EnvironmentGroup {
             room_part_row_count,
             worker_room_part_row_counts,
             room_part_flag_counts,
+            part_frontier_counts,
         ) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
@@ -3555,6 +3804,10 @@ impl EnvironmentGroup {
                 if let Err(err) = worker.send(WorkerCommand::GetFeatures {
                     frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,
+                    part_frontier_neighbor_count: self.part_frontier_neighbor_count,
+                    frontier_room_part_neighbor_count: self.frontier_room_part_neighbor_count,
+                    frontier_room_part_missing_connect_reserved_count: self
+                        .frontier_room_part_missing_connect_reserved_count,
                     frontier_window_size: self.frontier_window_size,
                     environment_start: start - worker.start,
                     environment_count: end - start,
@@ -3582,6 +3835,17 @@ impl EnvironmentGroup {
             room_part_refill_from_room_count: room_part_flag_counts[2],
             room_part_refill_to_room_count: room_part_flag_counts[3],
             room_part_missing_connect_count: room_part_flag_counts[4],
+            part_frontier_edge_count: part_frontier_counts.part_frontier_selected_count,
+            part_frontier_cap_hit_count: part_frontier_counts.part_frontier_cap_hit_count,
+            frontier_room_part_edge_count: part_frontier_counts.frontier_room_part_selected_count,
+            frontier_room_part_missing_edge_count: part_frontier_counts
+                .frontier_room_part_missing_selected_count,
+            frontier_room_part_general_edge_count: part_frontier_counts
+                .frontier_room_part_general_selected_count,
+            frontier_room_part_missing_cap_hit_count: part_frontier_counts
+                .frontier_room_part_missing_cap_hit_count,
+            frontier_room_part_general_cap_hit_count: part_frontier_counts
+                .frontier_room_part_general_cap_hit_count,
         })
     }
 
@@ -3651,6 +3915,11 @@ impl EnvironmentGroup {
             buffers.room_part_row_snapshot_idx.bind(py).readwrite();
         let mut row_room_part_idx = buffers.row_room_part_idx.bind(py).readwrite();
         let mut row_room_part_flags = buffers.row_room_part_flags.bind(py).readwrite();
+        let mut part_frontier_neighbor = buffers.part_frontier_neighbor.bind(py).readwrite();
+        let mut part_frontier_edge = buffers.part_frontier_edge.bind(py).readwrite();
+        let mut frontier_room_part_neighbor =
+            buffers.frontier_room_part_neighbor.bind(py).readwrite();
+        let mut frontier_room_part_edge = buffers.frontier_room_part_edge.bind(py).readwrite();
         if environment_start + environment_count > self.num_environments {
             return Err(PyValueError::new_err(
                 "candidate dimensions must fit within the environment group",
@@ -3680,6 +3949,11 @@ impl EnvironmentGroup {
             self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor);
         let frontier_neighbor_pair_width =
             self.frontier_neighbor_count * usize::from(self.features.frontier_neighbor_flags);
+        let part_frontier_neighbor_width = self.part_frontier_neighbor_count;
+        let part_frontier_edge_width = self.part_frontier_neighbor_count * PART_FRONTIER_EDGE_WIDTH;
+        let frontier_room_part_neighbor_width = self.frontier_room_part_neighbor_count;
+        let frontier_room_part_edge_width =
+            self.frontier_room_part_neighbor_count * PART_FRONTIER_EDGE_WIDTH;
         let connection_reachability_width =
             connection_count * usize::from(self.features.connection_reachability);
         let frontier_connection_width =
@@ -3738,6 +4012,11 @@ impl EnvironmentGroup {
             room_part_row_snapshot_idx.as_array().shape().to_vec();
         let row_room_part_idx_shape = row_room_part_idx.as_array().shape().to_vec();
         let row_room_part_flags_shape = row_room_part_flags.as_array().shape().to_vec();
+        let part_frontier_neighbor_shape = part_frontier_neighbor.as_array().shape().to_vec();
+        let part_frontier_edge_shape = part_frontier_edge.as_array().shape().to_vec();
+        let frontier_room_part_neighbor_shape =
+            frontier_room_part_neighbor.as_array().shape().to_vec();
+        let frontier_room_part_edge_shape = frontier_room_part_edge.as_array().shape().to_vec();
         if inventory_shape[0] < snapshot_count
             || room_x_shape[0] < snapshot_count
             || room_y_shape[0] < snapshot_count
@@ -3767,6 +4046,10 @@ impl EnvironmentGroup {
             || room_part_row_snapshot_idx_shape[0] < room_part_row_count
             || row_room_part_idx_shape[0] < room_part_row_count
             || row_room_part_flags_shape[0] < room_part_row_count
+            || part_frontier_neighbor_shape[0] < room_part_row_count
+            || part_frontier_edge_shape[0] < room_part_row_count
+            || frontier_room_part_neighbor_shape[0] < frontier_row_count
+            || frontier_room_part_edge_shape[0] < frontier_row_count
         {
             return Err(PyValueError::new_err(
                 "frontier feature output buffer is too small",
@@ -3851,6 +4134,26 @@ impl EnvironmentGroup {
             "frontier_neighbor_pair",
             frontier_neighbor_pair_shape[1],
             frontier_neighbor_pair_width,
+        )?;
+        check_dim(
+            "part_frontier_neighbor",
+            part_frontier_neighbor_shape[1],
+            part_frontier_neighbor_width,
+        )?;
+        check_dim(
+            "part_frontier_edge",
+            part_frontier_edge_shape[1],
+            part_frontier_edge_width,
+        )?;
+        check_dim(
+            "frontier_room_part_neighbor",
+            frontier_room_part_neighbor_shape[1],
+            frontier_room_part_neighbor_width,
+        )?;
+        check_dim(
+            "frontier_room_part_edge",
+            frontier_room_part_edge_shape[1],
+            frontier_room_part_edge_width,
         )?;
         check_dim(
             "connection_reachability",
@@ -3974,6 +4277,18 @@ impl EnvironmentGroup {
         let row_room_part_flags = row_room_part_flags
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("row_room_part_flags must be contiguous"))?;
+        let part_frontier_neighbor = part_frontier_neighbor
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("part_frontier_neighbor must be contiguous"))?;
+        let part_frontier_edge = part_frontier_edge
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("part_frontier_edge must be contiguous"))?;
+        let frontier_room_part_neighbor = frontier_room_part_neighbor
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("frontier_room_part_neighbor must be contiguous"))?;
+        let frontier_room_part_edge = frontier_room_part_edge
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("frontier_room_part_edge must be contiguous"))?;
 
         if worker_frontier_row_counts.len() != self.workers.len() {
             return Err(PyValueError::new_err(
@@ -3986,192 +4301,229 @@ impl EnvironmentGroup {
             ));
         }
 
-        let (actual_frontier_row_count, _, actual_room_part_row_count, _, _) = py.detach(|| {
-            let mut sent_workers = Vec::with_capacity(self.workers.len());
-            let mut first_error = None;
-            let mut frontier_row_start = 0;
-            let mut room_part_row_start = 0;
-            for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let start = max(environment_start, worker.start);
-                let end = min(environment_start + environment_count, worker.end());
-                if start >= end {
-                    continue;
+        let (actual_frontier_row_count, _, actual_room_part_row_count, _, _, _) =
+            py.detach(|| {
+                let mut sent_workers = Vec::with_capacity(self.workers.len());
+                let mut first_error = None;
+                let mut frontier_row_start = 0;
+                let mut room_part_row_start = 0;
+                for (worker_idx, worker) in self.workers.iter().enumerate() {
+                    let start = max(environment_start, worker.start);
+                    let end = min(environment_start + environment_count, worker.end());
+                    if start >= end {
+                        continue;
+                    }
+                    let snapshot_start = (start - environment_start) * candidate_count;
+                    let snapshot_count = (end - start) * candidate_count;
+                    let worker_frontier_row_count = worker_frontier_row_counts[worker_idx];
+                    let worker_room_part_row_count = worker_room_part_row_counts[worker_idx];
+                    let outputs = FeatureOutputShards {
+                        global: GlobalFeatureOutputShards {
+                            inventory: OutputShard::from_slice(
+                                &mut inventory[snapshot_start * inventory_width
+                                    ..(snapshot_start + snapshot_count) * inventory_width],
+                            ),
+                            room_x: OutputShard::from_slice(
+                                &mut out_room_x[snapshot_start * room_width
+                                    ..(snapshot_start + snapshot_count) * room_width],
+                            ),
+                            room_y: OutputShard::from_slice(
+                                &mut out_room_y[snapshot_start * room_width
+                                    ..(snapshot_start + snapshot_count) * room_width],
+                            ),
+                            room_placed: OutputShard::from_slice(
+                                &mut room_placed[snapshot_start * room_width
+                                    ..(snapshot_start + snapshot_count) * room_width],
+                            ),
+                            room_part_furthest_destination: OutputShard::from_slice(
+                                &mut room_part_furthest_destination[snapshot_start
+                                    * room_part_furthest_width
+                                    ..(snapshot_start + snapshot_count) * room_part_furthest_width],
+                            ),
+                            room_part_furthest_source: OutputShard::from_slice(
+                                &mut room_part_furthest_source[snapshot_start
+                                    * room_part_furthest_width
+                                    ..(snapshot_start + snapshot_count) * room_part_furthest_width],
+                            ),
+                            room_part_save_from_room_distance: OutputShard::from_slice(
+                                &mut room_part_save_from_room_distance[snapshot_start
+                                    * room_part_save_distance_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * room_part_save_distance_width],
+                            ),
+                            room_part_save_to_room_distance: OutputShard::from_slice(
+                                &mut room_part_save_to_room_distance[snapshot_start
+                                    * room_part_save_distance_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * room_part_save_distance_width],
+                            ),
+                            room_part_refill_from_room_distance: OutputShard::from_slice(
+                                &mut room_part_refill_from_room_distance[snapshot_start
+                                    * room_part_refill_distance_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * room_part_refill_distance_width],
+                            ),
+                            room_part_refill_to_room_distance: OutputShard::from_slice(
+                                &mut room_part_refill_to_room_distance[snapshot_start
+                                    * room_part_refill_distance_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * room_part_refill_distance_width],
+                            ),
+                            room_part_frontier_from_room_distance: OutputShard::from_slice(
+                                &mut room_part_frontier_from_room_distance[snapshot_start
+                                    * room_part_frontier_distance_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * room_part_frontier_distance_width],
+                            ),
+                            room_part_frontier_to_room_distance: OutputShard::from_slice(
+                                &mut room_part_frontier_to_room_distance[snapshot_start
+                                    * room_part_frontier_distance_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * room_part_frontier_distance_width],
+                            ),
+                            known_save_from_room_distance: OutputShard::from_slice(
+                                &mut known_save_from_room_distance[snapshot_start
+                                    * known_distance_width
+                                    ..(snapshot_start + snapshot_count) * known_distance_width],
+                            ),
+                            known_save_to_room_distance: OutputShard::from_slice(
+                                &mut known_save_to_room_distance[snapshot_start
+                                    * known_distance_width
+                                    ..(snapshot_start + snapshot_count) * known_distance_width],
+                            ),
+                            known_refill_from_room_distance: OutputShard::from_slice(
+                                &mut known_refill_from_room_distance[snapshot_start
+                                    * known_distance_width
+                                    ..(snapshot_start + snapshot_count) * known_distance_width],
+                            ),
+                            known_refill_to_room_distance: OutputShard::from_slice(
+                                &mut known_refill_to_room_distance[snapshot_start
+                                    * known_distance_width
+                                    ..(snapshot_start + snapshot_count) * known_distance_width],
+                            ),
+                            connection_reachability: OutputShard::from_slice(
+                                &mut connection_reachability[snapshot_start
+                                    * connection_reachability_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * connection_reachability_width],
+                            ),
+                            toilet_crossed_room_idx: OutputShard::from_slice(
+                                &mut toilet_crossed_room_idx[snapshot_start
+                                    * toilet_crossed_room_width
+                                    ..(snapshot_start + snapshot_count)
+                                        * toilet_crossed_room_width],
+                            ),
+                            inventory_count: inventory_width,
+                            room_count: room_width,
+                            room_part_furthest_count: room_part_furthest_width,
+                            room_part_save_distance_count: room_part_save_distance_width,
+                            room_part_refill_distance_count: room_part_refill_distance_width,
+                            room_part_frontier_distance_count: room_part_frontier_distance_width,
+                            known_distance_count: known_distance_width,
+                            connection_count: connection_reachability_width,
+                            toilet_crossed_room_count: toilet_crossed_room_width,
+                        },
+                        frontier_rows: FrontierFeatureOutputShards {
+                            frontier: OutputShard::from_slice(
+                                &mut frontier[frontier_row_start * FEATURE_FRONTIER_WIDTH
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * FEATURE_FRONTIER_WIDTH],
+                            ),
+                            frontier_occupancy: OutputShard::from_slice(
+                                &mut frontier_occupancy[frontier_row_start
+                                    * frontier_occupancy_width
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * frontier_occupancy_width],
+                            ),
+                            frontier_neighbor: OutputShard::from_slice(
+                                &mut frontier_neighbor[frontier_row_start * frontier_neighbor_width
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * frontier_neighbor_width],
+                            ),
+                            frontier_neighbor_pair: OutputShard::from_slice(
+                                &mut frontier_neighbor_pair[frontier_row_start
+                                    * frontier_neighbor_pair_width
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * frontier_neighbor_pair_width],
+                            ),
+                            frontier_room_part_neighbor: OutputShard::from_slice(
+                                &mut frontier_room_part_neighbor[frontier_row_start
+                                    * frontier_room_part_neighbor_width
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * frontier_room_part_neighbor_width],
+                            ),
+                            frontier_room_part_edge: OutputShard::from_slice(
+                                &mut frontier_room_part_edge[frontier_row_start
+                                    * frontier_room_part_edge_width
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * frontier_room_part_edge_width],
+                            ),
+                            frontier_connection_reachability: OutputShard::from_slice(
+                                &mut frontier_connection_reachability[frontier_row_start
+                                    * frontier_connection_width
+                                    ..(frontier_row_start + worker_frontier_row_count)
+                                        * frontier_connection_width],
+                            ),
+                            frontier_neighbor_count: self.frontier_neighbor_count,
+                            frontier_room_part_neighbor_count: self
+                                .frontier_room_part_neighbor_count,
+                            connection_count: frontier_connection_width,
+                            frontier_window_size: self.frontier_window_size,
+                        },
+                        room_part_rows: RoomPartFeatureOutputShards {
+                            part_frontier_neighbor: OutputShard::from_slice(
+                                &mut part_frontier_neighbor[room_part_row_start
+                                    * part_frontier_neighbor_width
+                                    ..(room_part_row_start + worker_room_part_row_count)
+                                        * part_frontier_neighbor_width],
+                            ),
+                            part_frontier_edge: OutputShard::from_slice(
+                                &mut part_frontier_edge[room_part_row_start
+                                    * part_frontier_edge_width
+                                    ..(room_part_row_start + worker_room_part_row_count)
+                                        * part_frontier_edge_width],
+                            ),
+                            part_frontier_neighbor_count: self.part_frontier_neighbor_count,
+                        },
+                        row_snapshot_idx: OutputShard::from_slice(
+                            &mut row_snapshot_idx[frontier_row_start
+                                ..frontier_row_start + worker_frontier_row_count],
+                        ),
+                        row_frontier_idx: OutputShard::from_slice(
+                            &mut row_frontier_idx[frontier_row_start
+                                ..frontier_row_start + worker_frontier_row_count],
+                        ),
+                        row_door_output_idx: OutputShard::from_slice(
+                            &mut row_door_output_idx[frontier_row_start
+                                ..frontier_row_start + worker_frontier_row_count],
+                        ),
+                        room_part_row_snapshot_idx: OutputShard::from_slice(
+                            &mut room_part_row_snapshot_idx[room_part_row_start
+                                ..room_part_row_start + worker_room_part_row_count],
+                        ),
+                        row_room_part_idx: OutputShard::from_slice(
+                            &mut row_room_part_idx[room_part_row_start
+                                ..room_part_row_start + worker_room_part_row_count],
+                        ),
+                        row_room_part_flags: OutputShard::from_slice(
+                            &mut row_room_part_flags[room_part_row_start
+                                ..room_part_row_start + worker_room_part_row_count],
+                        ),
+                        snapshot_start,
+                    };
+                    if let Err(err) = worker.send(WorkerCommand::PackFeatures {
+                        outputs,
+                        expected_snapshot_count: snapshot_count,
+                    }) {
+                        set_first_error(&mut first_error, err);
+                        break;
+                    }
+                    sent_workers.push(worker_idx);
+                    frontier_row_start += worker_frontier_row_count;
+                    room_part_row_start += worker_room_part_row_count;
                 }
-                let snapshot_start = (start - environment_start) * candidate_count;
-                let snapshot_count = (end - start) * candidate_count;
-                let worker_frontier_row_count = worker_frontier_row_counts[worker_idx];
-                let worker_room_part_row_count = worker_room_part_row_counts[worker_idx];
-                let outputs = FeatureOutputShards {
-                    global: GlobalFeatureOutputShards {
-                        inventory: OutputShard::from_slice(
-                            &mut inventory[snapshot_start * inventory_width
-                                ..(snapshot_start + snapshot_count) * inventory_width],
-                        ),
-                        room_x: OutputShard::from_slice(
-                            &mut out_room_x[snapshot_start * room_width
-                                ..(snapshot_start + snapshot_count) * room_width],
-                        ),
-                        room_y: OutputShard::from_slice(
-                            &mut out_room_y[snapshot_start * room_width
-                                ..(snapshot_start + snapshot_count) * room_width],
-                        ),
-                        room_placed: OutputShard::from_slice(
-                            &mut room_placed[snapshot_start * room_width
-                                ..(snapshot_start + snapshot_count) * room_width],
-                        ),
-                        room_part_furthest_destination: OutputShard::from_slice(
-                            &mut room_part_furthest_destination[snapshot_start
-                                * room_part_furthest_width
-                                ..(snapshot_start + snapshot_count) * room_part_furthest_width],
-                        ),
-                        room_part_furthest_source: OutputShard::from_slice(
-                            &mut room_part_furthest_source[snapshot_start * room_part_furthest_width
-                                ..(snapshot_start + snapshot_count) * room_part_furthest_width],
-                        ),
-                        room_part_save_from_room_distance: OutputShard::from_slice(
-                            &mut room_part_save_from_room_distance[snapshot_start
-                                * room_part_save_distance_width
-                                ..(snapshot_start + snapshot_count)
-                                    * room_part_save_distance_width],
-                        ),
-                        room_part_save_to_room_distance: OutputShard::from_slice(
-                            &mut room_part_save_to_room_distance[snapshot_start
-                                * room_part_save_distance_width
-                                ..(snapshot_start + snapshot_count)
-                                    * room_part_save_distance_width],
-                        ),
-                        room_part_refill_from_room_distance: OutputShard::from_slice(
-                            &mut room_part_refill_from_room_distance[snapshot_start
-                                * room_part_refill_distance_width
-                                ..(snapshot_start + snapshot_count)
-                                    * room_part_refill_distance_width],
-                        ),
-                        room_part_refill_to_room_distance: OutputShard::from_slice(
-                            &mut room_part_refill_to_room_distance[snapshot_start
-                                * room_part_refill_distance_width
-                                ..(snapshot_start + snapshot_count)
-                                    * room_part_refill_distance_width],
-                        ),
-                        room_part_frontier_from_room_distance: OutputShard::from_slice(
-                            &mut room_part_frontier_from_room_distance[snapshot_start
-                                * room_part_frontier_distance_width
-                                ..(snapshot_start + snapshot_count)
-                                    * room_part_frontier_distance_width],
-                        ),
-                        room_part_frontier_to_room_distance: OutputShard::from_slice(
-                            &mut room_part_frontier_to_room_distance[snapshot_start
-                                * room_part_frontier_distance_width
-                                ..(snapshot_start + snapshot_count)
-                                    * room_part_frontier_distance_width],
-                        ),
-                        known_save_from_room_distance: OutputShard::from_slice(
-                            &mut known_save_from_room_distance[snapshot_start * known_distance_width
-                                ..(snapshot_start + snapshot_count) * known_distance_width],
-                        ),
-                        known_save_to_room_distance: OutputShard::from_slice(
-                            &mut known_save_to_room_distance[snapshot_start * known_distance_width
-                                ..(snapshot_start + snapshot_count) * known_distance_width],
-                        ),
-                        known_refill_from_room_distance: OutputShard::from_slice(
-                            &mut known_refill_from_room_distance[snapshot_start
-                                * known_distance_width
-                                ..(snapshot_start + snapshot_count) * known_distance_width],
-                        ),
-                        known_refill_to_room_distance: OutputShard::from_slice(
-                            &mut known_refill_to_room_distance[snapshot_start * known_distance_width
-                                ..(snapshot_start + snapshot_count) * known_distance_width],
-                        ),
-                        connection_reachability: OutputShard::from_slice(
-                            &mut connection_reachability[snapshot_start
-                                * connection_reachability_width
-                                ..(snapshot_start + snapshot_count)
-                                    * connection_reachability_width],
-                        ),
-                        toilet_crossed_room_idx: OutputShard::from_slice(
-                            &mut toilet_crossed_room_idx[snapshot_start * toilet_crossed_room_width
-                                ..(snapshot_start + snapshot_count) * toilet_crossed_room_width],
-                        ),
-                        inventory_count: inventory_width,
-                        room_count: room_width,
-                        room_part_furthest_count: room_part_furthest_width,
-                        room_part_save_distance_count: room_part_save_distance_width,
-                        room_part_refill_distance_count: room_part_refill_distance_width,
-                        room_part_frontier_distance_count: room_part_frontier_distance_width,
-                        known_distance_count: known_distance_width,
-                        connection_count: connection_reachability_width,
-                        toilet_crossed_room_count: toilet_crossed_room_width,
-                    },
-                    frontier_rows: FrontierFeatureOutputShards {
-                        frontier: OutputShard::from_slice(
-                            &mut frontier[frontier_row_start * FEATURE_FRONTIER_WIDTH
-                                ..(frontier_row_start + worker_frontier_row_count)
-                                    * FEATURE_FRONTIER_WIDTH],
-                        ),
-                        frontier_occupancy: OutputShard::from_slice(
-                            &mut frontier_occupancy[frontier_row_start * frontier_occupancy_width
-                                ..(frontier_row_start + worker_frontier_row_count)
-                                    * frontier_occupancy_width],
-                        ),
-                        frontier_neighbor: OutputShard::from_slice(
-                            &mut frontier_neighbor[frontier_row_start * frontier_neighbor_width
-                                ..(frontier_row_start + worker_frontier_row_count)
-                                    * frontier_neighbor_width],
-                        ),
-                        frontier_neighbor_pair: OutputShard::from_slice(
-                            &mut frontier_neighbor_pair[frontier_row_start
-                                * frontier_neighbor_pair_width
-                                ..(frontier_row_start + worker_frontier_row_count)
-                                    * frontier_neighbor_pair_width],
-                        ),
-                        frontier_connection_reachability: OutputShard::from_slice(
-                            &mut frontier_connection_reachability[frontier_row_start
-                                * frontier_connection_width
-                                ..(frontier_row_start + worker_frontier_row_count)
-                                    * frontier_connection_width],
-                        ),
-                        frontier_neighbor_count: self.frontier_neighbor_count,
-                        connection_count: frontier_connection_width,
-                        frontier_window_size: self.frontier_window_size,
-                    },
-                    row_snapshot_idx: OutputShard::from_slice(
-                        &mut row_snapshot_idx
-                            [frontier_row_start..frontier_row_start + worker_frontier_row_count],
-                    ),
-                    row_frontier_idx: OutputShard::from_slice(
-                        &mut row_frontier_idx
-                            [frontier_row_start..frontier_row_start + worker_frontier_row_count],
-                    ),
-                    row_door_output_idx: OutputShard::from_slice(
-                        &mut row_door_output_idx
-                            [frontier_row_start..frontier_row_start + worker_frontier_row_count],
-                    ),
-                    room_part_row_snapshot_idx: OutputShard::from_slice(
-                        &mut room_part_row_snapshot_idx
-                            [room_part_row_start..room_part_row_start + worker_room_part_row_count],
-                    ),
-                    row_room_part_idx: OutputShard::from_slice(
-                        &mut row_room_part_idx
-                            [room_part_row_start..room_part_row_start + worker_room_part_row_count],
-                    ),
-                    row_room_part_flags: OutputShard::from_slice(
-                        &mut row_room_part_flags
-                            [room_part_row_start..room_part_row_start + worker_room_part_row_count],
-                    ),
-                    snapshot_start,
-                };
-                if let Err(err) = worker.send(WorkerCommand::PackFeatures {
-                    outputs,
-                    expected_snapshot_count: snapshot_count,
-                }) {
-                    set_first_error(&mut first_error, err);
-                    break;
-                }
-                sent_workers.push(worker_idx);
-                frontier_row_start += worker_frontier_row_count;
-                room_part_row_start += worker_room_part_row_count;
-            }
-            collect_feature_info(&self.workers, sent_workers, first_error)
-        })?;
+                collect_feature_info(&self.workers, sent_workers, first_error)
+            })?;
         if actual_frontier_row_count != frontier_row_count {
             return Err(PyRuntimeError::new_err(format!(
                 "frontier feature row count changed between passes: expected {frontier_row_count}, got {actual_frontier_row_count}"

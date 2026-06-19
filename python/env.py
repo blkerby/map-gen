@@ -239,6 +239,13 @@ class FeatureRequirements:
     room_part_refill_from_room_count: int
     room_part_refill_to_room_count: int
     room_part_missing_connect_count: int
+    part_frontier_edge_count: int
+    part_frontier_cap_hit_count: int
+    frontier_room_part_edge_count: int
+    frontier_room_part_missing_edge_count: int
+    frontier_room_part_general_edge_count: int
+    frontier_room_part_missing_cap_hit_count: int
+    frontier_room_part_general_cap_hit_count: int
 
 
 @dataclass
@@ -580,12 +587,32 @@ class RoomPartFeatures:
     row_snapshot_idx: torch.Tensor
     row_room_part_idx: torch.Tensor
     row_flags: torch.Tensor
+    part_frontier_neighbor: torch.Tensor
+    part_frontier_edge: torch.Tensor
+    frontier_room_part_neighbor: torch.Tensor
+    frontier_room_part_edge: torch.Tensor
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "RoomPartFeatures":
         return RoomPartFeatures(
             row_snapshot_idx=self.row_snapshot_idx.to(device, non_blocking=non_blocking),
             row_room_part_idx=self.row_room_part_idx.to(device, non_blocking=non_blocking),
             row_flags=self.row_flags.to(device, non_blocking=non_blocking),
+            part_frontier_neighbor=self.part_frontier_neighbor.to(
+                device,
+                non_blocking=non_blocking,
+            ),
+            part_frontier_edge=self.part_frontier_edge.to(
+                device,
+                non_blocking=non_blocking,
+            ),
+            frontier_room_part_neighbor=self.frontier_room_part_neighbor.to(
+                device,
+                non_blocking=non_blocking,
+            ),
+            frontier_room_part_edge=self.frontier_room_part_edge.to(
+                device,
+                non_blocking=non_blocking,
+            ),
         )
 
 
@@ -638,6 +665,9 @@ class Engine:
         map_size: tuple[int, int],
         num_envs: int,
         candidate_spatial_cell_size: int,
+        part_frontier_neighbor_count: int,
+        frontier_room_part_neighbor_count: int,
+        frontier_room_part_missing_connect_reserved_count: int,
         seed: Optional[int] = None,
         frontier_neighbor_count: int = 4,
         frontier_window_size: int = 16,
@@ -653,13 +683,23 @@ class Engine:
             num_envs,
             seed,
             frontier_neighbor_count,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count,
             frontier_window_size,
             candidate_spatial_cell_size,
             num_threads,
             frontier_neighbor_algorithm,
         )
         return EnvironmentGroup(
-            self, env, map_size, num_envs, frontier_neighbor_count, frontier_window_size
+            self,
+            env,
+            map_size,
+            num_envs,
+            frontier_neighbor_count,
+            frontier_window_size,
+            part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count,
         )
 
     def get_output_sizes(self) -> tuple[int, int]:
@@ -703,6 +743,8 @@ class EnvironmentGroup:
         num_envs: int,
         frontier_neighbor_count: int,
         frontier_window_size: int,
+        part_frontier_neighbor_count: int,
+        frontier_room_part_neighbor_count: int,
     ):
         self.engine = engine
         self.env = env
@@ -710,6 +752,8 @@ class EnvironmentGroup:
         self.num_envs = num_envs
         self.frontier_neighbor_count = frontier_neighbor_count
         self.frontier_window_size = frontier_window_size
+        self.part_frontier_neighbor_count = part_frontier_neighbor_count
+        self.frontier_room_part_neighbor_count = frontier_room_part_neighbor_count
 
     def clear(self):
         self.env.clear()
@@ -852,6 +896,23 @@ class EnvironmentGroup:
                 room_part_missing_connect_count=(
                     feature_requirements.room_part_missing_connect_count
                 ),
+                part_frontier_edge_count=feature_requirements.part_frontier_edge_count,
+                part_frontier_cap_hit_count=feature_requirements.part_frontier_cap_hit_count,
+                frontier_room_part_edge_count=(
+                    feature_requirements.frontier_room_part_edge_count
+                ),
+                frontier_room_part_missing_edge_count=(
+                    feature_requirements.frontier_room_part_missing_edge_count
+                ),
+                frontier_room_part_general_edge_count=(
+                    feature_requirements.frontier_room_part_general_edge_count
+                ),
+                frontier_room_part_missing_cap_hit_count=(
+                    feature_requirements.frontier_room_part_missing_cap_hit_count
+                ),
+                frontier_room_part_general_cap_hit_count=(
+                    feature_requirements.frontier_room_part_general_cap_hit_count
+                ),
             ),
             candidate_slot.stats(self.num_envs),
         )
@@ -978,6 +1039,17 @@ class EnvironmentGroup:
             room_part_refill_from_room_count=result.room_part_refill_from_room_count,
             room_part_refill_to_room_count=result.room_part_refill_to_room_count,
             room_part_missing_connect_count=result.room_part_missing_connect_count,
+            part_frontier_edge_count=result.part_frontier_edge_count,
+            part_frontier_cap_hit_count=result.part_frontier_cap_hit_count,
+            frontier_room_part_edge_count=result.frontier_room_part_edge_count,
+            frontier_room_part_missing_edge_count=result.frontier_room_part_missing_edge_count,
+            frontier_room_part_general_edge_count=result.frontier_room_part_general_edge_count,
+            frontier_room_part_missing_cap_hit_count=(
+                result.frontier_room_part_missing_cap_hit_count
+            ),
+            frontier_room_part_general_cap_hit_count=(
+                result.frontier_room_part_general_cap_hit_count
+            ),
         )
 
     def extract_features(
@@ -1066,6 +1138,12 @@ class EnvironmentGroup:
                     ),
                     "row_room_part_idx": feature_slot.row_room_part_idx.numpy(),
                     "row_room_part_flags": feature_slot.row_room_part_flags.numpy(),
+                    "part_frontier_neighbor": feature_slot.part_frontier_neighbor.numpy(),
+                    "part_frontier_edge": feature_slot.part_frontier_edge.numpy(),
+                    "frontier_room_part_neighbor": (
+                        feature_slot.frontier_room_part_neighbor.numpy()
+                    ),
+                    "frontier_room_part_edge": feature_slot.frontier_room_part_edge.numpy(),
                 }
             )
         )
@@ -1115,6 +1193,10 @@ class FeatureSlot:
         self.frontier_neighbor_pair_width = env.frontier_neighbor_count * int(
             features.frontier_neighbor_flags
         )
+        self.part_frontier_neighbor_width = env.part_frontier_neighbor_count
+        self.part_frontier_edge_width = env.part_frontier_neighbor_count * 10
+        self.frontier_room_part_neighbor_width = env.frontier_room_part_neighbor_count
+        self.frontier_room_part_edge_width = env.frontier_room_part_neighbor_count * 10
         self.connection_reachability_width = connection_count * int(
             features.connection_reachability
         )
@@ -1155,6 +1237,10 @@ class FeatureSlot:
         self.room_part_row_snapshot_idx = None
         self.row_room_part_idx = None
         self.row_room_part_flags = None
+        self.part_frontier_neighbor = None
+        self.part_frontier_edge = None
+        self.frontier_room_part_neighbor = None
+        self.frontier_room_part_edge = None
 
     def _empty(self, shape, dtype):
         return torch.empty(shape, dtype=dtype, pin_memory=self.pin_memory)
@@ -1240,6 +1326,22 @@ class FeatureSlot:
         )
         self.row_room_part_idx = self._empty((self.room_part_row_capacity,), torch.int16)
         self.row_room_part_flags = self._empty((self.room_part_row_capacity,), torch.uint8)
+        self.part_frontier_neighbor = self._empty(
+            (self.room_part_row_capacity, self.part_frontier_neighbor_width),
+            torch.int16,
+        )
+        self.part_frontier_edge = self._empty(
+            (self.room_part_row_capacity, self.part_frontier_edge_width),
+            torch.uint8,
+        )
+        self.frontier_room_part_neighbor = self._empty(
+            (self.frontier_row_capacity, self.frontier_room_part_neighbor_width),
+            torch.int16,
+        )
+        self.frontier_room_part_edge = self._empty(
+            (self.frontier_row_capacity, self.frontier_room_part_edge_width),
+            torch.uint8,
+        )
 
     def state_features(
         self,
@@ -1354,6 +1456,10 @@ class FeatureSlot:
                 row_snapshot_idx=self.room_part_row_snapshot_idx[:room_part_row_count],
                 row_room_part_idx=self.row_room_part_idx[:room_part_row_count],
                 row_flags=self.row_room_part_flags[:room_part_row_count],
+                part_frontier_neighbor=self.part_frontier_neighbor[:room_part_row_count],
+                part_frontier_edge=self.part_frontier_edge[:room_part_row_count],
+                frontier_room_part_neighbor=self.frontier_room_part_neighbor[:frontier_row_count],
+                frontier_room_part_edge=self.frontier_room_part_edge[:frontier_row_count],
             ),
         )
 
@@ -1483,6 +1589,10 @@ class FeatureSlot:
                 row_snapshot_idx=self.room_part_row_snapshot_idx[:room_part_row_count],
                 row_room_part_idx=self.row_room_part_idx[:room_part_row_count],
                 row_flags=self.row_room_part_flags[:room_part_row_count],
+                part_frontier_neighbor=self.part_frontier_neighbor[:room_part_row_count],
+                part_frontier_edge=self.part_frontier_edge[:room_part_row_count],
+                frontier_room_part_neighbor=self.frontier_room_part_neighbor[:frontier_row_count],
+                frontier_room_part_edge=self.frontier_room_part_edge[:frontier_row_count],
             ),
         )
 
@@ -1563,6 +1673,12 @@ def extract_candidate_features(
                 "room_part_row_snapshot_idx": feature_slot.room_part_row_snapshot_idx.numpy(),
                 "row_room_part_idx": feature_slot.row_room_part_idx.numpy(),
                 "row_room_part_flags": feature_slot.row_room_part_flags.numpy(),
+                "part_frontier_neighbor": feature_slot.part_frontier_neighbor.numpy(),
+                "part_frontier_edge": feature_slot.part_frontier_edge.numpy(),
+                "frontier_room_part_neighbor": (
+                    feature_slot.frontier_room_part_neighbor.numpy()
+                ),
+                "frontier_room_part_edge": feature_slot.frontier_room_part_edge.numpy(),
             }
         )
     )

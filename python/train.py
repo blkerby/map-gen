@@ -453,6 +453,11 @@ def create_generation_environment_groups_for_device(
             seed=device_index * config.generation.pipeline_groups + group_index,
             frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
             frontier_neighbor_count=config.generation.frontier_neighbor_count,
+            part_frontier_neighbor_count=config.generation.part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count=config.generation.frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count=(
+                config.generation.frontier_room_part_missing_connect_reserved_count
+            ),
             frontier_window_size=config.generation.frontier_window_size,
             num_threads=generation_group_threads,
         )
@@ -1619,6 +1624,11 @@ def create_train_batch_environment_groups(config: Config, engine: Engine):
             config.generation.candidate_spatial_cell_size,
             frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
             frontier_neighbor_count=config.generation.frontier_neighbor_count,
+            part_frontier_neighbor_count=config.generation.part_frontier_neighbor_count,
+            frontier_room_part_neighbor_count=config.generation.frontier_room_part_neighbor_count,
+            frontier_room_part_missing_connect_reserved_count=(
+                config.generation.frontier_room_part_missing_connect_reserved_count
+            ),
             frontier_window_size=config.generation.frontier_window_size,
             num_threads=train_group_threads,
         )
