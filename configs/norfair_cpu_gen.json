@@ -7,9 +7,9 @@
   "visualize": 1,
   "distance_proximity_scale": 5.0,
   "model": {
-    "compile": true,
-    "autocast": true,
-    "generation_autocast": true,
+    "compile": false,
+    "autocast": false,
+    "generation_autocast": false,
     "embedding_width": 512,
     "global_embedding_width": 512,
     "global_room_position_embedding_width": 512,
@@ -45,7 +45,7 @@
     "beta2": 0.99
   },
   "generation": {
-    "num_environments": 32,
+    "num_environments": 1,
     "num_iterations": 1,
     "num_devices": 1,
     "pipeline_groups": 1,

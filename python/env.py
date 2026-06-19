@@ -234,6 +234,11 @@ class FeatureRequirements:
     worker_frontier_row_counts: list[int]
     room_part_row_count: int
     worker_room_part_row_counts: list[int]
+    room_part_save_from_room_count: int
+    room_part_save_to_room_count: int
+    room_part_refill_from_room_count: int
+    room_part_refill_to_room_count: int
+    room_part_missing_connect_count: int
 
 
 @dataclass
@@ -834,6 +839,19 @@ class EnvironmentGroup:
                 worker_room_part_row_counts=(
                     feature_requirements.worker_room_part_row_counts
                 ),
+                room_part_save_from_room_count=(
+                    feature_requirements.room_part_save_from_room_count
+                ),
+                room_part_save_to_room_count=feature_requirements.room_part_save_to_room_count,
+                room_part_refill_from_room_count=(
+                    feature_requirements.room_part_refill_from_room_count
+                ),
+                room_part_refill_to_room_count=(
+                    feature_requirements.room_part_refill_to_room_count
+                ),
+                room_part_missing_connect_count=(
+                    feature_requirements.room_part_missing_connect_count
+                ),
             ),
             candidate_slot.stats(self.num_envs),
         )
@@ -955,6 +973,11 @@ class EnvironmentGroup:
             worker_frontier_row_counts=result.worker_frontier_row_counts,
             room_part_row_count=result.room_part_row_count,
             worker_room_part_row_counts=result.worker_room_part_row_counts,
+            room_part_save_from_room_count=result.room_part_save_from_room_count,
+            room_part_save_to_room_count=result.room_part_save_to_room_count,
+            room_part_refill_from_room_count=result.room_part_refill_from_room_count,
+            room_part_refill_to_room_count=result.room_part_refill_to_room_count,
+            room_part_missing_connect_count=result.room_part_missing_connect_count,
         )
 
     def extract_features(

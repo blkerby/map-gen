@@ -7,6 +7,8 @@ use crate::common::{
 };
 use crate::environment::{
     Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig, Features, FrontierNeighborAlgorithm,
+    ROOM_PART_FLAG_MISSING_CONNECT, ROOM_PART_FLAG_REFILL_FROM_ROOM, ROOM_PART_FLAG_REFILL_TO_ROOM,
+    ROOM_PART_FLAG_SAVE_FROM_ROOM, ROOM_PART_FLAG_SAVE_TO_ROOM,
     StepOutcomes as EnvironmentStepOutcomes,
 };
 use crossbeam_channel as channel;
@@ -109,6 +111,27 @@ static PROFILE_COUNTS: [AtomicU64; PROFILE_METRIC_COUNT] =
     [const { AtomicU64::new(0) }; PROFILE_METRIC_COUNT];
 static PROFILE_NANOS: [AtomicU64; PROFILE_METRIC_COUNT] =
     [const { AtomicU64::new(0) }; PROFILE_METRIC_COUNT];
+const ROOM_PART_FLAG_COUNT: usize = 5;
+const ROOM_PART_FLAG_VALUES: [u8; ROOM_PART_FLAG_COUNT] = [
+    ROOM_PART_FLAG_SAVE_FROM_ROOM,
+    ROOM_PART_FLAG_SAVE_TO_ROOM,
+    ROOM_PART_FLAG_REFILL_FROM_ROOM,
+    ROOM_PART_FLAG_REFILL_TO_ROOM,
+    ROOM_PART_FLAG_MISSING_CONNECT,
+];
+
+fn room_part_flag_counts(features: &[Features]) -> [usize; ROOM_PART_FLAG_COUNT] {
+    let mut counts = [0; ROOM_PART_FLAG_COUNT];
+    for flags in features
+        .iter()
+        .flat_map(|features| features.row_room_part_flags.iter().copied())
+    {
+        for (idx, flag) in ROOM_PART_FLAG_VALUES.iter().copied().enumerate() {
+            counts[idx] += usize::from(flags & flag != 0);
+        }
+    }
+    counts
+}
 
 pub(crate) fn profile_enabled() -> bool {
     PROFILE_ENABLED.load(Ordering::Relaxed)
@@ -380,6 +403,7 @@ enum WorkerResponse {
     FeatureInfo {
         frontier_row_count: usize,
         room_part_row_count: usize,
+        room_part_flag_counts: [usize; ROOM_PART_FLAG_COUNT],
     },
 }
 
@@ -783,6 +807,7 @@ fn worker_loop(
                             .iter()
                             .map(|features| features.row_room_part_idx.len())
                             .sum(),
+                        room_part_flag_counts: room_part_flag_counts(&pending_features),
                     },
                 }
             }
@@ -1175,6 +1200,7 @@ fn worker_loop(
                         .iter()
                         .map(|features| features.row_room_part_idx.len())
                         .sum(),
+                    room_part_flag_counts: room_part_flag_counts(&pending_features),
                 }
             }
             WorkerCommand::PackFeatures {
@@ -1195,6 +1221,7 @@ fn worker_loop(
                     WorkerResponse::FeatureInfo {
                         frontier_row_count: outputs.frontier_row_count,
                         room_part_row_count: outputs.room_part_row_count,
+                        room_part_flag_counts: outputs.room_part_flag_counts,
                     }
                 }
             }
@@ -1272,21 +1299,32 @@ fn collect_feature_info(
     workers: &[WorkerHandle],
     sent_workers: Vec<usize>,
     mut first_error: Option<PyErr>,
-) -> PyResult<(usize, Vec<usize>, usize, Vec<usize>)> {
+) -> PyResult<(
+    usize,
+    Vec<usize>,
+    usize,
+    Vec<usize>,
+    [usize; ROOM_PART_FLAG_COUNT],
+)> {
     let mut frontier_row_count = 0;
     let mut worker_frontier_row_counts = vec![0; workers.len()];
     let mut room_part_row_count = 0;
     let mut worker_room_part_row_counts = vec![0; workers.len()];
+    let mut room_part_flag_counts = [0; ROOM_PART_FLAG_COUNT];
     for worker_idx in sent_workers {
         match workers[worker_idx].recv() {
             Ok(WorkerResponse::FeatureInfo {
                 frontier_row_count: worker_frontier_row_count,
                 room_part_row_count: worker_room_part_row_count,
+                room_part_flag_counts: worker_room_part_flag_counts,
             }) => {
                 frontier_row_count += worker_frontier_row_count;
                 worker_frontier_row_counts[worker_idx] = worker_frontier_row_count;
                 room_part_row_count += worker_room_part_row_count;
                 worker_room_part_row_counts[worker_idx] = worker_room_part_row_count;
+                for idx in 0..ROOM_PART_FLAG_COUNT {
+                    room_part_flag_counts[idx] += worker_room_part_flag_counts[idx];
+                }
             }
             Ok(WorkerResponse::Done) => set_first_error(
                 &mut first_error,
@@ -1307,6 +1345,7 @@ fn collect_feature_info(
             worker_frontier_row_counts,
             room_part_row_count,
             worker_room_part_row_counts,
+            room_part_flag_counts,
         ))
     }
 }
@@ -1403,6 +1442,16 @@ pub struct FeatureRequirements {
     room_part_row_count: usize,
     #[pyo3(get)]
     worker_room_part_row_counts: Vec<usize>,
+    #[pyo3(get)]
+    room_part_save_from_room_count: usize,
+    #[pyo3(get)]
+    room_part_save_to_room_count: usize,
+    #[pyo3(get)]
+    room_part_refill_from_room_count: usize,
+    #[pyo3(get)]
+    room_part_refill_to_room_count: usize,
+    #[pyo3(get)]
+    room_part_missing_connect_count: usize,
 }
 
 #[pyclass(module = "map_gen")]
@@ -2118,6 +2167,7 @@ struct FeatureOutputSlices<'a> {
     snapshot_start: usize,
     frontier_row_count: usize,
     room_part_row_count: usize,
+    room_part_flag_counts: [usize; ROOM_PART_FLAG_COUNT],
 }
 
 impl FeatureOutputShards {
@@ -2134,6 +2184,7 @@ impl FeatureOutputShards {
             snapshot_start: self.snapshot_start,
             frontier_row_count: 0,
             room_part_row_count: 0,
+            room_part_flag_counts: [0; ROOM_PART_FLAG_COUNT],
         }
     }
 }
@@ -2165,6 +2216,9 @@ impl FeatureOutputSlices<'_> {
                 (self.snapshot_start + snapshot_idx) as i64;
             self.row_room_part_idx[room_part_row_idx] = room_part_idx;
             self.row_room_part_flags[room_part_row_idx] = flags;
+            for (idx, flag) in ROOM_PART_FLAG_VALUES.iter().copied().enumerate() {
+                self.room_part_flag_counts[idx] += usize::from(flags & flag != 0);
+            }
             self.room_part_row_count += 1;
         }
     }
@@ -2880,6 +2934,7 @@ impl EnvironmentGroup {
             worker_frontier_row_counts,
             room_part_row_count,
             worker_room_part_row_counts,
+            room_part_flag_counts,
         ) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
@@ -2994,6 +3049,11 @@ impl EnvironmentGroup {
             worker_frontier_row_counts,
             room_part_row_count,
             worker_room_part_row_counts,
+            room_part_save_from_room_count: room_part_flag_counts[0],
+            room_part_save_to_room_count: room_part_flag_counts[1],
+            room_part_refill_from_room_count: room_part_flag_counts[2],
+            room_part_refill_to_room_count: room_part_flag_counts[3],
+            room_part_missing_connect_count: room_part_flag_counts[4],
         })
     }
 
@@ -3482,6 +3542,7 @@ impl EnvironmentGroup {
             worker_frontier_row_counts,
             room_part_row_count,
             worker_room_part_row_counts,
+            room_part_flag_counts,
         ) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
@@ -3516,6 +3577,11 @@ impl EnvironmentGroup {
             worker_frontier_row_counts,
             room_part_row_count,
             worker_room_part_row_counts,
+            room_part_save_from_room_count: room_part_flag_counts[0],
+            room_part_save_to_room_count: room_part_flag_counts[1],
+            room_part_refill_from_room_count: room_part_flag_counts[2],
+            room_part_refill_to_room_count: room_part_flag_counts[3],
+            room_part_missing_connect_count: room_part_flag_counts[4],
         })
     }
 
@@ -3920,7 +3986,7 @@ impl EnvironmentGroup {
             ));
         }
 
-        let (actual_frontier_row_count, _, actual_room_part_row_count, _) = py.detach(|| {
+        let (actual_frontier_row_count, _, actual_room_part_row_count, _, _) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             let mut frontier_row_start = 0;

@@ -1173,6 +1173,11 @@ def run_generation_groups(
             "proposal_exhausted_rows": 0.0,
             "unresolved_room_part_nodes": 0.0,
             "unresolved_room_part_node_snapshots": 0.0,
+            "unresolved_room_part_save_from_room": 0.0,
+            "unresolved_room_part_save_to_room": 0.0,
+            "unresolved_room_part_refill_from_room": 0.0,
+            "unresolved_room_part_refill_to_room": 0.0,
+            "unresolved_room_part_missing_connect": 0.0,
         }
         with torch.no_grad():
             for group in groups:
@@ -1280,6 +1285,21 @@ def run_generation_groups(
                     )
                     stat_totals["unresolved_room_part_node_snapshots"] += float(
                         candidates.room_idx.numel()
+                    )
+                    stat_totals["unresolved_room_part_save_from_room"] += float(
+                        candidate_batch.feature_requirements.room_part_save_from_room_count
+                    )
+                    stat_totals["unresolved_room_part_save_to_room"] += float(
+                        candidate_batch.feature_requirements.room_part_save_to_room_count
+                    )
+                    stat_totals["unresolved_room_part_refill_from_room"] += float(
+                        candidate_batch.feature_requirements.room_part_refill_from_room_count
+                    )
+                    stat_totals["unresolved_room_part_refill_to_room"] += float(
+                        candidate_batch.feature_requirements.room_part_refill_to_room_count
+                    )
+                    stat_totals["unresolved_room_part_missing_connect"] += float(
+                        candidate_batch.feature_requirements.room_part_missing_connect_count
                     )
                     stat_totals["proposal_clean_candidates"] += float(
                         stats.clean_counts.sum().item()
@@ -1435,6 +1455,21 @@ def run_generation_groups(
         "proposal_exhaustion_rate": stat_totals["proposal_exhausted_rows"] / proposal_rows,
         "avg_unresolved_room_part_nodes": (
             stat_totals["unresolved_room_part_nodes"] / node_snapshots
+        ),
+        "avg_unresolved_room_part_save_from_room_nodes": (
+            stat_totals["unresolved_room_part_save_from_room"] / node_snapshots
+        ),
+        "avg_unresolved_room_part_save_to_room_nodes": (
+            stat_totals["unresolved_room_part_save_to_room"] / node_snapshots
+        ),
+        "avg_unresolved_room_part_refill_from_room_nodes": (
+            stat_totals["unresolved_room_part_refill_from_room"] / node_snapshots
+        ),
+        "avg_unresolved_room_part_refill_to_room_nodes": (
+            stat_totals["unresolved_room_part_refill_to_room"] / node_snapshots
+        ),
+        "avg_unresolved_room_part_missing_connect_nodes": (
+            stat_totals["unresolved_room_part_missing_connect"] / node_snapshots
         ),
     }
     return (
