@@ -27,6 +27,7 @@ class ModelConfig(StrictBaseModel):
     global_embedding_width: int
     global_room_position_embedding_width: int
     hidden_width: int
+    proposal_hidden_width: int
     door_match_embedding_width: int
     toilet_crossed_room_embedding_width: int
     num_layers: int
@@ -218,6 +219,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("model.global_embedding_width must be greater than zero")
     if config.model.global_room_position_embedding_width <= 0:
         raise ValueError("model.global_room_position_embedding_width must be greater than zero")
+    if config.model.proposal_hidden_width <= 0:
+        raise ValueError("model.proposal_hidden_width must be greater than zero")
     if (
         config.features.toilet_crossed_room
         and config.model.toilet_crossed_room_embedding_width <= 0

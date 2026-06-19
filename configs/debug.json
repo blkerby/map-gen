@@ -14,6 +14,7 @@
     "global_embedding_width": 256,
     "global_room_position_embedding_width": 256,
     "hidden_width": 256,
+    "proposal_hidden_width": 64,
     "door_match_embedding_width": 64,
     "toilet_crossed_room_embedding_width": 32,
     "num_layers": 2

@@ -197,6 +197,32 @@ class FactorizedOutcomeHead(torch.nn.Module):
             )
 
 
+class ProposalOutput(torch.nn.Module):
+    def __init__(
+        self,
+        input_width: int,
+        hidden_width: int,
+        output_width: int,
+    ):
+        super().__init__()
+        if hidden_width <= 0:
+            raise ValueError("proposal_hidden_width must be greater than zero")
+        self.out_features = output_width
+        self.layers = torch.nn.Sequential(
+            torch.nn.Linear(input_width, hidden_width, bias=False),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_width, output_width, bias=False),
+        )
+        self.layers[-1].weight.data.zero_()
+
+    @property
+    def output_dtype(self) -> torch.dtype:
+        return self.layers[-1].weight.dtype
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.layers(x)
+
+
 class FrontierModel(torch.nn.Module):
     def __init__(
         self,
@@ -208,6 +234,7 @@ class FrontierModel(torch.nn.Module):
         global_embedding_width,
         global_room_position_embedding_width,
         hidden_width,
+        proposal_hidden_width,
         door_match_embedding_width,
         toilet_crossed_room_embedding_width,
         num_layers,
@@ -495,12 +522,11 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             self.num_connection_outputs,
         )
-        self.proposal_output = torch.nn.Linear(
+        self.proposal_output = ProposalOutput(
             embedding_width,
+            proposal_hidden_width,
             output_metadata.num_door_variants,
-            bias=False,
         )
-        self.proposal_output.weight.data.zero_()
 
     def _door_match_embedding(
         self,

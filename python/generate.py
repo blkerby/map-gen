@@ -371,7 +371,7 @@ def unpack_proposal_mask(mask: ProposalCandidateMask, device: torch.device) -> t
 
 
 def row_scores_for_mask(
-    proposal_output: torch.nn.Linear,
+    proposal_output: torch.nn.Module,
     proposal_state: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
     row_frontier_idx: torch.Tensor,
@@ -382,7 +382,7 @@ def row_scores_for_mask(
     result = torch.full(
         (proposal_frontier_idx.shape[0], proposal_output.out_features),
         float("-inf"),
-        dtype=proposal_output.weight.dtype,
+        dtype=proposal_output.output_dtype,
         device=device,
     )
     if proposal_state.shape[0] == 0:
@@ -396,7 +396,7 @@ def row_scores_for_mask(
     )
     if torch.any(row_valid):
         result[row_snapshot_idx[row_valid]] = proposal_output(
-            proposal_state[row_valid].to(proposal_output.weight.dtype)
+            proposal_state[row_valid].to(proposal_output.output_dtype)
         )
     return result
 
