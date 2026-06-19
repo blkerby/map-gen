@@ -322,6 +322,7 @@ class FrontierModel(torch.nn.Module):
         self.global_embedding_width = global_embedding_width
         self.global_room_position_embedding_width = global_room_position_embedding_width
         self.num_room_parts = output_metadata.num_room_parts
+        self.room_part_node_flag_width = 5
         if global_embedding_width <= 0:
             raise ValueError("global_embedding_width must be greater than zero")
         if global_room_position_embedding_width <= 0:
@@ -477,6 +478,21 @@ class FrontierModel(torch.nn.Module):
             torch.nn.Embedding(256, 1) if self.features.room_part_frontier_distance else None
         )
         self.known_distance_embedding = torch.nn.Embedding(256, 1)
+        self.room_part_node_identity_embedding = (
+            torch.nn.Embedding(self.num_room_parts, embedding_width)
+            if self.features.room_part_nodes
+            else None
+        )
+        self.room_part_node_flag_linear = (
+            torch.nn.Linear(self.room_part_node_flag_width, embedding_width, bias=False)
+            if self.features.room_part_nodes
+            else None
+        )
+        self.room_part_node_distance_embedding = (
+            torch.nn.Embedding(256, embedding_width)
+            if self.features.room_part_nodes
+            else None
+        )
         self.frontier_pos_embedding_x = (
             torch.nn.Parameter(
                 torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
@@ -772,6 +788,69 @@ class FrontierModel(torch.nn.Module):
         ).to(torch.int64)
         return self.known_distance_embedding(distances).flatten(1).to(dtype)
 
+    def _room_part_node_state(
+        self,
+        features: Features,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        room_part_idx = features.room_part_features.row_room_part_idx.to(torch.int64)
+        row_count = room_part_idx.shape[0]
+        if self.room_part_node_identity_embedding is None:
+            return room_part_idx.new_zeros([row_count, self.embedding_width], dtype=dtype)
+        snapshot_idx = features.room_part_features.row_snapshot_idx.to(torch.int64)
+        state = self.room_part_node_identity_embedding(room_part_idx).to(dtype)
+        flags = features.room_part_features.row_flags
+        flag_features = torch.stack(
+            [
+                (flags & 1 != 0).to(dtype),
+                (flags & 2 != 0).to(dtype),
+                (flags & 4 != 0).to(dtype),
+                (flags & 8 != 0).to(dtype),
+                (flags & 16 != 0).to(dtype),
+            ],
+            dim=-1,
+        )
+        state = state + self.room_part_node_flag_linear(flag_features)
+        distance_inputs = [
+            features.global_features.known_save_from_room_distance,
+            features.global_features.known_save_to_room_distance,
+            features.global_features.known_refill_from_room_distance,
+            features.global_features.known_refill_to_room_distance,
+        ]
+        if self.features.room_part_furthest_distance:
+            distance_inputs.extend(
+                [
+                    features.global_features.room_part_furthest_destination,
+                    features.global_features.room_part_furthest_source,
+                ]
+            )
+        if self.features.room_part_save_distance:
+            distance_inputs.extend(
+                [
+                    features.global_features.room_part_save_from_room_distance,
+                    features.global_features.room_part_save_to_room_distance,
+                ]
+            )
+        if self.features.room_part_refill_distance:
+            distance_inputs.extend(
+                [
+                    features.global_features.room_part_refill_from_room_distance,
+                    features.global_features.room_part_refill_to_room_distance,
+                ]
+            )
+        if self.features.room_part_frontier_distance:
+            distance_inputs.extend(
+                [
+                    features.global_features.room_part_frontier_from_room_distance,
+                    features.global_features.room_part_frontier_to_room_distance,
+                ]
+            )
+        distances = torch.stack(
+            [values[snapshot_idx, room_part_idx] for values in distance_inputs],
+            dim=-1,
+        ).to(torch.int64)
+        return state + self.room_part_node_distance_embedding(distances).sum(dim=1).to(dtype)
+
     def _relative_position_features(self, features, neighbor):
         if self.frontier_relative_pos_embedding_x is None:
             return None
@@ -804,6 +883,7 @@ class FrontierModel(torch.nn.Module):
         # numeric: [r, numeric_width]
         numeric = []
         dtype = self._activation_dtype(node.device)
+        _ = self._room_part_node_state(features, dtype)
         if self.features.frontier_occupancy:
             numeric.append(
                 features.frontier_features.frontier_occupancy.unsqueeze(-1)

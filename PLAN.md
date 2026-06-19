@@ -28,7 +28,7 @@ small number of proposed candidates.
 - Let frontier and room-part nodes exchange messages in both directions at each
   layer. The final frontier node state remains the proposal state.
 
-## Current State: Directed Save/Refill/Frontier Features
+## Current State: Directed Features And Room-Part Nodes
 
 The global room-part distance features now expose directional information
 instead of round-trip/compressed distances.
@@ -52,36 +52,17 @@ These features use the compact distance encoding convention:
 The model still uses the current global-feature route for these signals. No
 deterministic finalized-known utilities are substituted into outputs.
 
-## Step 1: Unresolved Room-Part Nodes
+The feature pipeline also emits unresolved room-part node rows. Each row stores:
 
-Add a second sparse node type for placed room parts whose local outcomes are not
-fully determined.
+- row-to-snapshot index
+- global room-part index
+- unresolved objective flags for directed save/refill and missing-connect
+  endpoint status
 
-A room part should get a node when any of these are true:
-
-- at least one directed save/refill outcome for that part is not finalized
-- the part is an endpoint of an unresolved missing-connect outcome
-- a future frontier can still affect a local outcome attached to the part
-
-Room-part node identity:
-
-- Each node stores the global room-part index.
-- Python receives row-to-snapshot and row-to-room-part tensors, analogous to
-  frontier row metadata.
-- Outputs route from room-part rows back to global room-part output indices.
-
-Room-part node features:
-
-- room/part identity embedding
-- active/placed state
-- directed distance from room part to nearest save
-- directed distance from nearest save to room part
-- directed distance from room part to nearest refill
-- directed distance from nearest refill to room part
-- directed distance from room part to nearest frontier
-- directed distance from nearest frontier to room part
-- directed furthest-part distances
-- unresolved objective flags
+Room-part rows are currently structural only. The model constructs internal
+room-part node states from room-part identity, unresolved flags, known directed
+save/refill encodings, and enabled room-part distance features, but these states
+are not yet used by message passing or output heads.
 
 ## Deferred: Finalized-Known Directed Overrides
 
@@ -108,7 +89,7 @@ Before enabling these overrides for generation, validate that the proposal
 representation can model long-term tradeoffs well enough that deterministic
 short-term reward improvements do not dominate candidate selection.
 
-## Step 2: Bounded Part-Frontier Message Passing
+## Step 1: Bounded Part-Frontier Message Passing
 
 Add bidirectional sparse edges between unresolved room-part nodes and relevant
 frontier nodes.
@@ -154,7 +135,7 @@ Track truncation diagnostics:
 If truncation is frequent and appears quality-limiting, raise caps or consider a
 COO/segment-reduce representation for only the affected edge direction.
 
-## Step 3: Local Outcome Heads
+## Step 2: Local Outcome Heads
 
 Route local outcomes through local node/query representations.
 
@@ -188,14 +169,12 @@ Door/frontier proposal outcomes:
 
 Rust tests:
 
-- unresolved room-part node selection
 - part-frontier top-k edge packing and cap/truncation diagnostics
 - missing-connect endpoint/query metadata
 
 Python tests:
 
-- dataclass and PyO3 shape compatibility
-- model forward with zero room-part nodes
+- model forward with zero room-part nodes and part-frontier edges
 - model forward with room-part nodes and part-frontier edges
 - output routing for placed, unplaced, finalized, and missing-connect outcomes
 

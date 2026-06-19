@@ -377,7 +377,10 @@ impl WorkerCommand {
 enum WorkerResponse {
     Done,
     Error(String),
-    FeatureInfo(usize),
+    FeatureInfo {
+        frontier_row_count: usize,
+        room_part_row_count: usize,
+    },
 }
 
 struct WorkerHandle {
@@ -415,7 +418,7 @@ impl WorkerHandle {
         match self.recv()? {
             WorkerResponse::Done => Ok(()),
             WorkerResponse::Error(err) => Err(PyRuntimeError::new_err(err)),
-            WorkerResponse::FeatureInfo(_) => Err(PyRuntimeError::new_err(
+            WorkerResponse::FeatureInfo { .. } => Err(PyRuntimeError::new_err(
                 "engine worker thread returned unexpected feature info",
             )),
         }
@@ -771,12 +774,16 @@ fn worker_loop(
                 }
                 match consistency_error {
                     Some(err) => WorkerResponse::Error(err),
-                    None => WorkerResponse::FeatureInfo(
-                        pending_features
+                    None => WorkerResponse::FeatureInfo {
+                        frontier_row_count: pending_features
                             .iter()
                             .map(|features| features.frontier.len() / FEATURE_FRONTIER_WIDTH)
                             .sum(),
-                    ),
+                        room_part_row_count: pending_features
+                            .iter()
+                            .map(|features| features.row_room_part_idx.len())
+                            .sum(),
+                    },
                 }
             }
             WorkerCommand::GetActions {
@@ -1159,12 +1166,16 @@ fn worker_loop(
                         )
                     })
                     .collect();
-                WorkerResponse::FeatureInfo(
-                    pending_features
+                WorkerResponse::FeatureInfo {
+                    frontier_row_count: pending_features
                         .iter()
                         .map(|features| features.frontier.len() / FEATURE_FRONTIER_WIDTH)
                         .sum(),
-                )
+                    room_part_row_count: pending_features
+                        .iter()
+                        .map(|features| features.row_room_part_idx.len())
+                        .sum(),
+                }
             }
             WorkerCommand::PackFeatures {
                 outputs,
@@ -1181,7 +1192,10 @@ fn worker_loop(
                     for (idx, features) in pending_features.drain(..).enumerate() {
                         outputs.write_features(idx, &features);
                     }
-                    WorkerResponse::FeatureInfo(outputs.frontier_row_count)
+                    WorkerResponse::FeatureInfo {
+                        frontier_row_count: outputs.frontier_row_count,
+                        room_part_row_count: outputs.room_part_row_count,
+                    }
                 }
             }
             WorkerCommand::Shutdown => break,
@@ -1258,14 +1272,21 @@ fn collect_feature_info(
     workers: &[WorkerHandle],
     sent_workers: Vec<usize>,
     mut first_error: Option<PyErr>,
-) -> PyResult<(usize, Vec<usize>)> {
+) -> PyResult<(usize, Vec<usize>, usize, Vec<usize>)> {
     let mut frontier_row_count = 0;
     let mut worker_frontier_row_counts = vec![0; workers.len()];
+    let mut room_part_row_count = 0;
+    let mut worker_room_part_row_counts = vec![0; workers.len()];
     for worker_idx in sent_workers {
         match workers[worker_idx].recv() {
-            Ok(WorkerResponse::FeatureInfo(worker_frontier_row_count)) => {
+            Ok(WorkerResponse::FeatureInfo {
+                frontier_row_count: worker_frontier_row_count,
+                room_part_row_count: worker_room_part_row_count,
+            }) => {
                 frontier_row_count += worker_frontier_row_count;
                 worker_frontier_row_counts[worker_idx] = worker_frontier_row_count;
+                room_part_row_count += worker_room_part_row_count;
+                worker_room_part_row_counts[worker_idx] = worker_room_part_row_count;
             }
             Ok(WorkerResponse::Done) => set_first_error(
                 &mut first_error,
@@ -1281,7 +1302,12 @@ fn collect_feature_info(
     if let Some(err) = first_error {
         Err(err)
     } else {
-        Ok((frontier_row_count, worker_frontier_row_counts))
+        Ok((
+            frontier_row_count,
+            worker_frontier_row_counts,
+            room_part_row_count,
+            worker_room_part_row_counts,
+        ))
     }
 }
 
@@ -1373,6 +1399,10 @@ pub struct FeatureRequirements {
     frontier_row_count: usize,
     #[pyo3(get)]
     worker_frontier_row_counts: Vec<usize>,
+    #[pyo3(get)]
+    room_part_row_count: usize,
+    #[pyo3(get)]
+    worker_room_part_row_counts: Vec<usize>,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1410,6 +1440,10 @@ pub struct FeatureBuffers {
     frontier_row_count: usize,
     #[pyo3(get)]
     worker_frontier_row_counts: Vec<usize>,
+    #[pyo3(get)]
+    room_part_row_count: usize,
+    #[pyo3(get)]
+    worker_room_part_row_counts: Vec<usize>,
     inventory: Py<PyArray2<u8>>,
     out_room_x: Py<PyArray2<Coord>>,
     out_room_y: Py<PyArray2<Coord>>,
@@ -1436,6 +1470,9 @@ pub struct FeatureBuffers {
     row_snapshot_idx: Py<PyArray1<i64>>,
     row_frontier_idx: Py<PyArray1<FrontierIdx>>,
     row_door_output_idx: Py<PyArray1<i16>>,
+    room_part_row_snapshot_idx: Py<PyArray1<i64>>,
+    row_room_part_idx: Py<PyArray1<i16>>,
+    row_room_part_flags: Py<PyArray1<u8>>,
 }
 
 #[pymethods]
@@ -1475,6 +1512,8 @@ impl FeatureBuffers {
             environment_start: required_py_field!(fields, "environment_start"),
             frontier_row_count: required_py_field!(fields, "frontier_row_count"),
             worker_frontier_row_counts: required_py_field!(fields, "worker_frontier_row_counts"),
+            room_part_row_count: required_py_field!(fields, "room_part_row_count"),
+            worker_room_part_row_counts: required_py_field!(fields, "worker_room_part_row_counts"),
             inventory: required_py_field!(fields, "inventory"),
             out_room_x: required_py_field!(fields, "room_x"),
             out_room_y: required_py_field!(fields, "room_y"),
@@ -1534,6 +1573,9 @@ impl FeatureBuffers {
             row_snapshot_idx: required_py_field!(fields, "row_snapshot_idx"),
             row_frontier_idx: required_py_field!(fields, "row_frontier_idx"),
             row_door_output_idx: required_py_field!(fields, "row_door_output_idx"),
+            room_part_row_snapshot_idx: required_py_field!(fields, "room_part_row_snapshot_idx"),
+            row_room_part_idx: required_py_field!(fields, "row_room_part_idx"),
+            row_room_part_flags: required_py_field!(fields, "row_room_part_flags"),
         })
     }
 }
@@ -2058,6 +2100,9 @@ struct FeatureOutputShards {
     row_snapshot_idx: OutputShard<i64>,
     row_frontier_idx: OutputShard<FrontierIdx>,
     row_door_output_idx: OutputShard<i16>,
+    room_part_row_snapshot_idx: OutputShard<i64>,
+    row_room_part_idx: OutputShard<i16>,
+    row_room_part_flags: OutputShard<u8>,
     snapshot_start: usize,
 }
 
@@ -2067,8 +2112,12 @@ struct FeatureOutputSlices<'a> {
     row_snapshot_idx: &'a mut [i64],
     row_frontier_idx: &'a mut [FrontierIdx],
     row_door_output_idx: &'a mut [i16],
+    room_part_row_snapshot_idx: &'a mut [i64],
+    row_room_part_idx: &'a mut [i16],
+    row_room_part_flags: &'a mut [u8],
     snapshot_start: usize,
     frontier_row_count: usize,
+    room_part_row_count: usize,
 }
 
 impl FeatureOutputShards {
@@ -2079,8 +2128,12 @@ impl FeatureOutputShards {
             row_snapshot_idx: unsafe { self.row_snapshot_idx.into_mut_slice() },
             row_frontier_idx: unsafe { self.row_frontier_idx.into_mut_slice() },
             row_door_output_idx: unsafe { self.row_door_output_idx.into_mut_slice() },
+            room_part_row_snapshot_idx: unsafe { self.room_part_row_snapshot_idx.into_mut_slice() },
+            row_room_part_idx: unsafe { self.row_room_part_idx.into_mut_slice() },
+            row_room_part_flags: unsafe { self.row_room_part_flags.into_mut_slice() },
             snapshot_start: self.snapshot_start,
             frontier_row_count: 0,
+            room_part_row_count: 0,
         }
     }
 }
@@ -2101,6 +2154,18 @@ impl FeatureOutputSlices<'_> {
             self.frontier_rows
                 .write_frontier_row(frontier_row_idx, features, frontier_idx);
             self.frontier_row_count += 1;
+        }
+        for (&room_part_idx, &flags) in features
+            .row_room_part_idx
+            .iter()
+            .zip(features.row_room_part_flags.iter())
+        {
+            let room_part_row_idx = self.room_part_row_count;
+            self.room_part_row_snapshot_idx[room_part_row_idx] =
+                (self.snapshot_start + snapshot_idx) as i64;
+            self.row_room_part_idx[room_part_row_idx] = room_part_idx;
+            self.row_room_part_flags[room_part_row_idx] = flags;
+            self.room_part_row_count += 1;
         }
     }
 }
@@ -2408,6 +2473,9 @@ mod tests {
         let mut row_snapshot_idx = vec![-1; 4];
         let mut row_frontier_idx = vec![-1; 4];
         let mut row_door_output_idx = vec![-1; 4];
+        let mut room_part_row_snapshot_idx = vec![-1; 0];
+        let mut row_room_part_idx = vec![-1; 0];
+        let mut row_room_part_flags = vec![0; 0];
 
         let outputs = FeatureOutputShards {
             global: empty_global_feature_output_shards(),
@@ -2419,6 +2487,9 @@ mod tests {
             row_snapshot_idx: OutputShard::from_slice(&mut row_snapshot_idx),
             row_frontier_idx: OutputShard::from_slice(&mut row_frontier_idx),
             row_door_output_idx: OutputShard::from_slice(&mut row_door_output_idx),
+            room_part_row_snapshot_idx: OutputShard::from_slice(&mut room_part_row_snapshot_idx),
+            row_room_part_idx: OutputShard::from_slice(&mut row_room_part_idx),
+            row_room_part_flags: OutputShard::from_slice(&mut row_room_part_flags),
             snapshot_start: 10,
         };
         let mut outputs = unsafe { outputs.into_slices() };
@@ -2804,7 +2875,12 @@ impl EnvironmentGroup {
         let mut worker_evaluated_counts = vec![0; self.num_environments];
         let mut worker_rejected_counts = vec![0; self.num_environments];
 
-        let (frontier_row_count, worker_frontier_row_counts) = py.detach(|| {
+        let (
+            frontier_row_count,
+            worker_frontier_row_counts,
+            room_part_row_count,
+            worker_room_part_row_counts,
+        ) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -2916,6 +2992,8 @@ impl EnvironmentGroup {
         Ok(FeatureRequirements {
             frontier_row_count,
             worker_frontier_row_counts,
+            room_part_row_count,
+            worker_room_part_row_counts,
         })
     }
 
@@ -3399,7 +3477,12 @@ impl EnvironmentGroup {
                 "feature range must fit within the environment group",
             ));
         }
-        let (frontier_row_count, worker_frontier_row_counts) = py.detach(|| {
+        let (
+            frontier_row_count,
+            worker_frontier_row_counts,
+            room_part_row_count,
+            worker_room_part_row_counts,
+        ) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
@@ -3431,6 +3514,8 @@ impl EnvironmentGroup {
         Ok(FeatureRequirements {
             frontier_row_count,
             worker_frontier_row_counts,
+            room_part_row_count,
+            worker_room_part_row_counts,
         })
     }
 
@@ -3444,6 +3529,8 @@ impl EnvironmentGroup {
         let environment_start = buffers.environment_start;
         let frontier_row_count = buffers.frontier_row_count;
         let worker_frontier_row_counts = &buffers.worker_frontier_row_counts;
+        let room_part_row_count = buffers.room_part_row_count;
+        let worker_room_part_row_counts = &buffers.worker_room_part_row_counts;
         let mut inventory = buffers.inventory.bind(py).readwrite();
         let mut out_room_x = buffers.out_room_x.bind(py).readwrite();
         let mut out_room_y = buffers.out_room_y.bind(py).readwrite();
@@ -3494,6 +3581,10 @@ impl EnvironmentGroup {
         let mut row_snapshot_idx = buffers.row_snapshot_idx.bind(py).readwrite();
         let mut row_frontier_idx = buffers.row_frontier_idx.bind(py).readwrite();
         let mut row_door_output_idx = buffers.row_door_output_idx.bind(py).readwrite();
+        let mut room_part_row_snapshot_idx =
+            buffers.room_part_row_snapshot_idx.bind(py).readwrite();
+        let mut row_room_part_idx = buffers.row_room_part_idx.bind(py).readwrite();
+        let mut row_room_part_flags = buffers.row_room_part_flags.bind(py).readwrite();
         if environment_start + environment_count > self.num_environments {
             return Err(PyValueError::new_err(
                 "candidate dimensions must fit within the environment group",
@@ -3577,6 +3668,10 @@ impl EnvironmentGroup {
         let row_snapshot_idx_shape = row_snapshot_idx.as_array().shape().to_vec();
         let row_frontier_idx_shape = row_frontier_idx.as_array().shape().to_vec();
         let row_door_output_idx_shape = row_door_output_idx.as_array().shape().to_vec();
+        let room_part_row_snapshot_idx_shape =
+            room_part_row_snapshot_idx.as_array().shape().to_vec();
+        let row_room_part_idx_shape = row_room_part_idx.as_array().shape().to_vec();
+        let row_room_part_flags_shape = row_room_part_flags.as_array().shape().to_vec();
         if inventory_shape[0] < snapshot_count
             || room_x_shape[0] < snapshot_count
             || room_y_shape[0] < snapshot_count
@@ -3603,6 +3698,9 @@ impl EnvironmentGroup {
             || row_snapshot_idx_shape[0] < frontier_row_count
             || row_frontier_idx_shape[0] < frontier_row_count
             || row_door_output_idx_shape[0] < frontier_row_count
+            || room_part_row_snapshot_idx_shape[0] < room_part_row_count
+            || row_room_part_idx_shape[0] < room_part_row_count
+            || row_room_part_flags_shape[0] < room_part_row_count
         {
             return Err(PyValueError::new_err(
                 "frontier feature output buffer is too small",
@@ -3801,17 +3899,32 @@ impl EnvironmentGroup {
         let row_door_output_idx = row_door_output_idx
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("row_door_output_idx must be contiguous"))?;
+        let room_part_row_snapshot_idx = room_part_row_snapshot_idx
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("room_part_row_snapshot_idx must be contiguous"))?;
+        let row_room_part_idx = row_room_part_idx
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("row_room_part_idx must be contiguous"))?;
+        let row_room_part_flags = row_room_part_flags
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("row_room_part_flags must be contiguous"))?;
 
         if worker_frontier_row_counts.len() != self.workers.len() {
             return Err(PyValueError::new_err(
                 "worker frontier row count length does not match worker count",
             ));
         }
+        if worker_room_part_row_counts.len() != self.workers.len() {
+            return Err(PyValueError::new_err(
+                "worker room-part row count length does not match worker count",
+            ));
+        }
 
-        let (actual_frontier_row_count, _) = py.detach(|| {
+        let (actual_frontier_row_count, _, actual_room_part_row_count, _) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             let mut frontier_row_start = 0;
+            let mut room_part_row_start = 0;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
                 let start = max(environment_start, worker.start);
                 let end = min(environment_start + environment_count, worker.end());
@@ -3821,6 +3934,7 @@ impl EnvironmentGroup {
                 let snapshot_start = (start - environment_start) * candidate_count;
                 let snapshot_count = (end - start) * candidate_count;
                 let worker_frontier_row_count = worker_frontier_row_counts[worker_idx];
+                let worker_room_part_row_count = worker_room_part_row_counts[worker_idx];
                 let outputs = FeatureOutputShards {
                     global: GlobalFeatureOutputShards {
                         inventory: OutputShard::from_slice(
@@ -3965,6 +4079,18 @@ impl EnvironmentGroup {
                         &mut row_door_output_idx
                             [frontier_row_start..frontier_row_start + worker_frontier_row_count],
                     ),
+                    room_part_row_snapshot_idx: OutputShard::from_slice(
+                        &mut room_part_row_snapshot_idx
+                            [room_part_row_start..room_part_row_start + worker_room_part_row_count],
+                    ),
+                    row_room_part_idx: OutputShard::from_slice(
+                        &mut row_room_part_idx
+                            [room_part_row_start..room_part_row_start + worker_room_part_row_count],
+                    ),
+                    row_room_part_flags: OutputShard::from_slice(
+                        &mut row_room_part_flags
+                            [room_part_row_start..room_part_row_start + worker_room_part_row_count],
+                    ),
                     snapshot_start,
                 };
                 if let Err(err) = worker.send(WorkerCommand::PackFeatures {
@@ -3976,12 +4102,18 @@ impl EnvironmentGroup {
                 }
                 sent_workers.push(worker_idx);
                 frontier_row_start += worker_frontier_row_count;
+                room_part_row_start += worker_room_part_row_count;
             }
             collect_feature_info(&self.workers, sent_workers, first_error)
         })?;
         if actual_frontier_row_count != frontier_row_count {
             return Err(PyRuntimeError::new_err(format!(
                 "frontier feature row count changed between passes: expected {frontier_row_count}, got {actual_frontier_row_count}"
+            )));
+        }
+        if actual_room_part_row_count != room_part_row_count {
+            return Err(PyRuntimeError::new_err(format!(
+                "room-part feature row count changed between passes: expected {room_part_row_count}, got {actual_room_part_row_count}"
             )));
         }
         Ok(())

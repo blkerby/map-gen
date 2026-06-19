@@ -232,6 +232,8 @@ class EpisodeOutcomes:
 class FeatureRequirements:
     frontier_row_count: int
     worker_frontier_row_counts: list[int]
+    room_part_row_count: int
+    worker_room_part_row_counts: list[int]
 
 
 @dataclass
@@ -569,20 +571,37 @@ class FrontierFeatures:
 
 
 @dataclass
+class RoomPartFeatures:
+    row_snapshot_idx: torch.Tensor
+    row_room_part_idx: torch.Tensor
+    row_flags: torch.Tensor
+
+    def to(self, device: torch.device, non_blocking: bool = False) -> "RoomPartFeatures":
+        return RoomPartFeatures(
+            row_snapshot_idx=self.row_snapshot_idx.to(device, non_blocking=non_blocking),
+            row_room_part_idx=self.row_room_part_idx.to(device, non_blocking=non_blocking),
+            row_flags=self.row_flags.to(device, non_blocking=non_blocking),
+        )
+
+
+@dataclass
 class Features:
     global_features: GlobalFeatures
     frontier_features: FrontierFeatures
+    room_part_features: RoomPartFeatures
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "Features":
         return Features(
             global_features=self.global_features.to(device, non_blocking=non_blocking),
             frontier_features=self.frontier_features.to(device, non_blocking=non_blocking),
+            room_part_features=self.room_part_features.to(device, non_blocking=non_blocking),
         )
 
     def flatten_candidates(self) -> "Features":
         return Features(
             global_features=self.global_features.flatten_candidates(),
             frontier_features=self.frontier_features,
+            room_part_features=self.room_part_features,
         )
 
 
@@ -811,6 +830,10 @@ class EnvironmentGroup:
             FeatureRequirements(
                 frontier_row_count=feature_requirements.frontier_row_count,
                 worker_frontier_row_counts=feature_requirements.worker_frontier_row_counts,
+                room_part_row_count=feature_requirements.room_part_row_count,
+                worker_room_part_row_counts=(
+                    feature_requirements.worker_room_part_row_counts
+                ),
             ),
             candidate_slot.stats(self.num_envs),
         )
@@ -930,6 +953,8 @@ class EnvironmentGroup:
         return FeatureRequirements(
             frontier_row_count=result.frontier_row_count,
             worker_frontier_row_counts=result.worker_frontier_row_counts,
+            room_part_row_count=result.room_part_row_count,
+            worker_room_part_row_counts=result.worker_room_part_row_counts,
         )
 
     def extract_features(
@@ -950,7 +975,11 @@ class EnvironmentGroup:
             environment_start,
             environment_count,
         )
-        feature_slot.ensure(environment_count, feature_requirements.frontier_row_count)
+        feature_slot.ensure(
+            environment_count,
+            feature_requirements.frontier_row_count,
+            feature_requirements.room_part_row_count,
+        )
         self.env.pack_features_into(
             map_gen.FeatureBuffers(
                 {
@@ -959,6 +988,10 @@ class EnvironmentGroup:
                     "environment_start": environment_start,
                     "frontier_row_count": feature_requirements.frontier_row_count,
                     "worker_frontier_row_counts": feature_requirements.worker_frontier_row_counts,
+                    "room_part_row_count": feature_requirements.room_part_row_count,
+                    "worker_room_part_row_counts": (
+                        feature_requirements.worker_room_part_row_counts
+                    ),
                     "inventory": feature_slot.inventory.numpy(),
                     "room_x": feature_slot.room_x.numpy(),
                     "room_y": feature_slot.room_y.numpy(),
@@ -1005,6 +1038,11 @@ class EnvironmentGroup:
                     "row_snapshot_idx": feature_slot.row_snapshot_idx.numpy(),
                     "row_frontier_idx": feature_slot.row_frontier_idx.numpy(),
                     "row_door_output_idx": feature_slot.row_door_output_idx.numpy(),
+                    "room_part_row_snapshot_idx": (
+                        feature_slot.room_part_row_snapshot_idx.numpy()
+                    ),
+                    "row_room_part_idx": feature_slot.row_room_part_idx.numpy(),
+                    "row_room_part_flags": feature_slot.row_room_part_flags.numpy(),
                 }
             )
         )
@@ -1017,6 +1055,7 @@ class EnvironmentGroup:
             lookahead_outcomes,
             include_lookahead_outcomes,
             feature_requirements.frontier_row_count,
+            feature_requirements.room_part_row_count,
         )
 
     def finish(self):
@@ -1063,6 +1102,7 @@ class FeatureSlot:
         self.pin_memory = pin_memory
         self.snapshot_capacity = 0
         self.frontier_row_capacity = 0
+        self.room_part_row_capacity = 0
         self.inventory = None
         self.room_x = None
         self.room_y = None
@@ -1089,19 +1129,24 @@ class FeatureSlot:
         self.row_snapshot_idx = None
         self.row_frontier_idx = None
         self.row_door_output_idx = None
+        self.room_part_row_snapshot_idx = None
+        self.row_room_part_idx = None
+        self.row_room_part_flags = None
 
     def _empty(self, shape, dtype):
         return torch.empty(shape, dtype=dtype, pin_memory=self.pin_memory)
 
-    def ensure(self, snapshot_count: int, frontier_row_count: int):
+    def ensure(self, snapshot_count: int, frontier_row_count: int, room_part_row_count: int):
         if (
             self.inventory is not None
             and self.snapshot_capacity >= snapshot_count
             and self.frontier_row_capacity >= frontier_row_count
+            and self.room_part_row_capacity >= room_part_row_count
         ):
             return
         self.snapshot_capacity = max(self.snapshot_capacity, snapshot_count)
         self.frontier_row_capacity = max(self.frontier_row_capacity, frontier_row_count)
+        self.room_part_row_capacity = max(self.room_part_row_capacity, room_part_row_count)
         self.inventory = self._empty((self.snapshot_capacity, self.inventory_width), torch.uint8)
         self.room_x = self._empty((self.snapshot_capacity, self.room_width), torch.int8)
         self.room_y = self._empty((self.snapshot_capacity, self.room_width), torch.int8)
@@ -1166,6 +1211,12 @@ class FeatureSlot:
         self.row_snapshot_idx = self._empty((self.frontier_row_capacity,), torch.int64)
         self.row_frontier_idx = self._empty((self.frontier_row_capacity,), torch.int16)
         self.row_door_output_idx = self._empty((self.frontier_row_capacity,), torch.int16)
+        self.room_part_row_snapshot_idx = self._empty(
+            (self.room_part_row_capacity,),
+            torch.int64,
+        )
+        self.row_room_part_idx = self._empty((self.room_part_row_capacity,), torch.int16)
+        self.row_room_part_flags = self._empty((self.room_part_row_capacity,), torch.uint8)
 
     def state_features(
         self,
@@ -1177,6 +1228,7 @@ class FeatureSlot:
         lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         frontier_row_count: int,
+        room_part_row_count: int,
     ) -> Features:
         if not include_temperature:
             log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
@@ -1275,6 +1327,11 @@ class FeatureSlot:
                 row_frontier_idx=self.row_frontier_idx[:frontier_row_count],
                 row_door_output_idx=self.row_door_output_idx[:frontier_row_count],
             ),
+            room_part_features=RoomPartFeatures(
+                row_snapshot_idx=self.room_part_row_snapshot_idx[:room_part_row_count],
+                row_room_part_idx=self.row_room_part_idx[:room_part_row_count],
+                row_flags=self.row_room_part_flags[:room_part_row_count],
+            ),
         )
 
     def features(
@@ -1288,6 +1345,7 @@ class FeatureSlot:
         lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         frontier_row_count: int,
+        room_part_row_count: int,
     ) -> Features:
         snapshot_count = environment_count * candidate_count
         if not include_temperature:
@@ -1398,6 +1456,11 @@ class FeatureSlot:
                 row_frontier_idx=self.row_frontier_idx[:frontier_row_count],
                 row_door_output_idx=self.row_door_output_idx[:frontier_row_count],
             ),
+            room_part_features=RoomPartFeatures(
+                row_snapshot_idx=self.room_part_row_snapshot_idx[:room_part_row_count],
+                row_room_part_idx=self.row_room_part_idx[:room_part_row_count],
+                row_flags=self.row_room_part_flags[:room_part_row_count],
+            ),
         )
 
 
@@ -1415,7 +1478,9 @@ def extract_candidate_features(
 ) -> Features:
     frontier_row_count = feature_requirements.frontier_row_count
     worker_frontier_row_counts = feature_requirements.worker_frontier_row_counts
-    feature_slot.ensure(candidates.room_idx.numel(), frontier_row_count)
+    room_part_row_count = feature_requirements.room_part_row_count
+    worker_room_part_row_counts = feature_requirements.worker_room_part_row_counts
+    feature_slot.ensure(candidates.room_idx.numel(), frontier_row_count, room_part_row_count)
     env.env.pack_features_into(
         map_gen.FeatureBuffers(
             {
@@ -1424,6 +1489,8 @@ def extract_candidate_features(
                 "environment_start": 0,
                 "frontier_row_count": frontier_row_count,
                 "worker_frontier_row_counts": worker_frontier_row_counts,
+                "room_part_row_count": room_part_row_count,
+                "worker_room_part_row_counts": worker_room_part_row_counts,
                 "inventory": feature_slot.inventory.numpy(),
                 "room_x": feature_slot.room_x.numpy(),
                 "room_y": feature_slot.room_y.numpy(),
@@ -1470,6 +1537,9 @@ def extract_candidate_features(
                 "row_snapshot_idx": feature_slot.row_snapshot_idx.numpy(),
                 "row_frontier_idx": feature_slot.row_frontier_idx.numpy(),
                 "row_door_output_idx": feature_slot.row_door_output_idx.numpy(),
+                "room_part_row_snapshot_idx": feature_slot.room_part_row_snapshot_idx.numpy(),
+                "row_room_part_idx": feature_slot.row_room_part_idx.numpy(),
+                "row_room_part_flags": feature_slot.row_room_part_flags.numpy(),
             }
         )
     )
@@ -1483,4 +1553,5 @@ def extract_candidate_features(
         lookahead_outcomes,
         include_lookahead_outcomes,
         frontier_row_count,
+        room_part_row_count,
     ).flatten_candidates()

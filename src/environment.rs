@@ -22,6 +22,11 @@ const UNREACHABLE_DISTANCE: GraphDistance = GraphDistance::MAX;
 const KNOWN_DISTANCE_UNKNOWN: u8 = 0;
 const KNOWN_DISTANCE_UNREACHABLE: u8 = 1;
 pub const FEATURE_FRONTIER_WIDTH: usize = 5;
+pub const ROOM_PART_FLAG_SAVE_FROM_ROOM: u8 = 1 << 0;
+pub const ROOM_PART_FLAG_SAVE_TO_ROOM: u8 = 1 << 1;
+pub const ROOM_PART_FLAG_REFILL_FROM_ROOM: u8 = 1 << 2;
+pub const ROOM_PART_FLAG_REFILL_TO_ROOM: u8 = 1 << 3;
+pub const ROOM_PART_FLAG_MISSING_CONNECT: u8 = 1 << 4;
 
 fn encode_known_finalized_distance(
     current_distance: GraphDistance,
@@ -263,6 +268,7 @@ pub struct FeatureConfig {
     pub room_part_save_distance: bool,
     pub room_part_refill_distance: bool,
     pub room_part_frontier_distance: bool,
+    pub room_part_nodes: bool,
     pub frontier_mask: bool,
     pub frontier_position: bool,
     pub frontier_orientation: bool,
@@ -287,6 +293,7 @@ impl FeatureConfig {
             && !self.room_part_save_distance
             && !self.room_part_refill_distance
             && !self.room_part_frontier_distance
+            && !self.room_part_nodes
             && !self.connection_reachability
             && !self.toilet_crossed_room
             && !self.has_frontier_features()
@@ -331,6 +338,7 @@ impl FeatureConfig {
             room_part_save_distance: true,
             room_part_refill_distance: true,
             room_part_frontier_distance: true,
+            room_part_nodes: true,
             frontier_mask: true,
             frontier_position: true,
             frontier_orientation: true,
@@ -358,6 +366,7 @@ impl FeatureConfig {
             room_part_save_distance: false,
             room_part_refill_distance: false,
             room_part_frontier_distance: false,
+            room_part_nodes: false,
             frontier_mask: false,
             frontier_position: false,
             frontier_orientation: false,
@@ -391,6 +400,8 @@ pub struct Features {
     pub known_save_to_room_distance: Vec<u8>,
     pub known_refill_from_room_distance: Vec<u8>,
     pub known_refill_to_room_distance: Vec<u8>,
+    pub row_room_part_idx: Vec<i16>,
+    pub row_room_part_flags: Vec<u8>,
     // mask, x, y, vertical, kind
     pub frontier: Vec<i8>,
     // Global door output index for each frontier row, or -1 when unavailable.
@@ -1706,6 +1717,59 @@ impl Environment {
             );
         }
         (from_room, to_room)
+    }
+
+    fn unresolved_room_part_rows(
+        &self,
+        common: &CommonData,
+        known_save_from_room_distance: &[u8],
+        known_save_to_room_distance: &[u8],
+        known_refill_from_room_distance: &[u8],
+        known_refill_to_room_distance: &[u8],
+    ) -> (Vec<i16>, Vec<u8>) {
+        let mut flags_by_part = vec![0; common.room_part.len()];
+        let has_save_objective = !common.save_room_part.is_empty();
+        let has_refill_objective = !common.refill_room_part.is_empty();
+        for &part in &self.active_room_parts {
+            let idx = part as usize;
+            if has_save_objective && known_save_from_room_distance[idx] == KNOWN_DISTANCE_UNKNOWN {
+                flags_by_part[idx] |= ROOM_PART_FLAG_SAVE_FROM_ROOM;
+            }
+            if has_save_objective && known_save_to_room_distance[idx] == KNOWN_DISTANCE_UNKNOWN {
+                flags_by_part[idx] |= ROOM_PART_FLAG_SAVE_TO_ROOM;
+            }
+            if has_refill_objective
+                && known_refill_from_room_distance[idx] == KNOWN_DISTANCE_UNKNOWN
+            {
+                flags_by_part[idx] |= ROOM_PART_FLAG_REFILL_FROM_ROOM;
+            }
+            if has_refill_objective && known_refill_to_room_distance[idx] == KNOWN_DISTANCE_UNKNOWN
+            {
+                flags_by_part[idx] |= ROOM_PART_FLAG_REFILL_TO_ROOM;
+            }
+        }
+        for connection in &common.room_connection {
+            if !self.room_used[connection.room_idx as usize] {
+                continue;
+            }
+            let from_part =
+                Self::room_part_idx(common, connection.room_idx, connection.from_part) as usize;
+            let to_part =
+                Self::room_part_idx(common, connection.room_idx, connection.to_part) as usize;
+            flags_by_part[from_part] |= ROOM_PART_FLAG_MISSING_CONNECT;
+            flags_by_part[to_part] |= ROOM_PART_FLAG_MISSING_CONNECT;
+        }
+
+        let mut row_room_part_idx = Vec::new();
+        let mut row_room_part_flags = Vec::new();
+        for &part in &self.active_room_parts {
+            let flags = flags_by_part[part as usize];
+            if flags != 0 {
+                row_room_part_idx.push(part as i16);
+                row_room_part_flags.push(flags);
+            }
+        }
+        (row_room_part_idx, row_room_part_flags)
     }
 
     #[cfg(test)]
@@ -3244,6 +3308,17 @@ impl Environment {
             self.known_save_refill_distance_features(common, &self.room_part_save_distance_cache);
         let (known_refill_from_room_distance, known_refill_to_room_distance) =
             self.known_save_refill_distance_features(common, &self.room_part_refill_distance_cache);
+        let (row_room_part_idx, row_room_part_flags) = if config.room_part_nodes {
+            self.unresolved_room_part_rows(
+                common,
+                &known_save_from_room_distance,
+                &known_save_to_room_distance,
+                &known_refill_from_room_distance,
+                &known_refill_to_room_distance,
+            )
+        } else {
+            (vec![], vec![])
+        };
         let mut frontier = vec![0; frontier_count * FEATURE_FRONTIER_WIDTH];
         let frontier_window_area = frontier_window_size * frontier_window_size;
         let packed_frontier_window_size = frontier_window_area.div_ceil(8);
@@ -3516,6 +3591,8 @@ impl Environment {
             known_save_to_room_distance,
             known_refill_from_room_distance,
             known_refill_to_room_distance,
+            row_room_part_idx,
+            row_room_part_flags,
             frontier,
             row_door_output_idx,
             frontier_occupancy,
@@ -5340,6 +5417,110 @@ mod tests {
         assert_eq!(
             encode_known_finalized_distance(254, UNREACHABLE_DISTANCE),
             255
+        );
+    }
+
+    #[test]
+    fn unresolved_room_part_rows_include_missing_connection_endpoints() {
+        let rooms: Vec<Room> = serde_json::from_str(
+            r#"
+            [{
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"direction": "right", "x": 0, "y": 0, "kind": 0}],
+                    [{"direction": "down", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": [[0, 1], [1, 0]]
+            }]
+            "#,
+        )
+        .unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 4), 8, 0);
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+            },
+            &common,
+        );
+
+        let features = env.features(
+            &common,
+            &FeatureConfig {
+                room_part_nodes: true,
+                ..FeatureConfig::all_disabled()
+            },
+            FrontierNeighborAlgorithm::Delaunay,
+            1,
+            1,
+        );
+
+        assert_eq!(features.row_room_part_idx, vec![0, 1]);
+        assert_eq!(
+            features.row_room_part_flags,
+            vec![
+                ROOM_PART_FLAG_MISSING_CONNECT,
+                ROOM_PART_FLAG_MISSING_CONNECT
+            ]
+        );
+    }
+
+    #[test]
+    fn unresolved_room_part_rows_flag_unknown_save_refill_distances() {
+        let rooms: Vec<Room> = serde_json::from_str(
+            r#"
+            [
+                {
+                    "save": true,
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [
+                        [{"direction": "right", "x": 0, "y": 0, "kind": 0}]
+                    ],
+                    "connections": [],
+                    "missing_connections": []
+                },
+                {
+                    "refill": true,
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [
+                        [{"direction": "left", "x": 0, "y": 0, "kind": 0}]
+                    ],
+                    "connections": [],
+                    "missing_connections": []
+                }
+            ]
+            "#,
+        )
+        .unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 4), 8, 0);
+        env.active_room_parts = vec![0, 1];
+        let known_save_from_room_distance = vec![KNOWN_DISTANCE_UNKNOWN, 12];
+        let known_save_to_room_distance = vec![KNOWN_DISTANCE_UNREACHABLE, 13];
+        let known_refill_from_room_distance = vec![14, KNOWN_DISTANCE_UNKNOWN];
+        let known_refill_to_room_distance = vec![15, KNOWN_DISTANCE_UNREACHABLE];
+
+        let (row_room_part_idx, row_room_part_flags) = env.unresolved_room_part_rows(
+            &common,
+            &known_save_from_room_distance,
+            &known_save_to_room_distance,
+            &known_refill_from_room_distance,
+            &known_refill_to_room_distance,
+        );
+
+        assert_eq!(row_room_part_idx, vec![0, 1]);
+        assert_eq!(
+            row_room_part_flags,
+            vec![
+                ROOM_PART_FLAG_SAVE_FROM_ROOM,
+                ROOM_PART_FLAG_REFILL_FROM_ROOM
+            ]
         );
     }
 

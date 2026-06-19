@@ -105,6 +105,7 @@ class FeatureConfig(StrictBaseModel):
     room_part_save_distance: bool
     room_part_refill_distance: bool
     room_part_frontier_distance: bool
+    room_part_nodes: bool
     frontier_mask: bool
     frontier_position: bool
     frontier_orientation: bool
