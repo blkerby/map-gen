@@ -2720,7 +2720,11 @@ impl Environment {
         }
     }
 
-    fn room_part_idx(common: &CommonData, room_idx: RoomIdx, part_idx: PartIdx) -> RoomPartIdx {
+    pub(crate) fn room_part_idx(
+        common: &CommonData,
+        room_idx: RoomIdx,
+        part_idx: PartIdx,
+    ) -> RoomPartIdx {
         (common.room[room_idx as usize].door_group_offset + part_idx as usize) as RoomPartIdx
     }
 

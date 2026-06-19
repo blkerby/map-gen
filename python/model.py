@@ -611,6 +611,11 @@ class FrontierModel(torch.nn.Module):
             2,
         )
         self.register_buffer("door_variant_outcome_idx", door_output_metadata[:, 1])
+        connection_room_part_idx = torch.tensor(
+            output_metadata.connection_room_part_idx,
+            dtype=torch.int64,
+        ).reshape(self.num_connection_outputs, 2)
+        self.register_buffer("connection_room_part_idx", connection_room_part_idx)
         self.door_output = torch.nn.Linear(embedding_width, output_metadata.num_door_variants)
         self.frontier_door_invalid_output = torch.nn.Linear(frontier_embedding_width, 1)
         self.connection_output = FactorizedOutcomeHead(
@@ -633,6 +638,11 @@ class FrontierModel(torch.nn.Module):
         self.missing_connect_distance_output = torch.nn.Linear(
             embedding_width,
             self.num_connection_outputs,
+        )
+        self.local_save_refill_utility_output = torch.nn.Linear(room_part_embedding_width, 4)
+        self.local_missing_connect_output = torch.nn.Linear(
+            2 * room_part_embedding_width + global_embedding_width,
+            2,
         )
         self.proposal_output = ProposalOutput(
             frontier_embedding_width,
@@ -719,6 +729,162 @@ class FrontierModel(torch.nn.Module):
         neighbor = source_start_by_snapshot[target_snapshot_idx].unsqueeze(1) + local_neighbor
         neighbor = torch.where(neighbor_valid, neighbor, torch.zeros_like(neighbor))
         return neighbor, neighbor_valid.unsqueeze(-1)
+
+    def _local_room_part_lookup(
+        self,
+        row_snapshot_idx: torch.Tensor,
+        row_room_part_idx: torch.Tensor,
+        snapshot_count: int,
+    ) -> torch.Tensor:
+        lookup = row_snapshot_idx.new_full(
+            [snapshot_count, self.num_room_parts],
+            -1,
+            dtype=torch.int64,
+        )
+        row_count = row_room_part_idx.shape[0]
+        if row_count == 0:
+            return lookup
+        row_snapshot_idx = row_snapshot_idx.to(torch.int64)
+        row_room_part_idx = row_room_part_idx.to(torch.int64)
+        torch._assert(
+            torch.all((row_snapshot_idx >= 0) & (row_snapshot_idx < snapshot_count)),
+            "room-part row snapshot index out of bounds",
+        )
+        torch._assert(
+            torch.all((row_room_part_idx >= 0) & (row_room_part_idx < self.num_room_parts)),
+            "room-part row part index out of bounds",
+        )
+        flat_lookup = lookup.flatten()
+        flat_idx = row_snapshot_idx * self.num_room_parts + row_room_part_idx
+        row_idx = torch.arange(row_count, device=flat_idx.device, dtype=torch.int64)
+        flat_lookup.scatter_(0, flat_idx, row_idx)
+        return lookup
+
+    def _overlay_local_utility(
+        self,
+        base_utility: torch.Tensor,
+        local_utility: torch.Tensor,
+        flat_idx: torch.Tensor,
+        enabled: torch.Tensor,
+    ) -> torch.Tensor:
+        if flat_idx.shape[0] == 0:
+            return base_utility
+        utility = base_utility.squeeze(1).clone()
+        flat_utility = utility.flatten()
+        existing = flat_utility.detach().gather(0, flat_idx)
+        scatter_values = torch.where(enabled, local_utility, existing)
+        flat_utility.scatter_(0, flat_idx, scatter_values.to(flat_utility.dtype))
+        return utility.unsqueeze(1)
+
+    def _overlay_local_save_refill_utilities(
+        self,
+        room_part_X: torch.Tensor,
+        features: Features,
+        save_to_room_utility: torch.Tensor,
+        save_from_room_utility: torch.Tensor,
+        refill_to_room_utility: torch.Tensor,
+        refill_from_room_utility: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        row_count = room_part_X.shape[0]
+        if row_count == 0:
+            return (
+                save_to_room_utility,
+                save_from_room_utility,
+                refill_to_room_utility,
+                refill_from_room_utility,
+            )
+        row_snapshot_idx = features.room_part_features.row_snapshot_idx.to(torch.int64)
+        row_room_part_idx = features.room_part_features.row_room_part_idx.to(torch.int64)
+        flat_idx = row_snapshot_idx * self.num_room_parts + row_room_part_idx
+        flags = features.room_part_features.row_flags
+        local_utility = torch.sigmoid(
+            self.local_save_refill_utility_output(room_part_X).to(torch.float32)
+        )
+        return (
+            self._overlay_local_utility(
+                save_to_room_utility,
+                local_utility[:, 0],
+                flat_idx,
+                flags & 2 != 0,
+            ),
+            self._overlay_local_utility(
+                save_from_room_utility,
+                local_utility[:, 1],
+                flat_idx,
+                flags & 1 != 0,
+            ),
+            self._overlay_local_utility(
+                refill_to_room_utility,
+                local_utility[:, 2],
+                flat_idx,
+                flags & 8 != 0,
+            ),
+            self._overlay_local_utility(
+                refill_from_room_utility,
+                local_utility[:, 3],
+                flat_idx,
+                flags & 4 != 0,
+            ),
+        )
+
+    def _overlay_local_missing_connect_outputs(
+        self,
+        room_part_X: torch.Tensor,
+        global_state: torch.Tensor,
+        features: Features,
+        connection_invalid: torch.Tensor,
+        missing_connect_distance: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.num_connection_outputs == 0 or room_part_X.shape[0] == 0:
+            return connection_invalid, missing_connect_distance
+        snapshot_count = global_state.shape[0]
+        lookup = self._local_room_part_lookup(
+            features.room_part_features.row_snapshot_idx,
+            features.room_part_features.row_room_part_idx,
+            snapshot_count,
+        )
+        endpoints = self.connection_room_part_idx.to(connection_invalid.device)
+        source_row = lookup[:, endpoints[:, 0]]
+        destination_row = lookup[:, endpoints[:, 1]]
+        one_sided = (source_row >= 0) ^ (destination_row >= 0)
+        torch._assert(
+            torch.logical_not(one_sided).all(),
+            "missing-connect local query has only one endpoint row",
+        )
+        query_valid = (source_row >= 0) & (destination_row >= 0)
+        safe_source_row = source_row.clamp_min(0)
+        safe_destination_row = destination_row.clamp_min(0)
+        source_state = room_part_X[safe_source_row.reshape(-1)].view(
+            snapshot_count,
+            self.num_connection_outputs,
+            self.room_part_embedding_width,
+        )
+        destination_state = room_part_X[safe_destination_row.reshape(-1)].view(
+            snapshot_count,
+            self.num_connection_outputs,
+            self.room_part_embedding_width,
+        )
+        query_global_state = global_state.unsqueeze(1).expand(
+            -1,
+            self.num_connection_outputs,
+            -1,
+        )
+        local_outputs = self.local_missing_connect_output(
+            torch.cat([source_state, destination_state, query_global_state], dim=-1)
+        )
+        connection = connection_invalid.squeeze(1)
+        distance = missing_connect_distance.squeeze(1)
+        connection = torch.where(
+            query_valid,
+            local_outputs[..., 0].to(connection.dtype),
+            connection,
+        )
+        distance = torch.where(
+            query_valid,
+            local_outputs[..., 1].to(distance.dtype),
+            distance,
+        )
+        return connection.unsqueeze(1), distance.unsqueeze(1)
 
     def _activation_dtype(self, device: torch.device) -> torch.dtype:
         return activation_dtype(device, next(self.parameters()).dtype)
@@ -1282,6 +1448,19 @@ class FrontierModel(torch.nn.Module):
             self.refill_from_room_utility_output(X).to(torch.float32)
         )
         missing_connect_distance = self.missing_connect_distance_output(X).to(torch.float32)
+        (
+            save_to_room_utility,
+            save_from_room_utility,
+            refill_to_room_utility,
+            refill_from_room_utility,
+        ) = self._overlay_local_save_refill_utilities(
+            room_part_X,
+            features,
+            save_to_room_utility,
+            save_from_room_utility,
+            refill_to_room_utility,
+            refill_from_room_utility,
+        )
         preds = get_predictions(
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
             self.output_sizes,
@@ -1292,13 +1471,22 @@ class FrontierModel(torch.nn.Module):
             row_snapshot_idx,
             features.frontier_features.row_door_output_idx,
         )
+        connection_invalid, missing_connect_distance = (
+            self._overlay_local_missing_connect_outputs(
+                room_part_X,
+                global_state,
+                features,
+                preds.connection_invalid,
+                missing_connect_distance,
+            )
+        )
         door_invalid = apply_known_invalid_logits(
             door_invalid,
             features.global_features.lookahead_door_invalid,
             "door",
         )
         connection_invalid = apply_known_invalid_logits(
-            preds.connection_invalid,
+            connection_invalid,
             features.global_features.lookahead_connection_invalid,
             "connection",
         )

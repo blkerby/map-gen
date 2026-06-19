@@ -59,10 +59,36 @@ The feature pipeline also emits unresolved room-part node rows. Each row stores:
 - unresolved objective flags for directed save/refill and missing-connect
   endpoint status
 
-Room-part rows are currently structural only. The model constructs internal
-room-part node states from room-part identity, unresolved flags, known directed
-save/refill encodings, and enabled room-part distance features, but these states
-are not yet used by message passing or output heads.
+The model constructs internal room-part node states from room-part identity,
+unresolved flags, known directed save/refill encodings, and enabled room-part
+distance features. These states are now used by part-frontier message passing,
+but not yet by local output heads.
+
+## Current State: Configurable Local Widths
+
+The model separates the main local widths so capacity can be tuned without
+forcing the whole architecture to scale together.
+
+Current required model config fields include:
+
+- `embedding_width`: pooled/output-state width for global output heads.
+- `frontier_embedding_width`: frontier node width and proposal-state width.
+- `room_part_embedding_width`: unresolved room-part node width.
+- `global_embedding_width`: global context width used by message-passing
+  updates.
+- `global_room_position_embedding_width`: global room-position feature width.
+- `pooling_hidden_width`: hidden width for the pooled-state MLP.
+- `frontier_message_hidden_width`: hidden/update width for frontier-to-frontier
+  messages.
+- `part_from_frontier_message_hidden_width`: hidden/update width for
+  `part <- frontier` messages.
+- `frontier_from_part_message_hidden_width`: hidden/update width for
+  `frontier <- part` messages.
+- `proposal_hidden_width`: proposal-score MLP hidden width.
+
+The default configs currently keep the new local widths equal to the previous
+shared values, so the split is behavior-neutral until tuned. A smoke check with
+different frontier, room-part, pooled, global, and message widths passed.
 
 ## Deferred: Finalized-Known Directed Overrides
 
@@ -136,29 +162,48 @@ Aim diagnostics track:
 If truncation is frequent and appears quality-limiting, raise caps or consider a
 COO/segment-reduce representation for only the affected edge direction.
 
-## Step 2: Local Outcome Heads
+## Remaining Step 1 Validation: Message-Passing Tuning
 
-Route local outcomes through local node/query representations.
+The message-passing path is implemented, but still needs empirical tuning.
+
+Key checks:
+
+- Monitor selected fan-in and cap-hit diagnostics during training.
+- Decide whether `part <- frontier = 2`, `frontier <- part = 8`, and
+  missing-connect reserved count of 2 are adequate.
+- Refine `frontier <- part` ranking if save/refill pressure crowds out
+  missing-connect endpoints or if general slots are poorly used.
+- Try narrower `room_part_embedding_width` and/or direction-specific message
+  hidden widths if room-part message passing is too expensive.
+- Revisit frontier-neighbor count separately; extra frontier-frontier neighbors
+  may become useful late in training once local nodes are active.
+
+## Current State: Local Output Heads
+
+Local outcomes now route through local node/query representations when matching
+local rows exist. Existing pooled/global heads remain as fallbacks, so public
+prediction shapes and loss/reward consumers are unchanged.
 
 Save/refill utilities:
 
 - For placed room parts with unresolved nodes, predict directed save/refill
-  utilities from the room-part node state.
-- For finalized entries, initially keep learned predictions unless a later
-  experiment re-enables deterministic finalized-known overrides.
-- For unplaced room parts, keep using the global pooled state.
+  utilities from the room-part node state using a linear local head.
+- Scatter local values over the existing full utility tensors only for row flags
+  matching the unresolved objective direction.
+- For unplaced, finalized, or otherwise nonlocal entries, keep the pooled/global
+  prediction.
 
 Missing-connect outcomes:
 
 - Treat each missing connection as a directed local query:
   `source_part -> destination_part`.
-- Predict missing-connect validity and distance from endpoint states plus
-  directed pair features and global state.
-- If endpoints have room-part nodes, use those node states.
-- If an endpoint is placed but omitted because all attached outcomes are
-  finalized, use deterministic known values where available or a compact
-  non-message-passed endpoint embedding.
-- If the room is unplaced, route through the global state as today.
+- Predict missing-connect validity and distance from endpoint room-part states
+  plus global state using a linear query head.
+- Scatter local validity logits into the existing `connection_invalid` tensor.
+- Scatter local distances into the existing `missing_connect_distance` tensor.
+- Use local predictions only when both endpoints have local rows in the same
+  snapshot; one-sided endpoint rows are treated as an internal error.
+- If endpoints are not local, keep the pooled/global prediction.
 
 Door/frontier proposal outcomes:
 
@@ -168,36 +213,27 @@ Door/frontier proposal outcomes:
 
 ## Tests And Validation
 
-Rust tests:
+Completed validation:
+
+- `cargo test`
+- `conda run -n map-gen maturin develop`
+- `conda run -n map-gen python -m compileall python`
+- model forward smoke with part-frontier tensors
+- model forward smoke with intentionally different frontier, room-part, pooled,
+  global, and message hidden widths
+- model forward smoke covering local output-head shapes and output metadata
+
+Still useful tests to add:
 
 - part-frontier top-k edge packing and cap/truncation diagnostics
 - missing-connect endpoint/query metadata
-
-Python tests:
-
 - model forward with zero room-part nodes and part-frontier edges
 - model forward with room-part nodes and part-frontier edges
 - output routing for placed, unplaced, finalized, and missing-connect outcomes
 
-Validation commands:
-
-- `cargo test`
-- `conda run -n map-gen maturin develop`
-- Python compile/smoke checks in the `map-gen` conda environment
-
 ## Open Design Checks
 
-- Decide whether missing-connect validity and missing-connect distance should
-  share one directed query representation or use separate heads from the same
-  query state.
-- Evaluate whether the initial `part <- frontier = 2`,
-  `frontier <- part = 8`, and missing-connect reserved count of 2 have
-  acceptable truncation rates.
-- Refine `frontier <- part` ranking if save/refill pressure still crowds out
-  missing-connect endpoints or if diagnostics show poor use of the general
-  slots.
-- Revisit frontier-neighbor count after local nodes are added; extra
-  frontier-frontier neighbors may become more useful late in training but should
-  be evaluated separately from the room-part-node change.
+- Evaluate whether linear local output heads have enough capacity or need hidden
+  layers after training results are available.
 - Decide when, if ever, to re-enable finalized-known deterministic overrides
   after proposal-visible local architecture is in place.

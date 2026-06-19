@@ -641,6 +641,7 @@ class Features:
 class OutputMetadata:
     door: list[tuple[int, int]]
     connection: list[tuple[int, int]]
+    connection_room_part_idx: list[tuple[int, int]]
     num_door_variants: int
     num_connection_variants: int
     room_connection_variant_idx: list[int]
@@ -709,6 +710,7 @@ class Engine:
         (
             door,
             connection,
+            connection_room_part_idx,
             num_door_variants,
             num_connection_variants,
             room_connection_variant_idx,
@@ -718,6 +720,7 @@ class Engine:
         return OutputMetadata(
             door=door,
             connection=connection,
+            connection_room_part_idx=connection_room_part_idx,
             num_door_variants=num_door_variants,
             num_connection_variants=num_connection_variants,
             room_connection_variant_idx=room_connection_variant_idx,

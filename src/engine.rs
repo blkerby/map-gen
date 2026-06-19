@@ -2519,6 +2519,7 @@ impl Engine {
     ) -> (
         Vec<(usize, usize)>,
         Vec<(usize, usize)>,
+        Vec<(usize, usize)>,
         usize,
         usize,
         Vec<usize>,
@@ -2537,9 +2538,28 @@ impl Engine {
             .iter()
             .map(|output| (output.room_idx as usize, output.variant_outcome_idx))
             .collect();
+        let connection_room_part_idx = self
+            .common_data
+            .room_connection
+            .iter()
+            .map(|connection| {
+                let source_part = Environment::room_part_idx(
+                    &self.common_data,
+                    connection.room_idx,
+                    connection.from_part,
+                );
+                let destination_part = Environment::room_part_idx(
+                    &self.common_data,
+                    connection.room_idx,
+                    connection.to_part,
+                );
+                (source_part as usize, destination_part as usize)
+            })
+            .collect();
         (
             door_output,
             connection_output,
+            connection_room_part_idx,
             self.common_data.num_door_output_variants,
             self.common_data.num_connection_output_variants,
             self.common_data
