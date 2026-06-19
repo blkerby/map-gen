@@ -1171,6 +1171,8 @@ def run_generation_groups(
             "proposal_evaluated_candidates": 0.0,
             "proposal_rejected_candidates": 0.0,
             "proposal_exhausted_rows": 0.0,
+            "unresolved_room_part_nodes": 0.0,
+            "unresolved_room_part_node_snapshots": 0.0,
         }
         with torch.no_grad():
             for group in groups:
@@ -1273,6 +1275,12 @@ def run_generation_groups(
                     )
                 if step.group.step > 0:
                     stats = candidate_batch.stats
+                    stat_totals["unresolved_room_part_nodes"] += float(
+                        candidate_batch.feature_requirements.room_part_row_count
+                    )
+                    stat_totals["unresolved_room_part_node_snapshots"] += float(
+                        candidates.room_idx.numel()
+                    )
                     stat_totals["proposal_clean_candidates"] += float(
                         stats.clean_counts.sum().item()
                     )
@@ -1418,12 +1426,16 @@ def run_generation_groups(
     ) = merge_generation_results(results)
     proposal_rows = max(stat_totals["proposal_mask_rows"], 1.0)
     evaluated = max(stat_totals["proposal_evaluated_candidates"], 1.0)
+    node_snapshots = max(stat_totals["unresolved_room_part_node_snapshots"], 1.0)
     generation_stats = {
         "proposal_valid_cells": stat_totals["proposal_valid_cells"] / proposal_rows,
         "proposal_full_set_rate": stat_totals["proposal_full_set_rows"] / proposal_rows,
         "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
         "proposal_rejection_rate": stat_totals["proposal_rejected_candidates"] / evaluated,
         "proposal_exhaustion_rate": stat_totals["proposal_exhausted_rows"] / proposal_rows,
+        "avg_unresolved_room_part_nodes": (
+            stat_totals["unresolved_room_part_nodes"] / node_snapshots
+        ),
     }
     return (
         episode_data,
