@@ -570,14 +570,14 @@ class FrontierFeatures:
         )
 
     def mark_dynamic(self) -> None:
-        torch._dynamo.mark_dynamic(self.frontier, 0)
-        torch._dynamo.mark_dynamic(self.frontier_occupancy, 0)
-        torch._dynamo.mark_dynamic(self.frontier_neighbor, 0)
-        torch._dynamo.mark_dynamic(self.frontier_neighbor_pair, 0)
-        torch._dynamo.mark_dynamic(self.frontier_connection_reachability, 0)
-        torch._dynamo.mark_dynamic(self.row_snapshot_idx, 0)
-        torch._dynamo.mark_dynamic(self.row_frontier_idx, 0)
-        torch._dynamo.mark_dynamic(self.row_door_output_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(self.frontier, 0)
+        torch._dynamo.maybe_mark_dynamic(self.frontier_occupancy, 0)
+        torch._dynamo.maybe_mark_dynamic(self.frontier_neighbor, 0)
+        torch._dynamo.maybe_mark_dynamic(self.frontier_neighbor_pair, 0)
+        torch._dynamo.maybe_mark_dynamic(self.frontier_connection_reachability, 0)
+        torch._dynamo.maybe_mark_dynamic(self.row_snapshot_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(self.row_frontier_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(self.row_door_output_idx, 0)
 
 
 @dataclass
@@ -612,16 +612,16 @@ class MissingConnectQueryFeatures:
         )
 
     def mark_dynamic(self) -> None:
-        torch._dynamo.mark_dynamic(self.query_snapshot_idx, 0)
-        torch._dynamo.mark_dynamic(self.query_connection_idx, 0)
-        torch._dynamo.mark_dynamic(self.source_frontier, 0)
-        torch._dynamo.mark_dynamic(self.target_frontier, 0)
-        torch._dynamo.mark_dynamic(self.source_distance, 0)
-        torch._dynamo.mark_dynamic(self.target_distance, 0)
-        torch._dynamo.mark_dynamic(self.source_count, 0)
-        torch._dynamo.mark_dynamic(self.target_count, 0)
-        torch._dynamo.mark_dynamic(self.source_cap_hit, 0)
-        torch._dynamo.mark_dynamic(self.target_cap_hit, 0)
+        torch._dynamo.maybe_mark_dynamic(self.query_snapshot_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(self.query_connection_idx, 0)
+        torch._dynamo.maybe_mark_dynamic(self.source_frontier, 0)
+        torch._dynamo.maybe_mark_dynamic(self.target_frontier, 0)
+        torch._dynamo.maybe_mark_dynamic(self.source_distance, 0)
+        torch._dynamo.maybe_mark_dynamic(self.target_distance, 0)
+        torch._dynamo.maybe_mark_dynamic(self.source_count, 0)
+        torch._dynamo.maybe_mark_dynamic(self.target_count, 0)
+        torch._dynamo.maybe_mark_dynamic(self.source_cap_hit, 0)
+        torch._dynamo.maybe_mark_dynamic(self.target_cap_hit, 0)
 
 
 @dataclass
