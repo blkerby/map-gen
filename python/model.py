@@ -280,12 +280,19 @@ class MissingConnectFrontierQueryHead(torch.nn.Module):
         row_start_by_snapshot: torch.Tensor,
         features: Features,
         connection_output_count: int,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         query = features.missing_connect_query_features
         query_count = query.query_connection_idx.shape[0]
         snapshot_count = global_state.shape[0]
         if query_count == 0 or frontier_state.shape[0] == 0:
-            return frontier_state.new_zeros([snapshot_count, 1, connection_output_count])
+            return (
+                frontier_state.new_zeros([snapshot_count, 1, connection_output_count]),
+                torch.zeros(
+                    [snapshot_count, 1, connection_output_count],
+                    dtype=torch.bool,
+                    device=frontier_state.device,
+                ),
+            )
         query_snapshot_idx = query.query_snapshot_idx.to(torch.int64)
         source_mean, source_max, source_mean_distance, source_min_distance = self._pool(
             frontier_state,
@@ -320,7 +327,7 @@ class MissingConnectFrontierQueryHead(torch.nn.Module):
             ],
             dim=1,
         )
-        residual = self.layers(
+        query_logits = self.layers(
             torch.cat(
                 [
                     source_mean,
@@ -337,8 +344,14 @@ class MissingConnectFrontierQueryHead(torch.nn.Module):
             torch.int64
         )
         output = frontier_state.new_zeros([snapshot_count * connection_output_count])
-        output.index_add_(0, flat_idx, residual)
-        return output.view(snapshot_count, 1, connection_output_count)
+        output.index_copy_(0, flat_idx, query_logits)
+        mask = torch.zeros_like(output, dtype=torch.bool)
+        mask[flat_idx] = True
+        return output.view(snapshot_count, 1, connection_output_count), mask.view(
+            snapshot_count,
+            1,
+            connection_output_count,
+        )
 
 
 class FrontierModel(torch.nn.Module):
@@ -1178,13 +1191,18 @@ class FrontierModel(torch.nn.Module):
         )
         connection_invalid = preds.connection_invalid
         if self.missing_connect_query_output is not None:
-            connection_invalid = connection_invalid + self.missing_connect_query_output(
+            query_connection_invalid, query_connection_mask = self.missing_connect_query_output(
                 frontier_state,
                 global_state,
                 row_count_by_snapshot,
                 row_start_by_snapshot,
                 features,
                 self.num_connection_outputs,
+            )
+            connection_invalid = torch.where(
+                query_connection_mask,
+                query_connection_invalid,
+                connection_invalid,
             )
         connection_invalid = apply_known_invalid_logits(
             connection_invalid,
