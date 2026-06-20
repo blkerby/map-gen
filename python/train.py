@@ -825,7 +825,7 @@ class TrainingSession:
             ) in shard_results:
                 episode_data_iterations.append(iteration_episode_data.to(self.device))
                 outcome_iterations.append(iteration_outcomes.to(self.device))
-                door_match_count_iterations.append(iteration_door_match_counts.to(self.device))
+                door_match_count_iterations.append(iteration_door_match_counts)
                 proposal_data_iterations.append(iteration_proposal_data.to(self.device))
                 generation_stats_iterations.append(iteration_generation_stats)
                 profile_reports.append(iteration_profile_report)
@@ -1428,6 +1428,7 @@ class TrainingSession:
                     proposal_data,
                     step_config,
                 )
+                episode_outcomes = episode_outcomes.to(torch.device("cpu"))
 
                 self.experience.store(episode_data)
 
