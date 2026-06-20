@@ -1407,7 +1407,7 @@ impl Environment {
     }
 
     fn action_for_proposal_candidate(
-        &self,
+        &mut self,
         common: &CommonData,
         sorted_frontier_locations: &[DoorLocation],
         frontier_idx: FrontierIdx,
@@ -1421,6 +1421,8 @@ impl Environment {
         let frontier = self
             .frontier
             .get(sorted_frontier_locations.get(frontier_idx)?)?;
+        let mut matching_count = 0usize;
+        let mut selected = None;
         for &candidate in &frontier.candidates {
             for &connection_variant_idx in
                 common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
@@ -1445,15 +1447,19 @@ impl Environment {
                     if self.room_used[room_idx as usize] {
                         continue;
                     }
-                    return Some(Action {
+                    matching_count += 1;
+                    let action = Action {
                         room_idx,
                         x: candidate.x,
                         y: candidate.y,
-                    });
+                    };
+                    if self.rng.random_range(0..matching_count) == 0 {
+                        selected = Some(action);
+                    }
                 }
             }
         }
-        None
+        selected
     }
 
     pub fn step(&mut self, action: Action, common: &CommonData) {
