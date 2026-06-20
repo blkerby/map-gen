@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import math
 from typing import Literal
@@ -788,14 +788,19 @@ def train_optimizer_step(context: TrainRoundContext) -> None:
 
 def train_prepared_batch_group(
     context: TrainRoundContext,
-    prepared_batches: list[PreparedTrainBatch],
+    prepared_batches: Iterable[PreparedTrainBatch],
+    batch_count: int,
 ) -> tuple[MainLossBreakdown, float, int]:
+    if batch_count <= 0:
+        raise ValueError("batch_count must be greater than zero")
     context.main_model.zero_grad()
     context.balance_model.zero_grad()
-    loss_scale = 1.0 / len(prepared_batches)
+    loss_scale = 1.0 / batch_count
     group_loss = empty_main_loss_breakdown()
     group_balance_loss = 0.0
+    processed_count = 0
     for prepared_batch in prepared_batches:
+        processed_count += 1
         batch_loss, batch_balance_loss = train_batch_backward(
             context,
             prepared_batch,
@@ -803,8 +808,12 @@ def train_prepared_batch_group(
         )
         accumulate_main_loss(group_loss, batch_loss)
         group_balance_loss += batch_balance_loss
+    if processed_count != batch_count:
+        raise RuntimeError(
+            f"expected {batch_count} prepared batch(es), got {processed_count}"
+        )
     train_optimizer_step(context)
-    return group_loss, group_balance_loss, len(prepared_batches)
+    return group_loss, group_balance_loss, processed_count
 
 
 def add_completed_batch_group(
@@ -812,11 +821,13 @@ def add_completed_batch_group(
     total_loss: MainLossBreakdown,
     total_balance_loss: float,
     train_batch_count: int,
-    prepared_batch_group: list[PreparedTrainBatch],
+    prepared_batch_group: Iterable[PreparedTrainBatch],
+    group_size: int,
 ) -> tuple[float, int]:
     group_loss, group_balance_loss, group_count = train_prepared_batch_group(
         context,
         prepared_batch_group,
+        group_size,
     )
     accumulate_main_loss(total_loss, group_loss)
     return total_balance_loss + group_balance_loss, train_batch_count + group_count
@@ -854,40 +865,41 @@ def train_round(
     total_loss = empty_main_loss_breakdown()
     total_balance_loss = 0.0
     train_batch_count = 0
-    prepared_batch_group = []
 
-    prepared_batches = context.train_batch_prefetcher.map(
-        iter_train_batch_tasks(context.config, context.experience),
-        lambda task: prepare_train_batch_task(
-            context,
-            task,
-            episode_data,
-            episode_outcomes,
-            proposal_data,
-        ),
-    )
-    for prepared_batch in iter_shuffled_prepared_batches(
-        prepared_batches,
-        context.config.train.shuffle_buffer_batches,
-    ):
-        prepared_batch_group.append(prepared_batch)
-        if len(prepared_batch_group) == context.config.train.gradient_accumulation_steps:
-            total_balance_loss, train_batch_count = add_completed_batch_group(
+    train_batch_tasks = iter_train_batch_tasks(context.config, context.experience)
+    prepared_batches = iter(
+        context.train_batch_prefetcher.map(
+            train_batch_tasks,
+            lambda task: prepare_train_batch_task(
                 context,
-                total_loss,
-                total_balance_loss,
-                train_batch_count,
-                prepared_batch_group,
-            )
-            prepared_batch_group = []
-    if prepared_batch_group:
+                task,
+                episode_data,
+                episode_outcomes,
+                proposal_data,
+            ),
+        )
+    )
+    shuffled_prepared_batches = iter(
+        iter_shuffled_prepared_batches(
+            prepared_batches,
+            context.config.train.shuffle_buffer_batches,
+        )
+    )
+    remaining_batches = len(train_batch_tasks)
+    while remaining_batches > 0:
+        group_size = min(
+            context.config.train.gradient_accumulation_steps,
+            remaining_batches,
+        )
         total_balance_loss, train_batch_count = add_completed_batch_group(
             context,
             total_loss,
             total_balance_loss,
             train_batch_count,
-            prepared_batch_group,
+            (next(shuffled_prepared_batches) for _ in range(group_size)),
+            group_size,
         )
+        remaining_batches -= group_size
 
     if train_batch_count == 0:
         return empty_main_loss_breakdown(), 0.0

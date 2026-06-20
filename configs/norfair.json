@@ -112,7 +112,7 @@
     "missing_connect_distance_weight": 0.0,
     "proposal_weight": 0.005,
     "pipeline_groups": 4,
-    "gradient_accumulation_steps": 1,
+    "gradient_accumulation_steps": 2,
     "shuffle_buffer_batches": 1
   }
 }
