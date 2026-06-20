@@ -151,7 +151,7 @@ class TrainConfig(StrictBaseModel):
     proposal_weight: float
     ema_decay: ScheduleableFloat
     pipeline_groups: int
-    gradient_accumulation_steps: int
+    gradient_accumulation_steps: ScheduleableInt
     shuffle_buffer_batches: int
 
 
@@ -360,8 +360,11 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.sample_period must be greater than zero")
     if config.train.pipeline_groups <= 0:
         raise ValueError("train.pipeline_groups must be greater than zero")
-    if config.train.gradient_accumulation_steps <= 0:
-        raise ValueError("train.gradient_accumulation_steps must be greater than zero")
+    validate_positive_scheduleable_int(
+        config.train.gradient_accumulation_steps,
+        "train.gradient_accumulation_steps",
+        config.knot_episodes,
+    )
     if config.train.shuffle_buffer_batches <= 0:
         raise ValueError("train.shuffle_buffer_batches must be greater than zero")
     if config.train.proposal_weight < 0:
@@ -458,6 +461,27 @@ def validate_nonnegative_scheduleable_float(value: ScheduleableFloat, path: str)
         return
     if value < 0:
         raise ValueError(f"{path} must be greater than or equal to zero")
+
+
+def validate_positive_scheduleable_int(
+    value: ScheduleableInt,
+    path: str,
+    knot_episodes: list[int],
+) -> None:
+    if isinstance(value, Schedule):
+        if (value.linear is None) == (value.log is None):
+            raise ValueError(f"{path} must have exactly one schedule value: 'linear' or 'log'")
+        values = value.linear if value.linear is not None else value.log
+        if len(values) != len(knot_episodes):
+            raise ValueError(
+                f"{path} has {len(values)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
+            )
+        for index, item in enumerate(values):
+            if item <= 0:
+                raise ValueError(f"{path}[{index}] must be greater than zero")
+        return
+    if value <= 0:
+        raise ValueError(f"{path} must be greater than zero")
 
 
 def validate_ema_decay(value: float, path: str) -> None:

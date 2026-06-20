@@ -1300,6 +1300,7 @@ class TrainingSession:
             ),
             "distance_proximity_scale": step_config.distance_proximity_scale,
             "ema_decay": step_config.train.ema_decay,
+            "gradient_accumulation_steps": step_config.train.gradient_accumulation_steps,
             "toilet_weight": step_config.train.toilet_weight,
             "toilet_balance_weight": step_config.train.toilet_balance_weight,
             "avg_frontiers_weight": step_config.train.avg_frontiers_weight,
