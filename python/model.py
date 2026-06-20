@@ -265,6 +265,7 @@ class BoundedMessagePassingLayer(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(update_hidden_width, target_width, bias=False),
         )
+        torch.nn.init.zeros_(self.update_layer[2].weight)
 
     def forward(
         self,
@@ -422,7 +423,11 @@ class FrontierModel(torch.nn.Module):
                     update_hidden_width=part_from_frontier_message_hidden_width,
                     edge_width=10,
                 )
-                for _ in range(num_layers if use_part_frontier else 0)
+                for _ in range(
+                    num_layers
+                    if use_part_frontier and self.features.part_frontier_message_passing
+                    else 0
+                )
             ]
         )
         self.frontier_from_part_message_layers = torch.nn.ModuleList(
@@ -435,7 +440,11 @@ class FrontierModel(torch.nn.Module):
                     update_hidden_width=frontier_from_part_message_hidden_width,
                     edge_width=10,
                 )
-                for _ in range(num_layers if use_part_frontier else 0)
+                for _ in range(
+                    num_layers
+                    if use_part_frontier and self.features.frontier_room_part_message_passing
+                    else 0
+                )
             ]
         )
         global_width = (
@@ -639,10 +648,18 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             self.num_connection_outputs,
         )
-        self.local_save_refill_utility_output = torch.nn.Linear(room_part_embedding_width, 4)
-        self.local_missing_connect_output = torch.nn.Linear(
-            2 * room_part_embedding_width + global_embedding_width,
-            2,
+        self.local_save_refill_utility_output = (
+            torch.nn.Linear(room_part_embedding_width, 4)
+            if self.features.local_save_refill_outputs
+            else None
+        )
+        self.local_missing_connect_output = (
+            torch.nn.Linear(
+                2 * room_part_embedding_width + global_embedding_width,
+                2,
+            )
+            if self.features.local_missing_connect_outputs
+            else None
         )
         self.proposal_output = ProposalOutput(
             frontier_embedding_width,
@@ -786,7 +803,7 @@ class FrontierModel(torch.nn.Module):
         refill_from_room_utility: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         row_count = room_part_X.shape[0]
-        if row_count == 0:
+        if self.local_save_refill_utility_output is None or row_count == 0:
             return (
                 save_to_room_utility,
                 save_from_room_utility,
@@ -835,7 +852,11 @@ class FrontierModel(torch.nn.Module):
         connection_invalid: torch.Tensor,
         missing_connect_distance: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if self.num_connection_outputs == 0 or room_part_X.shape[0] == 0:
+        if (
+            self.local_missing_connect_output is None
+            or self.num_connection_outputs == 0
+            or room_part_X.shape[0] == 0
+        ):
             return connection_invalid, missing_connect_distance
         snapshot_count = global_state.shape[0]
         lookup = self._local_room_part_lookup(

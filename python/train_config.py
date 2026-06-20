@@ -114,6 +114,10 @@ class FeatureConfig(StrictBaseModel):
     room_part_refill_distance: bool
     room_part_frontier_distance: bool
     room_part_nodes: bool
+    part_frontier_message_passing: bool
+    frontier_room_part_message_passing: bool
+    local_save_refill_outputs: bool
+    local_missing_connect_outputs: bool
     frontier_mask: bool
     frontier_position: bool
     frontier_orientation: bool
@@ -307,6 +311,20 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "generation.frontier_room_part_missing_connect_reserved_count must not exceed generation.frontier_room_part_neighbor_count"
         )
+    if (
+        config.features.part_frontier_message_passing
+        or config.features.frontier_room_part_message_passing
+        or config.features.local_save_refill_outputs
+        or config.features.local_missing_connect_outputs
+    ) and not config.features.room_part_nodes:
+        raise ValueError(
+            "room-part message passing and local outputs require features.room_part_nodes"
+        )
+    if (
+        config.features.part_frontier_message_passing
+        or config.features.frontier_room_part_message_passing
+    ) and not config.features.frontier_mask:
+        raise ValueError("room-part message passing requires features.frontier_mask")
     if config.generation.frontier_window_size < 0:
         raise ValueError("generation.frontier_window_size must be greater than or equal to zero")
     if config.generation.candidate_spatial_cell_size <= 0:

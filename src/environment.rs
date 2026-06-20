@@ -349,6 +349,10 @@ pub struct FeatureConfig {
     pub room_part_refill_distance: bool,
     pub room_part_frontier_distance: bool,
     pub room_part_nodes: bool,
+    pub part_frontier_message_passing: bool,
+    pub frontier_room_part_message_passing: bool,
+    pub local_save_refill_outputs: bool,
+    pub local_missing_connect_outputs: bool,
     pub frontier_mask: bool,
     pub frontier_position: bool,
     pub frontier_orientation: bool,
@@ -402,6 +406,19 @@ impl FeatureConfig {
         if self.global_room_position && !self.room_position {
             return Err("global_room_position requires room_position");
         }
+        if (self.part_frontier_message_passing
+            || self.frontier_room_part_message_passing
+            || self.local_save_refill_outputs
+            || self.local_missing_connect_outputs)
+            && !self.room_part_nodes
+        {
+            return Err("room-part message passing and local outputs require room_part_nodes");
+        }
+        if (self.part_frontier_message_passing || self.frontier_room_part_message_passing)
+            && !self.frontier_mask
+        {
+            return Err("room-part message passing requires frontier_mask");
+        }
         Ok(())
     }
 
@@ -419,6 +436,10 @@ impl FeatureConfig {
             room_part_refill_distance: true,
             room_part_frontier_distance: true,
             room_part_nodes: true,
+            part_frontier_message_passing: true,
+            frontier_room_part_message_passing: true,
+            local_save_refill_outputs: true,
+            local_missing_connect_outputs: true,
             frontier_mask: true,
             frontier_position: true,
             frontier_orientation: true,
@@ -447,6 +468,10 @@ impl FeatureConfig {
             room_part_refill_distance: false,
             room_part_frontier_distance: false,
             room_part_nodes: false,
+            part_frontier_message_passing: false,
+            frontier_room_part_message_passing: false,
+            local_save_refill_outputs: false,
+            local_missing_connect_outputs: false,
             frontier_mask: false,
             frontier_position: false,
             frontier_orientation: false,
@@ -7091,6 +7116,23 @@ mod tests {
         assert!(
             FeatureConfig {
                 global_room_position: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FeatureConfig {
+                part_frontier_message_passing: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FeatureConfig {
+                room_part_nodes: true,
+                frontier_room_part_message_passing: true,
                 ..FeatureConfig::all_disabled()
             }
             .validate()
