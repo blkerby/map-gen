@@ -1,0 +1,494 @@
+from __future__ import annotations
+
+import math
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import torch
+
+from env import Features, OutputMetadata
+
+if TYPE_CHECKING:
+    from train_config import FeatureConfig
+
+NUM_COORD_VALUES = 256
+COORD_OFFSET = 128
+
+
+@dataclass(frozen=True)
+class FeatureContext:
+    features: FeatureConfig
+    output_metadata: OutputMetadata
+    num_rooms: int
+    num_room_parts: int
+    num_connection_outputs: int
+    door_counts: tuple[int, int, int, int]
+
+
+class GlobalFeature(torch.nn.Module, ABC):
+    @classmethod
+    @abstractmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def build(cls, context: FeatureContext) -> GlobalFeature:
+        raise NotImplementedError
+
+    @abstractmethod
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        raise NotImplementedError
+
+
+class InventoryFeature(GlobalFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.inventory
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.output_metadata.num_room_connection_variants
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> InventoryFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return features.global_features.inventory.to(dtype)
+
+
+class TemperatureFeature(GlobalFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.temperature
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return 1
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> TemperatureFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return features.global_features.log_temperature.to(dtype).unsqueeze(-1)
+
+
+class RecommendedCandidatesFeature(GlobalFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.recommended_candidates
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return 1
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> RecommendedCandidatesFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return features.global_features.log_recommended_candidates.to(dtype).unsqueeze(-1)
+
+
+class LookaheadFeature(GlobalFeature):
+    def __init__(
+        self,
+        left_count: int,
+        right_count: int,
+        up_count: int,
+        down_count: int,
+        door_match_width: int,
+    ):
+        super().__init__()
+        self.left_count = left_count
+        self.right_count = right_count
+        self.up_count = up_count
+        self.down_count = down_count
+        self.door_match_width = door_match_width
+        self.left_embedding = self._door_match_embedding(
+            left_count,
+            right_count,
+            door_match_width,
+        )
+        self.right_embedding = self._door_match_embedding(
+            right_count,
+            left_count,
+            door_match_width,
+        )
+        self.up_embedding = self._door_match_embedding(
+            up_count,
+            down_count,
+            door_match_width,
+        )
+        self.down_embedding = self._door_match_embedding(
+            down_count,
+            up_count,
+            door_match_width,
+        )
+
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.lookahead_outcomes > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.lookahead_outcomes + 2 * context.num_connection_outputs + 2
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> LookaheadFeature:
+        left_count, right_count, up_count, down_count = context.door_counts
+        return cls(
+            left_count,
+            right_count,
+            up_count,
+            down_count,
+            context.features.lookahead_outcomes,
+        )
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        left, right, up, down = torch.split(
+            features.global_features.lookahead_door_match,
+            [self.left_count, self.right_count, self.up_count, self.down_count],
+            dim=-1,
+        )
+        door_match_features = (
+            self._direction_features(left, self.left_embedding, dtype)
+            + self._direction_features(right, self.right_embedding, dtype)
+            + self._direction_features(up, self.up_embedding, dtype)
+            + self._direction_features(down, self.down_embedding, dtype)
+        )
+        connection_features = torch.stack(
+            [
+                (features.global_features.lookahead_connection_invalid == 0).to(dtype),
+                (features.global_features.lookahead_connection_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        toilet_features = torch.stack(
+            [
+                (features.global_features.lookahead_toilet_invalid == 0).to(dtype),
+                (features.global_features.lookahead_toilet_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        return torch.cat(
+            [door_match_features, connection_features, toilet_features],
+            dim=-1,
+        )
+
+    @staticmethod
+    def _door_match_embedding(
+        source_count: int,
+        partner_count: int,
+        width: int,
+    ) -> torch.nn.Parameter:
+        return torch.nn.Parameter(
+            torch.randn([source_count, partner_count + 1, width]) / math.sqrt(width)
+        )
+
+    def _direction_features(
+        self,
+        matches: torch.Tensor,
+        embedding: torch.nn.Parameter,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        if matches.shape[-1] == 0:
+            return matches.new_zeros([matches.shape[0], self.door_match_width], dtype=dtype)
+        known = matches >= 0
+        safe_matches = matches.clamp(min=0).to(torch.int64)
+        source_idx = torch.arange(
+            embedding.shape[0],
+            dtype=torch.int64,
+            device=matches.device,
+        ).unsqueeze(0)
+        values = embedding.to(dtype)[source_idx, safe_matches]
+        return torch.sum(values * known.unsqueeze(-1), dim=1)
+
+
+class ConnectionReachabilityFeature(GlobalFeature):
+    def __init__(self, num_connection_outputs: int, width: int):
+        super().__init__()
+        self.embedding = torch.nn.Linear(num_connection_outputs, width, bias=False)
+
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.connection_reachability > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.connection_reachability
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> ConnectionReachabilityFeature:
+        return cls(
+            context.num_connection_outputs,
+            context.features.connection_reachability,
+        )
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return self.embedding(features.global_features.connection_reachability.to(dtype))
+
+
+class ToiletCrossedRoomFeature(GlobalFeature):
+    def __init__(self, num_rooms: int, width: int):
+        super().__init__()
+        self.num_rooms = num_rooms
+        self.embedding = torch.nn.Embedding(num_rooms + 1, width)
+
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.toilet_crossed_room > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.toilet_crossed_room
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> ToiletCrossedRoomFeature:
+        return cls(context.num_rooms, context.features.toilet_crossed_room)
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        crossed_room = features.global_features.toilet_crossed_room_idx.to(torch.int64)
+        return self.embedding(crossed_room + 1).squeeze(-2).to(dtype)
+
+
+class GlobalRoomPositionFeature(GlobalFeature):
+    def __init__(
+        self,
+        room_connection_variant_idx: list[int],
+        num_room_connection_variants: int,
+        width: int,
+    ):
+        super().__init__()
+        self.register_buffer(
+            "room_connection_variant_idx",
+            torch.tensor(room_connection_variant_idx, dtype=torch.int64),
+        )
+        self.embedding_x = torch.nn.Parameter(
+            torch.randn([num_room_connection_variants, NUM_COORD_VALUES, width])
+            / math.sqrt(width)
+        )
+        self.embedding_y = torch.nn.Parameter(
+            torch.randn([num_room_connection_variants, NUM_COORD_VALUES, width])
+            / math.sqrt(width)
+        )
+
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.global_room_position > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.global_room_position
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> GlobalRoomPositionFeature:
+        return cls(
+            context.output_metadata.room_connection_variant_idx,
+            context.output_metadata.num_room_connection_variants,
+            context.features.global_room_position,
+        )
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        room_x = features.global_features.room_x.to(torch.int64) + COORD_OFFSET
+        room_y = features.global_features.room_y.to(torch.int64) + COORD_OFFSET
+        room_connection_variant_idx = (
+            self.room_connection_variant_idx.to(room_x.device).unsqueeze(0).expand_as(room_x)
+        )
+        room_position = (
+            self.embedding_x[room_connection_variant_idx, room_x]
+            + self.embedding_y[room_connection_variant_idx, room_y]
+        ).to(dtype)
+        placed = features.global_features.room_placed.to(dtype).unsqueeze(-1)
+        placed_count = placed.sum(dim=1).clamp_min(1)
+        return (room_position * placed).sum(dim=1) / torch.sqrt(placed_count)
+
+
+class DistanceSlotFeature(GlobalFeature):
+    def __init__(self, slot_count: int, width: int):
+        super().__init__()
+        self.width = width
+        self.embedding = torch.nn.Embedding(NUM_COORD_VALUES, width)
+        self.slot_count = slot_count
+
+    @classmethod
+    def _tensor_width(cls, slot_count: int, width: int) -> int:
+        return slot_count * width
+
+    def _embed_distances(self, distances: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        distances = distances.to(torch.int64)
+        return self.embedding(distances).flatten(1).to(dtype)
+
+
+class RoomPartFurthestDistanceFeature(DistanceSlotFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.room_part_furthest_distance > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return cls._tensor_width(
+            2 * context.num_room_parts,
+            context.features.room_part_furthest_distance,
+        )
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> RoomPartFurthestDistanceFeature:
+        return cls(
+            2 * context.num_room_parts,
+            context.features.room_part_furthest_distance,
+        )
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return self._embed_distances(
+            torch.cat(
+                [
+                    features.global_features.room_part_furthest_destination,
+                    features.global_features.room_part_furthest_source,
+                ],
+                dim=-1,
+            ),
+            dtype,
+        )
+
+
+class RoomPartSaveDistanceFeature(DistanceSlotFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.room_part_save_distance > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return cls._tensor_width(
+            2 * context.num_room_parts,
+            context.features.room_part_save_distance,
+        )
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> RoomPartSaveDistanceFeature:
+        return cls(2 * context.num_room_parts, context.features.room_part_save_distance)
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return self._embed_distances(
+            torch.cat(
+                [
+                    features.global_features.room_part_save_from_room_distance,
+                    features.global_features.room_part_save_to_room_distance,
+                ],
+                dim=-1,
+            ),
+            dtype,
+        )
+
+
+class RoomPartRefillDistanceFeature(DistanceSlotFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.room_part_refill_distance > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return cls._tensor_width(
+            2 * context.num_room_parts,
+            context.features.room_part_refill_distance,
+        )
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> RoomPartRefillDistanceFeature:
+        return cls(2 * context.num_room_parts, context.features.room_part_refill_distance)
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return self._embed_distances(
+            torch.cat(
+                [
+                    features.global_features.room_part_refill_from_room_distance,
+                    features.global_features.room_part_refill_to_room_distance,
+                ],
+                dim=-1,
+            ),
+            dtype,
+        )
+
+
+class RoomPartFrontierDistanceFeature(DistanceSlotFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.room_part_frontier_distance > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return cls._tensor_width(
+            2 * context.num_room_parts,
+            context.features.room_part_frontier_distance,
+        )
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> RoomPartFrontierDistanceFeature:
+        return cls(
+            2 * context.num_room_parts,
+            context.features.room_part_frontier_distance,
+        )
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return self._embed_distances(
+            torch.cat(
+                [
+                    features.global_features.room_part_frontier_from_room_distance,
+                    features.global_features.room_part_frontier_to_room_distance,
+                ],
+                dim=-1,
+            ),
+            dtype,
+        )
+
+
+class KnownDistanceFeature(DistanceSlotFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.known_distance > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return cls._tensor_width(4 * context.num_room_parts, context.features.known_distance)
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> KnownDistanceFeature:
+        return cls(4 * context.num_room_parts, context.features.known_distance)
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return self._embed_distances(
+            torch.cat(
+                [
+                    features.global_features.known_save_from_room_distance,
+                    features.global_features.known_save_to_room_distance,
+                    features.global_features.known_refill_from_room_distance,
+                    features.global_features.known_refill_to_room_distance,
+                ],
+                dim=-1,
+            ),
+            dtype,
+        )
+
+
+GLOBAL_FEATURES: list[type[GlobalFeature]] = [
+    InventoryFeature,
+    TemperatureFeature,
+    RecommendedCandidatesFeature,
+    LookaheadFeature,
+    ConnectionReachabilityFeature,
+    ToiletCrossedRoomFeature,
+    GlobalRoomPositionFeature,
+    RoomPartFurthestDistanceFeature,
+    RoomPartSaveDistanceFeature,
+    RoomPartRefillDistanceFeature,
+    RoomPartFrontierDistanceFeature,
+    KnownDistanceFeature,
+]

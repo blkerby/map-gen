@@ -6,12 +6,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from env import OutputMetadata, Features
+from features import (
+    COORD_OFFSET,
+    GLOBAL_FEATURES,
+    NUM_COORD_VALUES,
+    FeatureContext,
+)
 
 if TYPE_CHECKING:
     from train_config import FeatureConfig
 
-NUM_COORD_VALUES = 256
-COORD_OFFSET = 128
 DETERMINISTIC_INVALID_LOGIT = 20.0
 
 
@@ -563,13 +567,10 @@ class FrontierModel(torch.nn.Module):
         map_y,
         embedding_width,
         global_embedding_width,
-        global_room_position_embedding_width,
         hidden_width,
         proposal_hidden_width,
         missing_connect_hidden_width,
         missing_connect_query_summary_hidden_width,
-        door_match_embedding_width,
-        toilet_crossed_room_embedding_width,
         num_layers,
         door_counts,
         frontier_window_size,
@@ -582,17 +583,10 @@ class FrontierModel(torch.nn.Module):
         self.map_y = map_y
         self.embedding_width = embedding_width
         self.global_embedding_width = global_embedding_width
-        self.global_room_position_embedding_width = global_room_position_embedding_width
         self.num_room_parts = output_metadata.num_room_parts
         if global_embedding_width <= 0:
             raise ValueError("global_embedding_width must be greater than zero")
-        if global_room_position_embedding_width <= 0:
-            raise ValueError("global_room_position_embedding_width must be greater than zero")
         self.left_count, self.right_count, self.up_count, self.down_count = door_counts
-        if self.features.lookahead_outcomes and door_match_embedding_width <= 0:
-            raise ValueError("door_match_embedding_width must be greater than zero")
-        if self.features.toilet_crossed_room and toilet_crossed_room_embedding_width <= 0:
-            raise ValueError("toilet_crossed_room_embedding_width must be greater than zero")
         if self.features.missing_connect_query and missing_connect_hidden_width <= 0:
             raise ValueError("missing_connect_hidden_width must be greater than zero")
         if (
@@ -615,16 +609,16 @@ class FrontierModel(torch.nn.Module):
         if sum(door_counts) != door_output_size:
             raise ValueError("door_counts must sum to the door output size")
         self.num_connection_outputs = len(output_metadata.connection)
-        self.include_inventory = self.features.inventory
         if self.features.global_room_position and not self.features.room_position:
             raise ValueError("features.global_room_position requires features.room_position")
-        self.register_buffer(
-            "room_connection_variant_idx",
-            torch.tensor(output_metadata.room_connection_variant_idx, dtype=torch.int64),
+        feature_context = FeatureContext(
+            features=features,
+            output_metadata=output_metadata,
+            num_rooms=num_rooms,
+            num_room_parts=self.num_room_parts,
+            num_connection_outputs=self.num_connection_outputs,
+            door_counts=(self.left_count, self.right_count, self.up_count, self.down_count),
         )
-        # self.inventory_embedding = torch.nn.Parameter(
-        #     torch.randn([output_metadata.num_room_connection_variants, embedding_width]) / math.sqrt(embedding_width)
-        # ) if self.features.inventory else None
         self.orientation_embedding = (
             torch.nn.Embedding(2, embedding_width) if self.features.frontier_orientation else None
         )
@@ -692,21 +686,16 @@ class FrontierModel(torch.nn.Module):
                 for _ in range(num_layers if use_neighbors else 0)
             ]
         )
-        global_width = (
-            output_metadata.num_room_connection_variants * self.features.inventory
-            + embedding_width
-            * (self.features.connection_reachability and self.num_connection_outputs > 0)
-            + int(self.features.temperature)
-            + int(self.features.recommended_candidates)
-            + global_room_position_embedding_width * int(self.features.global_room_position)
-            + 2 * self.num_room_parts * int(self.features.room_part_furthest_distance)
-            + 2 * self.num_room_parts * int(self.features.room_part_save_distance)
-            + 2 * self.num_room_parts * int(self.features.room_part_refill_distance)
-            + 2 * self.num_room_parts * int(self.features.room_part_frontier_distance)
-            + 4 * self.num_room_parts
-            + (door_match_embedding_width + 2 * connection_output_size + 2)
-            * int(self.features.lookahead_outcomes)
-            + (toilet_crossed_room_embedding_width * int(self.features.toilet_crossed_room))
+        global_feature_classes = [
+            feature_class
+            for feature_class in GLOBAL_FEATURES
+            if feature_class.is_enabled(features)
+        ]
+        self.global_features = torch.nn.ModuleList(
+            [feature_class.build(feature_context) for feature_class in global_feature_classes]
+        )
+        global_width = sum(
+            feature_class.tensor_width(feature_context) for feature_class in global_feature_classes
         )
         self.global_mlp = (
             torch.nn.Linear(global_width, global_embedding_width, bias=False)
@@ -714,19 +703,7 @@ class FrontierModel(torch.nn.Module):
             else None
         )
         pooled_width = (
-            output_metadata.num_room_connection_variants * self.features.inventory
-            + embedding_width
-            * (
-                2 * self.features.frontier_mask
-                + (self.features.connection_reachability and self.num_connection_outputs > 0)
-            )
-            + int(self.features.temperature)
-            + int(self.features.recommended_candidates)
-            + global_room_position_embedding_width * int(self.features.global_room_position)
-            + (door_match_embedding_width + 2 * connection_output_size + 2)
-            * int(self.features.lookahead_outcomes)
-            + (toilet_crossed_room_embedding_width * int(self.features.toilet_crossed_room))
-            + 4 * self.num_room_parts
+            global_embedding_width + 2 * embedding_width * int(self.features.frontier_mask)
         )
         self.pooled_mlp = (
             torch.nn.Sequential(
@@ -734,53 +711,7 @@ class FrontierModel(torch.nn.Module):
                 torch.nn.GELU(),
                 torch.nn.Linear(hidden_width, embedding_width, bias=False),
             )
-            if pooled_width > 0
-            else None
         )
-        self.door_match_embedding_width = door_match_embedding_width
-        self.left_door_match_embedding = self._door_match_embedding(
-            self.left_count,
-            self.right_count,
-            door_match_embedding_width,
-        )
-        self.right_door_match_embedding = self._door_match_embedding(
-            self.right_count,
-            self.left_count,
-            door_match_embedding_width,
-        )
-        self.up_door_match_embedding = self._door_match_embedding(
-            self.up_count,
-            self.down_count,
-            door_match_embedding_width,
-        )
-        self.down_door_match_embedding = self._door_match_embedding(
-            self.down_count,
-            self.up_count,
-            door_match_embedding_width,
-        )
-        self.connection_reachability_embedding = (
-            torch.nn.Linear(self.num_connection_outputs, embedding_width, bias=False)
-            if self.features.connection_reachability and self.num_connection_outputs > 0
-            else None
-        )
-        self.toilet_crossed_room_embedding = (
-            torch.nn.Embedding(num_rooms + 1, toilet_crossed_room_embedding_width)
-            if self.features.toilet_crossed_room
-            else None
-        )
-        self.room_part_furthest_distance_embedding = (
-            torch.nn.Embedding(256, 1) if self.features.room_part_furthest_distance else None
-        )
-        self.room_part_save_distance_embedding = (
-            torch.nn.Embedding(256, 1) if self.features.room_part_save_distance else None
-        )
-        self.room_part_refill_distance_embedding = (
-            torch.nn.Embedding(256, 1) if self.features.room_part_refill_distance else None
-        )
-        self.room_part_frontier_distance_embedding = (
-            torch.nn.Embedding(256, 1) if self.features.room_part_frontier_distance else None
-        )
-        self.known_distance_embedding = torch.nn.Embedding(256, 1)
         self.frontier_pos_embedding_x = (
             torch.nn.Parameter(
                 torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
@@ -807,34 +738,6 @@ class FrontierModel(torch.nn.Module):
                 torch.randn([NUM_COORD_VALUES, hidden_width]) / math.sqrt(hidden_width)
             )
             if self.features.frontier_neighbor_position_embedding
-            else None
-        )
-        self.global_room_pos_embedding_x = (
-            torch.nn.Parameter(
-                torch.randn(
-                    [
-                        output_metadata.num_room_connection_variants,
-                        NUM_COORD_VALUES,
-                        global_room_position_embedding_width,
-                    ]
-                )
-                / math.sqrt(global_room_position_embedding_width)
-            )
-            if self.features.global_room_position
-            else None
-        )
-        self.global_room_pos_embedding_y = (
-            torch.nn.Parameter(
-                torch.randn(
-                    [
-                        output_metadata.num_room_connection_variants,
-                        NUM_COORD_VALUES,
-                        global_room_position_embedding_width,
-                    ]
-                )
-                / math.sqrt(global_room_position_embedding_width)
-            )
-            if self.features.global_room_position
             else None
         )
         self.pos_embedding_x = torch.nn.Parameter(
@@ -894,38 +797,10 @@ class FrontierModel(torch.nn.Module):
             else None
         )
 
-    def _door_match_embedding(
-        self,
-        source_count: int,
-        partner_count: int,
-        width: int,
-    ) -> torch.nn.Parameter | None:
-        if not self.features.lookahead_outcomes:
-            return None
-        return torch.nn.Parameter(
-            torch.randn([source_count, partner_count + 1, width]) / math.sqrt(width)
-        )
-
     def _position_embedding(self, x, y, embedding_x, embedding_y, dtype, offset=0):
         x = x.to(torch.int64) + offset
         y = y.to(torch.int64) + offset
         return embedding_x[x].to(dtype) + embedding_y[y].to(dtype)
-
-    def _global_room_position_features(self, features: Features, dtype):
-        if not self.features.global_room_position:
-            return None
-        room_x = features.global_features.room_x.to(torch.int64) + COORD_OFFSET
-        room_y = features.global_features.room_y.to(torch.int64) + COORD_OFFSET
-        room_connection_variant_idx = (
-            self.room_connection_variant_idx.to(room_x.device).unsqueeze(0).expand_as(room_x)
-        )
-        room_position = (
-            self.global_room_pos_embedding_x[room_connection_variant_idx, room_x]
-            + self.global_room_pos_embedding_y[room_connection_variant_idx, room_y]
-        ).to(dtype)
-        placed = features.global_features.room_placed.to(dtype).unsqueeze(-1)
-        placed_count = placed.sum(dim=1).clamp_min(1)
-        return (room_position * placed).sum(dim=1) / torch.sqrt(placed_count)
 
     def _pair_features(self, features, dtype):
         values = []
@@ -945,153 +820,6 @@ class FrontierModel(torch.nn.Module):
 
     def _activation_dtype(self, device: torch.device) -> torch.dtype:
         return activation_dtype(device, next(self.parameters()).dtype)
-
-    def _direction_door_match_features(
-        self,
-        matches: torch.Tensor,
-        embedding: torch.nn.Parameter | None,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        if embedding is None or matches.shape[-1] == 0:
-            return matches.new_zeros(
-                [matches.shape[0], self.door_match_embedding_width],
-                dtype=dtype,
-            )
-        known = matches >= 0
-        safe_matches = matches.clamp(min=0).to(torch.int64)
-        source_idx = torch.arange(
-            embedding.shape[0],
-            dtype=torch.int64,
-            device=matches.device,
-        ).unsqueeze(0)
-        values = embedding.to(dtype)[source_idx, safe_matches]
-        return torch.sum(values * known.unsqueeze(-1), dim=1)
-
-    def _lookahead_outcome_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        left, right, up, down = torch.split(
-            features.global_features.lookahead_door_match,
-            [self.left_count, self.right_count, self.up_count, self.down_count],
-            dim=-1,
-        )
-        door_match_features = (
-            self._direction_door_match_features(left, self.left_door_match_embedding, dtype)
-            + self._direction_door_match_features(right, self.right_door_match_embedding, dtype)
-            + self._direction_door_match_features(up, self.up_door_match_embedding, dtype)
-            + self._direction_door_match_features(down, self.down_door_match_embedding, dtype)
-        )
-        connection_features = torch.stack(
-            [
-                (features.global_features.lookahead_connection_invalid == 0).to(dtype),
-                (features.global_features.lookahead_connection_invalid == 1).to(dtype),
-            ],
-            dim=-1,
-        ).flatten(1)
-        toilet_features = torch.stack(
-            [
-                (features.global_features.lookahead_toilet_invalid == 0).to(dtype),
-                (features.global_features.lookahead_toilet_invalid == 1).to(dtype),
-            ],
-            dim=-1,
-        ).flatten(1)
-        return torch.cat([door_match_features, connection_features, toilet_features], dim=-1)
-
-    def _toilet_crossed_room_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if self.toilet_crossed_room_embedding is None:
-            return None
-        crossed_room = features.global_features.toilet_crossed_room_idx.to(torch.int64)
-        torch._assert(
-            torch.all((crossed_room >= -1) & (crossed_room < self.num_rooms)),
-            "toilet_crossed_room_idx must be -1 or a valid room index",
-        )
-        return self.toilet_crossed_room_embedding(crossed_room + 1).squeeze(-2).to(dtype)
-
-    def _room_part_furthest_distance_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if self.room_part_furthest_distance_embedding is None:
-            return None
-        distances = torch.cat(
-            [
-                features.global_features.room_part_furthest_destination,
-                features.global_features.room_part_furthest_source,
-            ],
-            dim=-1,
-        ).to(torch.int64)
-        return self.room_part_furthest_distance_embedding(distances).flatten(1).to(dtype)
-
-    def _room_part_save_distance_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if self.room_part_save_distance_embedding is None:
-            return None
-        distances = torch.cat(
-            [
-                features.global_features.room_part_save_from_room_distance,
-                features.global_features.room_part_save_to_room_distance,
-            ],
-            dim=-1,
-        ).to(torch.int64)
-        return self.room_part_save_distance_embedding(distances).flatten(1).to(dtype)
-
-    def _room_part_refill_distance_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if self.room_part_refill_distance_embedding is None:
-            return None
-        distances = torch.cat(
-            [
-                features.global_features.room_part_refill_from_room_distance,
-                features.global_features.room_part_refill_to_room_distance,
-            ],
-            dim=-1,
-        ).to(torch.int64)
-        return self.room_part_refill_distance_embedding(distances).flatten(1).to(dtype)
-
-    def _room_part_frontier_distance_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor | None:
-        if self.room_part_frontier_distance_embedding is None:
-            return None
-        distances = torch.cat(
-            [
-                features.global_features.room_part_frontier_from_room_distance,
-                features.global_features.room_part_frontier_to_room_distance,
-            ],
-            dim=-1,
-        ).to(torch.int64)
-        return self.room_part_frontier_distance_embedding(distances).flatten(1).to(dtype)
-
-    def _known_distance_features(
-        self,
-        features: Features,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        distances = torch.cat(
-            [
-                features.global_features.known_save_from_room_distance,
-                features.global_features.known_save_to_room_distance,
-                features.global_features.known_refill_from_room_distance,
-                features.global_features.known_refill_to_room_distance,
-            ],
-            dim=-1,
-        ).to(torch.int64)
-        return self.known_distance_embedding(distances).flatten(1).to(dtype)
 
     def _relative_position_features(self, features, neighbor):
         if self.frontier_relative_pos_embedding_x is None:
@@ -1183,83 +911,13 @@ class FrontierModel(torch.nn.Module):
                 row_start_by_snapshot,
                 features,
             )
-        # if self.inventory_embedding is not None:
-        #     X = X + torch.matmul(
-        #         features.global_features.inventory.to(torch.float32), self.inventory_embedding
-        #     ).unsqueeze(1)
-        # if self.connection_reachability_embedding is not None:
-        #     X = X + self.connection_reachability_embedding(
-        #         features.global_features.connection_reachability.to(torch.float32)
-        #     ).unsqueeze(1)
-        inventory_features = features.global_features.inventory.to(X.dtype) if self.include_inventory else None
-        connection_features = (
-            self.connection_reachability_embedding(features.global_features.connection_reachability.to(X.dtype))
-            if self.connection_reachability_embedding is not None
-            else None
-        )
-        temperature_features = (
-            features.global_features.log_temperature.to(X.dtype).unsqueeze(-1)
-            if self.features.temperature
-            else None
-        )
-        recommended_candidate_features = (
-            features.global_features.log_recommended_candidates.to(X.dtype).unsqueeze(-1)
-            if self.features.recommended_candidates
-            else None
-        )
-        lookahead_features = (
-            self._lookahead_outcome_features(features, X.dtype)
-            if self.features.lookahead_outcomes
-            else None
-        )
-        toilet_crossed_room_features = self._toilet_crossed_room_features(features, X.dtype)
-        global_room_position_features = self._global_room_position_features(features, X.dtype)
-        room_part_furthest_distance_features = self._room_part_furthest_distance_features(
-            features,
-            X.dtype,
-        )
-        room_part_save_distance_features = self._room_part_save_distance_features(
-            features,
-            X.dtype,
-        )
-        room_part_refill_distance_features = self._room_part_refill_distance_features(
-            features,
-            X.dtype,
-        )
-        room_part_frontier_distance_features = self._room_part_frontier_distance_features(
-            features,
-            X.dtype,
-        )
-        known_distance_features = self._known_distance_features(features, X.dtype)
-        global_inputs = []
-        if inventory_features is not None:
-            global_inputs.append(inventory_features)
-        if connection_features is not None:
-            global_inputs.append(connection_features)
-        if temperature_features is not None:
-            global_inputs.append(temperature_features)
-        if recommended_candidate_features is not None:
-            global_inputs.append(recommended_candidate_features)
-        if lookahead_features is not None:
-            global_inputs.append(lookahead_features)
-        if toilet_crossed_room_features is not None:
-            global_inputs.append(toilet_crossed_room_features)
-        if global_room_position_features is not None:
-            global_inputs.append(global_room_position_features)
-        if room_part_furthest_distance_features is not None:
-            global_inputs.append(room_part_furthest_distance_features)
-        if room_part_save_distance_features is not None:
-            global_inputs.append(room_part_save_distance_features)
-        if room_part_refill_distance_features is not None:
-            global_inputs.append(room_part_refill_distance_features)
-        if room_part_frontier_distance_features is not None:
-            global_inputs.append(room_part_frontier_distance_features)
-        global_inputs.append(known_distance_features)
-        global_state = (
-            self.global_mlp(torch.cat(global_inputs, dim=-1))
-            if self.global_mlp is not None
-            else X.new_zeros([snapshot_count, self.global_embedding_width])
-        )
+        if self.global_mlp is not None:
+            global_inputs = []
+            for global_feature in self.global_features:
+                global_inputs.append(global_feature(features, X.dtype))
+            global_state = self.global_mlp(torch.cat(global_inputs, dim=-1))
+        else:
+            global_state = X.new_zeros([snapshot_count, self.global_embedding_width])
         if row_count == 0:
             mean_pool = max_pool = X.new_zeros([snapshot_count, self.embedding_width])
         else:
@@ -1337,30 +995,10 @@ class FrontierModel(torch.nn.Module):
         proposal_state = X if return_proposal_state else X.new_empty([row_count, 0])
         frontier_state = X
         # mean_pool, max_pool, pooled_state: [s, e]
-        pooled_inputs = []
-        if inventory_features is not None:
-            # pooled_inputs.append(torch.matmul(features.global_features.inventory.to(torch.float32), self.inventory_embedding))
-            pooled_inputs.append(inventory_features)
+        pooled_inputs = [global_state]
         if self.features.frontier_mask:
             pooled_inputs.extend([mean_pool, max_pool])
-        if connection_features is not None:
-            pooled_inputs.append(connection_features)
-        if temperature_features is not None:
-            pooled_inputs.append(temperature_features)
-        if recommended_candidate_features is not None:
-            pooled_inputs.append(recommended_candidate_features)
-        if lookahead_features is not None:
-            pooled_inputs.append(lookahead_features)
-        if toilet_crossed_room_features is not None:
-            pooled_inputs.append(toilet_crossed_room_features)
-        if global_room_position_features is not None:
-            pooled_inputs.append(global_room_position_features)
-        pooled_inputs.append(known_distance_features)
-        pooled_state = (
-            self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
-            if self.pooled_mlp is not None
-            else X.new_zeros([snapshot_count, self.embedding_width])
-        )
+        pooled_state = self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
         if self.features.room_position:
             room_x = (features.global_features.room_x.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
             room_y = (features.global_features.room_y.to(torch.int64) + COORD_OFFSET).unsqueeze(1)

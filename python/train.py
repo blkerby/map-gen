@@ -281,15 +281,12 @@ def frontier_model_kwargs(
         "map_y": config.map_size[1],
         "embedding_width": config.model.embedding_width,
         "global_embedding_width": config.model.global_embedding_width,
-        "global_room_position_embedding_width": config.model.global_room_position_embedding_width,
         "hidden_width": config.model.hidden_width,
         "proposal_hidden_width": config.model.proposal_hidden_width,
         "missing_connect_hidden_width": config.model.missing_connect_hidden_width,
         "missing_connect_query_summary_hidden_width": (
             config.model.missing_connect_query_summary_hidden_width
         ),
-        "door_match_embedding_width": config.model.door_match_embedding_width,
-        "toilet_crossed_room_embedding_width": (config.model.toilet_crossed_room_embedding_width),
         "num_layers": config.model.num_layers,
         "door_counts": (
             count_room_doors_by_direction(rooms, "left"),

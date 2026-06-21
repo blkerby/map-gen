@@ -25,13 +25,10 @@ class ModelConfig(StrictBaseModel):
     generation_autocast: bool
     embedding_width: int
     global_embedding_width: int
-    global_room_position_embedding_width: int
     hidden_width: int
     proposal_hidden_width: int
     missing_connect_hidden_width: int
     missing_connect_query_summary_hidden_width: int
-    door_match_embedding_width: int
-    toilet_crossed_room_embedding_width: int
     num_layers: int
 
 
@@ -98,6 +95,62 @@ class GenerationConfig(StrictBaseModel):
 
 
 class FeatureConfig(StrictBaseModel):
+    inventory: bool
+    temperature: bool
+    recommended_candidates: bool
+    lookahead_outcomes: int
+    room_position: bool
+    global_room_position: int
+    room_part_furthest_distance: int
+    room_part_save_distance: int
+    room_part_refill_distance: int
+    room_part_frontier_distance: int
+    frontier_mask: bool
+    frontier_position: bool
+    frontier_orientation: bool
+    frontier_kind: bool
+    frontier_door_variant: bool
+    frontier_occupancy: bool
+    frontier_neighbor: bool
+    frontier_neighbor_position_embedding: bool
+    frontier_neighbor_flags: bool
+    connection_reachability: int
+    frontier_connection_reachability: bool
+    missing_connect_query: bool
+    missing_connect_query_summary: bool
+    toilet_crossed_room: int
+    known_distance: int
+
+    def engine_config(self) -> "EngineFeatureConfig":
+        return EngineFeatureConfig(
+            inventory=self.inventory,
+            temperature=self.temperature,
+            recommended_candidates=self.recommended_candidates,
+            lookahead_outcomes=self.lookahead_outcomes > 0,
+            room_position=self.room_position,
+            global_room_position=self.global_room_position > 0,
+            room_part_furthest_distance=self.room_part_furthest_distance > 0,
+            room_part_save_distance=self.room_part_save_distance > 0,
+            room_part_refill_distance=self.room_part_refill_distance > 0,
+            room_part_frontier_distance=self.room_part_frontier_distance > 0,
+            frontier_mask=self.frontier_mask,
+            frontier_position=self.frontier_position,
+            frontier_orientation=self.frontier_orientation,
+            frontier_kind=self.frontier_kind,
+            frontier_door_variant=self.frontier_door_variant,
+            frontier_occupancy=self.frontier_occupancy,
+            frontier_neighbor=self.frontier_neighbor,
+            frontier_neighbor_position_embedding=self.frontier_neighbor_position_embedding,
+            frontier_neighbor_flags=self.frontier_neighbor_flags,
+            connection_reachability=self.connection_reachability > 0,
+            frontier_connection_reachability=self.frontier_connection_reachability,
+            missing_connect_query=self.missing_connect_query,
+            missing_connect_query_summary=self.missing_connect_query_summary,
+            toilet_crossed_room=self.toilet_crossed_room > 0,
+        )
+
+
+class EngineFeatureConfig(StrictBaseModel):
     inventory: bool
     temperature: bool
     recommended_candidates: bool
@@ -211,6 +264,10 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
 
 
 def validate_config(config: Config) -> None:
+    def validate_feature_width(name: str, value: int) -> None:
+        if value < 0:
+            raise ValueError(f"features.{name} must be greater than or equal to zero")
+
     if not config.knot_episodes:
         raise ValueError("knot_episodes must contain at least one episode count")
     if config.knot_episodes[-1] <= 0:
@@ -223,8 +280,6 @@ def validate_config(config: Config) -> None:
         raise ValueError("distance_proximity_scale must be greater than zero")
     if config.model.global_embedding_width <= 0:
         raise ValueError("model.global_embedding_width must be greater than zero")
-    if config.model.global_room_position_embedding_width <= 0:
-        raise ValueError("model.global_room_position_embedding_width must be greater than zero")
     if config.model.proposal_hidden_width <= 0:
         raise ValueError("model.proposal_hidden_width must be greater than zero")
     if config.model.missing_connect_hidden_width <= 0:
@@ -238,11 +293,21 @@ def validate_config(config: Config) -> None:
         )
     if config.features.missing_connect_query_summary and not config.features.missing_connect_query:
         raise ValueError("features.missing_connect_query_summary requires missing_connect_query")
-    if (
-        config.features.toilet_crossed_room
-        and config.model.toilet_crossed_room_embedding_width <= 0
-    ):
-        raise ValueError("model.toilet_crossed_room_embedding_width must be greater than zero")
+    validate_feature_width("lookahead_outcomes", config.features.lookahead_outcomes)
+    validate_feature_width("global_room_position", config.features.global_room_position)
+    validate_feature_width(
+        "room_part_furthest_distance",
+        config.features.room_part_furthest_distance,
+    )
+    validate_feature_width("room_part_save_distance", config.features.room_part_save_distance)
+    validate_feature_width("room_part_refill_distance", config.features.room_part_refill_distance)
+    validate_feature_width(
+        "room_part_frontier_distance",
+        config.features.room_part_frontier_distance,
+    )
+    validate_feature_width("connection_reachability", config.features.connection_reachability)
+    validate_feature_width("toilet_crossed_room", config.features.toilet_crossed_room)
+    validate_feature_width("known_distance", config.features.known_distance)
     validate_optimizer_config(config.optimizer, "optimizer")
     validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
@@ -365,7 +430,7 @@ def validate_config(config: Config) -> None:
         or config.features.frontier_neighbor_flags
     ) and not config.features.frontier_neighbor:
         raise ValueError("frontier neighbor pair features require features.frontier_neighbor")
-    if config.features.global_room_position and not config.features.room_position:
+    if config.features.global_room_position > 0 and not config.features.room_position:
         raise ValueError("features.global_room_position requires features.room_position")
 
 

@@ -11,7 +11,7 @@ import json
 import map_gen
 
 if TYPE_CHECKING:
-    from train_config import FeatureConfig
+    from train_config import EngineFeatureConfig, FeatureConfig
 
 
 @dataclass
@@ -674,10 +674,11 @@ class OutputMetadata:
 class Engine:
     engine: map_gen.Engine
     rooms: list[dict]
+    features: EngineFeatureConfig
 
     def __init__(self, rooms: list[dict], features: FeatureConfig):
-        self.features = features
-        self.engine = map_gen.Engine(json.dumps(rooms), features.model_dump_json())
+        self.features = features.engine_config()
+        self.engine = map_gen.Engine(json.dumps(rooms), self.features.model_dump_json())
         self.rooms = rooms
 
     def create_environment_group(
