@@ -24,7 +24,6 @@ class FeatureContext:
     num_room_parts: int
     num_connection_outputs: int
     door_counts: tuple[int, int, int, int]
-    embedding_width: int
     frontier_window_area: int
 
 
@@ -53,6 +52,11 @@ class FrontierNodeFeature(torch.nn.Module, ABC):
     @classmethod
     @abstractmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
         raise NotImplementedError
 
     @classmethod
@@ -519,7 +523,6 @@ class FrontierNodeNumericFeature(FrontierNodeFeature):
         num_connection_outputs: int,
         include_occupancy: bool,
         include_connection_reachability: bool,
-        embedding_width: int,
     ):
         super().__init__()
         self.frontier_window_area = frontier_window_area
@@ -531,15 +534,22 @@ class FrontierNodeNumericFeature(FrontierNodeFeature):
             1 << torch.arange(8, dtype=torch.uint8),
             persistent=False,
         )
-        numeric_width = (
-            frontier_window_area * int(include_occupancy)
-            + 2 * num_connection_outputs * int(include_connection_reachability)
-        )
-        self.projection = torch.nn.Linear(numeric_width, embedding_width, bias=False)
 
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
         return config.frontier_occupancy or config.frontier_connection_reachability
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        occupancy_width = context.frontier_window_area * int(
+            context.features.frontier_occupancy
+        )
+        reachability_width = (
+            2
+            * context.num_connection_outputs
+            * int(context.features.frontier_connection_reachability)
+        )
+        return occupancy_width + reachability_width
 
     @classmethod
     def build(cls, context: FeatureContext) -> FrontierNodeNumericFeature:
@@ -548,7 +558,6 @@ class FrontierNodeNumericFeature(FrontierNodeFeature):
             context.num_connection_outputs,
             context.features.frontier_occupancy,
             context.features.frontier_connection_reachability,
-            context.embedding_width,
         )
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
@@ -572,26 +581,30 @@ class FrontierNodeNumericFeature(FrontierNodeFeature):
                     dim=-1,
                 ).flatten(-2)
             )
-        return self.projection(torch.cat(values, dim=-1))
+        return torch.cat(values, dim=-1)
 
 
 class FrontierPositionFeature(FrontierNodeFeature):
-    def __init__(self, embedding_width: int):
+    def __init__(self, width: int):
         super().__init__()
         self.embedding_x = torch.nn.Parameter(
-            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+            torch.randn([NUM_COORD_VALUES, width]) / math.sqrt(width)
         )
         self.embedding_y = torch.nn.Parameter(
-            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
+            torch.randn([NUM_COORD_VALUES, width]) / math.sqrt(width)
         )
 
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
-        return config.frontier_position
+        return config.frontier_position > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.frontier_position
 
     @classmethod
     def build(cls, context: FeatureContext) -> FrontierPositionFeature:
-        return cls(context.embedding_width)
+        return cls(context.features.frontier_position)
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         frontier = features.frontier_features.frontier
@@ -601,17 +614,21 @@ class FrontierPositionFeature(FrontierNodeFeature):
 
 
 class FrontierOrientationFeature(FrontierNodeFeature):
-    def __init__(self, embedding_width: int):
+    def __init__(self, width: int):
         super().__init__()
-        self.embedding = torch.nn.Embedding(2, embedding_width)
+        self.embedding = torch.nn.Embedding(2, width)
 
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
-        return config.frontier_orientation
+        return config.frontier_orientation > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.frontier_orientation
 
     @classmethod
     def build(cls, context: FeatureContext) -> FrontierOrientationFeature:
-        return cls(context.embedding_width)
+        return cls(context.features.frontier_orientation)
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         frontier = features.frontier_features.frontier
@@ -619,17 +636,21 @@ class FrontierOrientationFeature(FrontierNodeFeature):
 
 
 class FrontierKindFeature(FrontierNodeFeature):
-    def __init__(self, embedding_width: int):
+    def __init__(self, width: int):
         super().__init__()
-        self.embedding = torch.nn.Embedding(256, embedding_width)
+        self.embedding = torch.nn.Embedding(256, width)
 
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
-        return config.frontier_kind
+        return config.frontier_kind > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.frontier_kind
 
     @classmethod
     def build(cls, context: FeatureContext) -> FrontierKindFeature:
-        return cls(context.embedding_width)
+        return cls(context.features.frontier_kind)
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         frontier = features.frontier_features.frontier
@@ -637,17 +658,24 @@ class FrontierKindFeature(FrontierNodeFeature):
 
 
 class FrontierDoorVariantFeature(FrontierNodeFeature):
-    def __init__(self, num_door_variants: int, embedding_width: int):
+    def __init__(self, num_door_variants: int, width: int):
         super().__init__()
-        self.embedding = torch.nn.Embedding(num_door_variants, embedding_width)
+        self.embedding = torch.nn.Embedding(num_door_variants, width)
 
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
-        return config.frontier_door_variant
+        return config.frontier_door_variant > 0
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.features.frontier_door_variant
 
     @classmethod
     def build(cls, context: FeatureContext) -> FrontierDoorVariantFeature:
-        return cls(context.output_metadata.num_door_variants, context.embedding_width)
+        return cls(
+            context.output_metadata.num_door_variants,
+            context.features.frontier_door_variant,
+        )
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         return self.embedding(

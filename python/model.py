@@ -619,15 +619,27 @@ class FrontierModel(torch.nn.Module):
             num_room_parts=self.num_room_parts,
             num_connection_outputs=self.num_connection_outputs,
             door_counts=(self.left_count, self.right_count, self.up_count, self.down_count),
-            embedding_width=embedding_width,
             frontier_window_area=frontier_window_size**2,
+        )
+        frontier_node_feature_classes = [
+            feature_class
+            for feature_class in FRONTIER_NODE_FEATURES
+            if feature_class.is_enabled(features)
+        ]
+        frontier_node_width = sum(
+            feature_class.tensor_width(feature_context)
+            for feature_class in frontier_node_feature_classes
         )
         self.frontier_node_features = torch.nn.ModuleList(
             [
                 feature_class.build(feature_context)
-                for feature_class in FRONTIER_NODE_FEATURES
-                if feature_class.is_enabled(features)
+                for feature_class in frontier_node_feature_classes
             ]
+        )
+        self.frontier_node_mlp = (
+            torch.nn.Linear(frontier_node_width, embedding_width, bias=False)
+            if frontier_node_width > 0
+            else None
         )
         pair_width = 3 * self.features.frontier_neighbor_flags
         use_neighbors = self.features.frontier_neighbor
@@ -823,8 +835,11 @@ class FrontierModel(torch.nn.Module):
         dtype = self._activation_dtype(node.device)
         # X: [r, e]
         X = node.new_zeros([row_count, self.embedding_width], dtype=dtype)
-        for frontier_node_feature in self.frontier_node_features:
-            X = X + frontier_node_feature(features, dtype)
+        if self.frontier_node_mlp is not None:
+            node_inputs = []
+            for frontier_node_feature in self.frontier_node_features:
+                node_inputs.append(frontier_node_feature(features, dtype))
+            X = X + self.frontier_node_mlp(torch.cat(node_inputs, dim=-1))
         if row_count == 0:
             row_count_by_snapshot = torch.zeros(
                 [snapshot_count],

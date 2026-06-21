@@ -106,10 +106,10 @@ class FeatureConfig(StrictBaseModel):
     room_part_refill_distance: int
     room_part_frontier_distance: int
     frontier_mask: bool
-    frontier_position: bool
-    frontier_orientation: bool
-    frontier_kind: bool
-    frontier_door_variant: bool
+    frontier_position: int
+    frontier_orientation: int
+    frontier_kind: int
+    frontier_door_variant: int
     frontier_occupancy: bool
     frontier_neighbor: bool
     frontier_neighbor_position_embedding: bool
@@ -134,10 +134,10 @@ class FeatureConfig(StrictBaseModel):
             room_part_refill_distance=self.room_part_refill_distance > 0,
             room_part_frontier_distance=self.room_part_frontier_distance > 0,
             frontier_mask=self.frontier_mask,
-            frontier_position=self.frontier_position,
-            frontier_orientation=self.frontier_orientation,
-            frontier_kind=self.frontier_kind,
-            frontier_door_variant=self.frontier_door_variant,
+            frontier_position=self.frontier_position > 0,
+            frontier_orientation=self.frontier_orientation > 0,
+            frontier_kind=self.frontier_kind > 0,
+            frontier_door_variant=self.frontier_door_variant > 0,
             frontier_occupancy=self.frontier_occupancy,
             frontier_neighbor=self.frontier_neighbor,
             frontier_neighbor_position_embedding=self.frontier_neighbor_position_embedding,
@@ -306,6 +306,10 @@ def validate_config(config: Config) -> None:
         config.features.room_part_frontier_distance,
     )
     validate_feature_width("connection_reachability", config.features.connection_reachability)
+    validate_feature_width("frontier_position", config.features.frontier_position)
+    validate_feature_width("frontier_orientation", config.features.frontier_orientation)
+    validate_feature_width("frontier_kind", config.features.frontier_kind)
+    validate_feature_width("frontier_door_variant", config.features.frontier_door_variant)
     validate_feature_width("toilet_crossed_room", config.features.toilet_crossed_room)
     validate_feature_width("known_distance", config.features.known_distance)
     validate_optimizer_config(config.optimizer, "optimizer")
