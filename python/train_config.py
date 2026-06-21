@@ -112,7 +112,7 @@ class FeatureConfig(StrictBaseModel):
     frontier_door_variant: int
     frontier_occupancy: bool
     frontier_neighbor: bool
-    frontier_neighbor_position_embedding: bool
+    frontier_neighbor_position_embedding: int
     frontier_neighbor_flags: bool
     connection_reachability: int
     frontier_connection_reachability: bool
@@ -140,7 +140,7 @@ class FeatureConfig(StrictBaseModel):
             frontier_door_variant=self.frontier_door_variant > 0,
             frontier_occupancy=self.frontier_occupancy,
             frontier_neighbor=self.frontier_neighbor,
-            frontier_neighbor_position_embedding=self.frontier_neighbor_position_embedding,
+            frontier_neighbor_position_embedding=self.frontier_neighbor_position_embedding > 0,
             frontier_neighbor_flags=self.frontier_neighbor_flags,
             connection_reachability=self.connection_reachability > 0,
             frontier_connection_reachability=self.frontier_connection_reachability,
@@ -310,6 +310,10 @@ def validate_config(config: Config) -> None:
     validate_feature_width("frontier_orientation", config.features.frontier_orientation)
     validate_feature_width("frontier_kind", config.features.frontier_kind)
     validate_feature_width("frontier_door_variant", config.features.frontier_door_variant)
+    validate_feature_width(
+        "frontier_neighbor_position_embedding",
+        config.features.frontier_neighbor_position_embedding,
+    )
     validate_feature_width("toilet_crossed_room", config.features.toilet_crossed_room)
     validate_feature_width("known_distance", config.features.known_distance)
     validate_optimizer_config(config.optimizer, "optimizer")
@@ -430,7 +434,7 @@ def validate_config(config: Config) -> None:
     ) and not config.features.frontier_mask:
         raise ValueError("start-of-network features require features.frontier_mask")
     if (
-        config.features.frontier_neighbor_position_embedding
+        config.features.frontier_neighbor_position_embedding > 0
         or config.features.frontier_neighbor_flags
     ) and not config.features.frontier_neighbor:
         raise ValueError("frontier neighbor pair features require features.frontier_neighbor")

@@ -87,7 +87,7 @@
     "frontier_door_variant": 64,
     "frontier_occupancy": true,
     "frontier_neighbor": true,
-    "frontier_neighbor_position_embedding": true,
+    "frontier_neighbor_position_embedding": 256,
     "frontier_neighbor_flags": true,
     "connection_reachability": 0,
     "frontier_connection_reachability": false,

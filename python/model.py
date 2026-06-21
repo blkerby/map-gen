@@ -9,8 +9,7 @@ from env import OutputMetadata, Features
 from features import (
     COORD_OFFSET,
     FRONTIER_NODE_FEATURES,
-    FRONTIER_PAIR_INPUT_FEATURES,
-    FRONTIER_PAIR_MESSAGE_FEATURES,
+    FRONTIER_PAIR_FEATURES,
     GLOBAL_FEATURES,
     NUM_COORD_VALUES,
     FeatureContext,
@@ -622,7 +621,6 @@ class FrontierModel(torch.nn.Module):
             num_connection_outputs=self.num_connection_outputs,
             door_counts=(self.left_count, self.right_count, self.up_count, self.down_count),
             frontier_window_area=frontier_window_size**2,
-            hidden_width=hidden_width,
         )
         frontier_node_feature_classes = [
             feature_class
@@ -644,26 +642,19 @@ class FrontierModel(torch.nn.Module):
             if frontier_node_width > 0
             else None
         )
-        frontier_pair_input_feature_classes = [
+        frontier_pair_feature_classes = [
             feature_class
-            for feature_class in FRONTIER_PAIR_INPUT_FEATURES
+            for feature_class in FRONTIER_PAIR_FEATURES
             if feature_class.is_enabled(features)
         ]
         pair_width = sum(
             feature_class.tensor_width(feature_context)
-            for feature_class in frontier_pair_input_feature_classes
+            for feature_class in frontier_pair_feature_classes
         )
-        self.frontier_pair_input_features = torch.nn.ModuleList(
+        self.frontier_pair_features = torch.nn.ModuleList(
             [
                 feature_class.build(feature_context)
-                for feature_class in frontier_pair_input_feature_classes
-            ]
-        )
-        self.frontier_pair_message_features = torch.nn.ModuleList(
-            [
-                feature_class.build(feature_context)
-                for feature_class in FRONTIER_PAIR_MESSAGE_FEATURES
-                if feature_class.is_enabled(features)
+                for feature_class in frontier_pair_feature_classes
             ]
         )
         use_neighbors = self.features.frontier_neighbor
@@ -794,21 +785,14 @@ class FrontierModel(torch.nn.Module):
         y = y.to(torch.int64) + offset
         return embedding_x[x].to(dtype) + embedding_y[y].to(dtype)
 
-    def _pair_features(self, features, dtype):
+    def _pair_features(self, features, neighbor, dtype):
         values = []
-        for pair_input_feature in self.frontier_pair_input_features:
-            values.append(pair_input_feature(features, dtype))
+        for pair_feature in self.frontier_pair_features:
+            values.append(pair_feature(features, neighbor, dtype))
         return torch.cat(values, dim=-1) if values else None
 
     def _activation_dtype(self, device: torch.device) -> torch.dtype:
         return activation_dtype(device, next(self.parameters()).dtype)
-
-    def _pair_message_features(self, features, neighbor, dtype):
-        value = None
-        for pair_message_feature in self.frontier_pair_message_features:
-            feature_value = pair_message_feature(features, neighbor, dtype)
-            value = feature_value if value is None else value + feature_value
-        return value
 
     def forward(
         self,
@@ -860,22 +844,19 @@ class FrontierModel(torch.nn.Module):
             mean_pool = max_pool = X.new_zeros([snapshot_count, self.embedding_width])
         else:
             # pair: [r, k, pair_width], neighbor: [r, k], pair_mask: [r, k, 1]
-            pair = self._pair_features(features, dtype)
             frontier_neighbor = features.frontier_features.frontier_neighbor
             local_neighbor = frontier_neighbor.clamp_min(0).to(torch.int64)
             row_neighbor_count = row_count_by_snapshot[row_snapshot_idx].unsqueeze(1)
             neighbor_valid = (frontier_neighbor >= 0) & (local_neighbor < row_neighbor_count)
             neighbor = row_start_by_snapshot[row_snapshot_idx].unsqueeze(1) + local_neighbor
             pair_mask = neighbor_valid.unsqueeze(-1)
-            pair_message = self._pair_message_features(features, neighbor, dtype)
+            pair = self._pair_features(features, neighbor, dtype)
             single_neighbor = neighbor.shape[1] == 1
             if single_neighbor:
                 neighbor = neighbor[:, 0]
                 pair_mask = pair_mask[:, 0]
                 if pair is not None:
                     pair = pair[:, 0]
-                if pair_message is not None:
-                    pair_message = pair_message[:, 0]
             else:
                 pair_count = pair_mask.sum(1).clamp_min(1)
             global_rows = global_state[row_snapshot_idx]
@@ -890,8 +871,6 @@ class FrontierModel(torch.nn.Module):
                 # Gather each frontier's neighbors: source: [r, k, h]
                 source = source[neighbor]
                 messages = source if pair_layer is None else source + pair_layer(pair)
-                if pair_message is not None:
-                    messages = messages + pair_message
                 messages = output_layer(messages) * pair_mask
                 if not single_neighbor:
                     # messages: [r, k, e]
