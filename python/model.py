@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from env import OutputMetadata, Features
 from features import (
     COORD_OFFSET,
+    FRONTIER_NODE_FEATURES,
     GLOBAL_FEATURES,
     NUM_COORD_VALUES,
     FeatureContext,
@@ -618,32 +619,15 @@ class FrontierModel(torch.nn.Module):
             num_room_parts=self.num_room_parts,
             num_connection_outputs=self.num_connection_outputs,
             door_counts=(self.left_count, self.right_count, self.up_count, self.down_count),
+            embedding_width=embedding_width,
+            frontier_window_area=frontier_window_size**2,
         )
-        self.orientation_embedding = (
-            torch.nn.Embedding(2, embedding_width) if self.features.frontier_orientation else None
-        )
-        self.kind_embedding = (
-            torch.nn.Embedding(256, embedding_width) if self.features.frontier_kind else None
-        )
-        self.frontier_door_variant_embedding = (
-            torch.nn.Embedding(output_metadata.num_door_variants, embedding_width)
-            if self.features.frontier_door_variant
-            else None
-        )
-        node_numeric_width = (
-            frontier_window_size**2 * self.features.frontier_occupancy
-            + 2 * self.num_connection_outputs * self.features.frontier_connection_reachability
-        )
-        self.node_numeric = (
-            torch.nn.Linear(node_numeric_width, embedding_width, bias=False)
-            if node_numeric_width > 0
-            else None
-        )
-        self.frontier_window_area = frontier_window_size**2
-        self.register_buffer(
-            "frontier_occupancy_bits",
-            1 << torch.arange(8, dtype=torch.uint8),
-            persistent=False,
+        self.frontier_node_features = torch.nn.ModuleList(
+            [
+                feature_class.build(feature_context)
+                for feature_class in FRONTIER_NODE_FEATURES
+                if feature_class.is_enabled(features)
+            ]
         )
         pair_width = 3 * self.features.frontier_neighbor_flags
         use_neighbors = self.features.frontier_neighbor
@@ -711,20 +695,6 @@ class FrontierModel(torch.nn.Module):
                 torch.nn.GELU(),
                 torch.nn.Linear(hidden_width, embedding_width, bias=False),
             )
-        )
-        self.frontier_pos_embedding_x = (
-            torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
-            )
-            if self.features.frontier_position
-            else None
-        )
-        self.frontier_pos_embedding_y = (
-            torch.nn.Parameter(
-                torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
-            )
-            if self.features.frontier_position
-            else None
         )
         self.frontier_relative_pos_embedding_x = (
             torch.nn.Parameter(
@@ -850,48 +820,11 @@ class FrontierModel(torch.nn.Module):
         row_snapshot_idx = features.frontier_features.row_snapshot_idx.to(torch.int64)
         snapshot_count = features.global_features.inventory.shape[0]
         row_count = node.shape[0]
-        # numeric: [r, numeric_width]
-        numeric = []
         dtype = self._activation_dtype(node.device)
-        if self.features.frontier_occupancy:
-            numeric.append(
-                features.frontier_features.frontier_occupancy.unsqueeze(-1)
-                .bitwise_and(self.frontier_occupancy_bits)
-                .ne(0)
-                .flatten(-2)[..., : self.frontier_window_area]
-                .to(dtype)
-            )
-        if self.features.frontier_connection_reachability:
-            flags = features.frontier_features.frontier_connection_reachability
-            numeric.append(
-                torch.stack(
-                    [
-                        (flags & 1 != 0).to(dtype),
-                        (flags & 2 != 0).to(dtype),
-                    ],
-                    dim=-1,
-                ).flatten(-2)
-            )
         # X: [r, e]
         X = node.new_zeros([row_count, self.embedding_width], dtype=dtype)
-        if self.node_numeric is not None:
-            X = X + self.node_numeric(torch.cat(numeric, dim=-1))
-        if self.frontier_pos_embedding_x is not None:
-            X = X + self._position_embedding(
-                node[:, 1],
-                node[:, 2],
-                self.frontier_pos_embedding_x,
-                self.frontier_pos_embedding_y,
-                dtype,
-            )
-        if self.orientation_embedding is not None:
-            X = X + self.orientation_embedding(node[:, 3].to(torch.int64)).to(dtype)
-        if self.kind_embedding is not None:
-            X = X + self.kind_embedding(node[:, 4].to(torch.int64)).to(dtype)
-        if self.frontier_door_variant_embedding is not None:
-            X = X + self.frontier_door_variant_embedding(
-                features.frontier_features.frontier_door_variant.to(torch.int64)
-            ).to(dtype)
+        for frontier_node_feature in self.frontier_node_features:
+            X = X + frontier_node_feature(features, dtype)
         if row_count == 0:
             row_count_by_snapshot = torch.zeros(
                 [snapshot_count],
