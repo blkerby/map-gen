@@ -599,6 +599,7 @@ class MissingConnectQueryFeatures:
     target_count: torch.Tensor
     source_cap_hit: torch.Tensor
     target_cap_hit: torch.Tensor
+    current_distance: torch.Tensor
 
     def to(
         self,
@@ -616,6 +617,7 @@ class MissingConnectQueryFeatures:
             target_count=self.target_count.to(device, non_blocking=non_blocking),
             source_cap_hit=self.source_cap_hit.to(device, non_blocking=non_blocking),
             target_cap_hit=self.target_cap_hit.to(device, non_blocking=non_blocking),
+            current_distance=self.current_distance.to(device, non_blocking=non_blocking),
         )
 
     def mark_dynamic(self) -> None:
@@ -629,6 +631,7 @@ class MissingConnectQueryFeatures:
         torch._dynamo.maybe_mark_dynamic(self.target_count, 0)
         torch._dynamo.maybe_mark_dynamic(self.source_cap_hit, 0)
         torch._dynamo.maybe_mark_dynamic(self.target_cap_hit, 0)
+        torch._dynamo.maybe_mark_dynamic(self.current_distance, 0)
 
 
 @dataclass
@@ -1192,6 +1195,9 @@ class EnvironmentGroup:
                     "missing_connect_utility_query_target_cap_hit": (
                         feature_slot.missing_connect_utility_query_target_cap_hit.numpy()
                     ),
+                    "missing_connect_utility_query_current_distance": (
+                        feature_slot.missing_connect_utility_query_current_distance.numpy()
+                    ),
                     "toilet_crossed_room_idx": feature_slot.toilet_crossed_room_idx.numpy(),
                     "row_snapshot_idx": feature_slot.row_snapshot_idx.numpy(),
                     "row_frontier_idx": feature_slot.row_frontier_idx.numpy(),
@@ -1304,6 +1310,7 @@ class FeatureSlot:
         self.missing_connect_utility_query_target_count = None
         self.missing_connect_utility_query_source_cap_hit = None
         self.missing_connect_utility_query_target_cap_hit = None
+        self.missing_connect_utility_query_current_distance = None
         self.toilet_crossed_room_idx = None
         self.row_snapshot_idx = None
         self.row_frontier_idx = None
@@ -1500,6 +1507,10 @@ class FeatureSlot:
             (self.missing_connect_utility_query_row_capacity,),
             torch.uint8,
         )
+        self.missing_connect_utility_query_current_distance = self._empty(
+            (self.missing_connect_utility_query_row_capacity,),
+            torch.uint8,
+        )
         self.toilet_crossed_room_idx = self._empty(
             (self.snapshot_capacity, self.toilet_crossed_room_width),
             torch.int16,
@@ -1650,6 +1661,9 @@ class FeatureSlot:
                 target_cap_hit=self.missing_connect_query_target_cap_hit[
                     :missing_connect_query_row_count
                 ],
+                current_distance=self.missing_connect_query_source_distance.new_empty(
+                    [missing_connect_query_row_count]
+                ),
             ),
             missing_connect_utility_query_features=MissingConnectQueryFeatures(
                 query_snapshot_idx=self.missing_connect_utility_query_snapshot_idx[
@@ -1680,6 +1694,9 @@ class FeatureSlot:
                     :missing_connect_utility_query_row_count
                 ],
                 target_cap_hit=self.missing_connect_utility_query_target_cap_hit[
+                    :missing_connect_utility_query_row_count
+                ],
+                current_distance=self.missing_connect_utility_query_current_distance[
                     :missing_connect_utility_query_row_count
                 ],
             ),
@@ -1840,6 +1857,9 @@ class FeatureSlot:
                 target_cap_hit=self.missing_connect_query_target_cap_hit[
                     :missing_connect_query_row_count
                 ],
+                current_distance=self.missing_connect_query_source_distance.new_empty(
+                    [missing_connect_query_row_count]
+                ),
             ),
             missing_connect_utility_query_features=MissingConnectQueryFeatures(
                 query_snapshot_idx=self.missing_connect_utility_query_snapshot_idx[
@@ -1870,6 +1890,9 @@ class FeatureSlot:
                     :missing_connect_utility_query_row_count
                 ],
                 target_cap_hit=self.missing_connect_utility_query_target_cap_hit[
+                    :missing_connect_utility_query_row_count
+                ],
+                current_distance=self.missing_connect_utility_query_current_distance[
                     :missing_connect_utility_query_row_count
                 ],
             ),
@@ -2026,6 +2049,9 @@ def extract_candidate_features(
                 ),
                 "missing_connect_utility_query_target_cap_hit": (
                     feature_slot.missing_connect_utility_query_target_cap_hit.numpy()
+                ),
+                "missing_connect_utility_query_current_distance": (
+                    feature_slot.missing_connect_utility_query_current_distance.numpy()
                 ),
                 "toilet_crossed_room_idx": feature_slot.toilet_crossed_room_idx.numpy(),
                 "row_snapshot_idx": feature_slot.row_snapshot_idx.numpy(),

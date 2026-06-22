@@ -230,17 +230,20 @@ class ProposalOutput(torch.nn.Module):
 
 
 class MissingConnectFrontierQueryHead(torch.nn.Module):
-    scalar_width = 10
+    base_scalar_width = 10
 
     def __init__(
         self,
         embedding_width: int,
         global_embedding_width: int,
         hidden_width: int,
+        include_current_distance: bool,
     ):
         super().__init__()
         if hidden_width <= 0:
             raise ValueError("missing_connect_hidden_width must be greater than zero")
+        self.include_current_distance = include_current_distance
+        self.scalar_width = self.base_scalar_width + int(include_current_distance)
         self.layers = torch.nn.Sequential(
             torch.nn.Linear(embedding_width * 4 + global_embedding_width + self.scalar_width, hidden_width, bias=False),
             torch.nn.GELU(),
@@ -329,7 +332,15 @@ class MissingConnectFrontierQueryHead(torch.nn.Module):
                 target_min_distance,
                 (source_count > 0).to(frontier_state.dtype).unsqueeze(1),
                 (target_count > 0).to(frontier_state.dtype).unsqueeze(1),
-            ],
+            ]
+            + (
+                [
+                    torch.log1p(query.current_distance.to(frontier_state.dtype)).unsqueeze(1)
+                    / math.log(256.0)
+                ]
+                if self.include_current_distance
+                else []
+            ),
             dim=1,
         )
         query_logits = self.layers(
@@ -746,6 +757,7 @@ class FrontierModel(torch.nn.Module):
                 embedding_width,
                 global_embedding_width,
                 missing_connect_hidden_width,
+                include_current_distance=False,
             )
             if self.features.missing_connect_query
             else None
@@ -755,6 +767,7 @@ class FrontierModel(torch.nn.Module):
                 embedding_width,
                 global_embedding_width,
                 missing_connect_hidden_width,
+                include_current_distance=True,
             )
             if self.features.missing_connect_utility_query
             else None

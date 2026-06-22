@@ -452,6 +452,7 @@ pub struct Features {
     pub missing_connect_utility_query_target_count: Vec<u16>,
     pub missing_connect_utility_query_source_cap_hit: Vec<u8>,
     pub missing_connect_utility_query_target_cap_hit: Vec<u8>,
+    pub missing_connect_utility_query_current_distance: Vec<u8>,
     // Concrete room crossed by the Toilet when exactly one non-Toilet room crosses it.
     pub toilet_crossed_room_idx: Vec<i16>,
 }
@@ -3449,6 +3450,7 @@ impl Environment {
         let mut missing_connect_utility_query_target_count = Vec::new();
         let mut missing_connect_utility_query_source_cap_hit = Vec::new();
         let mut missing_connect_utility_query_target_cap_hit = Vec::new();
+        let mut missing_connect_utility_query_current_distance = Vec::new();
         profile_end(ProfileMetric::EnvFeaturesSetup, profile);
 
         let profile = profile_start();
@@ -3637,6 +3639,8 @@ impl Environment {
                             self.graph_distance[from_part * graph_size + to_part],
                         )
                 {
+                    missing_connect_utility_query_current_distance
+                        .push(self.graph_distance[from_part * graph_size + to_part]);
                     MissingConnectQueryBuffers {
                         connection_idx: &mut missing_connect_utility_query_connection_idx,
                         source_frontier: &mut missing_connect_utility_query_source_frontier,
@@ -3792,6 +3796,7 @@ impl Environment {
             missing_connect_utility_query_target_count,
             missing_connect_utility_query_source_cap_hit,
             missing_connect_utility_query_target_cap_hit,
+            missing_connect_utility_query_current_distance,
             toilet_crossed_room_idx,
         };
         profile_end(ProfileMetric::EnvFeaturesOutput, profile);
@@ -6965,6 +6970,10 @@ mod tests {
         assert_eq!(
             features.missing_connect_utility_query_target_frontier,
             vec![1, -1, -1, -1]
+        );
+        assert_eq!(
+            features.missing_connect_utility_query_current_distance,
+            vec![UNREACHABLE_DISTANCE]
         );
     }
 
