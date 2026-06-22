@@ -30,7 +30,7 @@ class GenerateConfig:
     reward_graph_diameter: float
     reward_save_distance: float
     reward_refill_distance: float
-    reward_missing_connect_distance: float
+    reward_missing_connect_utility: float
     distance_proximity_scale: float
     autocast: bool
 

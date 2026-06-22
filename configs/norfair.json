@@ -7,7 +7,7 @@
   "visualize": 0,
   "distance_proximity_scale": 5.0,
   "model": {
-    "compile": true,
+    "compile": false,
     "autocast": true,
     "generation_autocast": true,
     "embedding_width": 256,
@@ -16,7 +16,7 @@
     "proposal_hidden_width": 512,
     "missing_connect_hidden_width": 256,
     "missing_connect_query_summary_hidden_width": 256,
-    "num_layers": 8
+    "num_layers": 4
   },
   "optimizer": {
     "type": "muon",
@@ -61,7 +61,7 @@
     "reward_graph_diameter": 0.0,
     "reward_save_distance": 0.0,
     "reward_refill_distance": 0.0,
-    "reward_missing_connect_distance": 0.0,
+    "reward_missing_connect_utility": 1.0,
     "frontier_neighbor_algorithm": "nearest-exclusive",
     "frontier_neighbor_count": 4,
     "frontier_window_size": 8,
@@ -113,7 +113,7 @@
     "graph_diameter_weight": 0.0,
     "save_distance_weight": 0.0,
     "refill_distance_weight": 0.0,
-    "missing_connect_distance_weight": 0.0,
+    "missing_connect_utility_weight": 1.0,
     "proposal_weight": 0.005,
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 2,

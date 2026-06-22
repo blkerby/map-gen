@@ -73,7 +73,7 @@ class MainLossBreakdown:
     graph_diameter: float
     save_distance: float
     refill_distance: float
-    missing_connect_distance: float
+    missing_connect_utility: float
     proposal: float
     door_contribution: float
     connection_contribution: float
@@ -84,7 +84,7 @@ class MainLossBreakdown:
     graph_diameter_contribution: float
     save_distance_contribution: float
     refill_distance_contribution: float
-    missing_connect_distance_contribution: float
+    missing_connect_utility_contribution: float
     proposal_contribution: float
 
 
@@ -125,7 +125,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         graph_diameter=0.0,
         save_distance=0.0,
         refill_distance=0.0,
-        missing_connect_distance=0.0,
+        missing_connect_utility=0.0,
         proposal=0.0,
         door_contribution=0.0,
         connection_contribution=0.0,
@@ -136,7 +136,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         graph_diameter_contribution=0.0,
         save_distance_contribution=0.0,
         refill_distance_contribution=0.0,
-        missing_connect_distance_contribution=0.0,
+        missing_connect_utility_contribution=0.0,
         proposal_contribution=0.0,
     )
 
@@ -152,7 +152,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.graph_diameter += source.graph_diameter
     target.save_distance += source.save_distance
     target.refill_distance += source.refill_distance
-    target.missing_connect_distance += source.missing_connect_distance
+    target.missing_connect_utility += source.missing_connect_utility
     target.proposal += source.proposal
     target.door_contribution += source.door_contribution
     target.connection_contribution += source.connection_contribution
@@ -163,7 +163,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.graph_diameter_contribution += source.graph_diameter_contribution
     target.save_distance_contribution += source.save_distance_contribution
     target.refill_distance_contribution += source.refill_distance_contribution
-    target.missing_connect_distance_contribution += source.missing_connect_distance_contribution
+    target.missing_connect_utility_contribution += source.missing_connect_utility_contribution
     target.proposal_contribution += source.proposal_contribution
 
 
@@ -179,7 +179,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         graph_diameter=total_loss.graph_diameter / count,
         save_distance=total_loss.save_distance / count,
         refill_distance=total_loss.refill_distance / count,
-        missing_connect_distance=total_loss.missing_connect_distance / count,
+        missing_connect_utility=total_loss.missing_connect_utility / count,
         proposal=total_loss.proposal / count,
         door_contribution=total_loss.door_contribution / count,
         connection_contribution=total_loss.connection_contribution / count,
@@ -190,8 +190,8 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         graph_diameter_contribution=total_loss.graph_diameter_contribution / count,
         save_distance_contribution=total_loss.save_distance_contribution / count,
         refill_distance_contribution=total_loss.refill_distance_contribution / count,
-        missing_connect_distance_contribution=(
-            total_loss.missing_connect_distance_contribution / count
+        missing_connect_utility_contribution=(
+            total_loss.missing_connect_utility_contribution / count
         ),
         proposal_contribution=total_loss.proposal_contribution / count,
     )
@@ -631,13 +631,15 @@ def train_feature_batch_backward(
         end_outcomes.refill_from_room_distance_mask.to(context.device),
         context.loss_config.distance_proximity_scale,
     ).unsqueeze(1)
-    missing_connect_distance_target = end_outcomes.missing_connect_distance.to(
-        context.device
+    missing_connect_utility_target = distance_proximity_utility(
+        end_outcomes.missing_connect_distance.to(context.device),
+        end_outcomes.missing_connect_distance_mask.to(context.device),
+        context.loss_config.distance_proximity_scale,
     ).unsqueeze(1)
-    missing_connect_distance_mask = end_outcomes.missing_connect_distance_mask.to(
-        device=context.device,
+    missing_connect_utility_mask = torch.ones_like(
+        missing_connect_utility_target,
         dtype=torch.bool,
-    ).unsqueeze(1)
+    )
     mask = torch.ones(
         [batch_size, 1, 1],
         dtype=torch.bool,
@@ -687,8 +689,8 @@ def train_feature_batch_backward(
             refill_to_room_utility_target,
             refill_from_room_utility_target,
             active_room_part_mask,
-            missing_connect_distance_target,
-            missing_connect_distance_mask,
+            missing_connect_utility_target,
+            missing_connect_utility_mask,
             context.loss_config,
         )
         backward_loss = prefix_loss.total * prefix_weight
@@ -702,8 +704,8 @@ def train_feature_batch_backward(
         total_loss.graph_diameter += prefix_loss.graph_diameter.item() * prefix_weight
         total_loss.save_distance += prefix_loss.save_distance.item() * prefix_weight
         total_loss.refill_distance += prefix_loss.refill_distance.item() * prefix_weight
-        total_loss.missing_connect_distance += (
-            prefix_loss.missing_connect_distance.item() * prefix_weight
+        total_loss.missing_connect_utility += (
+            prefix_loss.missing_connect_utility.item() * prefix_weight
         )
         total_loss.door_contribution += prefix_loss.door_contribution.item() * prefix_weight
         total_loss.connection_contribution += (
@@ -726,8 +728,8 @@ def train_feature_batch_backward(
         total_loss.refill_distance_contribution += (
             prefix_loss.refill_distance_contribution.item() * prefix_weight
         )
-        total_loss.missing_connect_distance_contribution += (
-            prefix_loss.missing_connect_distance_contribution.item() * prefix_weight
+        total_loss.missing_connect_utility_contribution += (
+            prefix_loss.missing_connect_utility_contribution.item() * prefix_weight
         )
         if return_proposal_state:
             proposal_score = proposal_scores_for_frontier(

@@ -132,18 +132,9 @@ def toilet_balance_reward(
     return -toilet_balance_score * valid_probability
 
 
-def mean_distance_penalty(distance: torch.Tensor) -> torch.Tensor:
-    distance = distance.to(torch.float32)
-    if distance.shape[2] == 0:
-        return torch.sum(distance, dim=2)
-    return torch.mean(distance, dim=2)
-
-
-def mean_proximity_utility(utility: torch.Tensor) -> torch.Tensor:
+def total_proximity_utility(utility: torch.Tensor) -> torch.Tensor:
     utility = utility.to(torch.float32)
-    if utility.shape[2] == 0:
-        return torch.sum(utility, dim=2)
-    return torch.mean(utility, dim=2)
+    return torch.sum(utility, dim=2)
 
 
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
@@ -180,17 +171,17 @@ def compute_expected_reward(
         - config.reward_graph_diameter * preds.graph_diameter.to(torch.float32)
         + config.reward_save_distance
         * (
-            mean_proximity_utility(preds.save_to_room_utility)
-            + mean_proximity_utility(preds.save_from_room_utility)
+            total_proximity_utility(preds.save_to_room_utility)
+            + total_proximity_utility(preds.save_from_room_utility)
         )
         + config.reward_refill_distance
         * (
-            mean_proximity_utility(preds.refill_to_room_utility)
-            + mean_proximity_utility(preds.refill_from_room_utility)
+            total_proximity_utility(preds.refill_to_room_utility)
+            + total_proximity_utility(preds.refill_from_room_utility)
         )
-        - (
-            config.reward_missing_connect_distance
-            * mean_distance_penalty(preds.missing_connect_distance)
+        + (
+            config.reward_missing_connect_utility
+            * total_proximity_utility(preds.missing_connect_utility)
         )
     )
 
@@ -677,7 +668,7 @@ def select_candidate_actions(
                     candidate_count,
                     -1,
                 ),
-                missing_connect_distance=preds.missing_connect_distance.view(
+                missing_connect_utility=preds.missing_connect_utility.view(
                     environment_count,
                     candidate_count,
                     -1,

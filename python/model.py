@@ -48,8 +48,8 @@ class Predictions:
     refill_to_room_utility: torch.Tensor
     # Predicted room-to-refill proximity utility for each global room part:
     refill_from_room_utility: torch.Tensor
-    # Predicted distance for each required missing connection:
-    missing_connect_distance: torch.Tensor
+    # Predicted utility for each required missing connection:
+    missing_connect_utility: torch.Tensor
     # Frontier-local proposal logits for door variants:
     proposal_score: torch.Tensor
     # Optional frontier-local state before global pooling:
@@ -86,7 +86,7 @@ def get_predictions(raw_preds, output_sizes):
         save_from_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         refill_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         refill_from_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
-        missing_connect_distance=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
+        missing_connect_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_state=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_row_snapshot_idx=raw_preds.new_empty([0], dtype=torch.int64),
@@ -762,7 +762,7 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             self.num_room_parts,
         )
-        self.missing_connect_distance_output = torch.nn.Linear(
+        self.missing_connect_utility_output = torch.nn.Linear(
             embedding_width,
             self.num_connection_outputs,
         )
@@ -962,7 +962,9 @@ class FrontierModel(torch.nn.Module):
         refill_from_room_utility = torch.sigmoid(
             self.refill_from_room_utility_output(X).to(torch.float32)
         )
-        missing_connect_distance = self.missing_connect_distance_output(X).to(torch.float32)
+        missing_connect_utility = torch.sigmoid(
+            self.missing_connect_utility_output(X).to(torch.float32)
+        )
         preds = get_predictions(
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
             self.output_sizes,
@@ -1010,7 +1012,7 @@ class FrontierModel(torch.nn.Module):
             save_from_room_utility=save_from_room_utility,
             refill_to_room_utility=refill_to_room_utility,
             refill_from_room_utility=refill_from_room_utility,
-            missing_connect_distance=missing_connect_distance,
+            missing_connect_utility=missing_connect_utility,
             proposal_score=X.new_empty([row_count, 0]),
             proposal_state=proposal_state,
             proposal_row_snapshot_idx=(

@@ -85,7 +85,7 @@ class GenerationConfig(StrictBaseModel):
     reward_graph_diameter: ScheduleableFloat
     reward_save_distance: ScheduleableFloat
     reward_refill_distance: ScheduleableFloat
-    reward_missing_connect_distance: ScheduleableFloat
+    reward_missing_connect_utility: ScheduleableFloat
     frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"]
     frontier_neighbor_count: int
     frontier_window_size: int
@@ -193,7 +193,7 @@ class TrainConfig(StrictBaseModel):
     graph_diameter_weight: float
     save_distance_weight: float
     refill_distance_weight: float
-    missing_connect_distance_weight: float
+    missing_connect_utility_weight: float
     proposal_weight: float
     ema_decay: ScheduleableFloat
     pipeline_groups: int
@@ -376,8 +376,8 @@ def validate_config(config: Config) -> None:
         "generation.reward_refill_distance",
     )
     validate_nonnegative_scheduleable_float(
-        config.generation.reward_missing_connect_distance,
-        "generation.reward_missing_connect_distance",
+        config.generation.reward_missing_connect_utility,
+        "generation.reward_missing_connect_utility",
     )
     if config.generation.num_threads is not None and config.generation.num_threads <= 0:
         raise ValueError("generation.num_threads must be greater than zero")
@@ -408,9 +408,9 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.save_distance_weight must be greater than or equal to zero")
     if config.train.refill_distance_weight < 0:
         raise ValueError("train.refill_distance_weight must be greater than or equal to zero")
-    if config.train.missing_connect_distance_weight < 0:
+    if config.train.missing_connect_utility_weight < 0:
         raise ValueError(
-            "train.missing_connect_distance_weight must be greater than or equal to zero"
+            "train.missing_connect_utility_weight must be greater than or equal to zero"
         )
     validate_ema_decay_config(config.train.ema_decay, "train.ema_decay", config.knot_episodes)
     if (

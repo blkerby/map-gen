@@ -99,26 +99,26 @@ projection that injects a query summary into the initial frontier state should
 remain zero-initialized so enabling the path does not immediately perturb
 behavior before training learns useful weights.
 
-## Step 3: Missing-Connect Distance Query
+## Step 3: Missing-Connect Utility Query
 
 Next, use the existing missing-connect query inputs for
-`missing_connect_distance`.
+`missing_connect_utility`.
 
-The distance query should follow the same replacement semantics as validity:
-for emitted distance query rows, the query distance prediction replaces the
+The utility query should follow the same replacement semantics as validity: for
+emitted utility query rows, the query utility prediction replaces the
 global/non-query prediction for those rows. It should not be modeled as:
 
 ```text
-distance = global_distance + query_distance_delta
+utility = global_utility + query_utility_delta
 ```
 
 Keep this separate from validity because some configs set
-`missing_connect_distance_weight` and `reward_missing_connect_distance` to zero,
-so distance training signal may be absent depending on the run.
+`missing_connect_utility_weight` and `reward_missing_connect_utility` to zero,
+so utility training signal may be absent depending on the run.
 
-When an `r -> s` path already exists, the distance target is determined by the
+When an `r -> s` path already exists, the utility target is determined from the
 shortest existing path length `d_a`. A query is only needed if a future path
-through frontiers could be shorter.
+through frontiers could be shorter and therefore produce higher utility.
 
 For the missing-connect sets:
 
@@ -134,7 +134,7 @@ d_F + d_G >= d_a
 ```
 
 then no frontier-mediated path can improve the already-existing path, so the
-distance outcome is determined and no distance query row should be emitted.
+utility outcome is determined and no utility query row should be emitted.
 
 The same bound can prune individual frontier entries before truncation:
 
@@ -147,20 +147,20 @@ frontier sets before normal ranking and truncation.
 Implementation notes:
 
 - reuse the current missing-connect query feature layout where possible;
-- add distance-specific query rows only if validity rows are not sufficient for
-  the distance eligibility rules;
+- add utility-specific query rows only if validity rows are not sufficient for
+  the utility eligibility rules;
 - keep output tensor shapes unchanged;
-- scatter query distance predictions into `missing_connect_distance` for queried
+- scatter query utility predictions into `missing_connect_utility` for queried
   rows only;
-- preserve the existing distance loss mask.
+- preserve the existing utility loss mask.
 
 Risks:
 
 - pooled source/target sets may be too weak for the true best frontier-pair
   distance condition;
 - nearest-distance truncation may discard a farther but more useful frontier;
-- configs with zero distance reward/loss will not provide useful signal for
-  this head.
+- configs with zero distance reward/loss will not provide useful signal for this
+  head.
 
 Possible upgrades:
 
@@ -193,8 +193,8 @@ Use sparse bounded frontier sets and the same two-stage pattern:
    distance/count features;
 2. scatter whole-query embeddings back to participating frontiers for early
    conditioning;
-3. add direct output heads for the corresponding save/refill utility or
-   distance predictions once the conditioning path is stable.
+3. add direct output heads for the corresponding save/refill utility or distance
+   predictions once the conditioning path is stable.
 
 For an active room part `p` and save/refill objective set `D`, the directional
 targets are:
@@ -215,8 +215,8 @@ infinite and allow all reachable frontiers in that direction.
 Preferred feature design:
 
 - avoid persistent room-part nodes;
-- add sparse query metadata for unresolved save/refill outputs rather than
-  dense `frontier x room_part` tensors if possible;
+- add sparse query metadata for unresolved save/refill outputs rather than dense
+  `frontier x room_part` tensors if possible;
 - emit query rows only for save/refill outcomes with a non-empty relevant
   frontier set;
 - for each query row, store snapshot index, room-part index, output kind,
@@ -245,7 +245,7 @@ Risks:
 The implemented missing-connect query and query-summary switches already allow
 basic ablations. Add new toggles before enabling additional query heads at once:
 
-- `missing_connect_distance_query`;
+- `missing_connect_utility_query`;
 - `save_refill_query_summary`;
 - `save_refill_query_outputs`;
 - optional global query-summary injection, if a global-only head needs it.
@@ -270,7 +270,7 @@ Important ablations:
 - early whole-query frontier summary without direct missing-connect output
   replacement;
 - early whole-query frontier summary with and without global query summary;
-- missing-connect validity plus distance query;
+- missing-connect validity plus utility query;
 - missing-connect summary with and without connection-output identity embedding;
 - save/refill query only;
 - all query heads.
