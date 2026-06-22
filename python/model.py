@@ -284,10 +284,9 @@ class MissingConnectFrontierQueryHead(torch.nn.Module):
         global_state: torch.Tensor,
         row_count_by_snapshot: torch.Tensor,
         row_start_by_snapshot: torch.Tensor,
-        features: Features,
+        query,
         connection_output_count: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        query = features.missing_connect_query_features
         query_count = query.query_connection_idx.shape[0]
         snapshot_count = global_state.shape[0]
         if query_count == 0 or frontier_state.shape[0] == 0:
@@ -589,7 +588,10 @@ class FrontierModel(torch.nn.Module):
         if global_embedding_width <= 0:
             raise ValueError("global_embedding_width must be greater than zero")
         self.left_count, self.right_count, self.up_count, self.down_count = door_counts
-        if self.features.missing_connect_query and missing_connect_hidden_width <= 0:
+        if (
+            self.features.missing_connect_query
+            or self.features.missing_connect_utility_query
+        ) and missing_connect_hidden_width <= 0:
             raise ValueError("missing_connect_hidden_width must be greater than zero")
         if (
             self.features.missing_connect_query_summary
@@ -746,6 +748,15 @@ class FrontierModel(torch.nn.Module):
                 missing_connect_hidden_width,
             )
             if self.features.missing_connect_query
+            else None
+        )
+        self.missing_connect_utility_query_output = (
+            MissingConnectFrontierQueryHead(
+                embedding_width,
+                global_embedding_width,
+                missing_connect_hidden_width,
+            )
+            if self.features.missing_connect_utility_query
             else None
         )
         self.toilet_output = torch.nn.Linear(embedding_width, 1)
@@ -987,7 +998,7 @@ class FrontierModel(torch.nn.Module):
                 global_state,
                 row_count_by_snapshot,
                 row_start_by_snapshot,
-                features,
+                features.missing_connect_query_features,
                 self.num_connection_outputs,
             )
             connection_invalid = torch.where(
@@ -1000,6 +1011,25 @@ class FrontierModel(torch.nn.Module):
             features.global_features.lookahead_connection_invalid,
             "connection",
         )
+        if self.missing_connect_utility_query_output is not None:
+            query_missing_connect_utility, query_utility_mask = (
+                self.missing_connect_utility_query_output(
+                    frontier_state,
+                    global_state,
+                    row_count_by_snapshot,
+                    row_start_by_snapshot,
+                    features.missing_connect_utility_query_features,
+                    self.num_connection_outputs,
+                )
+            )
+            query_missing_connect_utility = torch.sigmoid(
+                query_missing_connect_utility.to(torch.float32)
+            )
+            missing_connect_utility = torch.where(
+                query_utility_mask,
+                query_missing_connect_utility,
+                missing_connect_utility,
+            )
         return Predictions(
             door_invalid=door_invalid,
             connection_invalid=connection_invalid,

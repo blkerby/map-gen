@@ -276,6 +276,7 @@ pub struct FeatureConfig {
     pub connection_reachability: bool,
     pub frontier_connection_reachability: bool,
     pub missing_connect_query: bool,
+    pub missing_connect_utility_query: bool,
     pub missing_connect_query_summary: bool,
     pub toilet_crossed_room: bool,
 }
@@ -294,6 +295,7 @@ impl FeatureConfig {
             && !self.connection_reachability
             && !self.toilet_crossed_room
             && !self.missing_connect_query
+            && !self.missing_connect_utility_query
             && !self.missing_connect_query_summary
             && !self.has_frontier_features()
     }
@@ -310,7 +312,8 @@ impl FeatureConfig {
             || self.frontier_occupancy
             || self.frontier_neighbor
             || self.frontier_connection_reachability
-            || self.missing_connect_query)
+            || self.missing_connect_query
+            || self.missing_connect_utility_query)
             && !self.frontier_mask
         {
             return Err("frontier query and frontier features require frontier_mask");
@@ -354,6 +357,7 @@ impl FeatureConfig {
             connection_reachability: true,
             frontier_connection_reachability: true,
             missing_connect_query: true,
+            missing_connect_utility_query: true,
             missing_connect_query_summary: true,
             toilet_crossed_room: true,
         }
@@ -384,6 +388,7 @@ impl FeatureConfig {
             connection_reachability: false,
             frontier_connection_reachability: false,
             missing_connect_query: false,
+            missing_connect_utility_query: false,
             missing_connect_query_summary: false,
             toilet_crossed_room: false,
         }
@@ -436,8 +441,100 @@ pub struct Features {
     pub missing_connect_query_target_count: Vec<u16>,
     pub missing_connect_query_source_cap_hit: Vec<u8>,
     pub missing_connect_query_target_cap_hit: Vec<u8>,
+    // Sparse utility query rows for required missing connections. Frontier
+    // indices are snapshot-local and use the same layout as validity rows.
+    pub missing_connect_utility_query_connection_idx: Vec<i64>,
+    pub missing_connect_utility_query_source_frontier: Vec<i16>,
+    pub missing_connect_utility_query_target_frontier: Vec<i16>,
+    pub missing_connect_utility_query_source_distance: Vec<u8>,
+    pub missing_connect_utility_query_target_distance: Vec<u8>,
+    pub missing_connect_utility_query_source_count: Vec<u16>,
+    pub missing_connect_utility_query_target_count: Vec<u16>,
+    pub missing_connect_utility_query_source_cap_hit: Vec<u8>,
+    pub missing_connect_utility_query_target_cap_hit: Vec<u8>,
     // Concrete room crossed by the Toilet when exactly one non-Toilet room crosses it.
     pub toilet_crossed_room_idx: Vec<i16>,
+}
+
+struct MissingConnectQueryBuffers<'a> {
+    connection_idx: &'a mut Vec<i64>,
+    source_frontier: &'a mut Vec<i16>,
+    target_frontier: &'a mut Vec<i16>,
+    source_distance: &'a mut Vec<u8>,
+    target_distance: &'a mut Vec<u8>,
+    source_count: &'a mut Vec<u16>,
+    target_count: &'a mut Vec<u16>,
+    source_cap_hit: &'a mut Vec<u8>,
+    target_cap_hit: &'a mut Vec<u8>,
+}
+
+impl MissingConnectQueryBuffers<'_> {
+    fn push_row(
+        &mut self,
+        connection_idx: usize,
+        source_frontiers: &[(GraphDistance, i16)],
+        target_frontiers: &[(GraphDistance, i16)],
+        frontier_count: usize,
+    ) {
+        self.connection_idx.push(connection_idx as i64);
+        self.source_count
+            .push(source_frontiers.len().min(u16::MAX as usize) as u16);
+        self.target_count
+            .push(target_frontiers.len().min(u16::MAX as usize) as u16);
+        self.source_cap_hit
+            .push(u8::from(source_frontiers.len() > frontier_count));
+        self.target_cap_hit
+            .push(u8::from(target_frontiers.len() > frontier_count));
+        for idx in 0..frontier_count {
+            if let Some(&(distance, frontier_idx)) = source_frontiers.get(idx) {
+                self.source_frontier.push(frontier_idx);
+                self.source_distance.push(distance);
+            } else {
+                self.source_frontier.push(-1);
+                self.source_distance.push(0);
+            }
+            if let Some(&(distance, frontier_idx)) = target_frontiers.get(idx) {
+                self.target_frontier.push(frontier_idx);
+                self.target_distance.push(distance);
+            } else {
+                self.target_frontier.push(-1);
+                self.target_distance.push(0);
+            }
+        }
+    }
+}
+
+fn utility_missing_connect_frontiers(
+    source_frontiers: &[(GraphDistance, i16)],
+    target_frontiers: &[(GraphDistance, i16)],
+    current_distance: GraphDistance,
+) -> Option<(Vec<(GraphDistance, i16)>, Vec<(GraphDistance, i16)>)> {
+    if source_frontiers.is_empty() || target_frontiers.is_empty() {
+        return None;
+    }
+    let min_source_distance = source_frontiers[0].0;
+    let min_target_distance = target_frontiers[0].0;
+    let best_frontier_bound = u16::from(min_source_distance) + u16::from(min_target_distance);
+    if current_distance != UNREACHABLE_DISTANCE
+        && best_frontier_bound >= u16::from(current_distance)
+    {
+        return None;
+    }
+    let mut utility_source_frontiers = source_frontiers.to_vec();
+    let mut utility_target_frontiers = target_frontiers.to_vec();
+    if current_distance != UNREACHABLE_DISTANCE {
+        utility_source_frontiers.retain(|&(distance, _)| {
+            u16::from(distance) + u16::from(min_target_distance) < u16::from(current_distance)
+        });
+        utility_target_frontiers.retain(|&(distance, _)| {
+            u16::from(min_source_distance) + u16::from(distance) < u16::from(current_distance)
+        });
+    }
+    if utility_source_frontiers.is_empty() || utility_target_frontiers.is_empty() {
+        None
+    } else {
+        Some((utility_source_frontiers, utility_target_frontiers))
+    }
 }
 
 fn frontier_midpoint(location: DoorLocation) -> (i16, i16) {
@@ -3343,6 +3440,15 @@ impl Environment {
         let mut missing_connect_query_target_count = Vec::new();
         let mut missing_connect_query_source_cap_hit = Vec::new();
         let mut missing_connect_query_target_cap_hit = Vec::new();
+        let mut missing_connect_utility_query_connection_idx = Vec::new();
+        let mut missing_connect_utility_query_source_frontier = Vec::new();
+        let mut missing_connect_utility_query_target_frontier = Vec::new();
+        let mut missing_connect_utility_query_source_distance = Vec::new();
+        let mut missing_connect_utility_query_target_distance = Vec::new();
+        let mut missing_connect_utility_query_source_count = Vec::new();
+        let mut missing_connect_utility_query_target_count = Vec::new();
+        let mut missing_connect_utility_query_source_cap_hit = Vec::new();
+        let mut missing_connect_utility_query_target_cap_hit = Vec::new();
         profile_end(ProfileMetric::EnvFeaturesSetup, profile);
 
         let profile = profile_start();
@@ -3480,7 +3586,7 @@ impl Environment {
                         [frontier_idx * common.room_connection.len() + connection_idx] = flags;
                 }
             }
-            if config.missing_connect_query && !already_reachable {
+            if config.missing_connect_query || config.missing_connect_utility_query {
                 let from_part =
                     Self::room_part_idx(common, connection.room_idx, connection.from_part) as usize;
                 let to_part =
@@ -3504,32 +3610,50 @@ impl Environment {
                 }
                 source_frontiers.sort_unstable();
                 target_frontiers.sort_unstable();
-                missing_connect_query_connection_idx.push(connection_idx as i64);
-                missing_connect_query_source_count
-                    .push(source_frontiers.len().min(u16::MAX as usize) as u16);
-                missing_connect_query_target_count
-                    .push(target_frontiers.len().min(u16::MAX as usize) as u16);
-                missing_connect_query_source_cap_hit.push(u8::from(
-                    source_frontiers.len() > missing_connect_query_frontier_count,
-                ));
-                missing_connect_query_target_cap_hit.push(u8::from(
-                    target_frontiers.len() > missing_connect_query_frontier_count,
-                ));
-                for idx in 0..missing_connect_query_frontier_count {
-                    if let Some(&(distance, frontier_idx)) = source_frontiers.get(idx) {
-                        missing_connect_query_source_frontier.push(frontier_idx);
-                        missing_connect_query_source_distance.push(distance);
-                    } else {
-                        missing_connect_query_source_frontier.push(-1);
-                        missing_connect_query_source_distance.push(0);
+                if config.missing_connect_query && !already_reachable {
+                    MissingConnectQueryBuffers {
+                        connection_idx: &mut missing_connect_query_connection_idx,
+                        source_frontier: &mut missing_connect_query_source_frontier,
+                        target_frontier: &mut missing_connect_query_target_frontier,
+                        source_distance: &mut missing_connect_query_source_distance,
+                        target_distance: &mut missing_connect_query_target_distance,
+                        source_count: &mut missing_connect_query_source_count,
+                        target_count: &mut missing_connect_query_target_count,
+                        source_cap_hit: &mut missing_connect_query_source_cap_hit,
+                        target_cap_hit: &mut missing_connect_query_target_cap_hit,
                     }
-                    if let Some(&(distance, frontier_idx)) = target_frontiers.get(idx) {
-                        missing_connect_query_target_frontier.push(frontier_idx);
-                        missing_connect_query_target_distance.push(distance);
-                    } else {
-                        missing_connect_query_target_frontier.push(-1);
-                        missing_connect_query_target_distance.push(0);
+                    .push_row(
+                        connection_idx,
+                        &source_frontiers,
+                        &target_frontiers,
+                        missing_connect_query_frontier_count,
+                    );
+                }
+                if config.missing_connect_utility_query
+                    && let Some((utility_source_frontiers, utility_target_frontiers)) =
+                        utility_missing_connect_frontiers(
+                            &source_frontiers,
+                            &target_frontiers,
+                            self.graph_distance[from_part * graph_size + to_part],
+                        )
+                {
+                    MissingConnectQueryBuffers {
+                        connection_idx: &mut missing_connect_utility_query_connection_idx,
+                        source_frontier: &mut missing_connect_utility_query_source_frontier,
+                        target_frontier: &mut missing_connect_utility_query_target_frontier,
+                        source_distance: &mut missing_connect_utility_query_source_distance,
+                        target_distance: &mut missing_connect_utility_query_target_distance,
+                        source_count: &mut missing_connect_utility_query_source_count,
+                        target_count: &mut missing_connect_utility_query_target_count,
+                        source_cap_hit: &mut missing_connect_utility_query_source_cap_hit,
+                        target_cap_hit: &mut missing_connect_utility_query_target_cap_hit,
                     }
+                    .push_row(
+                        connection_idx,
+                        &utility_source_frontiers,
+                        &utility_target_frontiers,
+                        missing_connect_query_frontier_count,
+                    );
                 }
             }
         }
@@ -3659,6 +3783,15 @@ impl Environment {
             missing_connect_query_target_count,
             missing_connect_query_source_cap_hit,
             missing_connect_query_target_cap_hit,
+            missing_connect_utility_query_connection_idx,
+            missing_connect_utility_query_source_frontier,
+            missing_connect_utility_query_target_frontier,
+            missing_connect_utility_query_source_distance,
+            missing_connect_utility_query_target_distance,
+            missing_connect_utility_query_source_count,
+            missing_connect_utility_query_target_count,
+            missing_connect_utility_query_source_cap_hit,
+            missing_connect_utility_query_target_cap_hit,
             toilet_crossed_room_idx,
         };
         profile_end(ProfileMetric::EnvFeaturesOutput, profile);
@@ -6785,6 +6918,7 @@ mod tests {
             connection_reachability: true,
             frontier_connection_reachability: true,
             missing_connect_query: true,
+            missing_connect_utility_query: true,
             ..FeatureConfig::all_disabled()
         };
         let features = env.features(
@@ -6818,6 +6952,52 @@ mod tests {
             features.missing_connect_query_target_distance,
             vec![0, 0, 0, 0]
         );
+        assert_eq!(
+            features.missing_connect_utility_query_connection_idx,
+            vec![0]
+        );
+        assert_eq!(features.missing_connect_utility_query_source_count, vec![1]);
+        assert_eq!(features.missing_connect_utility_query_target_count, vec![1]);
+        assert_eq!(
+            features.missing_connect_utility_query_source_frontier,
+            vec![0, -1, -1, -1]
+        );
+        assert_eq!(
+            features.missing_connect_utility_query_target_frontier,
+            vec![1, -1, -1, -1]
+        );
+    }
+
+    #[test]
+    fn utility_missing_connect_frontiers_keep_unreachable_connection_sets() {
+        let source = vec![(2, 10), (5, 11)];
+        let target = vec![(3, 20), (7, 21)];
+
+        let (source_result, target_result) =
+            utility_missing_connect_frontiers(&source, &target, UNREACHABLE_DISTANCE).unwrap();
+
+        assert_eq!(source_result, source);
+        assert_eq!(target_result, target);
+    }
+
+    #[test]
+    fn utility_missing_connect_frontiers_skip_non_improving_existing_path() {
+        let source = vec![(2, 10), (5, 11)];
+        let target = vec![(3, 20), (7, 21)];
+
+        assert!(utility_missing_connect_frontiers(&source, &target, 5).is_none());
+    }
+
+    #[test]
+    fn utility_missing_connect_frontiers_prune_non_improving_entries() {
+        let source = vec![(1, 10), (3, 11), (5, 12)];
+        let target = vec![(2, 20), (4, 21), (7, 22)];
+
+        let (source_result, target_result) =
+            utility_missing_connect_frontiers(&source, &target, 6).unwrap();
+
+        assert_eq!(source_result, vec![(1, 10), (3, 11)]);
+        assert_eq!(target_result, vec![(2, 20), (4, 21)]);
     }
 
     #[test]

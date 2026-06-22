@@ -117,6 +117,7 @@ class FeatureConfig(StrictBaseModel):
     connection_reachability: int
     frontier_connection_reachability: bool
     missing_connect_query: bool
+    missing_connect_utility_query: bool
     missing_connect_query_summary: bool
     toilet_crossed_room: int
     known_distance: int
@@ -145,6 +146,7 @@ class FeatureConfig(StrictBaseModel):
             connection_reachability=self.connection_reachability > 0,
             frontier_connection_reachability=self.frontier_connection_reachability,
             missing_connect_query=self.missing_connect_query,
+            missing_connect_utility_query=self.missing_connect_utility_query,
             missing_connect_query_summary=self.missing_connect_query_summary,
             toilet_crossed_room=self.toilet_crossed_room > 0,
         )
@@ -173,6 +175,7 @@ class EngineFeatureConfig(StrictBaseModel):
     connection_reachability: bool
     frontier_connection_reachability: bool
     missing_connect_query: bool
+    missing_connect_utility_query: bool
     missing_connect_query_summary: bool
     toilet_crossed_room: bool
 
@@ -427,6 +430,7 @@ def validate_config(config: Config) -> None:
         or config.features.frontier_neighbor
         or config.features.frontier_connection_reachability
         or config.features.missing_connect_query
+        or config.features.missing_connect_utility_query
     ) and not config.features.frontier_mask:
         raise ValueError("frontier query and frontier features require features.frontier_mask")
     if (

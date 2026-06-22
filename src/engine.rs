@@ -378,6 +378,7 @@ impl WorkerCommand {
 struct FeatureInfo {
     frontier_row_count: usize,
     missing_connect_query_row_count: usize,
+    missing_connect_utility_query_row_count: usize,
 }
 
 // Feature preparation reports only metadata needed to allocate output buffers. Bulk data is
@@ -1187,6 +1188,8 @@ fn worker_loop(
                     WorkerResponse::FeatureInfo(FeatureInfo {
                         frontier_row_count: outputs.frontier_row_count,
                         missing_connect_query_row_count: outputs.missing_connect_query_row_count,
+                        missing_connect_utility_query_row_count: outputs
+                            .missing_connect_utility_query_row_count,
                     })
                 }
             }
@@ -1268,15 +1271,20 @@ fn collect_feature_info(
     let mut total = FeatureInfo::default();
     let mut worker_frontier_row_counts = vec![0; workers.len()];
     let mut worker_query_row_counts = vec![0; workers.len()];
+    let mut worker_utility_query_row_counts = vec![0; workers.len()];
     for worker_idx in sent_workers {
         match workers[worker_idx].recv() {
             Ok(WorkerResponse::FeatureInfo(worker_feature_info)) => {
                 total.frontier_row_count += worker_feature_info.frontier_row_count;
                 total.missing_connect_query_row_count +=
                     worker_feature_info.missing_connect_query_row_count;
+                total.missing_connect_utility_query_row_count +=
+                    worker_feature_info.missing_connect_utility_query_row_count;
                 worker_frontier_row_counts[worker_idx] = worker_feature_info.frontier_row_count;
                 worker_query_row_counts[worker_idx] =
                     worker_feature_info.missing_connect_query_row_count;
+                worker_utility_query_row_counts[worker_idx] =
+                    worker_feature_info.missing_connect_utility_query_row_count;
             }
             Ok(WorkerResponse::Done) => set_first_error(
                 &mut first_error,
@@ -1295,10 +1303,15 @@ fn collect_feature_info(
         let worker_info = worker_frontier_row_counts
             .into_iter()
             .zip(worker_query_row_counts)
+            .zip(worker_utility_query_row_counts)
             .map(
-                |(frontier_row_count, missing_connect_query_row_count)| FeatureInfo {
+                |(
+                    (frontier_row_count, missing_connect_query_row_count),
+                    missing_connect_utility_query_row_count,
+                )| FeatureInfo {
                     frontier_row_count,
                     missing_connect_query_row_count,
+                    missing_connect_utility_query_row_count,
                 },
             )
             .collect();
@@ -1399,6 +1412,10 @@ pub struct FeatureRequirements {
     missing_connect_query_row_count: usize,
     #[pyo3(get)]
     worker_missing_connect_query_row_counts: Vec<usize>,
+    #[pyo3(get)]
+    missing_connect_utility_query_row_count: usize,
+    #[pyo3(get)]
+    worker_missing_connect_utility_query_row_counts: Vec<usize>,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1440,6 +1457,10 @@ pub struct FeatureBuffers {
     missing_connect_query_row_count: usize,
     #[pyo3(get)]
     worker_missing_connect_query_row_counts: Vec<usize>,
+    #[pyo3(get)]
+    missing_connect_utility_query_row_count: usize,
+    #[pyo3(get)]
+    worker_missing_connect_utility_query_row_counts: Vec<usize>,
     inventory: Py<PyArray2<u8>>,
     out_room_x: Py<PyArray2<Coord>>,
     out_room_y: Py<PyArray2<Coord>>,
@@ -1473,6 +1494,16 @@ pub struct FeatureBuffers {
     missing_connect_query_target_count: Py<PyArray1<u16>>,
     missing_connect_query_source_cap_hit: Py<PyArray1<u8>>,
     missing_connect_query_target_cap_hit: Py<PyArray1<u8>>,
+    missing_connect_utility_query_snapshot_idx: Py<PyArray1<i64>>,
+    missing_connect_utility_query_connection_idx: Py<PyArray1<i64>>,
+    missing_connect_utility_query_source_frontier: Py<PyArray2<i16>>,
+    missing_connect_utility_query_target_frontier: Py<PyArray2<i16>>,
+    missing_connect_utility_query_source_distance: Py<PyArray2<u8>>,
+    missing_connect_utility_query_target_distance: Py<PyArray2<u8>>,
+    missing_connect_utility_query_source_count: Py<PyArray1<u16>>,
+    missing_connect_utility_query_target_count: Py<PyArray1<u16>>,
+    missing_connect_utility_query_source_cap_hit: Py<PyArray1<u8>>,
+    missing_connect_utility_query_target_cap_hit: Py<PyArray1<u8>>,
     toilet_crossed_room_idx: Py<PyArray2<i16>>,
     row_snapshot_idx: Py<PyArray1<i64>>,
     row_frontier_idx: Py<PyArray1<FrontierIdx>>,
@@ -1523,6 +1554,14 @@ impl FeatureBuffers {
             worker_missing_connect_query_row_counts: required_py_field!(
                 fields,
                 "worker_missing_connect_query_row_counts"
+            ),
+            missing_connect_utility_query_row_count: required_py_field!(
+                fields,
+                "missing_connect_utility_query_row_count"
+            ),
+            worker_missing_connect_utility_query_row_counts: required_py_field!(
+                fields,
+                "worker_missing_connect_utility_query_row_counts"
             ),
             inventory: required_py_field!(fields, "inventory"),
             out_room_x: required_py_field!(fields, "room_x"),
@@ -1619,6 +1658,46 @@ impl FeatureBuffers {
             missing_connect_query_target_cap_hit: required_py_field!(
                 fields,
                 "missing_connect_query_target_cap_hit"
+            ),
+            missing_connect_utility_query_snapshot_idx: required_py_field!(
+                fields,
+                "missing_connect_utility_query_snapshot_idx"
+            ),
+            missing_connect_utility_query_connection_idx: required_py_field!(
+                fields,
+                "missing_connect_utility_query_connection_idx"
+            ),
+            missing_connect_utility_query_source_frontier: required_py_field!(
+                fields,
+                "missing_connect_utility_query_source_frontier"
+            ),
+            missing_connect_utility_query_target_frontier: required_py_field!(
+                fields,
+                "missing_connect_utility_query_target_frontier"
+            ),
+            missing_connect_utility_query_source_distance: required_py_field!(
+                fields,
+                "missing_connect_utility_query_source_distance"
+            ),
+            missing_connect_utility_query_target_distance: required_py_field!(
+                fields,
+                "missing_connect_utility_query_target_distance"
+            ),
+            missing_connect_utility_query_source_count: required_py_field!(
+                fields,
+                "missing_connect_utility_query_source_count"
+            ),
+            missing_connect_utility_query_target_count: required_py_field!(
+                fields,
+                "missing_connect_utility_query_target_count"
+            ),
+            missing_connect_utility_query_source_cap_hit: required_py_field!(
+                fields,
+                "missing_connect_utility_query_source_cap_hit"
+            ),
+            missing_connect_utility_query_target_cap_hit: required_py_field!(
+                fields,
+                "missing_connect_utility_query_target_cap_hit"
             ),
             toilet_crossed_room_idx: required_py_field!(fields, "toilet_crossed_room_idx"),
             row_snapshot_idx: required_py_field!(fields, "row_snapshot_idx"),
@@ -1832,6 +1911,10 @@ fn feature_info(features: &[Features]) -> FeatureInfo {
         missing_connect_query_row_count: features
             .iter()
             .map(|features| features.missing_connect_query_connection_idx.len())
+            .sum(),
+        missing_connect_utility_query_row_count: features
+            .iter()
+            .map(|features| features.missing_connect_utility_query_connection_idx.len())
             .sum(),
     }
 }
@@ -2177,6 +2260,16 @@ struct FeatureOutputShards {
     missing_connect_query_target_count: OutputShard<u16>,
     missing_connect_query_source_cap_hit: OutputShard<u8>,
     missing_connect_query_target_cap_hit: OutputShard<u8>,
+    missing_connect_utility_query_snapshot_idx: OutputShard<i64>,
+    missing_connect_utility_query_connection_idx: OutputShard<i64>,
+    missing_connect_utility_query_source_frontier: OutputShard<i16>,
+    missing_connect_utility_query_target_frontier: OutputShard<i16>,
+    missing_connect_utility_query_source_distance: OutputShard<u8>,
+    missing_connect_utility_query_target_distance: OutputShard<u8>,
+    missing_connect_utility_query_source_count: OutputShard<u16>,
+    missing_connect_utility_query_target_count: OutputShard<u16>,
+    missing_connect_utility_query_source_cap_hit: OutputShard<u8>,
+    missing_connect_utility_query_target_cap_hit: OutputShard<u8>,
     missing_connect_query_frontier_count: usize,
     snapshot_start: usize,
 }
@@ -2197,10 +2290,21 @@ struct FeatureOutputSlices<'a> {
     missing_connect_query_target_count: &'a mut [u16],
     missing_connect_query_source_cap_hit: &'a mut [u8],
     missing_connect_query_target_cap_hit: &'a mut [u8],
+    missing_connect_utility_query_snapshot_idx: &'a mut [i64],
+    missing_connect_utility_query_connection_idx: &'a mut [i64],
+    missing_connect_utility_query_source_frontier: &'a mut [i16],
+    missing_connect_utility_query_target_frontier: &'a mut [i16],
+    missing_connect_utility_query_source_distance: &'a mut [u8],
+    missing_connect_utility_query_target_distance: &'a mut [u8],
+    missing_connect_utility_query_source_count: &'a mut [u16],
+    missing_connect_utility_query_target_count: &'a mut [u16],
+    missing_connect_utility_query_source_cap_hit: &'a mut [u8],
+    missing_connect_utility_query_target_cap_hit: &'a mut [u8],
     missing_connect_query_frontier_count: usize,
     snapshot_start: usize,
     frontier_row_count: usize,
     missing_connect_query_row_count: usize,
+    missing_connect_utility_query_row_count: usize,
 }
 
 impl FeatureOutputShards {
@@ -2241,15 +2345,105 @@ impl FeatureOutputShards {
             missing_connect_query_target_cap_hit: unsafe {
                 self.missing_connect_query_target_cap_hit.into_mut_slice()
             },
+            missing_connect_utility_query_snapshot_idx: unsafe {
+                self.missing_connect_utility_query_snapshot_idx
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_connection_idx: unsafe {
+                self.missing_connect_utility_query_connection_idx
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_source_frontier: unsafe {
+                self.missing_connect_utility_query_source_frontier
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_target_frontier: unsafe {
+                self.missing_connect_utility_query_target_frontier
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_source_distance: unsafe {
+                self.missing_connect_utility_query_source_distance
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_target_distance: unsafe {
+                self.missing_connect_utility_query_target_distance
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_source_count: unsafe {
+                self.missing_connect_utility_query_source_count
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_target_count: unsafe {
+                self.missing_connect_utility_query_target_count
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_source_cap_hit: unsafe {
+                self.missing_connect_utility_query_source_cap_hit
+                    .into_mut_slice()
+            },
+            missing_connect_utility_query_target_cap_hit: unsafe {
+                self.missing_connect_utility_query_target_cap_hit
+                    .into_mut_slice()
+            },
             missing_connect_query_frontier_count: self.missing_connect_query_frontier_count,
             snapshot_start: self.snapshot_start,
             frontier_row_count: 0,
             missing_connect_query_row_count: 0,
+            missing_connect_utility_query_row_count: 0,
         }
     }
 }
 
 impl FeatureOutputSlices<'_> {
+    fn write_missing_connect_query_rows(
+        query_row_count: &mut usize,
+        snapshot_start: usize,
+        snapshot_idx: usize,
+        frontier_count: usize,
+        query_snapshot_idx: &mut [i64],
+        query_connection_idx: &mut [i64],
+        query_source_frontier: &mut [i16],
+        query_target_frontier: &mut [i16],
+        query_source_distance: &mut [u8],
+        query_target_distance: &mut [u8],
+        query_source_count: &mut [u16],
+        query_target_count: &mut [u16],
+        query_source_cap_hit: &mut [u8],
+        query_target_cap_hit: &mut [u8],
+        feature_connection_idx: &[i64],
+        feature_source_frontier: &[i16],
+        feature_target_frontier: &[i16],
+        feature_source_distance: &[u8],
+        feature_target_distance: &[u8],
+        feature_source_count: &[u16],
+        feature_target_count: &[u16],
+        feature_source_cap_hit: &[u8],
+        feature_target_cap_hit: &[u8],
+    ) {
+        for query_idx in 0..feature_connection_idx.len() {
+            let dst_idx = *query_row_count;
+            query_snapshot_idx[dst_idx] = (snapshot_start + snapshot_idx) as i64;
+            query_connection_idx[dst_idx] = feature_connection_idx[query_idx];
+            query_source_count[dst_idx] = feature_source_count[query_idx];
+            query_target_count[dst_idx] = feature_target_count[query_idx];
+            query_source_cap_hit[dst_idx] = feature_source_cap_hit[query_idx];
+            query_target_cap_hit[dst_idx] = feature_target_cap_hit[query_idx];
+            let query_start = query_idx * frontier_count;
+            let query_end = query_start + frontier_count;
+            let dst_start = dst_idx * frontier_count;
+            let dst_end = dst_start + frontier_count;
+            query_source_frontier[dst_start..dst_end]
+                .copy_from_slice(&feature_source_frontier[query_start..query_end]);
+            query_target_frontier[dst_start..dst_end]
+                .copy_from_slice(&feature_target_frontier[query_start..query_end]);
+            query_source_distance[dst_start..dst_end]
+                .copy_from_slice(&feature_source_distance[query_start..query_end]);
+            query_target_distance[dst_start..dst_end]
+                .copy_from_slice(&feature_target_distance[query_start..query_end]);
+            *query_row_count += 1;
+        }
+    }
+
     fn write_features(&mut self, snapshot_idx: usize, features: &Features) {
         self.global.write_features(snapshot_idx, features);
         let frontier_count = features.frontier.len() / FEATURE_FRONTIER_WIDTH;
@@ -2266,39 +2460,56 @@ impl FeatureOutputSlices<'_> {
                 .write_frontier_row(frontier_row_idx, features, frontier_idx);
             self.frontier_row_count += 1;
         }
-        let query_count = features.missing_connect_query_connection_idx.len();
-        for query_idx in 0..query_count {
-            let dst_idx = self.missing_connect_query_row_count;
-            self.missing_connect_query_snapshot_idx[dst_idx] =
-                (self.snapshot_start + snapshot_idx) as i64;
-            self.missing_connect_query_connection_idx[dst_idx] =
-                features.missing_connect_query_connection_idx[query_idx];
-            self.missing_connect_query_source_count[dst_idx] =
-                features.missing_connect_query_source_count[query_idx];
-            self.missing_connect_query_target_count[dst_idx] =
-                features.missing_connect_query_target_count[query_idx];
-            self.missing_connect_query_source_cap_hit[dst_idx] =
-                features.missing_connect_query_source_cap_hit[query_idx];
-            self.missing_connect_query_target_cap_hit[dst_idx] =
-                features.missing_connect_query_target_cap_hit[query_idx];
-            let query_start = query_idx * self.missing_connect_query_frontier_count;
-            let query_end = query_start + self.missing_connect_query_frontier_count;
-            let dst_start = dst_idx * self.missing_connect_query_frontier_count;
-            let dst_end = dst_start + self.missing_connect_query_frontier_count;
-            self.missing_connect_query_source_frontier[dst_start..dst_end].copy_from_slice(
-                &features.missing_connect_query_source_frontier[query_start..query_end],
-            );
-            self.missing_connect_query_target_frontier[dst_start..dst_end].copy_from_slice(
-                &features.missing_connect_query_target_frontier[query_start..query_end],
-            );
-            self.missing_connect_query_source_distance[dst_start..dst_end].copy_from_slice(
-                &features.missing_connect_query_source_distance[query_start..query_end],
-            );
-            self.missing_connect_query_target_distance[dst_start..dst_end].copy_from_slice(
-                &features.missing_connect_query_target_distance[query_start..query_end],
-            );
-            self.missing_connect_query_row_count += 1;
-        }
+        Self::write_missing_connect_query_rows(
+            &mut self.missing_connect_query_row_count,
+            self.snapshot_start,
+            snapshot_idx,
+            self.missing_connect_query_frontier_count,
+            self.missing_connect_query_snapshot_idx,
+            self.missing_connect_query_connection_idx,
+            self.missing_connect_query_source_frontier,
+            self.missing_connect_query_target_frontier,
+            self.missing_connect_query_source_distance,
+            self.missing_connect_query_target_distance,
+            self.missing_connect_query_source_count,
+            self.missing_connect_query_target_count,
+            self.missing_connect_query_source_cap_hit,
+            self.missing_connect_query_target_cap_hit,
+            &features.missing_connect_query_connection_idx,
+            &features.missing_connect_query_source_frontier,
+            &features.missing_connect_query_target_frontier,
+            &features.missing_connect_query_source_distance,
+            &features.missing_connect_query_target_distance,
+            &features.missing_connect_query_source_count,
+            &features.missing_connect_query_target_count,
+            &features.missing_connect_query_source_cap_hit,
+            &features.missing_connect_query_target_cap_hit,
+        );
+        Self::write_missing_connect_query_rows(
+            &mut self.missing_connect_utility_query_row_count,
+            self.snapshot_start,
+            snapshot_idx,
+            self.missing_connect_query_frontier_count,
+            self.missing_connect_utility_query_snapshot_idx,
+            self.missing_connect_utility_query_connection_idx,
+            self.missing_connect_utility_query_source_frontier,
+            self.missing_connect_utility_query_target_frontier,
+            self.missing_connect_utility_query_source_distance,
+            self.missing_connect_utility_query_target_distance,
+            self.missing_connect_utility_query_source_count,
+            self.missing_connect_utility_query_target_count,
+            self.missing_connect_utility_query_source_cap_hit,
+            self.missing_connect_utility_query_target_cap_hit,
+            &features.missing_connect_utility_query_connection_idx,
+            &features.missing_connect_utility_query_source_frontier,
+            &features.missing_connect_utility_query_target_frontier,
+            &features.missing_connect_utility_query_source_distance,
+            &features.missing_connect_utility_query_target_distance,
+            &features.missing_connect_utility_query_source_count,
+            &features.missing_connect_utility_query_target_count,
+            &features.missing_connect_utility_query_source_cap_hit,
+            &features.missing_connect_utility_query_target_cap_hit,
+        );
     }
 }
 
@@ -2620,6 +2831,16 @@ mod tests {
         let mut missing_connect_query_target_count = Vec::new();
         let mut missing_connect_query_source_cap_hit = Vec::new();
         let mut missing_connect_query_target_cap_hit = Vec::new();
+        let mut missing_connect_utility_query_snapshot_idx = Vec::new();
+        let mut missing_connect_utility_query_connection_idx = Vec::new();
+        let mut missing_connect_utility_query_source_frontier = Vec::new();
+        let mut missing_connect_utility_query_target_frontier = Vec::new();
+        let mut missing_connect_utility_query_source_distance = Vec::new();
+        let mut missing_connect_utility_query_target_distance = Vec::new();
+        let mut missing_connect_utility_query_source_count = Vec::new();
+        let mut missing_connect_utility_query_target_count = Vec::new();
+        let mut missing_connect_utility_query_source_cap_hit = Vec::new();
+        let mut missing_connect_utility_query_target_cap_hit = Vec::new();
 
         let outputs = FeatureOutputShards {
             global: empty_global_feature_output_shards(),
@@ -2660,6 +2881,36 @@ mod tests {
             ),
             missing_connect_query_target_cap_hit: OutputShard::from_slice(
                 &mut missing_connect_query_target_cap_hit,
+            ),
+            missing_connect_utility_query_snapshot_idx: OutputShard::from_slice(
+                &mut missing_connect_utility_query_snapshot_idx,
+            ),
+            missing_connect_utility_query_connection_idx: OutputShard::from_slice(
+                &mut missing_connect_utility_query_connection_idx,
+            ),
+            missing_connect_utility_query_source_frontier: OutputShard::from_slice(
+                &mut missing_connect_utility_query_source_frontier,
+            ),
+            missing_connect_utility_query_target_frontier: OutputShard::from_slice(
+                &mut missing_connect_utility_query_target_frontier,
+            ),
+            missing_connect_utility_query_source_distance: OutputShard::from_slice(
+                &mut missing_connect_utility_query_source_distance,
+            ),
+            missing_connect_utility_query_target_distance: OutputShard::from_slice(
+                &mut missing_connect_utility_query_target_distance,
+            ),
+            missing_connect_utility_query_source_count: OutputShard::from_slice(
+                &mut missing_connect_utility_query_source_count,
+            ),
+            missing_connect_utility_query_target_count: OutputShard::from_slice(
+                &mut missing_connect_utility_query_target_count,
+            ),
+            missing_connect_utility_query_source_cap_hit: OutputShard::from_slice(
+                &mut missing_connect_utility_query_source_cap_hit,
+            ),
+            missing_connect_utility_query_target_cap_hit: OutputShard::from_slice(
+                &mut missing_connect_utility_query_target_cap_hit,
             ),
             missing_connect_query_frontier_count: 0,
             snapshot_start: 10,
@@ -3135,6 +3386,9 @@ impl EnvironmentGroup {
             feature_info.frontier_row_count * usize::from(self.features.has_frontier_features());
         let missing_connect_query_row_count = feature_info.missing_connect_query_row_count
             * usize::from(self.features.missing_connect_query);
+        let missing_connect_utility_query_row_count = feature_info
+            .missing_connect_utility_query_row_count
+            * usize::from(self.features.missing_connect_utility_query);
         let worker_frontier_row_counts = worker_feature_info
             .iter()
             .map(|info| {
@@ -3142,10 +3396,17 @@ impl EnvironmentGroup {
             })
             .collect::<Vec<_>>();
         let worker_missing_connect_query_row_counts = worker_feature_info
-            .into_iter()
+            .iter()
             .map(|info| {
                 info.missing_connect_query_row_count
                     * usize::from(self.features.missing_connect_query)
+            })
+            .collect::<Vec<_>>();
+        let worker_missing_connect_utility_query_row_counts = worker_feature_info
+            .into_iter()
+            .map(|info| {
+                info.missing_connect_utility_query_row_count
+                    * usize::from(self.features.missing_connect_utility_query)
             })
             .collect::<Vec<_>>();
 
@@ -3173,6 +3434,8 @@ impl EnvironmentGroup {
             worker_frontier_row_counts,
             missing_connect_query_row_count,
             worker_missing_connect_query_row_counts,
+            missing_connect_utility_query_row_count,
+            worker_missing_connect_utility_query_row_counts,
         })
     }
 
@@ -3684,6 +3947,9 @@ impl EnvironmentGroup {
             feature_info.frontier_row_count * usize::from(self.features.has_frontier_features());
         let missing_connect_query_row_count = feature_info.missing_connect_query_row_count
             * usize::from(self.features.missing_connect_query);
+        let missing_connect_utility_query_row_count = feature_info
+            .missing_connect_utility_query_row_count
+            * usize::from(self.features.missing_connect_utility_query);
         let worker_frontier_row_counts = worker_feature_info
             .iter()
             .map(|info| {
@@ -3691,10 +3957,17 @@ impl EnvironmentGroup {
             })
             .collect::<Vec<_>>();
         let worker_missing_connect_query_row_counts = worker_feature_info
-            .into_iter()
+            .iter()
             .map(|info| {
                 info.missing_connect_query_row_count
                     * usize::from(self.features.missing_connect_query)
+            })
+            .collect::<Vec<_>>();
+        let worker_missing_connect_utility_query_row_counts = worker_feature_info
+            .into_iter()
+            .map(|info| {
+                info.missing_connect_utility_query_row_count
+                    * usize::from(self.features.missing_connect_utility_query)
             })
             .collect::<Vec<_>>();
         Ok(FeatureRequirements {
@@ -3702,6 +3975,8 @@ impl EnvironmentGroup {
             worker_frontier_row_counts,
             missing_connect_query_row_count,
             worker_missing_connect_query_row_counts,
+            missing_connect_utility_query_row_count,
+            worker_missing_connect_utility_query_row_counts,
         })
     }
 
@@ -3718,6 +3993,10 @@ impl EnvironmentGroup {
         let missing_connect_query_row_count = buffers.missing_connect_query_row_count;
         let worker_missing_connect_query_row_counts =
             &buffers.worker_missing_connect_query_row_counts;
+        let missing_connect_utility_query_row_count =
+            buffers.missing_connect_utility_query_row_count;
+        let worker_missing_connect_utility_query_row_counts =
+            &buffers.worker_missing_connect_utility_query_row_counts;
         let mut inventory = buffers.inventory.bind(py).readwrite();
         let mut out_room_x = buffers.out_room_x.bind(py).readwrite();
         let mut out_room_y = buffers.out_room_y.bind(py).readwrite();
@@ -3805,6 +4084,46 @@ impl EnvironmentGroup {
             .missing_connect_query_target_cap_hit
             .bind(py)
             .readwrite();
+        let mut missing_connect_utility_query_snapshot_idx = buffers
+            .missing_connect_utility_query_snapshot_idx
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_connection_idx = buffers
+            .missing_connect_utility_query_connection_idx
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_source_frontier = buffers
+            .missing_connect_utility_query_source_frontier
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_target_frontier = buffers
+            .missing_connect_utility_query_target_frontier
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_source_distance = buffers
+            .missing_connect_utility_query_source_distance
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_target_distance = buffers
+            .missing_connect_utility_query_target_distance
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_source_count = buffers
+            .missing_connect_utility_query_source_count
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_target_count = buffers
+            .missing_connect_utility_query_target_count
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_source_cap_hit = buffers
+            .missing_connect_utility_query_source_cap_hit
+            .bind(py)
+            .readwrite();
+        let mut missing_connect_utility_query_target_cap_hit = buffers
+            .missing_connect_utility_query_target_cap_hit
+            .bind(py)
+            .readwrite();
         let mut toilet_crossed_room_idx = buffers.toilet_crossed_room_idx.bind(py).readwrite();
         let mut row_snapshot_idx = buffers.row_snapshot_idx.bind(py).readwrite();
         let mut row_frontier_idx = buffers.row_frontier_idx.bind(py).readwrite();
@@ -3844,6 +4163,9 @@ impl EnvironmentGroup {
             connection_count * usize::from(self.features.frontier_connection_reachability);
         let missing_connect_query_frontier_width = self.missing_connect_query_frontier_count
             * usize::from(self.features.missing_connect_query);
+        let missing_connect_utility_query_frontier_width = self
+            .missing_connect_query_frontier_count
+            * usize::from(self.features.missing_connect_utility_query);
         let toilet_crossed_room_width = usize::from(self.features.toilet_crossed_room);
 
         let inventory_shape = inventory.as_array().shape().to_vec();
@@ -3931,6 +4253,56 @@ impl EnvironmentGroup {
             .as_array()
             .shape()
             .to_vec();
+        let missing_connect_utility_query_snapshot_idx_shape =
+            missing_connect_utility_query_snapshot_idx
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_connection_idx_shape =
+            missing_connect_utility_query_connection_idx
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_source_frontier_shape =
+            missing_connect_utility_query_source_frontier
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_target_frontier_shape =
+            missing_connect_utility_query_target_frontier
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_source_distance_shape =
+            missing_connect_utility_query_source_distance
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_target_distance_shape =
+            missing_connect_utility_query_target_distance
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_source_count_shape =
+            missing_connect_utility_query_source_count
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_target_count_shape =
+            missing_connect_utility_query_target_count
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_source_cap_hit_shape =
+            missing_connect_utility_query_source_cap_hit
+                .as_array()
+                .shape()
+                .to_vec();
+        let missing_connect_utility_query_target_cap_hit_shape =
+            missing_connect_utility_query_target_cap_hit
+                .as_array()
+                .shape()
+                .to_vec();
         let toilet_crossed_room_shape = toilet_crossed_room_idx.as_array().shape().to_vec();
         let row_snapshot_idx_shape = row_snapshot_idx.as_array().shape().to_vec();
         let row_frontier_idx_shape = row_frontier_idx.as_array().shape().to_vec();
@@ -3969,6 +4341,26 @@ impl EnvironmentGroup {
             || missing_connect_query_target_count_shape[0] < missing_connect_query_row_count
             || missing_connect_query_source_cap_hit_shape[0] < missing_connect_query_row_count
             || missing_connect_query_target_cap_hit_shape[0] < missing_connect_query_row_count
+            || missing_connect_utility_query_snapshot_idx_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_connection_idx_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_source_frontier_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_target_frontier_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_source_distance_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_target_distance_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_source_count_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_target_count_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_source_cap_hit_shape[0]
+                < missing_connect_utility_query_row_count
+            || missing_connect_utility_query_target_cap_hit_shape[0]
+                < missing_connect_utility_query_row_count
             || row_snapshot_idx_shape[0] < frontier_row_count
             || row_frontier_idx_shape[0] < frontier_row_count
             || row_door_output_idx_shape[0] < frontier_row_count
@@ -4086,6 +4478,26 @@ impl EnvironmentGroup {
             "missing_connect_query_target_distance",
             missing_connect_query_target_distance_shape[1],
             missing_connect_query_frontier_width,
+        )?;
+        check_dim(
+            "missing_connect_utility_query_source_frontier",
+            missing_connect_utility_query_source_frontier_shape[1],
+            missing_connect_utility_query_frontier_width,
+        )?;
+        check_dim(
+            "missing_connect_utility_query_target_frontier",
+            missing_connect_utility_query_target_frontier_shape[1],
+            missing_connect_utility_query_frontier_width,
+        )?;
+        check_dim(
+            "missing_connect_utility_query_source_distance",
+            missing_connect_utility_query_source_distance_shape[1],
+            missing_connect_utility_query_frontier_width,
+        )?;
+        check_dim(
+            "missing_connect_utility_query_target_distance",
+            missing_connect_utility_query_target_distance_shape[1],
+            missing_connect_utility_query_frontier_width,
         )?;
         check_dim(
             "toilet_crossed_room_idx",
@@ -4231,6 +4643,83 @@ impl EnvironmentGroup {
             .map_err(|_| {
                 PyValueError::new_err("missing_connect_query_target_cap_hit must be contiguous")
             })?;
+        let missing_connect_utility_query_snapshot_idx = missing_connect_utility_query_snapshot_idx
+            .as_slice_mut()
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "missing_connect_utility_query_snapshot_idx must be contiguous",
+                )
+            })?;
+        let missing_connect_utility_query_connection_idx =
+            missing_connect_utility_query_connection_idx
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_connection_idx must be contiguous",
+                    )
+                })?;
+        let missing_connect_utility_query_source_frontier =
+            missing_connect_utility_query_source_frontier
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_source_frontier must be contiguous",
+                    )
+                })?;
+        let missing_connect_utility_query_target_frontier =
+            missing_connect_utility_query_target_frontier
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_target_frontier must be contiguous",
+                    )
+                })?;
+        let missing_connect_utility_query_source_distance =
+            missing_connect_utility_query_source_distance
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_source_distance must be contiguous",
+                    )
+                })?;
+        let missing_connect_utility_query_target_distance =
+            missing_connect_utility_query_target_distance
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_target_distance must be contiguous",
+                    )
+                })?;
+        let missing_connect_utility_query_source_count = missing_connect_utility_query_source_count
+            .as_slice_mut()
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "missing_connect_utility_query_source_count must be contiguous",
+                )
+            })?;
+        let missing_connect_utility_query_target_count = missing_connect_utility_query_target_count
+            .as_slice_mut()
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "missing_connect_utility_query_target_count must be contiguous",
+                )
+            })?;
+        let missing_connect_utility_query_source_cap_hit =
+            missing_connect_utility_query_source_cap_hit
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_source_cap_hit must be contiguous",
+                    )
+                })?;
+        let missing_connect_utility_query_target_cap_hit =
+            missing_connect_utility_query_target_cap_hit
+                .as_slice_mut()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "missing_connect_utility_query_target_cap_hit must be contiguous",
+                    )
+                })?;
         let toilet_crossed_room_idx = toilet_crossed_room_idx
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("toilet_crossed_room_idx must be contiguous"))?;
@@ -4254,12 +4743,18 @@ impl EnvironmentGroup {
                 "worker missing connect query row count length does not match worker count",
             ));
         }
+        if worker_missing_connect_utility_query_row_counts.len() != self.workers.len() {
+            return Err(PyValueError::new_err(
+                "worker missing connect utility query row count length does not match worker count",
+            ));
+        }
 
         let (actual_frontier_row_count, _) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
             let mut first_error = None;
             let mut frontier_row_start = 0;
             let mut missing_connect_query_row_start = 0;
+            let mut missing_connect_utility_query_row_start = 0;
             for (worker_idx, worker) in self.workers.iter().enumerate() {
                 let start = max(environment_start, worker.start);
                 let end = min(environment_start + environment_count, worker.end());
@@ -4271,6 +4766,8 @@ impl EnvironmentGroup {
                 let worker_frontier_row_count = worker_frontier_row_counts[worker_idx];
                 let worker_missing_connect_query_row_count =
                     worker_missing_connect_query_row_counts[worker_idx];
+                let worker_missing_connect_utility_query_row_count =
+                    worker_missing_connect_utility_query_row_counts[worker_idx];
                 let outputs = FeatureOutputShards {
                     global: GlobalFeatureOutputShards {
                         inventory: OutputShard::from_slice(
@@ -4477,7 +4974,75 @@ impl EnvironmentGroup {
                             ..missing_connect_query_row_start
                                 + worker_missing_connect_query_row_count],
                     ),
-                    missing_connect_query_frontier_count: missing_connect_query_frontier_width,
+                    missing_connect_utility_query_snapshot_idx: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_snapshot_idx
+                            [missing_connect_utility_query_row_start
+                                ..missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count],
+                    ),
+                    missing_connect_utility_query_connection_idx: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_connection_idx
+                            [missing_connect_utility_query_row_start
+                                ..missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count],
+                    ),
+                    missing_connect_utility_query_source_frontier: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_source_frontier
+                            [missing_connect_utility_query_row_start
+                                * missing_connect_utility_query_frontier_width
+                                ..(missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count)
+                                    * missing_connect_utility_query_frontier_width],
+                    ),
+                    missing_connect_utility_query_target_frontier: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_target_frontier
+                            [missing_connect_utility_query_row_start
+                                * missing_connect_utility_query_frontier_width
+                                ..(missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count)
+                                    * missing_connect_utility_query_frontier_width],
+                    ),
+                    missing_connect_utility_query_source_distance: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_source_distance
+                            [missing_connect_utility_query_row_start
+                                * missing_connect_utility_query_frontier_width
+                                ..(missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count)
+                                    * missing_connect_utility_query_frontier_width],
+                    ),
+                    missing_connect_utility_query_target_distance: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_target_distance
+                            [missing_connect_utility_query_row_start
+                                * missing_connect_utility_query_frontier_width
+                                ..(missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count)
+                                    * missing_connect_utility_query_frontier_width],
+                    ),
+                    missing_connect_utility_query_source_count: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_source_count
+                            [missing_connect_utility_query_row_start
+                                ..missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count],
+                    ),
+                    missing_connect_utility_query_target_count: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_target_count
+                            [missing_connect_utility_query_row_start
+                                ..missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count],
+                    ),
+                    missing_connect_utility_query_source_cap_hit: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_source_cap_hit
+                            [missing_connect_utility_query_row_start
+                                ..missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count],
+                    ),
+                    missing_connect_utility_query_target_cap_hit: OutputShard::from_slice(
+                        &mut missing_connect_utility_query_target_cap_hit
+                            [missing_connect_utility_query_row_start
+                                ..missing_connect_utility_query_row_start
+                                    + worker_missing_connect_utility_query_row_count],
+                    ),
+                    missing_connect_query_frontier_count: self.missing_connect_query_frontier_count,
                     snapshot_start,
                 };
                 if let Err(err) = worker.send(WorkerCommand::PackFeatures {
@@ -4490,6 +5055,8 @@ impl EnvironmentGroup {
                 sent_workers.push(worker_idx);
                 frontier_row_start += worker_frontier_row_count;
                 missing_connect_query_row_start += worker_missing_connect_query_row_count;
+                missing_connect_utility_query_row_start +=
+                    worker_missing_connect_utility_query_row_count;
             }
             collect_feature_info(&self.workers, sent_workers, first_error)
         })?;
@@ -4505,6 +5072,14 @@ impl EnvironmentGroup {
             return Err(PyRuntimeError::new_err(format!(
                 "missing connect query row count changed between passes: expected {missing_connect_query_row_count}, got {}",
                 actual_frontier_row_count.missing_connect_query_row_count
+            )));
+        }
+        if actual_frontier_row_count.missing_connect_utility_query_row_count
+            != missing_connect_utility_query_row_count
+        {
+            return Err(PyRuntimeError::new_err(format!(
+                "missing connect utility query row count changed between passes: expected {missing_connect_utility_query_row_count}, got {}",
+                actual_frontier_row_count.missing_connect_utility_query_row_count
             )));
         }
         Ok(())

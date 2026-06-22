@@ -92,6 +92,7 @@
     "connection_reachability": 512,
     "frontier_connection_reachability": true,
     "missing_connect_query": true,
+    "missing_connect_utility_query": true,
     "missing_connect_query_summary": true,
     "toilet_crossed_room": 32,
     "known_distance": 1

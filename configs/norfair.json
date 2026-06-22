@@ -7,7 +7,7 @@
   "visualize": 0,
   "distance_proximity_scale": 5.0,
   "model": {
-    "compile": false,
+    "compile": true,
     "autocast": true,
     "generation_autocast": true,
     "embedding_width": 256,
@@ -92,6 +92,7 @@
     "connection_reachability": 0,
     "frontier_connection_reachability": false,
     "missing_connect_query": true,
+    "missing_connect_utility_query": true,
     "missing_connect_query_summary": true,
     "toilet_crossed_room": 32,
     "known_distance": 1
