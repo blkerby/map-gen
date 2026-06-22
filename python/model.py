@@ -973,9 +973,7 @@ class FrontierModel(torch.nn.Module):
         refill_from_room_utility = torch.sigmoid(
             self.refill_from_room_utility_output(X).to(torch.float32)
         )
-        missing_connect_utility = torch.sigmoid(
-            self.missing_connect_utility_output(X).to(torch.float32)
-        )
+        missing_connect_utility = self.missing_connect_utility_output(X).to(torch.float32)
         preds = get_predictions(
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
             self.output_sizes,
@@ -1022,9 +1020,7 @@ class FrontierModel(torch.nn.Module):
                     self.num_connection_outputs,
                 )
             )
-            query_missing_connect_utility = torch.sigmoid(
-                query_missing_connect_utility.to(torch.float32)
-            )
+            query_missing_connect_utility = query_missing_connect_utility.to(torch.float32)
             missing_connect_utility = torch.where(
                 query_utility_mask,
                 query_missing_connect_utility,

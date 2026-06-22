@@ -34,5 +34,8 @@
   make assumptions based on the local development environment.
 - Activate the "map-gen" conda environment before running Python.
 - Do not bother removing or clearing `python/__pycache__`.
-- Ask for confirmation before diving into making changes, unless the desired
-  change is already clear from the user's request.
+- Ask for confirmation before diving into making changes, unless the exact
+  desired code change is already clear from the user's request. This includes
+  follow-up debugging after a reported regression: investigate and explain the
+  likely cause first, but do not apply a speculative fix or design change until
+  the user confirms that specific change.
