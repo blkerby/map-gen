@@ -3751,11 +3751,10 @@ impl Environment {
                 |room_part: RoomPartIdx,
                  query_kind: u8,
                  current_distance: GraphDistance,
-                 mut frontiers: Vec<(GraphDistance, i16)>| {
-                    frontiers.sort_unstable();
+                 frontiers: &[(GraphDistance, i16)]| {
                     if let Some((query_frontiers, cap_hit, frontier_count)) =
                         save_refill_utility_frontiers(
-                            &frontiers,
+                            frontiers,
                             current_distance,
                             save_refill_query_frontier_count,
                         )
@@ -3778,52 +3777,37 @@ impl Environment {
                 };
             for &room_part in &self.active_room_parts {
                 let part = room_part as usize;
+                let mut to_room_frontiers = Vec::new();
+                let mut from_room_frontiers = Vec::new();
+                for (frontier_idx, (_, frontier)) in sorted_frontiers.iter().enumerate() {
+                    let frontier_part = frontier.room_part_idx as usize;
+                    let to_room_distance = self.graph_distance[frontier_part * graph_size + part];
+                    if to_room_distance != UNREACHABLE_DISTANCE {
+                        to_room_frontiers.push((to_room_distance, frontier_idx as i16));
+                    }
+                    let from_room_distance = self.graph_distance[part * graph_size + frontier_part];
+                    if from_room_distance != UNREACHABLE_DISTANCE {
+                        from_room_frontiers.push((from_room_distance, frontier_idx as i16));
+                    }
+                }
+                to_room_frontiers.sort_unstable();
+                from_room_frontiers.sort_unstable();
                 if config.save_utility_query {
                     let current_to_room =
                         self.room_part_save_distance_cache.nearest_save_source[part];
-                    let mut to_room_frontiers = Vec::new();
                     let current_from_room =
                         self.room_part_save_distance_cache.nearest_save_destination[part];
-                    let mut from_room_frontiers = Vec::new();
-                    for (frontier_idx, (_, frontier)) in sorted_frontiers.iter().enumerate() {
-                        let frontier_part = frontier.room_part_idx as usize;
-                        let to_room_distance =
-                            self.graph_distance[frontier_part * graph_size + part];
-                        if to_room_distance != UNREACHABLE_DISTANCE {
-                            to_room_frontiers.push((to_room_distance, frontier_idx as i16));
-                        }
-                        let from_room_distance =
-                            self.graph_distance[part * graph_size + frontier_part];
-                        if from_room_distance != UNREACHABLE_DISTANCE {
-                            from_room_frontiers.push((from_room_distance, frontier_idx as i16));
-                        }
-                    }
-                    push_save_refill_query(room_part, 0, current_to_room, to_room_frontiers);
-                    push_save_refill_query(room_part, 1, current_from_room, from_room_frontiers);
+                    push_save_refill_query(room_part, 0, current_to_room, &to_room_frontiers);
+                    push_save_refill_query(room_part, 1, current_from_room, &from_room_frontiers);
                 }
                 if config.refill_utility_query {
                     let current_to_room =
                         self.room_part_refill_distance_cache.nearest_save_source[part];
-                    let mut to_room_frontiers = Vec::new();
                     let current_from_room = self
                         .room_part_refill_distance_cache
                         .nearest_save_destination[part];
-                    let mut from_room_frontiers = Vec::new();
-                    for (frontier_idx, (_, frontier)) in sorted_frontiers.iter().enumerate() {
-                        let frontier_part = frontier.room_part_idx as usize;
-                        let to_room_distance =
-                            self.graph_distance[frontier_part * graph_size + part];
-                        if to_room_distance != UNREACHABLE_DISTANCE {
-                            to_room_frontiers.push((to_room_distance, frontier_idx as i16));
-                        }
-                        let from_room_distance =
-                            self.graph_distance[part * graph_size + frontier_part];
-                        if from_room_distance != UNREACHABLE_DISTANCE {
-                            from_room_frontiers.push((from_room_distance, frontier_idx as i16));
-                        }
-                    }
-                    push_save_refill_query(room_part, 2, current_to_room, to_room_frontiers);
-                    push_save_refill_query(room_part, 3, current_from_room, from_room_frontiers);
+                    push_save_refill_query(room_part, 2, current_to_room, &to_room_frontiers);
+                    push_save_refill_query(room_part, 3, current_from_room, &from_room_frontiers);
                 }
             }
         }
