@@ -97,6 +97,7 @@ profile_metrics! {
     EnvFeaturesSetup => "env.features.setup",
     EnvFeaturesSortFrontiers => "env.features.sort_frontiers",
     EnvFeaturesConnectionReachability => "env.features.connection_reachability",
+    EnvFeaturesSaveRefillUtilityQuery => "env.features.save_refill_utility_query",
     EnvFeaturesFrontierNeighbor => "env.features.frontier_neighbor",
     EnvFeaturesFrontierNeighborFlags => "env.features.frontier_neighbor_flags",
     EnvFeaturesRoomPositionClone => "env.features.room_position_clone",
@@ -251,7 +252,6 @@ enum WorkerCommand {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
         recommended_candidates: usize,
         shortlist_candidates: usize,
         sampled_frontier_idx: InputShard<FrontierIdx>,
@@ -335,7 +335,6 @@ enum WorkerCommand {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
         environment_start: usize,
         environment_count: usize,
     },
@@ -566,7 +565,6 @@ fn worker_loop(
                 frontier_neighbor_count,
                 frontier_window_size,
                 missing_connect_query_frontier_count,
-                save_refill_query_frontier_count,
                 recommended_candidates,
                 shortlist_candidates,
                 sampled_frontier_idx,
@@ -677,7 +675,6 @@ fn worker_loop(
                         frontier_neighbor_count,
                         frontier_window_size,
                         missing_connect_query_frontier_count,
-                        save_refill_query_frontier_count,
                     ) {
                         Ok(result) => result,
                         Err(err) => {
@@ -758,7 +755,6 @@ fn worker_loop(
                                 frontier_neighbor_count,
                                 frontier_window_size,
                                 missing_connect_query_frontier_count,
-                                save_refill_query_frontier_count,
                             ));
                         }
                         let door_start = idx * door_outcome_count;
@@ -1156,7 +1152,6 @@ fn worker_loop(
                 frontier_neighbor_count,
                 frontier_window_size,
                 missing_connect_query_frontier_count,
-                save_refill_query_frontier_count,
                 environment_start,
                 environment_count,
             } => {
@@ -1172,7 +1167,6 @@ fn worker_loop(
                             frontier_neighbor_count,
                             frontier_window_size,
                             missing_connect_query_frontier_count,
-                            save_refill_query_frontier_count,
                         )
                     })
                     .collect();
@@ -1375,7 +1369,6 @@ pub struct EnvironmentGroup {
     frontier_neighbor_count: usize,
     frontier_window_size: usize,
     missing_connect_query_frontier_count: usize,
-    save_refill_query_frontier_count: usize,
     action_count: usize,
 }
 
@@ -1536,10 +1529,8 @@ pub struct FeatureBuffers {
     save_refill_utility_query_snapshot_idx: Py<PyArray1<i64>>,
     save_refill_utility_query_room_part_idx: Py<PyArray1<i64>>,
     save_refill_utility_query_kind: Py<PyArray1<u8>>,
-    save_refill_utility_query_frontier: Py<PyArray2<i16>>,
-    save_refill_utility_query_frontier_distance: Py<PyArray2<u8>>,
-    save_refill_utility_query_frontier_count: Py<PyArray1<u16>>,
-    save_refill_utility_query_frontier_cap_hit: Py<PyArray1<u8>>,
+    save_refill_utility_query_frontier: Py<PyArray1<i16>>,
+    save_refill_utility_query_frontier_distance: Py<PyArray1<u8>>,
     save_refill_utility_query_current_distance: Py<PyArray1<u8>>,
     toilet_crossed_room_idx: Py<PyArray2<i16>>,
     row_snapshot_idx: Py<PyArray1<i64>>,
@@ -1763,14 +1754,6 @@ impl FeatureBuffers {
             save_refill_utility_query_frontier_distance: required_py_field!(
                 fields,
                 "save_refill_utility_query_frontier_distance"
-            ),
-            save_refill_utility_query_frontier_count: required_py_field!(
-                fields,
-                "save_refill_utility_query_frontier_count"
-            ),
-            save_refill_utility_query_frontier_cap_hit: required_py_field!(
-                fields,
-                "save_refill_utility_query_frontier_cap_hit"
             ),
             save_refill_utility_query_current_distance: required_py_field!(
                 fields,
@@ -2356,11 +2339,8 @@ struct FeatureOutputShards {
     save_refill_utility_query_kind: OutputShard<u8>,
     save_refill_utility_query_frontier: OutputShard<i16>,
     save_refill_utility_query_frontier_distance: OutputShard<u8>,
-    save_refill_utility_query_frontier_count: OutputShard<u16>,
-    save_refill_utility_query_frontier_cap_hit: OutputShard<u8>,
     save_refill_utility_query_current_distance: OutputShard<u8>,
     missing_connect_query_frontier_count: usize,
-    save_refill_query_frontier_count: usize,
     snapshot_start: usize,
 }
 
@@ -2395,11 +2375,8 @@ struct FeatureOutputSlices<'a> {
     save_refill_utility_query_kind: &'a mut [u8],
     save_refill_utility_query_frontier: &'a mut [i16],
     save_refill_utility_query_frontier_distance: &'a mut [u8],
-    save_refill_utility_query_frontier_count: &'a mut [u16],
-    save_refill_utility_query_frontier_cap_hit: &'a mut [u8],
     save_refill_utility_query_current_distance: &'a mut [u8],
     missing_connect_query_frontier_count: usize,
-    save_refill_query_frontier_count: usize,
     snapshot_start: usize,
     frontier_row_count: usize,
     missing_connect_query_row_count: usize,
@@ -2502,20 +2479,11 @@ impl FeatureOutputShards {
                 self.save_refill_utility_query_frontier_distance
                     .into_mut_slice()
             },
-            save_refill_utility_query_frontier_count: unsafe {
-                self.save_refill_utility_query_frontier_count
-                    .into_mut_slice()
-            },
-            save_refill_utility_query_frontier_cap_hit: unsafe {
-                self.save_refill_utility_query_frontier_cap_hit
-                    .into_mut_slice()
-            },
             save_refill_utility_query_current_distance: unsafe {
                 self.save_refill_utility_query_current_distance
                     .into_mut_slice()
             },
             missing_connect_query_frontier_count: self.missing_connect_query_frontier_count,
-            save_refill_query_frontier_count: self.save_refill_query_frontier_count,
             snapshot_start: self.snapshot_start,
             frontier_row_count: 0,
             missing_connect_query_row_count: 0,
@@ -2635,21 +2603,16 @@ impl FeatureOutputSlices<'_> {
         query_row_count: &mut usize,
         snapshot_start: usize,
         snapshot_idx: usize,
-        frontier_count: usize,
         query_snapshot_idx: &mut [i64],
         query_room_part_idx: &mut [i64],
         query_kind: &mut [u8],
         query_frontier: &mut [i16],
         query_frontier_distance: &mut [u8],
-        query_frontier_count: &mut [u16],
-        query_frontier_cap_hit: &mut [u8],
         query_current_distance: &mut [u8],
         feature_room_part_idx: &[i64],
         feature_kind: &[u8],
         feature_frontier: &[i16],
         feature_frontier_distance: &[u8],
-        feature_frontier_count: &[u16],
-        feature_frontier_cap_hit: &[u8],
         feature_current_distance: &[u8],
     ) {
         for query_idx in 0..feature_room_part_idx.len() {
@@ -2657,17 +2620,9 @@ impl FeatureOutputSlices<'_> {
             query_snapshot_idx[dst_idx] = (snapshot_start + snapshot_idx) as i64;
             query_room_part_idx[dst_idx] = feature_room_part_idx[query_idx];
             query_kind[dst_idx] = feature_kind[query_idx];
-            query_frontier_count[dst_idx] = feature_frontier_count[query_idx];
-            query_frontier_cap_hit[dst_idx] = feature_frontier_cap_hit[query_idx];
+            query_frontier[dst_idx] = feature_frontier[query_idx];
+            query_frontier_distance[dst_idx] = feature_frontier_distance[query_idx];
             query_current_distance[dst_idx] = feature_current_distance[query_idx];
-            let query_start = query_idx * frontier_count;
-            let query_end = query_start + frontier_count;
-            let dst_start = dst_idx * frontier_count;
-            let dst_end = dst_start + frontier_count;
-            query_frontier[dst_start..dst_end]
-                .copy_from_slice(&feature_frontier[query_start..query_end]);
-            query_frontier_distance[dst_start..dst_end]
-                .copy_from_slice(&feature_frontier_distance[query_start..query_end]);
             *query_row_count += 1;
         }
     }
@@ -2744,21 +2699,16 @@ impl FeatureOutputSlices<'_> {
             &mut self.save_refill_utility_query_row_count,
             self.snapshot_start,
             snapshot_idx,
-            self.save_refill_query_frontier_count,
             self.save_refill_utility_query_snapshot_idx,
             self.save_refill_utility_query_room_part_idx,
             self.save_refill_utility_query_kind,
             self.save_refill_utility_query_frontier,
             self.save_refill_utility_query_frontier_distance,
-            self.save_refill_utility_query_frontier_count,
-            self.save_refill_utility_query_frontier_cap_hit,
             self.save_refill_utility_query_current_distance,
             &features.save_refill_utility_query_room_part_idx,
             &features.save_refill_utility_query_kind,
             &features.save_refill_utility_query_frontier,
             &features.save_refill_utility_query_frontier_distance,
-            &features.save_refill_utility_query_frontier_count,
-            &features.save_refill_utility_query_frontier_cap_hit,
             &features.save_refill_utility_query_current_distance,
         );
     }
@@ -2792,7 +2742,7 @@ impl Engine {
         })
     }
 
-    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, frontier_window_size, missing_connect_query_frontier_count, save_refill_query_frontier_count, candidate_spatial_cell_size, num_threads=None, frontier_neighbor_algorithm="delaunay"))]
+    #[pyo3(signature = (map_size, num_environments, seed, frontier_neighbor_count, frontier_window_size, missing_connect_query_frontier_count, candidate_spatial_cell_size, num_threads=None, frontier_neighbor_algorithm="delaunay"))]
     fn create_environment_group(
         &self,
         map_size: (Coord, Coord),
@@ -2801,7 +2751,6 @@ impl Engine {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
         candidate_spatial_cell_size: usize,
         num_threads: Option<usize>,
         frontier_neighbor_algorithm: &str,
@@ -2826,7 +2775,6 @@ impl Engine {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
             candidate_spatial_cell_size,
             num_threads,
         )
@@ -2894,7 +2842,6 @@ impl EnvironmentGroup {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
         candidate_spatial_cell_size: usize,
         num_threads: Option<usize>,
     ) -> PyResult<Self> {
@@ -2941,7 +2888,6 @@ impl EnvironmentGroup {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
             action_count: 0,
         })
     }
@@ -3101,8 +3047,6 @@ mod tests {
         let mut save_refill_utility_query_kind = Vec::new();
         let mut save_refill_utility_query_frontier = Vec::new();
         let mut save_refill_utility_query_frontier_distance = Vec::new();
-        let mut save_refill_utility_query_frontier_count = Vec::new();
-        let mut save_refill_utility_query_frontier_cap_hit = Vec::new();
         let mut save_refill_utility_query_current_distance = Vec::new();
 
         let outputs = FeatureOutputShards {
@@ -3190,17 +3134,10 @@ mod tests {
             save_refill_utility_query_frontier_distance: OutputShard::from_slice(
                 &mut save_refill_utility_query_frontier_distance,
             ),
-            save_refill_utility_query_frontier_count: OutputShard::from_slice(
-                &mut save_refill_utility_query_frontier_count,
-            ),
-            save_refill_utility_query_frontier_cap_hit: OutputShard::from_slice(
-                &mut save_refill_utility_query_frontier_cap_hit,
-            ),
             save_refill_utility_query_current_distance: OutputShard::from_slice(
                 &mut save_refill_utility_query_current_distance,
             ),
             missing_connect_query_frontier_count: 0,
-            save_refill_query_frontier_count: 0,
             snapshot_start: 10,
         };
         let mut outputs = unsafe { outputs.into_slices() };
@@ -3628,7 +3565,6 @@ impl EnvironmentGroup {
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
                     missing_connect_query_frontier_count: self.missing_connect_query_frontier_count,
-                    save_refill_query_frontier_count: self.save_refill_query_frontier_count,
                     door_outcome_count,
                     connection_outcome_count,
                     pre_door_valid: OutputShard::from_slice(
@@ -4235,7 +4171,6 @@ impl EnvironmentGroup {
                     frontier_neighbor_count: self.frontier_neighbor_count,
                     frontier_window_size: self.frontier_window_size,
                     missing_connect_query_frontier_count: self.missing_connect_query_frontier_count,
-                    save_refill_query_frontier_count: self.save_refill_query_frontier_count,
                     environment_start: start - worker.start,
                     environment_count: end - start,
                 }) {
@@ -4461,14 +4396,6 @@ impl EnvironmentGroup {
             .save_refill_utility_query_frontier_distance
             .bind(py)
             .readwrite();
-        let mut save_refill_utility_query_frontier_count = buffers
-            .save_refill_utility_query_frontier_count
-            .bind(py)
-            .readwrite();
-        let mut save_refill_utility_query_frontier_cap_hit = buffers
-            .save_refill_utility_query_frontier_cap_hit
-            .bind(py)
-            .readwrite();
         let mut save_refill_utility_query_current_distance = buffers
             .save_refill_utility_query_current_distance
             .bind(py)
@@ -4514,10 +4441,6 @@ impl EnvironmentGroup {
             * usize::from(self.features.missing_connect_query);
         let missing_connect_utility_query_pair_width = self.missing_connect_query_frontier_count
             * usize::from(self.features.missing_connect_utility_query);
-        let save_refill_utility_query_enabled =
-            self.features.save_utility_query || self.features.refill_utility_query;
-        let save_refill_query_frontier_width =
-            self.save_refill_query_frontier_count * usize::from(save_refill_utility_query_enabled);
         let toilet_crossed_room_width = usize::from(self.features.toilet_crossed_room);
 
         let inventory_shape = inventory.as_array().shape().to_vec();
@@ -4674,16 +4597,6 @@ impl EnvironmentGroup {
                 .as_array()
                 .shape()
                 .to_vec();
-        let save_refill_utility_query_frontier_count_shape =
-            save_refill_utility_query_frontier_count
-                .as_array()
-                .shape()
-                .to_vec();
-        let save_refill_utility_query_frontier_cap_hit_shape =
-            save_refill_utility_query_frontier_cap_hit
-                .as_array()
-                .shape()
-                .to_vec();
         let save_refill_utility_query_current_distance_shape =
             save_refill_utility_query_current_distance
                 .as_array()
@@ -4753,10 +4666,6 @@ impl EnvironmentGroup {
             || save_refill_utility_query_kind_shape[0] < save_refill_utility_query_row_count
             || save_refill_utility_query_frontier_shape[0] < save_refill_utility_query_row_count
             || save_refill_utility_query_frontier_distance_shape[0]
-                < save_refill_utility_query_row_count
-            || save_refill_utility_query_frontier_count_shape[0]
-                < save_refill_utility_query_row_count
-            || save_refill_utility_query_frontier_cap_hit_shape[0]
                 < save_refill_utility_query_row_count
             || save_refill_utility_query_current_distance_shape[0]
                 < save_refill_utility_query_row_count
@@ -4892,16 +4801,6 @@ impl EnvironmentGroup {
             "missing_connect_utility_query_pair_total_distance",
             missing_connect_utility_query_pair_total_distance_shape[1],
             missing_connect_utility_query_pair_width,
-        )?;
-        check_dim(
-            "save_refill_utility_query_frontier",
-            save_refill_utility_query_frontier_shape[1],
-            save_refill_query_frontier_width,
-        )?;
-        check_dim(
-            "save_refill_utility_query_frontier_distance",
-            save_refill_utility_query_frontier_distance_shape[1],
-            save_refill_query_frontier_width,
         )?;
         check_dim(
             "toilet_crossed_room_idx",
@@ -5147,18 +5046,6 @@ impl EnvironmentGroup {
                         "save_refill_utility_query_frontier_distance must be contiguous",
                     )
                 })?;
-        let save_refill_utility_query_frontier_count = save_refill_utility_query_frontier_count
-            .as_slice_mut()
-            .map_err(|_| {
-                PyValueError::new_err("save_refill_utility_query_frontier_count must be contiguous")
-            })?;
-        let save_refill_utility_query_frontier_cap_hit = save_refill_utility_query_frontier_cap_hit
-            .as_slice_mut()
-            .map_err(|_| {
-                PyValueError::new_err(
-                    "save_refill_utility_query_frontier_cap_hit must be contiguous",
-                )
-            })?;
         let save_refill_utility_query_current_distance = save_refill_utility_query_current_distance
             .as_slice_mut()
             .map_err(|_| {
@@ -5513,26 +5400,11 @@ impl EnvironmentGroup {
                     ),
                     save_refill_utility_query_frontier: OutputShard::from_slice(
                         &mut save_refill_utility_query_frontier[save_refill_utility_query_row_start
-                            * save_refill_query_frontier_width
-                            ..(save_refill_utility_query_row_start
-                                + worker_save_refill_utility_query_row_count)
-                                * save_refill_query_frontier_width],
+                            ..save_refill_utility_query_row_start
+                                + worker_save_refill_utility_query_row_count],
                     ),
                     save_refill_utility_query_frontier_distance: OutputShard::from_slice(
                         &mut save_refill_utility_query_frontier_distance
-                            [save_refill_utility_query_row_start * save_refill_query_frontier_width
-                                ..(save_refill_utility_query_row_start
-                                    + worker_save_refill_utility_query_row_count)
-                                    * save_refill_query_frontier_width],
-                    ),
-                    save_refill_utility_query_frontier_count: OutputShard::from_slice(
-                        &mut save_refill_utility_query_frontier_count
-                            [save_refill_utility_query_row_start
-                                ..save_refill_utility_query_row_start
-                                    + worker_save_refill_utility_query_row_count],
-                    ),
-                    save_refill_utility_query_frontier_cap_hit: OutputShard::from_slice(
-                        &mut save_refill_utility_query_frontier_cap_hit
                             [save_refill_utility_query_row_start
                                 ..save_refill_utility_query_row_start
                                     + worker_save_refill_utility_query_row_count],
@@ -5544,7 +5416,6 @@ impl EnvironmentGroup {
                                     + worker_save_refill_utility_query_row_count],
                     ),
                     missing_connect_query_frontier_count: self.missing_connect_query_frontier_count,
-                    save_refill_query_frontier_count: self.save_refill_query_frontier_count,
                     snapshot_start,
                 };
                 if let Err(err) = worker.send(WorkerCommand::PackFeatures {

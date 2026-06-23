@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Callable, TYPE_CHECKING
 
 from env import OutputMetadata, Features
 from features import (
@@ -19,6 +19,11 @@ if TYPE_CHECKING:
     from train_config import FeatureConfig
 
 DETERMINISTIC_INVALID_LOGIT = 20.0
+ProfileCallback = Callable[[str, Callable[[], object]], object]
+
+
+def no_profile(_name: str, fn: Callable[[], object]) -> object:
+    return fn()
 
 
 # These tensors are all f32 with shape
@@ -534,7 +539,7 @@ class MissingConnectUtilityPairQueryHead(torch.nn.Module):
 
 
 class SaveRefillUtilityQueryHead(torch.nn.Module):
-    scalar_width = 4
+    scalar_width = 2
     kind_count = 4
     max_distance_index = 510
     unreachable_distance = 255
@@ -551,14 +556,9 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
         self.distance_embedding = torch.nn.Embedding(self.max_distance_index + 1, 1)
         self.margin_embedding = torch.nn.Embedding(self.max_distance_index + 1, 1)
         self.kind_embedding = torch.nn.Embedding(self.kind_count, hidden_width)
-        self.frontier_layers = torch.nn.Sequential(
-            torch.nn.Linear(embedding_width + 2, hidden_width, bias=False),
-            torch.nn.GELU(),
-            torch.nn.Linear(hidden_width, hidden_width, bias=False),
-        )
         self.output_layers = torch.nn.Sequential(
             torch.nn.Linear(
-                hidden_width * 3 + global_embedding_width + self.scalar_width,
+                embedding_width + 2 + hidden_width + global_embedding_width + self.scalar_width,
                 hidden_width,
                 bias=False,
             ),
@@ -577,9 +577,9 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         local_frontier = frontier.to(torch.int64)
         safe_local_frontier = local_frontier.clamp_min(0)
-        row_count = row_count_by_snapshot[query_snapshot_idx].unsqueeze(1)
+        row_count = row_count_by_snapshot[query_snapshot_idx]
         valid = (local_frontier >= 0) & (safe_local_frontier < row_count)
-        packed_frontier = row_start_by_snapshot[query_snapshot_idx].unsqueeze(1) + safe_local_frontier
+        packed_frontier = row_start_by_snapshot[query_snapshot_idx] + safe_local_frontier
         packed_frontier = packed_frontier.clamp_max(max(frontier_state.shape[0] - 1, 0))
         return frontier_state[packed_frontier], valid
 
@@ -615,7 +615,7 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
         )
         distance = query.frontier_distance.to(torch.int16)
         distance_idx = distance.clamp(0, self.max_distance_index).to(torch.int64)
-        current_distance = query.current_distance.to(torch.int16).view(query_count, 1)
+        current_distance = query.current_distance.to(torch.int16)
         finite_current = current_distance != self.unreachable_distance
         finite_margin_idx = (current_distance - distance + 255).clamp(
             0,
@@ -626,32 +626,15 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
             finite_margin_idx,
             torch.full_like(finite_margin_idx, self.max_distance_index),
         ).to(torch.int64)
-        frontier_embedding = self.frontier_layers(
-            torch.cat(
-                [
-                    frontier,
-                    self.distance_embedding(distance_idx).to(frontier_state.dtype),
-                    self.margin_embedding(margin_idx).to(frontier_state.dtype),
-                ],
-                dim=-1,
-            )
-        )
-        mask = valid.unsqueeze(-1)
-        valid_count = mask.sum(dim=1).clamp_min(1)
-        frontier_mean = (frontier_embedding * mask).sum(dim=1) / valid_count
-        frontier_max = frontier_embedding.masked_fill(~mask, -torch.inf).amax(dim=1)
-        frontier_max = torch.where(torch.isfinite(frontier_max), frontier_max, 0)
-        frontier_count = query.frontier_count.to(frontier_state.dtype)
+        safe_frontier = torch.where(valid.unsqueeze(1), frontier, torch.zeros_like(frontier))
         current_distance_value = torch.where(
-            finite_current.squeeze(1),
+            finite_current,
             torch.log1p(query.current_distance.to(frontier_state.dtype)) / math.log(256.0),
-            torch.zeros_like(frontier_count, dtype=frontier_state.dtype),
+            query.current_distance.new_zeros([query_count], dtype=frontier_state.dtype),
         )
         scalar = torch.cat(
             [
-                torch.log1p(frontier_count).unsqueeze(1) / math.log(65536.0),
-                query.frontier_cap_hit.to(frontier_state.dtype).unsqueeze(1),
-                finite_current.to(frontier_state.dtype),
+                finite_current.to(frontier_state.dtype).unsqueeze(1),
                 current_distance_value.unsqueeze(1),
             ],
             dim=1,
@@ -660,8 +643,9 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
         query_utility = self.output_layers(
             torch.cat(
                 [
-                    frontier_mean,
-                    frontier_max,
+                    safe_frontier,
+                    self.distance_embedding(distance_idx).to(frontier_state.dtype),
+                    self.margin_embedding(margin_idx).to(frontier_state.dtype),
                     self.kind_embedding(query_kind).to(frontier_state.dtype),
                     global_state[query_snapshot_idx],
                     scalar,
@@ -942,6 +926,7 @@ class FrontierModel(torch.nn.Module):
         self,
         features: Features,
         return_proposal_state: bool,
+        profile: ProfileCallback,
     ):
         # Shapes below use: s=snapshot, r=frontier row, k=neighbors, e=embedding width,
         # h=message hidden width.
@@ -1087,10 +1072,20 @@ class FrontierModel(torch.nn.Module):
         toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
         graph_diameter = self.graph_diameter_output(X).squeeze(-1).to(torch.float32)
-        save_to_room_utility = self.save_to_room_utility_output(X).to(torch.float32)
-        save_from_room_utility = self.save_from_room_utility_output(X).to(torch.float32)
-        refill_to_room_utility = self.refill_to_room_utility_output(X).to(torch.float32)
-        refill_from_room_utility = self.refill_from_room_utility_output(X).to(torch.float32)
+        (
+            save_to_room_utility,
+            save_from_room_utility,
+            refill_to_room_utility,
+            refill_from_room_utility,
+        ) = profile(
+            "python.model.save_refill_linear_heads",
+            lambda: (
+                self.save_to_room_utility_output(X).to(torch.float32),
+                self.save_from_room_utility_output(X).to(torch.float32),
+                self.refill_to_room_utility_output(X).to(torch.float32),
+                self.refill_from_room_utility_output(X).to(torch.float32),
+            ),
+        )
         missing_connect_utility = self.missing_connect_utility_output(X).to(torch.float32)
         preds = get_predictions(
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
@@ -1146,35 +1141,48 @@ class FrontierModel(torch.nn.Module):
             )
         if self.save_refill_utility_query_output is not None:
             query_save_refill_utility, query_save_refill_mask = (
-                self.save_refill_utility_query_output(
-                    frontier_state,
-                    global_state,
-                    row_count_by_snapshot,
-                    row_start_by_snapshot,
-                    features.save_refill_utility_query_features,
-                    self.num_room_parts,
+                profile(
+                    "python.model.save_refill_query_head",
+                    lambda: self.save_refill_utility_query_output(
+                        frontier_state,
+                        global_state,
+                        row_count_by_snapshot,
+                        row_start_by_snapshot,
+                        features.save_refill_utility_query_features,
+                        self.num_room_parts,
+                    ),
                 )
             )
             query_save_refill_utility = query_save_refill_utility.to(torch.float32)
-            save_to_room_utility = torch.where(
-                query_save_refill_mask[0],
-                query_save_refill_utility[0],
+            (
                 save_to_room_utility,
-            )
-            save_from_room_utility = torch.where(
-                query_save_refill_mask[1],
-                query_save_refill_utility[1],
                 save_from_room_utility,
-            )
-            refill_to_room_utility = torch.where(
-                query_save_refill_mask[2],
-                query_save_refill_utility[2],
                 refill_to_room_utility,
-            )
-            refill_from_room_utility = torch.where(
-                query_save_refill_mask[3],
-                query_save_refill_utility[3],
                 refill_from_room_utility,
+            ) = profile(
+                "python.model.save_refill_query_replace",
+                lambda: (
+                    torch.where(
+                        query_save_refill_mask[0],
+                        query_save_refill_utility[0],
+                        save_to_room_utility,
+                    ),
+                    torch.where(
+                        query_save_refill_mask[1],
+                        query_save_refill_utility[1],
+                        save_from_room_utility,
+                    ),
+                    torch.where(
+                        query_save_refill_mask[2],
+                        query_save_refill_utility[2],
+                        refill_to_room_utility,
+                    ),
+                    torch.where(
+                        query_save_refill_mask[3],
+                        query_save_refill_utility[3],
+                        refill_from_room_utility,
+                    ),
+                ),
             )
         if self.known_save_refill_utility_override:
             save_to_room_utility = apply_known_distance_utility(

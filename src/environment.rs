@@ -461,8 +461,6 @@ pub struct Features {
     pub save_refill_utility_query_kind: Vec<u8>,
     pub save_refill_utility_query_frontier: Vec<i16>,
     pub save_refill_utility_query_frontier_distance: Vec<u8>,
-    pub save_refill_utility_query_frontier_count: Vec<u16>,
-    pub save_refill_utility_query_frontier_cap_hit: Vec<u8>,
     pub save_refill_utility_query_current_distance: Vec<u8>,
     // Concrete room crossed by the Toilet when exactly one non-Toilet room crosses it.
     pub toilet_crossed_room_idx: Vec<i16>,
@@ -572,48 +570,12 @@ fn utility_missing_connect_pairs(
     }
 }
 
-fn save_refill_utility_frontiers(
-    frontiers: &[(GraphDistance, i16)],
-    current_distance: GraphDistance,
-    frontier_count: usize,
-) -> Option<(Vec<(GraphDistance, i16)>, bool, u16)> {
-    let mut result = Vec::new();
-    let mut cap_hit = false;
-    let mut full_count = 0usize;
-    for &(distance, frontier_idx) in frontiers {
-        if current_distance != UNREACHABLE_DISTANCE
-            && u16::from(distance) + 1 >= u16::from(current_distance)
-        {
-            break;
-        }
-        if result.len() < frontier_count {
-            result.push((distance, frontier_idx));
-        } else {
-            cap_hit = true;
-        }
-        full_count += 1;
-    }
-    (!result.is_empty()).then_some((result, cap_hit, full_count.min(u16::MAX as usize) as u16))
-}
-
 fn save_refill_utility_distance_can_improve(
     distance: GraphDistance,
     current_distance: GraphDistance,
 ) -> bool {
     current_distance == UNREACHABLE_DISTANCE
         || u16::from(distance) + 1 < u16::from(current_distance)
-}
-
-fn save_refill_utility_distance_needed(
-    distance: GraphDistance,
-    current_a: Option<GraphDistance>,
-    current_b: Option<GraphDistance>,
-) -> bool {
-    current_a.is_some_and(|current_distance| {
-        save_refill_utility_distance_can_improve(distance, current_distance)
-    }) || current_b.is_some_and(|current_distance| {
-        save_refill_utility_distance_can_improve(distance, current_distance)
-    })
 }
 
 fn frontier_midpoint(location: DoorLocation) -> (i16, i16) {
@@ -2833,7 +2795,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> Result<
         (
             StepOutcomes,
@@ -2888,7 +2849,6 @@ impl Environment {
                 frontier_neighbor_count,
                 frontier_window_size,
                 missing_connect_query_frontier_count,
-                save_refill_query_frontier_count,
             )? {
                 CandidateOutcome::Rejected => {
                     rejected_count += 1;
@@ -2928,7 +2888,6 @@ impl Environment {
                             frontier_neighbor_count,
                             frontier_window_size,
                             missing_connect_query_frontier_count,
-                            save_refill_query_frontier_count,
                         );
                     (candidate, post_candidate_outcomes, door_match, features)
                 })
@@ -2976,7 +2935,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> Result<CandidateOutcome, String> {
         let profile = profile_start();
         let snapshot = self.apply_lookahead_candidate(candidate, common);
@@ -3055,7 +3013,6 @@ impl Environment {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
         );
         profile_end(ProfileMetric::EnvProposalFeatures, profile);
         let step_outcomes = StepOutcomes {
@@ -3082,7 +3039,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> (StepOutcomes, Vec<i16>, Features) {
         let profile = profile_start();
         let snapshot = self.apply_lookahead_candidate(candidate, common);
@@ -3097,7 +3053,6 @@ impl Environment {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
         );
         profile_end(ProfileMetric::EnvProposalFeatures, profile);
         let profile = profile_start();
@@ -3166,7 +3121,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> Features {
         if config.is_empty() {
             return Features::default();
@@ -3191,7 +3145,6 @@ impl Environment {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
         )
     }
 
@@ -3411,7 +3364,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> Features {
         self.features_with_occupancy(
             common,
@@ -3422,7 +3374,6 @@ impl Environment {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
         )
     }
 
@@ -3436,7 +3387,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> Features {
         assert!(self.frontier.len() <= Self::max_frontiers(common));
         let profile = profile_start();
@@ -3544,8 +3494,6 @@ impl Environment {
         let mut save_refill_utility_query_kind = Vec::new();
         let mut save_refill_utility_query_frontier = Vec::new();
         let mut save_refill_utility_query_frontier_distance = Vec::new();
-        let mut save_refill_utility_query_frontier_count = Vec::new();
-        let mut save_refill_utility_query_frontier_cap_hit = Vec::new();
         let mut save_refill_utility_query_current_distance = Vec::new();
         profile_end(ProfileMetric::EnvFeaturesSetup, profile);
 
@@ -3567,9 +3515,14 @@ impl Environment {
             vec![]
         };
         let graph_size = common.room_part.len();
+        let mut first_frontier_row_by_part = vec![-1; graph_size];
 
         let map_width = self.map_size.0 as usize;
         for (idx, (location, data)) in sorted_frontiers.iter().enumerate() {
+            let frontier_part = data.room_part_idx as usize;
+            if first_frontier_row_by_part[frontier_part] < 0 {
+                first_frontier_row_by_part[frontier_part] = idx as i16;
+            }
             let row = idx * FEATURE_FRONTIER_WIDTH;
             frontier[row] = i8::from(config.frontier_mask);
             if config.frontier_position || config.frontier_neighbor_position_embedding {
@@ -3771,28 +3724,27 @@ impl Environment {
                 |room_part: RoomPartIdx,
                  query_kind: u8,
                  current_distance: GraphDistance,
-                 frontiers: &[(GraphDistance, i16)]| {
-                    if let Some((query_frontiers, cap_hit, frontier_count)) =
-                        save_refill_utility_frontiers(
-                            frontiers,
+                 frontier_distance: GraphDistance,
+                 frontier_part: RoomPartIdx| {
+                    if frontier_distance != UNREACHABLE_DISTANCE
+                        && save_refill_utility_distance_can_improve(
+                            frontier_distance,
                             current_distance,
-                            save_refill_query_frontier_count,
                         )
                     {
+                        let Some(&frontier_idx) =
+                            first_frontier_row_by_part.get(frontier_part as usize)
+                        else {
+                            return;
+                        };
+                        if frontier_idx < 0 {
+                            return;
+                        }
                         save_refill_utility_query_room_part_idx.push(i64::from(room_part));
                         save_refill_utility_query_kind.push(query_kind);
-                        save_refill_utility_query_frontier_count.push(frontier_count);
-                        save_refill_utility_query_frontier_cap_hit.push(u8::from(cap_hit));
                         save_refill_utility_query_current_distance.push(current_distance);
-                        for idx in 0..save_refill_query_frontier_count {
-                            if let Some(&(distance, frontier_idx)) = query_frontiers.get(idx) {
-                                save_refill_utility_query_frontier.push(frontier_idx);
-                                save_refill_utility_query_frontier_distance.push(distance);
-                            } else {
-                                save_refill_utility_query_frontier.push(-1);
-                                save_refill_utility_query_frontier_distance.push(0);
-                            }
-                        }
+                        save_refill_utility_query_frontier.push(frontier_idx);
+                        save_refill_utility_query_frontier_distance.push(frontier_distance);
                     }
                 };
             for &room_part in &self.active_room_parts {
@@ -3810,45 +3762,32 @@ impl Environment {
                     self.room_part_refill_distance_cache
                         .nearest_save_destination[part],
                 );
-                let mut to_room_frontiers = Vec::new();
-                let mut from_room_frontiers = Vec::new();
-                for (frontier_idx, (_, frontier)) in sorted_frontiers.iter().enumerate() {
-                    let frontier_part = frontier.room_part_idx as usize;
-                    let to_room_distance = self.graph_distance[frontier_part * graph_size + part];
-                    if to_room_distance != UNREACHABLE_DISTANCE
-                        && save_refill_utility_distance_needed(
-                            to_room_distance,
-                            save_current_to_room,
-                            refill_current_to_room,
-                        )
-                    {
-                        to_room_frontiers.push((to_room_distance, frontier_idx as i16));
-                    }
-                    let from_room_distance = self.graph_distance[part * graph_size + frontier_part];
-                    if from_room_distance != UNREACHABLE_DISTANCE
-                        && save_refill_utility_distance_needed(
-                            from_room_distance,
-                            save_current_from_room,
-                            refill_current_from_room,
-                        )
-                    {
-                        from_room_frontiers.push((from_room_distance, frontier_idx as i16));
-                    }
-                }
-                to_room_frontiers.sort_unstable();
-                from_room_frontiers.sort_unstable();
+                let to_room_distance = self
+                    .room_part_frontier_distance_cache
+                    .nearest_frontier_source[part];
+                let to_room_frontier_part = self
+                    .room_part_frontier_distance_cache
+                    .nearest_frontier_source_part[part];
+                let from_room_distance = self
+                    .room_part_frontier_distance_cache
+                    .nearest_frontier_destination[part];
+                let from_room_frontier_part = self
+                    .room_part_frontier_distance_cache
+                    .nearest_frontier_destination_part[part];
                 if config.save_utility_query {
                     push_save_refill_query(
                         room_part,
                         0,
                         save_current_to_room.unwrap(),
-                        &to_room_frontiers,
+                        to_room_distance,
+                        to_room_frontier_part,
                     );
                     push_save_refill_query(
                         room_part,
                         1,
                         save_current_from_room.unwrap(),
-                        &from_room_frontiers,
+                        from_room_distance,
+                        from_room_frontier_part,
                     );
                 }
                 if config.refill_utility_query {
@@ -3856,18 +3795,20 @@ impl Environment {
                         room_part,
                         2,
                         refill_current_to_room.unwrap(),
-                        &to_room_frontiers,
+                        to_room_distance,
+                        to_room_frontier_part,
                     );
                     push_save_refill_query(
                         room_part,
                         3,
                         refill_current_from_room.unwrap(),
-                        &from_room_frontiers,
+                        from_room_distance,
+                        from_room_frontier_part,
                     );
                 }
             }
         }
-        profile_end(ProfileMetric::EnvFeaturesConnectionReachability, profile);
+        profile_end(ProfileMetric::EnvFeaturesSaveRefillUtilityQuery, profile);
 
         if config.frontier_neighbor {
             let profile = profile_start();
@@ -4006,8 +3947,6 @@ impl Environment {
             save_refill_utility_query_kind,
             save_refill_utility_query_frontier,
             save_refill_utility_query_frontier_distance,
-            save_refill_utility_query_frontier_count,
-            save_refill_utility_query_frontier_cap_hit,
             save_refill_utility_query_current_distance,
             toilet_crossed_room_idx,
         };
@@ -4024,7 +3963,6 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         missing_connect_query_frontier_count: usize,
-        save_refill_query_frontier_count: usize,
     ) -> Features {
         if config.is_empty() {
             return Features::default();
@@ -4052,7 +3990,6 @@ impl Environment {
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
         );
         let profile = profile_start();
         self.restore_feature_candidate(common, candidate, snapshot);
@@ -4768,7 +4705,6 @@ mod tests {
                 1,
                 1,
                 4,
-                4,
             )
             .unwrap();
 
@@ -5101,7 +5037,6 @@ mod tests {
             4,
             4,
             4,
-            4,
         );
         assert_eq!(env.active_save_room_parts, expected_active_save_room_parts);
         assert_eq!(
@@ -5157,26 +5092,17 @@ mod tests {
             4,
             4,
             4,
-            2,
         );
 
         assert_eq!(features.save_refill_utility_query_room_part_idx, vec![0; 4]);
         assert_eq!(features.save_refill_utility_query_kind, vec![0, 1, 2, 3]);
-        assert_eq!(
-            features.save_refill_utility_query_frontier_count,
-            vec![1; 4]
-        );
-        assert_eq!(
-            features.save_refill_utility_query_frontier_cap_hit,
-            vec![0; 4]
-        );
         assert_eq!(
             features.save_refill_utility_query_current_distance,
             vec![UNREACHABLE_DISTANCE; 4]
         );
         assert_eq!(
             features.save_refill_utility_query_frontier,
-            vec![0, -1, 0, -1, 0, -1, 0, -1]
+            vec![0, 0, 0, 0]
         );
     }
 
@@ -5964,7 +5890,6 @@ mod tests {
             1,
             1,
             4,
-            4,
         );
 
         assert_eq!(features.known_save_from_room_distance, vec![2, 6, 0]);
@@ -6006,7 +5931,6 @@ mod tests {
             FrontierNeighborAlgorithm::Nearest,
             1,
             1,
-            4,
             4,
         );
 
@@ -6757,7 +6681,6 @@ mod tests {
             4,
             4,
             4,
-            4,
         );
         assert_eq!(
             simulated.frontier.len() / FEATURE_FRONTIER_WIDTH,
@@ -6786,7 +6709,6 @@ mod tests {
                 FrontierNeighborAlgorithm::Delaunay,
                 4,
                 4,
-                4,
                 4
             )
         );
@@ -6807,7 +6729,6 @@ mod tests {
             4,
             4,
             4,
-            4,
         );
         env.step(dummy_candidate, &common);
         assert_eq!(
@@ -6816,7 +6737,6 @@ mod tests {
                 &common,
                 &config,
                 FrontierNeighborAlgorithm::Delaunay,
-                4,
                 4,
                 4,
                 4
@@ -6866,7 +6786,6 @@ mod tests {
             4,
             4,
             4,
-            4,
         );
         assert_eq!(features.frontier.len() / FEATURE_FRONTIER_WIDTH, 1);
         let placed_door_output_idx = common
@@ -6899,7 +6818,6 @@ mod tests {
             &common,
             &config,
             FrontierNeighborAlgorithm::Delaunay,
-            4,
             4,
             4,
             4,
@@ -7041,14 +6959,12 @@ mod tests {
                     FrontierNeighborAlgorithm::Delaunay,
                     4,
                     4,
-                    4,
                     4
                 ),
                 known_env.features(
                     &common,
                     &config,
                     FrontierNeighborAlgorithm::Delaunay,
-                    4,
                     4,
                     4,
                     4
@@ -7213,7 +7129,6 @@ mod tests {
             1,
             1,
             4,
-            4,
         );
         assert_eq!(features.connection_reachability, vec![0]);
         assert_eq!(features.frontier_connection_reachability, vec![1, 2]);
@@ -7338,7 +7253,6 @@ mod tests {
             },
             &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Delaunay,
-            4,
             4,
             4,
             4,

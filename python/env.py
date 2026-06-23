@@ -687,8 +687,6 @@ class SaveRefillUtilityQueryFeatures:
     query_kind: torch.Tensor
     frontier: torch.Tensor
     frontier_distance: torch.Tensor
-    frontier_count: torch.Tensor
-    frontier_cap_hit: torch.Tensor
     current_distance: torch.Tensor
 
     def to(
@@ -702,8 +700,6 @@ class SaveRefillUtilityQueryFeatures:
             query_kind=self.query_kind.to(device, non_blocking=non_blocking),
             frontier=self.frontier.to(device, non_blocking=non_blocking),
             frontier_distance=self.frontier_distance.to(device, non_blocking=non_blocking),
-            frontier_count=self.frontier_count.to(device, non_blocking=non_blocking),
-            frontier_cap_hit=self.frontier_cap_hit.to(device, non_blocking=non_blocking),
             current_distance=self.current_distance.to(device, non_blocking=non_blocking),
         )
 
@@ -713,8 +709,6 @@ class SaveRefillUtilityQueryFeatures:
         torch._dynamo.maybe_mark_dynamic(self.query_kind, 0)
         torch._dynamo.maybe_mark_dynamic(self.frontier, 0)
         torch._dynamo.maybe_mark_dynamic(self.frontier_distance, 0)
-        torch._dynamo.maybe_mark_dynamic(self.frontier_count, 0)
-        torch._dynamo.maybe_mark_dynamic(self.frontier_cap_hit, 0)
         torch._dynamo.maybe_mark_dynamic(self.current_distance, 0)
 
 
@@ -790,7 +784,6 @@ class Engine:
         num_envs: int,
         candidate_spatial_cell_size: int,
         missing_connect_query_frontier_count: int,
-        save_refill_query_frontier_count: int,
         seed: Optional[int] = None,
         frontier_neighbor_count: int = 4,
         frontier_window_size: int = 16,
@@ -808,7 +801,6 @@ class Engine:
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
             candidate_spatial_cell_size,
             num_threads,
             frontier_neighbor_algorithm,
@@ -821,7 +813,6 @@ class Engine:
             frontier_neighbor_count,
             frontier_window_size,
             missing_connect_query_frontier_count,
-            save_refill_query_frontier_count,
         )
 
     def get_output_sizes(self) -> tuple[int, int]:
@@ -866,7 +857,6 @@ class EnvironmentGroup:
         frontier_neighbor_count: int,
         frontier_window_size: int,
         missing_connect_query_frontier_count: int,
-        save_refill_query_frontier_count: int,
     ):
         self.engine = engine
         self.env = env
@@ -875,7 +865,6 @@ class EnvironmentGroup:
         self.frontier_neighbor_count = frontier_neighbor_count
         self.frontier_window_size = frontier_window_size
         self.missing_connect_query_frontier_count = missing_connect_query_frontier_count
-        self.save_refill_query_frontier_count = save_refill_query_frontier_count
 
     def clear(self):
         self.env.clear()
@@ -1325,12 +1314,6 @@ class EnvironmentGroup:
                     "save_refill_utility_query_frontier_distance": (
                         feature_slot.save_refill_utility_query_frontier_distance.numpy()
                     ),
-                    "save_refill_utility_query_frontier_count": (
-                        feature_slot.save_refill_utility_query_frontier_count.numpy()
-                    ),
-                    "save_refill_utility_query_frontier_cap_hit": (
-                        feature_slot.save_refill_utility_query_frontier_cap_hit.numpy()
-                    ),
                     "save_refill_utility_query_current_distance": (
                         feature_slot.save_refill_utility_query_current_distance.numpy()
                     ),
@@ -1398,9 +1381,6 @@ class FeatureSlot:
         self.missing_connect_query_frontier_width = (
             env.missing_connect_query_frontier_count * int(features.missing_connect_query)
         )
-        self.save_refill_query_frontier_width = env.save_refill_query_frontier_count * int(
-            features.save_utility_query or features.refill_utility_query
-        )
         self.toilet_crossed_room_width = int(features.toilet_crossed_room)
         self.pin_memory = pin_memory
         self.snapshot_capacity = 0
@@ -1456,8 +1436,6 @@ class FeatureSlot:
         self.save_refill_utility_query_kind = None
         self.save_refill_utility_query_frontier = None
         self.save_refill_utility_query_frontier_distance = None
-        self.save_refill_utility_query_frontier_count = None
-        self.save_refill_utility_query_frontier_cap_hit = None
         self.save_refill_utility_query_current_distance = None
         self.toilet_crossed_room_idx = None
         self.row_snapshot_idx = None
@@ -1672,24 +1650,10 @@ class FeatureSlot:
             torch.uint8,
         )
         self.save_refill_utility_query_frontier = self._empty(
-            (
-                self.save_refill_utility_query_row_capacity,
-                self.save_refill_query_frontier_width,
-            ),
+            (self.save_refill_utility_query_row_capacity,),
             torch.int16,
         )
         self.save_refill_utility_query_frontier_distance = self._empty(
-            (
-                self.save_refill_utility_query_row_capacity,
-                self.save_refill_query_frontier_width,
-            ),
-            torch.uint8,
-        )
-        self.save_refill_utility_query_frontier_count = self._empty(
-            (self.save_refill_utility_query_row_capacity,),
-            torch.uint16,
-        )
-        self.save_refill_utility_query_frontier_cap_hit = self._empty(
             (self.save_refill_utility_query_row_capacity,),
             torch.uint8,
         )
@@ -1898,12 +1862,6 @@ class FeatureSlot:
                     :save_refill_utility_query_row_count
                 ],
                 frontier_distance=self.save_refill_utility_query_frontier_distance[
-                    :save_refill_utility_query_row_count
-                ],
-                frontier_count=self.save_refill_utility_query_frontier_count[
-                    :save_refill_utility_query_row_count
-                ],
-                frontier_cap_hit=self.save_refill_utility_query_frontier_cap_hit[
                     :save_refill_utility_query_row_count
                 ],
                 current_distance=self.save_refill_utility_query_current_distance[
@@ -2120,12 +2078,6 @@ class FeatureSlot:
                 frontier_distance=self.save_refill_utility_query_frontier_distance[
                     :save_refill_utility_query_row_count
                 ],
-                frontier_count=self.save_refill_utility_query_frontier_count[
-                    :save_refill_utility_query_row_count
-                ],
-                frontier_cap_hit=self.save_refill_utility_query_frontier_cap_hit[
-                    :save_refill_utility_query_row_count
-                ],
                 current_distance=self.save_refill_utility_query_current_distance[
                     :save_refill_utility_query_row_count
                 ],
@@ -2309,12 +2261,6 @@ def extract_candidate_features(
                 ),
                 "save_refill_utility_query_frontier_distance": (
                     feature_slot.save_refill_utility_query_frontier_distance.numpy()
-                ),
-                "save_refill_utility_query_frontier_count": (
-                    feature_slot.save_refill_utility_query_frontier_count.numpy()
-                ),
-                "save_refill_utility_query_frontier_cap_hit": (
-                    feature_slot.save_refill_utility_query_frontier_cap_hit.numpy()
                 ),
                 "save_refill_utility_query_current_distance": (
                     feature_slot.save_refill_utility_query_current_distance.numpy()

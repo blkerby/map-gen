@@ -20,7 +20,7 @@ from env import (
     extract_candidate_features,
 )
 from loss import compute_step_balance_score_target_logits
-from model import BalancePredictions, Predictions
+from model import BalancePredictions, Predictions, no_profile
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -70,6 +70,22 @@ class GenerationProfiler:
 
     def report(self) -> ProfileReport:
         return [(name, self.counts[name], self.nanos[name]) for name in sorted(self.counts)]
+
+
+class TorchProfileCallback:
+    def __init__(self, device: torch.device, profiler: GenerationProfiler):
+        self.device = device
+        self.profiler = profiler
+
+    def __call__(self, name, fn):
+        if not self.profiler.enabled:
+            return fn()
+        sync_profile_device(self.device, True)
+        profile_time = profile_start(True)
+        result = fn()
+        sync_profile_device(self.device, True)
+        self.profiler.add(name, profile_time)
+        return result
 
 
 def profile_start(enabled: bool) -> int:
@@ -144,6 +160,7 @@ def compute_expected_reward(
     preds,
     outcomes,
     config: GenerateConfig,
+    profile,
 ):
     door_logprobs = torch.nn.functional.logsigmoid(-preds.door_invalid)
     connection_logprobs = torch.nn.functional.logsigmoid(-preds.connection_invalid)
@@ -169,15 +186,20 @@ def compute_expected_reward(
         + config.reward_toilet_balance * toilet_balance_scores
         - config.reward_frontier * preds.avg_frontiers.to(torch.float32)
         - config.reward_graph_diameter * preds.graph_diameter.to(torch.float32)
-        + config.reward_save_distance
-        * (
-            total_proximity_utility(preds.save_to_room_utility)
-            + total_proximity_utility(preds.save_from_room_utility)
-        )
-        + config.reward_refill_distance
-        * (
-            total_proximity_utility(preds.refill_to_room_utility)
-            + total_proximity_utility(preds.refill_from_room_utility)
+        + profile(
+            "python.reward.save_refill_utility_sum",
+            lambda: (
+                config.reward_save_distance
+                * (
+                    total_proximity_utility(preds.save_to_room_utility)
+                    + total_proximity_utility(preds.save_from_room_utility)
+                )
+                + config.reward_refill_distance
+                * (
+                    total_proximity_utility(preds.refill_to_room_utility)
+                    + total_proximity_utility(preds.refill_from_room_utility)
+                )
+            ),
         )
         + (
             config.reward_missing_connect_utility
@@ -318,7 +340,6 @@ def create_generation_environment_groups(
                 generation_group_environments,
                 config.generation.candidate_spatial_cell_size,
                 config.generation.missing_connect_query_frontier_count,
-                config.generation.save_refill_query_frontier_count,
                 seed=device_index * config.generation.pipeline_groups + group_index,
                 frontier_neighbor_algorithm=config.generation.frontier_neighbor_algorithm,
                 frontier_neighbor_count=config.generation.frontier_neighbor_count,
@@ -600,6 +621,7 @@ def select_candidate_actions(
     environment_count, candidate_count = candidates.room_idx.shape
     profile = profiler.enabled
     with gpu_lock:
+        model_profile = TorchProfileCallback(device, profiler)
         sync_profile_device(device, profile)
         profile_time = profile_start(profile)
         env_features = transfer_features(features, device, transfer_stream)
@@ -616,6 +638,7 @@ def select_candidate_actions(
             preds = model(
                 env_features,
                 return_proposal_state=return_proposal_state,
+                profile=model_profile,
             )
         sync_profile_device(device, profile)
         profiler.add("python.score.model_forward", profile_time)
@@ -681,6 +704,7 @@ def select_candidate_actions(
             ),
             outcomes,
             group.config,
+            model_profile,
         )
         sync_profile_device(device, profile)
         profiler.add("python.score.reward", profile_time)
@@ -747,7 +771,11 @@ def compute_proposal_scores(
             dtype=torch.bfloat16,
             enabled=device.type == "cuda" and group.config.autocast,
         ):
-            preds = model(env_features, return_proposal_state=True)
+            preds = model(
+                env_features,
+                return_proposal_state=True,
+                profile=no_profile,
+            )
         return row_scores_for_mask(
             model.proposal_output,
             preds.proposal_state,

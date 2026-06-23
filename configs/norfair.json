@@ -7,7 +7,7 @@
   "visualize": 0,
   "distance_proximity_scale": 5.0,
   "model": {
-    "compile": true,
+    "compile": false,
     "autocast": true,
     "generation_autocast": true,
     "embedding_width": 256,
@@ -67,7 +67,6 @@
     "frontier_neighbor_count": 4,
     "frontier_window_size": 8,
     "missing_connect_query_frontier_count": 1,
-    "save_refill_query_frontier_count": 4,
     "candidate_spatial_cell_size": 8,
     "num_threads": 32
   },
@@ -95,8 +94,8 @@
     "frontier_connection_reachability": false,
     "missing_connect_query": true,
     "missing_connect_utility_query": true,
-    "save_utility_query": false,
-    "refill_utility_query": false,
+    "save_utility_query": true,
+    "refill_utility_query": true,
     "toilet_crossed_room": 32,
     "known_distance": 1
   },
