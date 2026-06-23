@@ -16,6 +16,7 @@
     "proposal_hidden_width": 64,
     "missing_connect_hidden_width": 512,
     "utility_query_hidden_width": 512,
+    "known_save_refill_utility_override": false,
     "num_layers": 4
   },
   "optimizer": {

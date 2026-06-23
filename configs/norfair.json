@@ -16,6 +16,7 @@
     "proposal_hidden_width": 512,
     "missing_connect_hidden_width": 256,
     "utility_query_hidden_width": 256,
+    "known_save_refill_utility_override": false,
     "num_layers": 4
   },
   "optimizer": {
@@ -59,8 +60,8 @@
     "reward_toilet_balance": 0.0,
     "reward_frontier": 0.0,
     "reward_graph_diameter": 0.0,
-    "reward_save_distance": 1.0,
-    "reward_refill_distance": 1.0,
+    "reward_save_distance": 0.5,
+    "reward_refill_distance": 0.5,
     "reward_missing_connect_utility": 0.0,
     "frontier_neighbor_algorithm": "nearest-exclusive",
     "frontier_neighbor_count": 4,

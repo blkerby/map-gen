@@ -115,6 +115,30 @@ def apply_known_invalid_logits(
     return torch.where(known_invalid >= 0, deterministic_logits, invalid_logits)
 
 
+def apply_known_distance_utility(
+    utility: torch.Tensor,
+    known_distance: torch.Tensor,
+    distance_proximity_scale: float,
+    outcome_name: str,
+) -> torch.Tensor:
+    if known_distance.shape[-1] == 0:
+        return utility
+    torch._assert(
+        known_distance.shape[-1] == utility.shape[-1],
+        f"known {outcome_name} distances must match {outcome_name} prediction width",
+    )
+    while known_distance.ndim < utility.ndim:
+        known_distance = known_distance.unsqueeze(1)
+    scale = utility.new_tensor(distance_proximity_scale)
+    finite_distance = (known_distance.to(utility.dtype) - 2).clamp_min(0)
+    known_utility = torch.where(
+        known_distance == 1,
+        torch.zeros_like(utility),
+        scale / (finite_distance + scale),
+    )
+    return torch.where(known_distance > 0, known_utility, utility)
+
+
 def apply_frontier_door_invalid_logits(
     door_invalid: torch.Tensor,
     frontier_door_invalid: torch.Tensor,
@@ -679,6 +703,8 @@ class FrontierModel(torch.nn.Module):
         proposal_hidden_width,
         missing_connect_hidden_width,
         utility_query_hidden_width,
+        known_save_refill_utility_override,
+        distance_proximity_scale,
         num_layers,
         door_counts,
         frontier_window_size,
@@ -691,6 +717,10 @@ class FrontierModel(torch.nn.Module):
         self.map_y = map_y
         self.embedding_width = embedding_width
         self.global_embedding_width = global_embedding_width
+        if distance_proximity_scale <= 0:
+            raise ValueError("distance_proximity_scale must be greater than zero")
+        self.distance_proximity_scale = distance_proximity_scale
+        self.known_save_refill_utility_override = known_save_refill_utility_override
         self.num_room_parts = output_metadata.num_room_parts
         if global_embedding_width <= 0:
             raise ValueError("global_embedding_width must be greater than zero")
@@ -1145,6 +1175,31 @@ class FrontierModel(torch.nn.Module):
                 query_save_refill_mask[3],
                 query_save_refill_utility[3],
                 refill_from_room_utility,
+            )
+        if self.known_save_refill_utility_override:
+            save_to_room_utility = apply_known_distance_utility(
+                save_to_room_utility,
+                features.global_features.known_save_to_room_distance,
+                self.distance_proximity_scale,
+                "save-to-room utility",
+            )
+            save_from_room_utility = apply_known_distance_utility(
+                save_from_room_utility,
+                features.global_features.known_save_from_room_distance,
+                self.distance_proximity_scale,
+                "save-from-room utility",
+            )
+            refill_to_room_utility = apply_known_distance_utility(
+                refill_to_room_utility,
+                features.global_features.known_refill_to_room_distance,
+                self.distance_proximity_scale,
+                "refill-to-room utility",
+            )
+            refill_from_room_utility = apply_known_distance_utility(
+                refill_from_room_utility,
+                features.global_features.known_refill_from_room_distance,
+                self.distance_proximity_scale,
+                "refill-from-room utility",
             )
         return Predictions(
             door_invalid=door_invalid,

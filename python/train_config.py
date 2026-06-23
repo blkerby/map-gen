@@ -29,6 +29,7 @@ class ModelConfig(StrictBaseModel):
     proposal_hidden_width: int
     missing_connect_hidden_width: int
     utility_query_hidden_width: int
+    known_save_refill_utility_override: bool
     num_layers: int
 
 
