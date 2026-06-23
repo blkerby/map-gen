@@ -519,6 +519,7 @@ class GenerationProcessState:
     balance_model: torch.nn.Module
     profile: bool
     ignore_scores: bool
+    cleared_cuda_cache_after_first_task: bool
 
 
 GENERATION_PROCESS_STATE: GenerationProcessState | None = None
@@ -563,6 +564,7 @@ def initialize_generation_process(
         balance_model=balance_model,
         profile=profile,
         ignore_scores=ignore_scores,
+        cleared_cuda_cache_after_first_task=False,
     )
 
 
@@ -609,11 +611,19 @@ def run_generation_process_task(
         profile=state.profile,
     )
     profile_report = map_gen.profile_report() + python_profile_report if state.profile else []
+    episode_data_cpu = episode_data.to(torch.device("cpu"))
+    outcomes_cpu = outcomes.to(torch.device("cpu"))
+    door_match_counts_cpu = door_match_counts.to(torch.device("cpu"))
+    proposal_data_cpu = proposal_data.to(torch.device("cpu"))
+    del episode_data, outcomes, door_match_counts, proposal_data
+    if state.device.type == "cuda" and not state.cleared_cuda_cache_after_first_task:
+        torch.cuda.empty_cache()
+        state.cleared_cuda_cache_after_first_task = True
     return (
-        episode_data.to(torch.device("cpu")),
-        outcomes.to(torch.device("cpu")),
-        door_match_counts.to(torch.device("cpu")),
-        proposal_data.to(torch.device("cpu")),
+        episode_data_cpu,
+        outcomes_cpu,
+        door_match_counts_cpu,
+        proposal_data_cpu,
         generation_stats,
         profile_report,
     )
