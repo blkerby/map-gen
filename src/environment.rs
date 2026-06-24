@@ -3616,24 +3616,26 @@ impl Environment {
                         0
                     });
                 }
-                let current_distance = self.graph_distance[from_part * graph_size + to_part];
-                let pair_total_distance = u16::from(source_distance) + u16::from(target_distance);
-                let pair_can_improve = current_distance == UNREACHABLE_DISTANCE
-                    || pair_total_distance + 2 < u16::from(current_distance);
                 if config.missing_connect_utility_query
                     && source_frontier >= 0
                     && target_frontier >= 0
-                    && pair_can_improve
                 {
-                    missing_connect_utility_query_connection_idx.push(connection_idx as i64);
-                    missing_connect_utility_query_source_count.push(source_count);
-                    missing_connect_utility_query_target_count.push(target_count);
-                    missing_connect_utility_query_pair_count.push(1);
-                    missing_connect_utility_query_pair_cap_hit.push(0);
-                    missing_connect_utility_query_current_distance.push(current_distance);
-                    missing_connect_utility_query_pair_source_frontier.push(source_frontier);
-                    missing_connect_utility_query_pair_target_frontier.push(target_frontier);
-                    missing_connect_utility_query_pair_total_distance.push(pair_total_distance);
+                    let current_distance = self.graph_distance[from_part * graph_size + to_part];
+                    let pair_total_distance =
+                        u16::from(source_distance) + u16::from(target_distance);
+                    let pair_can_improve = current_distance == UNREACHABLE_DISTANCE
+                        || pair_total_distance + 2 < u16::from(current_distance);
+                    if pair_can_improve {
+                        missing_connect_utility_query_connection_idx.push(connection_idx as i64);
+                        missing_connect_utility_query_source_count.push(source_count);
+                        missing_connect_utility_query_target_count.push(target_count);
+                        missing_connect_utility_query_pair_count.push(1);
+                        missing_connect_utility_query_pair_cap_hit.push(0);
+                        missing_connect_utility_query_current_distance.push(current_distance);
+                        missing_connect_utility_query_pair_source_frontier.push(source_frontier);
+                        missing_connect_utility_query_pair_target_frontier.push(target_frontier);
+                        missing_connect_utility_query_pair_total_distance.push(pair_total_distance);
+                    }
                 }
                 if let Some(start) = detail_start {
                     missing_connect_profile_duration += start.elapsed();

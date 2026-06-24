@@ -1374,6 +1374,9 @@ class FeatureSlot:
             features.frontier_connection_reachability
         )
         self.missing_connect_query_frontier_width = int(features.missing_connect_query)
+        self.missing_connect_utility_query_pair_width = int(
+            features.missing_connect_utility_query
+        )
         self.toilet_crossed_room_width = int(features.toilet_crossed_room)
         self.pin_memory = pin_memory
         self.snapshot_capacity = 0
@@ -1592,21 +1595,21 @@ class FeatureSlot:
         self.missing_connect_utility_query_pair_source_frontier = self._empty(
             (
                 self.missing_connect_utility_query_row_capacity,
-                self.missing_connect_query_frontier_width,
+                self.missing_connect_utility_query_pair_width,
             ),
             torch.int16,
         )
         self.missing_connect_utility_query_pair_target_frontier = self._empty(
             (
                 self.missing_connect_utility_query_row_capacity,
-                self.missing_connect_query_frontier_width,
+                self.missing_connect_utility_query_pair_width,
             ),
             torch.int16,
         )
         self.missing_connect_utility_query_pair_total_distance = self._empty(
             (
                 self.missing_connect_utility_query_row_capacity,
-                self.missing_connect_query_frontier_width,
+                self.missing_connect_utility_query_pair_width,
             ),
             torch.uint16,
         )
