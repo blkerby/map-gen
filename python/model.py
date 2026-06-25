@@ -7,11 +7,9 @@ from typing import Callable, TYPE_CHECKING
 
 from env import OutputMetadata, Features
 from features import (
-    COORD_OFFSET,
     FRONTIER_NODE_FEATURES,
     FRONTIER_PAIR_FEATURES,
     GLOBAL_FEATURES,
-    NUM_COORD_VALUES,
     FeatureContext,
 )
 
@@ -144,19 +142,19 @@ def apply_known_distance_utility(
     return torch.where(known_distance > 0, known_utility, utility)
 
 
-def apply_frontier_door_invalid_logits(
-    door_invalid: torch.Tensor,
-    frontier_door_invalid: torch.Tensor,
+def apply_frontier_door_output_logits(
+    output_logits: torch.Tensor,
+    frontier_output_logits: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
     row_door_output_idx: torch.Tensor,
 ) -> torch.Tensor:
-    if door_invalid.shape[-1] == 0 or frontier_door_invalid.shape[0] == 0:
-        return door_invalid
-    snapshot_count = door_invalid.shape[0]
-    door_output_count = door_invalid.shape[-1]
-    frontier_door_invalid = frontier_door_invalid.squeeze(-1).to(door_invalid.dtype)
-    row_snapshot_idx = row_snapshot_idx.to(device=door_invalid.device, dtype=torch.int64)
-    row_door_output_idx = row_door_output_idx.to(device=door_invalid.device, dtype=torch.int64)
+    if output_logits.shape[-1] == 0 or frontier_output_logits.shape[0] == 0:
+        return output_logits
+    snapshot_count = output_logits.shape[0]
+    door_output_count = output_logits.shape[-1]
+    frontier_output_logits = frontier_output_logits.squeeze(-1).to(output_logits.dtype)
+    row_snapshot_idx = row_snapshot_idx.to(device=output_logits.device, dtype=torch.int64)
+    row_door_output_idx = row_door_output_idx.to(device=output_logits.device, dtype=torch.int64)
     valid_rows = (
         (row_snapshot_idx >= 0)
         & (row_snapshot_idx < snapshot_count)
@@ -166,14 +164,14 @@ def apply_frontier_door_invalid_logits(
     safe_row_snapshot_idx = row_snapshot_idx.clamp(0, snapshot_count - 1)
     safe_row_door_output_idx = row_door_output_idx.clamp(0, door_output_count - 1)
     row_lookup_idx = safe_row_snapshot_idx * door_output_count + safe_row_door_output_idx
-    door_invalid_flat = door_invalid.flatten().clone()
+    output_logits_flat = output_logits.flatten().clone()
     scatter_values = torch.where(
         valid_rows,
-        frontier_door_invalid,
-        door_invalid_flat.detach().gather(0, row_lookup_idx),
+        frontier_output_logits,
+        output_logits_flat.detach().gather(0, row_lookup_idx),
     )
-    door_invalid_flat.scatter_(0, row_lookup_idx, scatter_values)
-    return door_invalid_flat.view_as(door_invalid)
+    output_logits_flat.scatter_(0, row_lookup_idx, scatter_values)
+    return output_logits_flat.view_as(output_logits)
 
 
 def normalize(x: torch.Tensor):
@@ -184,52 +182,6 @@ def activation_dtype(device: torch.device, parameter_dtype: torch.dtype) -> torc
     if device.type == "cuda" and torch.is_autocast_enabled("cuda"):
         return torch.get_autocast_dtype("cuda")
     return parameter_dtype
-
-
-class FactorizedOutcomeHead(torch.nn.Module):
-    def __init__(self, output_metadata, num_geometry_outcomes, embedding_width):
-        super().__init__()
-        self.embedding_width = embedding_width
-        self.num_outputs = len(output_metadata)
-        metadata = torch.tensor(output_metadata, dtype=torch.int64).reshape(self.num_outputs, 2)
-        self.register_buffer("room_idx", metadata[:, 0])
-        self.register_buffer("geometry_outcome_idx", metadata[:, 1])
-        self.geometry_outcome_embedding = torch.nn.Parameter(
-            torch.randn([num_geometry_outcomes, embedding_width]) / math.sqrt(embedding_width)
-        )
-        self.state = torch.nn.Linear(embedding_width, embedding_width, bias=False)
-        self.logit_scale = torch.nn.Parameter(
-            torch.tensor(math.log(math.sqrt(embedding_width) / 2))
-        )
-
-    def forward(self, X, room_x, room_y, room_placed, pos_embedding_x, pos_embedding_y):
-        if self.num_outputs == 0:
-            return X.new_empty([X.shape[0], X.shape[1], 0], dtype=torch.float32)
-        state = self.state(X)
-        # Keep normalization, base logits, and final logits out of reduced
-        # precision. These scores directly drive both the loss and candidate
-        # selection.
-        with torch.amp.autocast(X.device.type, enabled=False):
-            state = torch.nn.functional.normalize(state.to(torch.float32), dim=-1)
-            geometry_outcome_embedding = torch.nn.functional.normalize(
-                self.geometry_outcome_embedding.to(torch.float32), dim=-1
-            )
-            pos_embedding_x = torch.nn.functional.normalize(
-                pos_embedding_x.to(torch.float32), dim=-1
-            )
-            pos_embedding_y = torch.nn.functional.normalize(
-                pos_embedding_y.to(torch.float32), dim=-1
-            )
-            base_query = geometry_outcome_embedding[self.geometry_outcome_idx]
-            base_logits = torch.matmul(state, base_query.transpose(0, 1))
-            x_logits = torch.matmul(state, pos_embedding_x.transpose(0, 1))
-            y_logits = torch.matmul(state, pos_embedding_y.transpose(0, 1))
-            room_logits = torch.gather(x_logits, -1, room_x) + torch.gather(y_logits, -1, room_y)
-            room_logits = torch.where(room_placed, room_logits, 0.0)
-            position_logits = room_logits[..., self.room_idx]
-            return (base_logits + position_logits) * torch.exp(
-                torch.clamp(self.logit_scale.to(torch.float32), max=math.log(100.0))
-            )
 
 
 class ProposalOutput(torch.nn.Module):
@@ -752,12 +704,6 @@ class FrontierModel(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, embedding_width, bias=False),
         )
-        self.pos_embedding_x = torch.nn.Parameter(
-            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
-        )
-        self.pos_embedding_y = torch.nn.Parameter(
-            torch.randn([NUM_COORD_VALUES, embedding_width]) / math.sqrt(embedding_width)
-        )
         door_output_metadata = torch.tensor(output_metadata.door, dtype=torch.int64).reshape(
             door_output_size,
             2,
@@ -765,6 +711,7 @@ class FrontierModel(torch.nn.Module):
         self.register_buffer("door_variant_outcome_idx", door_output_metadata[:, 1])
         self.door_output = torch.nn.Linear(embedding_width, output_metadata.num_door_variants)
         self.frontier_door_invalid_output = torch.nn.Linear(embedding_width, 1)
+        self.frontier_balance_score_output = torch.nn.Linear(embedding_width, 1)
         connection_output_metadata = torch.tensor(
             output_metadata.connection,
             dtype=torch.int64,
@@ -789,8 +736,9 @@ class FrontierModel(torch.nn.Module):
             else None
         )
         self.toilet_output = torch.nn.Linear(embedding_width, 1)
-        self.balance_score_output = FactorizedOutcomeHead(
-            output_metadata.door, output_metadata.num_door_variants, embedding_width
+        self.balance_score_output = torch.nn.Linear(
+            embedding_width,
+            output_metadata.num_door_variants,
         )
         self.toilet_balance_score_output = torch.nn.Linear(embedding_width, 1)
         self.avg_frontiers_output = torch.nn.Linear(embedding_width, 1)
@@ -820,11 +768,6 @@ class FrontierModel(torch.nn.Module):
             proposal_hidden_width,
             output_metadata.num_door_variants,
         )
-
-    def _position_embedding(self, x, y, embedding_x, embedding_y, dtype, offset=0):
-        x = x.to(torch.int64) + offset
-        y = y.to(torch.int64) + offset
-        return embedding_x[x].to(dtype) + embedding_y[y].to(dtype)
 
     def _pair_features(self, features, neighbor, dtype):
         values = []
@@ -944,6 +887,7 @@ class FrontierModel(torch.nn.Module):
                 )
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
         frontier_door_invalid = self.frontier_door_invalid_output(X)
+        frontier_balance_score = self.frontier_balance_score_output(X)
         proposal_state = X if return_proposal_state else X.new_empty([row_count, 0])
         frontier_state = X
         # mean_pool, max_pool, pooled_state: [s, e]
@@ -951,21 +895,6 @@ class FrontierModel(torch.nn.Module):
         if self.features.frontier_mask:
             pooled_inputs.extend([mean_pool, max_pool])
         pooled_state = self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
-        if self.features.room_position:
-            room_x = (features.global_features.room_x.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
-            room_y = (features.global_features.room_y.to(torch.int64) + COORD_OFFSET).unsqueeze(1)
-            room_placed = features.global_features.room_placed.to(torch.bool).unsqueeze(1)
-        else:
-            room_x = torch.full(
-                [snapshot_count, 1, self.num_rooms],
-                COORD_OFFSET,
-                dtype=torch.int64,
-                device=X.device,
-            )
-            room_y = room_x
-            room_placed = torch.zeros(
-                [snapshot_count, 1, self.num_rooms], dtype=torch.bool, device=X.device
-            )
         # X: [s, 1, e]
         X = pooled_state.unsqueeze(1)
         door_variant = self.door_output(X)
@@ -973,14 +902,8 @@ class FrontierModel(torch.nn.Module):
         connection_variant = self.connection_output(X)
         connection = connection_variant[..., self.connection_variant_outcome_idx]
         toilet = self.toilet_output(X)
-        balance_score = self.balance_score_output(
-            X,
-            room_x,
-            room_y,
-            room_placed,
-            self.pos_embedding_x,
-            self.pos_embedding_y,
-        )
+        balance_score_variant = self.balance_score_output(X)
+        balance_score = balance_score_variant[..., self.door_variant_outcome_idx]
         toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
         graph_diameter = self.graph_diameter_output(X).squeeze(-1).to(torch.float32)
@@ -1003,7 +926,7 @@ class FrontierModel(torch.nn.Module):
             torch.cat([door, connection, toilet, balance_score, toilet_balance_score], dim=-1),
             self.output_sizes,
         )
-        door_invalid = apply_frontier_door_invalid_logits(
+        door_invalid = apply_frontier_door_output_logits(
             preds.door_invalid,
             frontier_door_invalid,
             row_snapshot_idx,
@@ -1044,6 +967,12 @@ class FrontierModel(torch.nn.Module):
             connection_invalid,
             features.global_features.lookahead_connection_invalid,
             "connection",
+        )
+        balance_score = apply_frontier_door_output_logits(
+            preds.balance_score,
+            frontier_balance_score,
+            row_snapshot_idx,
+            features.frontier_features.row_door_output_idx,
         )
         if self.save_refill_utility_query_output is not None:
             query_save_refill_utility, query_save_refill_mask = profile(
@@ -1116,7 +1045,7 @@ class FrontierModel(torch.nn.Module):
             door_invalid=door_invalid,
             connection_invalid=connection_invalid,
             toilet_invalid=preds.toilet_invalid,
-            balance_score=preds.balance_score,
+            balance_score=balance_score,
             toilet_balance_score=preds.toilet_balance_score,
             avg_frontiers=avg_frontiers,
             graph_diameter=graph_diameter,
