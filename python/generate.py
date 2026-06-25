@@ -21,9 +21,9 @@ from env import (
 )
 from loss import compute_step_balance_score_target_logits
 from model import BalancePredictions, Predictions, no_profile
-from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from queue import Empty, Full, Queue
 import logging
 import math
 import threading
@@ -40,13 +40,12 @@ type GenerationStats = dict[str, float]
 # to keep the GPU busy while CPU extraction is ongoing. This pays off heavily
 # because we are using a relatively small model on the GPU.
 #
-# Generation runs several environment groups (typically two) per generation device.
-# The coordinator thread reads candidates/outcomes, submits only CPU feature
-# extraction to a small executor, then consumes completed extractions in FIFO
-# order. For each completed group step it transfers and scores candidates on the
-# generation device, steps that group's environment, and immediately starts the
-# next step for that group. This keeps expensive CPU extraction overlapped
-# across groups while avoiding CUDA work from multiple Python worker threads.
+# Generation runs several environment groups per generation device. Each group
+# has a CPU producer that owns environment mutation and feature extraction. A
+# transfer coordinator stages completed candidate batches onto a CUDA transfer
+# stream, and a GPU scorer consumes those staged batches. The scorer returns
+# selected actions through a per-group queue so the owning CPU producer can step
+# its environment and continue.
 
 
 def rand_choice(p):
@@ -61,15 +60,19 @@ class GenerationProfiler:
         self.enabled = enabled
         self.counts: dict[str, int] = {}
         self.nanos: dict[str, int] = {}
+        self.lock = threading.Lock()
 
     def add(self, name: str, start: int) -> None:
         if not self.enabled:
             return
-        self.counts[name] = self.counts.get(name, 0) + 1
-        self.nanos[name] = self.nanos.get(name, 0) + time.perf_counter_ns() - start
+        elapsed = time.perf_counter_ns() - start
+        with self.lock:
+            self.counts[name] = self.counts.get(name, 0) + 1
+            self.nanos[name] = self.nanos.get(name, 0) + elapsed
 
     def report(self) -> ProfileReport:
-        return [(name, self.counts[name], self.nanos[name]) for name in sorted(self.counts)]
+        with self.lock:
+            return [(name, self.counts[name], self.nanos[name]) for name in sorted(self.counts)]
 
 
 class TorchProfileCallback:
@@ -227,34 +230,6 @@ def transfer_features(
     return result
 
 
-def transfer_candidate_batch(
-    candidate_batch: "CandidateBatch",
-    device: torch.device,
-    transfer_stream: torch.cuda.Stream | None = None,
-) -> "CandidateBatch":
-    if transfer_stream is None or device.type != "cuda":
-        return candidate_batch.to(device)
-    current_stream = torch.cuda.current_stream(device)
-    with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
-        result = candidate_batch.to(device, non_blocking=True)
-        ready = torch.cuda.Event()
-        ready.record(transfer_stream)
-    current_stream.wait_event(ready)
-    return result
-
-
-@dataclass
-class GenerationGroup:
-    env: EnvironmentGroup
-    config: GenerateConfig
-    step: int
-    feature_slot: FeatureSlot
-    candidate_slot: CandidateSlot
-    balance_preds: BalancePredictions
-    previous_lookahead_outcomes: StepOutcomes | None
-    previous_proposal_scores: ProposalCache | None
-
-
 @dataclass
 class ProposalCache:
     state: torch.Tensor
@@ -291,22 +266,89 @@ class CandidateBatch:
 
 
 @dataclass
+class CandidateScoreSuccess:
+    action_index: torch.Tensor
+    selected_actions: Actions
+    selected_outcomes: StepOutcomes
+    selected_proposal_scores: ProposalCache | None
+    proposal_frontier_idx: torch.Tensor
+    proposal_door_variant_idx: torch.Tensor
+    selected_candidate: torch.Tensor
+    target_logits: torch.Tensor
+
+
+@dataclass
+class PipelineFailure:
+    error: BaseException
+
+
+type CandidateScoreResult = CandidateScoreSuccess | PipelineFailure
+
+
+@dataclass
+class GenerationGroup:
+    env: EnvironmentGroup
+    config: GenerateConfig
+    step: int
+    feature_slot: FeatureSlot
+    candidate_slot: CandidateSlot
+    balance_preds: BalancePredictions
+    previous_lookahead_outcomes: StepOutcomes | None
+    previous_proposal_scores: ProposalCache | None
+    score_result_queue: Queue[CandidateScoreResult]
+
+
+@dataclass
 class PreparedGenerationStep:
     candidate_batch: CandidateBatch
     features: Features | None
 
 
 @dataclass
-class PendingCandidateStep:
+class CandidateScoreRequest:
     group: GenerationGroup
-    future: Future[PreparedGenerationStep]
+    group_index: int
+    prepared_step: PreparedGenerationStep
     shortlist_limited: torch.Tensor
 
 
 @dataclass
-class PendingProposalStep:
-    group: GenerationGroup
-    future: Future[ProposalInputs]
+class StagedCandidateScoreRequest:
+    request: CandidateScoreRequest
+    candidate_batch: CandidateBatch
+    features: Features | None
+    ready_event: torch.cuda.Event | None
+
+@dataclass
+class StopPipeline:
+    pass
+
+
+type CpuReadyMessage = CandidateScoreRequest | StopPipeline
+type GpuReadyMessage = StagedCandidateScoreRequest | StopPipeline
+
+
+@dataclass
+class GroupPipelineOutput:
+    proposal_frontier_idx: list[torch.Tensor]
+    proposal_door_variant_idx: list[torch.Tensor]
+    selected_candidate: list[torch.Tensor]
+    target_logits: list[torch.Tensor]
+
+
+@dataclass
+class PipelineSharedState:
+    profiler: GenerationProfiler
+    stat_totals: GenerationStats
+    stat_lock: threading.Lock
+    gpu_lock: threading.Lock
+    cancellation_event: threading.Event
+    groups: list[GenerationGroup]
+
+
+@dataclass
+class PipelineThreadFailure:
+    error: BaseException
 
 
 @dataclass
@@ -612,145 +654,137 @@ def select_candidate_actions(
     post_candidate_door_match: torch.Tensor,
     features: Features,
     device: torch.device,
-    gpu_lock: threading.Lock,
-    transfer_stream: torch.cuda.Stream | None,
     num_rooms: int,
     profiler: GenerationProfiler,
 ) -> tuple[torch.Tensor, Actions, torch.Tensor, torch.Tensor | None]:
     environment_count, candidate_count = candidates.room_idx.shape
     profile = profiler.enabled
-    with gpu_lock:
-        model_profile = TorchProfileCallback(device, profiler)
-        sync_profile_device(device, profile)
-        profile_time = profile_start(profile)
-        env_features = transfer_features(features, device, transfer_stream)
-        sync_profile_device(device, profile)
-        profiler.add("python.score.transfer_features", profile_time)
-
-        profile_time = profile_start(profile)
-        with torch.amp.autocast(
-            "cuda",
-            dtype=torch.bfloat16,
-            enabled=device.type == "cuda" and group.config.autocast,
-        ):
-            return_proposal_state = group.config.recommended_candidates > 0
-            preds = model(
-                env_features,
-                return_proposal_state=return_proposal_state,
-                profile=model_profile,
-            )
-        sync_profile_device(device, profile)
-        profiler.add("python.score.model_forward", profile_time)
-
-        profile_time = profile_start(profile)
-        balance_score = preds.balance_score.view(environment_count, candidate_count, -1)
-        actual_balance_score, actual_balance_score_mask = (
-            compute_step_balance_score_target_logits(
-                group.balance_preds,
-                post_candidate_door_match,
-            )
+    model_profile = TorchProfileCallback(device, profiler)
+    sync_profile_device(device, profile)
+    profile_time = profile_start(profile)
+    with torch.amp.autocast(
+        "cuda",
+        dtype=torch.bfloat16,
+        enabled=device.type == "cuda" and group.config.autocast,
+    ):
+        return_proposal_state = group.config.recommended_candidates > 0
+        preds = model(
+            features,
+            return_proposal_state=return_proposal_state,
+            profile=model_profile,
         )
-        balance_score = torch.where(
-            actual_balance_score_mask,
-            actual_balance_score,
-            balance_score,
+    sync_profile_device(device, profile)
+    profiler.add("python.score.model_forward", profile_time)
+
+    profile_time = profile_start(profile)
+    balance_score = preds.balance_score.view(environment_count, candidate_count, -1)
+    actual_balance_score, actual_balance_score_mask = (
+        compute_step_balance_score_target_logits(
+            group.balance_preds,
+            post_candidate_door_match,
         )
-        expected_reward = compute_expected_reward(
-            Predictions(
-                door_invalid=preds.door_invalid.view(environment_count, candidate_count, -1),
-                connection_invalid=preds.connection_invalid.view(
-                    environment_count,
-                    candidate_count,
-                    -1,
-                ),
-                toilet_invalid=preds.toilet_invalid.view(environment_count, candidate_count),
-                balance_score=balance_score,
-                toilet_balance_score=preds.toilet_balance_score.view(
-                    environment_count,
-                    candidate_count,
-                ),
-                avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
-                graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
-                save_to_room_utility=preds.save_to_room_utility.view(
-                    environment_count,
-                    candidate_count,
-                    -1,
-                ),
-                save_from_room_utility=preds.save_from_room_utility.view(
-                    environment_count,
-                    candidate_count,
-                    -1,
-                ),
-                refill_to_room_utility=preds.refill_to_room_utility.view(
-                    environment_count,
-                    candidate_count,
-                    -1,
-                ),
-                refill_from_room_utility=preds.refill_from_room_utility.view(
-                    environment_count,
-                    candidate_count,
-                    -1,
-                ),
-                missing_connect_utility=preds.missing_connect_utility.view(
-                    environment_count,
-                    candidate_count,
-                    -1,
-                ),
-                proposal_score=preds.proposal_score,
-                proposal_state=preds.proposal_state,
-                proposal_row_snapshot_idx=preds.proposal_row_snapshot_idx,
-                proposal_row_frontier_idx=preds.proposal_row_frontier_idx,
+    )
+    balance_score = torch.where(
+        actual_balance_score_mask,
+        actual_balance_score,
+        balance_score,
+    )
+    expected_reward = compute_expected_reward(
+        Predictions(
+            door_invalid=preds.door_invalid.view(environment_count, candidate_count, -1),
+            connection_invalid=preds.connection_invalid.view(
+                environment_count,
+                candidate_count,
+                -1,
             ),
-            outcomes,
-            group.config,
-            model_profile,
-        )
-        sync_profile_device(device, profile)
-        profiler.add("python.score.reward", profile_time)
+            toilet_invalid=preds.toilet_invalid.view(environment_count, candidate_count),
+            balance_score=balance_score,
+            toilet_balance_score=preds.toilet_balance_score.view(
+                environment_count,
+                candidate_count,
+            ),
+            avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
+            graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
+            save_to_room_utility=preds.save_to_room_utility.view(
+                environment_count,
+                candidate_count,
+                -1,
+            ),
+            save_from_room_utility=preds.save_from_room_utility.view(
+                environment_count,
+                candidate_count,
+                -1,
+            ),
+            refill_to_room_utility=preds.refill_to_room_utility.view(
+                environment_count,
+                candidate_count,
+                -1,
+            ),
+            refill_from_room_utility=preds.refill_from_room_utility.view(
+                environment_count,
+                candidate_count,
+                -1,
+            ),
+            missing_connect_utility=preds.missing_connect_utility.view(
+                environment_count,
+                candidate_count,
+                -1,
+            ),
+            proposal_score=preds.proposal_score,
+            proposal_state=preds.proposal_state,
+            proposal_row_snapshot_idx=preds.proposal_row_snapshot_idx,
+            proposal_row_frontier_idx=preds.proposal_row_frontier_idx,
+        ),
+        outcomes,
+        group.config,
+        model_profile,
+    )
+    sync_profile_device(device, profile)
+    profiler.add("python.score.reward", profile_time)
 
-        profile_time = profile_start(profile)
-        # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
-        dummy_candidate = candidates.room_idx == num_rooms
-        candidate_logits = expected_reward / torch.unsqueeze(group.config.temperature, 1)
-        candidate_logits = torch.where(
-            dummy_candidate,
+    profile_time = profile_start(profile)
+    # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
+    dummy_candidate = candidates.room_idx == num_rooms
+    candidate_logits = expected_reward / torch.unsqueeze(group.config.temperature, 1)
+    candidate_logits = torch.where(
+        dummy_candidate,
+        torch.full_like(candidate_logits, float("-inf")),
+        candidate_logits,
+    )
+    valid_row = torch.any(torch.isfinite(candidate_logits), dim=1)
+    safe_candidate_logits = torch.where(
+        valid_row.unsqueeze(1),
+        candidate_logits,
+        torch.where(
+            torch.arange(candidate_count, device=device).unsqueeze(0) == 0,
+            torch.zeros_like(candidate_logits),
             torch.full_like(candidate_logits, float("-inf")),
-            candidate_logits,
-        )
-        valid_row = torch.any(torch.isfinite(candidate_logits), dim=1)
-        safe_candidate_logits = torch.where(
-            valid_row.unsqueeze(1),
-            candidate_logits,
-            torch.where(
-                torch.arange(candidate_count, device=device).unsqueeze(0) == 0,
-                torch.zeros_like(candidate_logits),
-                torch.full_like(candidate_logits, float("-inf")),
-            ),
-        )
-        probs = torch.softmax(safe_candidate_logits, dim=1)
-        action_index = rand_choice(probs)
-        selected_actions = candidates.select(action_index)
-        sync_profile_device(device, profile)
-        profiler.add("python.score.sample", profile_time)
+        ),
+    )
+    probs = torch.softmax(safe_candidate_logits, dim=1)
+    action_index = rand_choice(probs)
+    selected_actions = candidates.select(action_index)
+    sync_profile_device(device, profile)
+    profiler.add("python.score.sample", profile_time)
 
-        profile_time = profile_start(profile)
-        selected_proposal_scores = None
-        if return_proposal_state:
-            proposal_row_snapshot_idx = preds.proposal_row_snapshot_idx
-            row_count_by_snapshot = torch.bincount(
-                proposal_row_snapshot_idx,
-                minlength=environment_count * candidate_count,
-            )
-            row_start_idx = row_count_by_snapshot.cumsum(0) - row_count_by_snapshot
-            selected_proposal_scores = ProposalCache(
-                state=preds.proposal_state,
-                row_start_idx=row_start_idx,
-                row_count=row_count_by_snapshot,
-                action_index=action_index,
-                candidate_count=candidate_count,
-            )
-            sync_profile_device(device, profile)
-        profiler.add("python.score.cache_proposal", profile_time)
+    profile_time = profile_start(profile)
+    selected_proposal_scores = None
+    if return_proposal_state:
+        proposal_row_snapshot_idx = preds.proposal_row_snapshot_idx
+        row_count_by_snapshot = torch.bincount(
+            proposal_row_snapshot_idx,
+            minlength=environment_count * candidate_count,
+        )
+        row_start_idx = row_count_by_snapshot.cumsum(0) - row_count_by_snapshot
+        selected_proposal_scores = ProposalCache(
+            state=preds.proposal_state,
+            row_start_idx=row_start_idx,
+            row_count=row_count_by_snapshot,
+            action_index=action_index,
+            candidate_count=candidate_count,
+        )
+        sync_profile_device(device, profile)
+    profiler.add("python.score.cache_proposal", profile_time)
     return action_index, selected_actions, candidate_logits, selected_proposal_scores
 
 
@@ -760,29 +794,27 @@ def compute_proposal_scores(
     features: Features,
     proposal_mask: ProposalCandidateMask,
     device: torch.device,
-    gpu_lock: threading.Lock,
     transfer_stream: torch.cuda.Stream | None,
 ) -> torch.Tensor:
-    with gpu_lock:
-        env_features = transfer_features(features, device, transfer_stream)
-        with torch.amp.autocast(
-            "cuda",
-            dtype=torch.bfloat16,
-            enabled=device.type == "cuda" and group.config.autocast,
-        ):
-            preds = model(
-                env_features,
-                return_proposal_state=True,
-                profile=no_profile,
-            )
-        return row_scores_for_mask(
-            model.proposal_output,
-            preds.proposal_state,
-            preds.proposal_row_snapshot_idx,
-            preds.proposal_row_frontier_idx,
-            proposal_mask,
-            device,
+    env_features = transfer_features(features, device, transfer_stream)
+    with torch.amp.autocast(
+        "cuda",
+        dtype=torch.bfloat16,
+        enabled=device.type == "cuda" and group.config.autocast,
+    ):
+        preds = model(
+            env_features,
+            return_proposal_state=True,
+            profile=no_profile,
         )
+    return row_scores_for_mask(
+        model.proposal_output,
+        preds.proposal_state,
+        preds.proposal_row_snapshot_idx,
+        preds.proposal_row_frontier_idx,
+        proposal_mask,
+        device,
+    )
 
 
 def compute_cached_proposal_scores(
@@ -834,127 +866,496 @@ def verify_and_step(
         group.env.get_outcomes(device, verify_consistency=True)
 
 
-def start_generation_step(
-    group: GenerationGroup,
-    executor: ThreadPoolExecutor,
-    pending_proposals: deque[PendingProposalStep],
+def put_queue_until_done(
+    queue: Queue,
+    item,
+    cancellation_event: threading.Event,
+) -> bool:
+    while not cancellation_event.is_set():
+        try:
+            queue.put(item, timeout=0.05)
+            return True
+        except Full:
+            continue
+    return False
+
+
+def get_queue_until_done(
+    queue: Queue,
+    cancellation_event: threading.Event,
+):
+    while not cancellation_event.is_set():
+        try:
+            return queue.get(timeout=0.05)
+        except Empty:
+            continue
+    return PipelineFailure(RuntimeError("generation pipeline cancelled"))
+
+
+def broadcast_pipeline_failure(
+    groups: list[GenerationGroup],
+    error: BaseException,
 ) -> None:
-    if group.step >= group.config.episode_length:
+    failure = PipelineFailure(error)
+    for group in groups:
+        try:
+            group.score_result_queue.put_nowait(failure)
+        except Full:
+            pass
+
+
+def stage_candidate_score_request(
+    request: CandidateScoreRequest,
+    device: torch.device,
+    transfer_stream: torch.cuda.Stream | None,
+    profiler: GenerationProfiler,
+) -> StagedCandidateScoreRequest:
+    profile = profiler.enabled
+    profile_time = profile_start(profile)
+    if transfer_stream is None or device.type != "cuda":
+        candidate_batch = request.prepared_step.candidate_batch.to(device)
+        features = (
+            None
+            if request.prepared_step.features is None
+            else request.prepared_step.features.to(device)
+        )
+        if features is not None:
+            features.mark_dynamic()
+        profiler.add("python.transfer.stage_candidate", profile_time)
+        return StagedCandidateScoreRequest(
+            request=request,
+            candidate_batch=candidate_batch,
+            features=features,
+            ready_event=None,
+        )
+    with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
+        candidate_batch = request.prepared_step.candidate_batch.to(
+            device,
+            non_blocking=True,
+        )
+        features = (
+            None
+            if request.prepared_step.features is None
+            else request.prepared_step.features.to(device, non_blocking=True)
+        )
+        if features is not None:
+            features.mark_dynamic()
+        ready_event = torch.cuda.Event()
+        ready_event.record(transfer_stream)
+    profiler.add("python.transfer.stage_candidate", profile_time)
+    return StagedCandidateScoreRequest(
+        request=request,
+        candidate_batch=candidate_batch,
+        features=features,
+        ready_event=ready_event,
+    )
+
+
+def wait_for_staged_candidate(
+    staged: StagedCandidateScoreRequest,
+    device: torch.device,
+) -> None:
+    if staged.ready_event is None or device.type != "cuda":
         return
-    pending_proposals.append(
-        PendingProposalStep(
-            group=group,
-            future=executor.submit(
-                prepare_proposal_inputs,
-                group,
-            ),
-        )
-    )
+    torch.cuda.current_stream(device).wait_event(staged.ready_event)
 
 
-def start_candidate_step(
-    group: GenerationGroup,
-    sampled_frontier_idx: torch.Tensor,
-    sampled_door_variant_idx: torch.Tensor,
-    shortlist_limited: torch.Tensor,
-    executor: ThreadPoolExecutor,
-    pending_candidates: deque[PendingCandidateStep],
-) -> None:
-    pending_candidates.append(
-        PendingCandidateStep(
-            group=group,
-            future=executor.submit(
-                prepare_shortlist_generation_step,
-                group,
-                sampled_frontier_idx,
-                sampled_door_variant_idx,
-            ),
-            shortlist_limited=shortlist_limited,
-        )
-    )
-
-
-def pop_ready_proposal_step(
-    pending_proposals: deque[PendingProposalStep],
-) -> PendingProposalStep | None:
-    for index, proposal_step in enumerate(pending_proposals):
-        if proposal_step.future.done():
-            del pending_proposals[index]
-            return proposal_step
-    return None
-
-
-def process_proposal_step(
-    proposal_step: PendingProposalStep,
+def score_staged_candidate_request(
+    staged: StagedCandidateScoreRequest,
     model,
     device: torch.device,
-    gpu_lock: threading.Lock,
-    transfer_stream: torch.cuda.Stream | None,
-    executor: ThreadPoolExecutor,
-    pending_candidates: deque[PendingCandidateStep],
+    num_rooms: int,
     profiler: GenerationProfiler,
-    stat_totals: GenerationStats,
-    profile: bool,
-) -> None:
+) -> CandidateScoreSuccess:
+    wait_for_staged_candidate(staged, device)
+    group = staged.request.group
+    candidate_batch = staged.candidate_batch
+    candidates = candidate_batch.candidates
+    if staged.features is None:
+        action_index = torch.zeros(
+            candidates.room_idx.shape[0],
+            dtype=torch.int64,
+            device=device,
+        )
+        selected_actions = candidates.select(action_index)
+        candidate_logits = torch.zeros(
+            candidates.room_idx.shape,
+            dtype=torch.float32,
+            device=device,
+        )
+        selected_proposal_scores = None
+    else:
+        (
+            action_index,
+            selected_actions,
+            candidate_logits,
+            selected_proposal_scores,
+        ) = select_candidate_actions(
+            group,
+            model,
+            candidates,
+            candidate_batch.reward_outcomes,
+            candidate_batch.post_candidate_outcomes.door_match,
+            staged.features,
+            device,
+            num_rooms,
+            profiler,
+        )
+    profile = profiler.enabled
     profile_time = profile_start(profile)
-    proposal_inputs = proposal_step.future.result()
-    profiler.add("python.wait_proposal_features", profile_time)
+    max_candidates = group.config.recommended_candidates
+    candidate_frontier_idx = candidate_batch.proposal_frontier_idx
+    frontier_idx = (
+        candidate_frontier_idx[:, 0]
+        if candidate_frontier_idx.shape[1] > 0
+        else torch.full(
+            [candidates.room_idx.shape[0]],
+            -1,
+            dtype=candidate_frontier_idx.dtype,
+            device=device,
+        )
+    )
+    if candidate_batch.proposal_door_variant_idx.shape[1] == max_candidates:
+        door_variant_idx = candidate_batch.proposal_door_variant_idx
+    else:
+        door_variant_idx = torch.full(
+            [candidates.room_idx.shape[0], max_candidates],
+            -1,
+            dtype=candidate_batch.proposal_door_variant_idx.dtype,
+            device=device,
+        )
+        door_variant_idx[:, : candidate_batch.proposal_door_variant_idx.shape[1]] = (
+            candidate_batch.proposal_door_variant_idx
+        )
+    if candidate_logits.shape[1] == max_candidates:
+        target_logits = candidate_logits.to(torch.float32)
+    else:
+        target_logits = torch.full(
+            [candidates.room_idx.shape[0], max_candidates],
+            float("-inf"),
+            dtype=torch.float32,
+            device=device,
+        )
+        target_logits[:, : candidate_logits.shape[1]] = candidate_logits.to(torch.float32)
+    selected_outcomes = select_outcomes(
+        candidate_batch.post_candidate_outcomes,
+        action_index,
+    )
+    sync_profile_device(device, profile)
+    result = CandidateScoreSuccess(
+        action_index=action_index.to(device="cpu", copy=True),
+        selected_actions=selected_actions.to(torch.device("cpu")),
+        selected_outcomes=selected_outcomes.to(torch.device("cpu")),
+        selected_proposal_scores=selected_proposal_scores,
+        proposal_frontier_idx=frontier_idx.to(device="cpu", copy=True),
+        proposal_door_variant_idx=door_variant_idx.to(device="cpu", copy=True),
+        selected_candidate=action_index.to(device="cpu", copy=True),
+        target_logits=target_logits.to(device="cpu", copy=True),
+    )
+    profiler.add("python.record_proposal_data", profile_time)
+    return result
+
+
+def run_transfer_coordinator(
+    cpu_ready_queue: Queue[CpuReadyMessage],
+    gpu_ready_queue: Queue[GpuReadyMessage],
+    device: torch.device,
+    transfer_stream: torch.cuda.Stream | None,
+    shared: PipelineSharedState,
+) -> None:
+    try:
+        while not shared.cancellation_event.is_set():
+            message = get_queue_until_done(cpu_ready_queue, shared.cancellation_event)
+            if isinstance(message, PipelineFailure):
+                return
+            if isinstance(message, StopPipeline):
+                put_queue_until_done(gpu_ready_queue, message, shared.cancellation_event)
+                return
+            staged = stage_candidate_score_request(
+                message,
+                device,
+                transfer_stream,
+                shared.profiler,
+            )
+            if not put_queue_until_done(gpu_ready_queue, staged, shared.cancellation_event):
+                return
+    except BaseException as error:
+        shared.cancellation_event.set()
+        broadcast_pipeline_failure(shared.groups, error)
+        raise
+
+
+def run_gpu_scorer(
+    gpu_ready_queue: Queue[GpuReadyMessage],
+    model,
+    device: torch.device,
+    num_rooms: int,
+    shared: PipelineSharedState,
+) -> None:
+    try:
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
+        with torch.no_grad():
+            while not shared.cancellation_event.is_set():
+                message = get_queue_until_done(gpu_ready_queue, shared.cancellation_event)
+                if isinstance(message, PipelineFailure):
+                    return
+                if isinstance(message, StopPipeline):
+                    return
+                profile_time = profile_start(shared.profiler.enabled)
+                with shared.gpu_lock:
+                    result = score_staged_candidate_request(
+                        message,
+                        model,
+                        device,
+                        num_rooms,
+                        shared.profiler,
+                    )
+                shared.profiler.add("python.score.total_candidate", profile_time)
+                put_queue_until_done(
+                    message.request.group.score_result_queue,
+                    result,
+                    shared.cancellation_event,
+                )
+    except BaseException as error:
+        shared.cancellation_event.set()
+        broadcast_pipeline_failure(shared.groups, error)
+        raise
+
+
+def run_direct_gpu_scorer(
+    cpu_ready_queue: Queue[CpuReadyMessage],
+    model,
+    device: torch.device,
+    num_rooms: int,
+    shared: PipelineSharedState,
+) -> None:
+    try:
+        if device.type == "cuda":
+            torch.cuda.set_device(device)
+        with torch.no_grad():
+            while not shared.cancellation_event.is_set():
+                message = get_queue_until_done(cpu_ready_queue, shared.cancellation_event)
+                if isinstance(message, PipelineFailure):
+                    return
+                if isinstance(message, StopPipeline):
+                    return
+                with shared.gpu_lock:
+                    staged = stage_candidate_score_request(
+                        message,
+                        device,
+                        None,
+                        shared.profiler,
+                    )
+                    result = score_staged_candidate_request(
+                        staged,
+                        model,
+                        device,
+                        num_rooms,
+                        shared.profiler,
+                    )
+                put_queue_until_done(
+                    message.group.score_result_queue,
+                    result,
+                    shared.cancellation_event,
+                )
+    except BaseException as error:
+        shared.cancellation_event.set()
+        broadcast_pipeline_failure(shared.groups, error)
+        raise
+
+
+def add_stat_totals(
+    shared: PipelineSharedState,
+    updates: GenerationStats,
+) -> None:
+    with shared.stat_lock:
+        for key, value in updates.items():
+            shared.stat_totals[key] += value
+
+
+def compute_group_proposal_shortlist(
+    group: GenerationGroup,
+    model,
+    device: torch.device,
+    shared: PipelineSharedState,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    profile = shared.profiler.enabled
+    profile_time = profile_start(profile)
+    proposal_inputs = prepare_proposal_inputs(group)
+    shared.profiler.add("python.wait_proposal_features", profile_time)
     before_shortlist_time = profile_start(profile)
     valid_counts = proposal_inputs.mask.valid_counts
     row_valid_counts = valid_counts
-    shortlist_limited = row_valid_counts > proposal_step.group.config.shortlist_candidates
-    stat_totals["proposal_mask_rows"] += float(row_valid_counts.numel())
-    stat_totals["proposal_valid_cells"] += float(row_valid_counts.sum().item())
-    stat_totals["proposal_full_set_rows"] += float(
-        (row_valid_counts <= proposal_step.group.config.shortlist_candidates).sum().item()
+    add_stat_totals(
+        shared,
+        {
+            "proposal_mask_rows": float(row_valid_counts.numel()),
+            "proposal_valid_cells": float(row_valid_counts.sum().item()),
+            "proposal_full_set_rows": float(
+                (row_valid_counts <= group.config.shortlist_candidates).sum().item()
+            ),
+            "proposal_clean_candidates": 0.0,
+            "proposal_evaluated_candidates": 0.0,
+            "proposal_rejected_candidates": 0.0,
+            "proposal_exhausted_rows": 0.0,
+        },
     )
-    if proposal_step.group.previous_proposal_scores is not None:
+    shortlist_limited = row_valid_counts > group.config.shortlist_candidates
+    with shared.gpu_lock:
+        if group.previous_proposal_scores is not None:
+            profile_time = profile_start(profile)
+            proposal_scores = compute_cached_proposal_scores(
+                group,
+                model,
+                group.previous_proposal_scores,
+                proposal_inputs.mask,
+                device,
+            )
+            sync_profile_device(device, profile)
+            shared.profiler.add("python.proposal.compute_cached_scores", profile_time)
+        else:
+            if proposal_inputs.features is None:
+                raise ValueError("proposal scores require proposal features")
+            profile_time = profile_start(profile)
+            proposal_scores = compute_proposal_scores(
+                group,
+                model,
+                proposal_inputs.features,
+                proposal_inputs.mask,
+                device,
+                None,
+            )
+            sync_profile_device(device, profile)
+            shared.profiler.add("python.proposal.compute_fresh_scores", profile_time)
+        shared.profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
         profile_time = profile_start(profile)
-        proposal_scores = compute_cached_proposal_scores(
-            proposal_step.group,
-            model,
-            proposal_step.group.previous_proposal_scores,
+        (
+            sampled_frontier_idx,
+            sampled_door_variant_idx,
+        ) = sample_proposal_shortlist(
+            proposal_scores,
             proposal_inputs.mask,
+            group.config,
             device,
         )
         sync_profile_device(device, profile)
-        profiler.add("python.proposal.compute_cached_scores", profile_time)
-    else:
-        if proposal_inputs.features is None:
-            raise ValueError("proposal scores require proposal features")
-        profile_time = profile_start(profile)
-        proposal_scores = compute_proposal_scores(
-            proposal_step.group,
-            model,
-            proposal_inputs.features,
-            proposal_inputs.mask,
-            device,
-            gpu_lock,
-            transfer_stream,
-        )
-        sync_profile_device(device, profile)
-        profiler.add("python.proposal.compute_fresh_scores", profile_time)
-    profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
-    profile_time = profile_start(profile)
-    (
-        sampled_frontier_idx,
-        sampled_door_variant_idx,
-    ) = sample_proposal_shortlist(
-        proposal_scores,
-        proposal_inputs.mask,
-        proposal_step.group.config,
-        device,
-    )
-    sync_profile_device(device, profile)
-    profiler.add("python.proposal.sample_shortlist", profile_time)
-    start_candidate_step(
-        proposal_step.group,
+        shared.profiler.add("python.proposal.sample_shortlist", profile_time)
+    return (
         sampled_frontier_idx.to(torch.device("cpu")),
         sampled_door_variant_idx.to(torch.device("cpu")),
         shortlist_limited.to(torch.device("cpu")),
-        executor,
-        pending_candidates,
     )
+
+
+def record_candidate_stats(
+    request: CandidateScoreRequest,
+    shared: PipelineSharedState,
+) -> None:
+    stats = request.prepared_step.candidate_batch.stats
+    shortlist_limited = request.shortlist_limited
+    clean_candidates = float(stats.clean_counts.sum().item())
+    evaluated_candidates = float(stats.evaluated_counts.sum().item())
+    rejected_candidates = float(stats.rejected_counts.sum().item())
+    exhausted_rows = float(
+        (
+            (stats.clean_counts < request.group.config.recommended_candidates)
+            & shortlist_limited
+        )
+        .sum()
+        .item()
+    )
+    add_stat_totals(
+        shared,
+        {
+            "proposal_mask_rows": 0.0,
+            "proposal_valid_cells": 0.0,
+            "proposal_full_set_rows": 0.0,
+            "proposal_clean_candidates": clean_candidates,
+            "proposal_evaluated_candidates": evaluated_candidates,
+            "proposal_rejected_candidates": rejected_candidates,
+            "proposal_exhausted_rows": exhausted_rows,
+        },
+    )
+
+
+def run_group_producer(
+    group: GenerationGroup,
+    group_index: int,
+    model,
+    device: torch.device,
+    cpu_ready_queue: Queue[CpuReadyMessage],
+    output: GroupPipelineOutput,
+    shared: PipelineSharedState,
+    verify_outcome_consistency: bool,
+) -> None:
+    try:
+        group.env.clear()
+        group.env.step_initial()
+        group.step = 1
+        group.previous_lookahead_outcomes = bootstrap_lookahead_outcomes(
+            group.env.get_outcomes(
+                torch.device("cpu"),
+                verify_consistency=False,
+            ).step_outcomes
+        )
+        group.previous_proposal_scores = None
+        while group.step < group.config.episode_length and not shared.cancellation_event.is_set():
+            (
+                sampled_frontier_idx,
+                sampled_door_variant_idx,
+                shortlist_limited,
+            ) = compute_group_proposal_shortlist(
+                group,
+                model,
+                device,
+                shared,
+            )
+            profile_time = profile_start(shared.profiler.enabled)
+            prepared_step = prepare_shortlist_generation_step(
+                group,
+                sampled_frontier_idx,
+                sampled_door_variant_idx,
+            )
+            shared.profiler.add("python.wait_candidate_features", profile_time)
+            request = CandidateScoreRequest(
+                group=group,
+                group_index=group_index,
+                prepared_step=prepared_step,
+                shortlist_limited=shortlist_limited,
+            )
+            profile_time = profile_start(shared.profiler.enabled)
+            if not put_queue_until_done(cpu_ready_queue, request, shared.cancellation_event):
+                return
+            result = get_queue_until_done(
+                group.score_result_queue,
+                shared.cancellation_event,
+            )
+            shared.profiler.add("python.pipeline.wait_score_result", profile_time)
+            if isinstance(result, PipelineFailure):
+                raise result.error
+            record_candidate_stats(request, shared)
+            output.proposal_frontier_idx.append(result.proposal_frontier_idx)
+            output.proposal_door_variant_idx.append(result.proposal_door_variant_idx)
+            output.selected_candidate.append(result.selected_candidate)
+            output.target_logits.append(result.target_logits)
+            profile_time = profile_start(shared.profiler.enabled)
+            group.previous_lookahead_outcomes = result.selected_outcomes
+            group.previous_proposal_scores = result.selected_proposal_scores
+            shared.profiler.add("python.cache_next_proposal", profile_time)
+            profile_time = profile_start(shared.profiler.enabled)
+            verify_and_step(
+                group,
+                result.selected_actions,
+                torch.device("cpu"),
+                verify_outcome_consistency,
+            )
+            shared.profiler.add("python.step_environment", profile_time)
+            group.step += 1
+    except BaseException as error:
+        shared.cancellation_event.set()
+        broadcast_pipeline_failure(shared.groups, error)
+        raise
 
 
 def merge_generation_results(
@@ -1180,8 +1581,10 @@ def run_generation_groups(
         raise ValueError("generation groups require one config per environment group")
     profiler = GenerationProfiler(profile)
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
-    gpu_lock = threading.Lock()
     num_rooms = len(envs[0].engine.rooms)
+    gpu_prefetch_batches = configs[0].gpu_prefetch_batches
+    if any(config.gpu_prefetch_batches != gpu_prefetch_batches for config in configs):
+        raise ValueError("generation groups require matching gpu_prefetch_batches")
     groups = [
         GenerationGroup(
             env=env,
@@ -1192,218 +1595,99 @@ def run_generation_groups(
             balance_preds=balance_model(torch.log(config.temperature)),
             previous_lookahead_outcomes=None,
             previous_proposal_scores=None,
+            score_result_queue=Queue(maxsize=1),
         )
         for env, config in zip(envs, configs)
     ]
-    group_index_by_id = {id(group): idx for idx, group in enumerate(groups)}
-    with ThreadPoolExecutor(max_workers=len(groups)) as executor:
-        pending_proposals: deque[PendingProposalStep] = deque()
-        pending_candidates: deque[PendingCandidateStep] = deque()
-        group_proposal_frontier_idx = [[] for _ in groups]
-        group_proposal_door_variant_idx = [[] for _ in groups]
-        group_selected_candidate = [[] for _ in groups]
-        group_proposal_target_logits = [[] for _ in groups]
-        stat_totals = {
-            "proposal_mask_rows": 0.0,
-            "proposal_valid_cells": 0.0,
-            "proposal_full_set_rows": 0.0,
-            "proposal_clean_candidates": 0.0,
-            "proposal_evaluated_candidates": 0.0,
-            "proposal_rejected_candidates": 0.0,
-            "proposal_exhausted_rows": 0.0,
-        }
-        with torch.no_grad():
-            for group in groups:
-                group.env.clear()
-                group.env.step_initial()
-                group.step = 1
-                group.previous_lookahead_outcomes = bootstrap_lookahead_outcomes(
-                    group.env.get_outcomes(
-                        torch.device("cpu"),
-                        verify_consistency=False,
-                    ).step_outcomes
-                )
-                group.previous_proposal_scores = None
-                start_generation_step(
-                    group,
-                    executor,
-                    pending_proposals,
-                )
-            while pending_proposals or pending_candidates:
-                proposal_step = pop_ready_proposal_step(pending_proposals)
-                if proposal_step is not None:
-                    profile_time = profile_start(profile)
-                    process_proposal_step(
-                        proposal_step,
-                        model,
-                        device,
-                        gpu_lock,
-                        transfer_stream,
-                        executor,
-                        pending_candidates,
-                        profiler,
-                        stat_totals,
-                        profile,
-                    )
-                    profiler.add(
-                        "python.pipeline.ready_proposal_while_candidate_pending",
-                        profile_time,
-                    )
-                    continue
-                if not pending_candidates:
-                    proposal_drain_time = profile_start(profile)
-                    while pending_proposals:
-                        process_proposal_step(
-                            pending_proposals.popleft(),
-                            model,
-                            device,
-                            gpu_lock,
-                            transfer_stream,
-                            executor,
-                            pending_candidates,
-                            profiler,
-                            stat_totals,
-                            profile,
-                        )
-                    profiler.add("python.pipeline.no_pending_candidates", proposal_drain_time)
-                    continue
-
-                step = pending_candidates.popleft()
-                profile_time = profile_start(profile)
-                prepared_step = step.future.result()
-                profiler.add("python.wait_candidate_features", profile_time)
-                profile_time = profile_start(profile)
-                candidate_batch = transfer_candidate_batch(
-                    prepared_step.candidate_batch,
-                    device,
-                    transfer_stream,
-                )
-                profiler.add("python.transfer_candidate_batch", profile_time)
-                candidates = candidate_batch.candidates
-                if prepared_step.features is None:
-                    action_index = torch.zeros(
-                        candidates.room_idx.shape[0],
-                        dtype=torch.int64,
-                        device=device,
-                    )
-                    selected_actions = candidates.select(action_index)
-                    candidate_logits = torch.zeros(
-                        candidates.room_idx.shape,
-                        dtype=torch.float32,
-                        device=device,
-                    )
-                    selected_proposal_scores = None
-                else:
-                    (
-                        action_index,
-                        selected_actions,
-                        candidate_logits,
-                        selected_proposal_scores,
-                    ) = select_candidate_actions(
-                        step.group,
-                        model,
-                        candidates,
-                        candidate_batch.reward_outcomes,
-                        candidate_batch.post_candidate_outcomes.door_match,
-                        prepared_step.features,
-                        device,
-                        gpu_lock,
-                        transfer_stream,
-                        num_rooms,
-                        profiler,
-                    )
-                if step.group.step > 0:
-                    stats = candidate_batch.stats
-                    stat_totals["proposal_clean_candidates"] += float(
-                        stats.clean_counts.sum().item()
-                    )
-                    stat_totals["proposal_evaluated_candidates"] += float(
-                        stats.evaluated_counts.sum().item()
-                    )
-                    stat_totals["proposal_rejected_candidates"] += float(
-                        stats.rejected_counts.sum().item()
-                    )
-                    stat_totals["proposal_exhausted_rows"] += float(
-                        (
-                            (stats.clean_counts < step.group.config.recommended_candidates)
-                            & step.shortlist_limited.to(device)
-                        )
-                        .sum()
-                        .item()
-                    )
-                group_index = group_index_by_id[id(step.group)]
-                profile_time = profile_start(profile)
-                max_candidates = step.group.config.recommended_candidates
-                candidate_frontier_idx = candidate_batch.proposal_frontier_idx
-                frontier_idx = (
-                    candidate_frontier_idx[:, 0]
-                    if candidate_frontier_idx.shape[1] > 0
-                    else torch.full(
-                        [candidates.room_idx.shape[0]],
-                        -1,
-                        dtype=candidate_frontier_idx.dtype,
-                        device=device,
-                    )
-                )
-                if candidate_batch.proposal_door_variant_idx.shape[1] == max_candidates:
-                    door_variant_idx = candidate_batch.proposal_door_variant_idx
-                else:
-                    door_variant_idx = torch.full(
-                        [candidates.room_idx.shape[0], max_candidates],
-                        -1,
-                        dtype=candidate_batch.proposal_door_variant_idx.dtype,
-                        device=device,
-                    )
-                    door_variant_idx[:, : candidate_batch.proposal_door_variant_idx.shape[1]] = (
-                        candidate_batch.proposal_door_variant_idx
-                    )
-                if candidate_logits.shape[1] == max_candidates:
-                    target_logits = candidate_logits.to(torch.float32)
-                else:
-                    target_logits = torch.full(
-                        [candidates.room_idx.shape[0], max_candidates],
-                        float("-inf"),
-                        dtype=torch.float32,
-                        device=device,
-                    )
-                    target_logits[:, : candidate_logits.shape[1]] = candidate_logits.to(
-                        torch.float32
-                    )
-                group_proposal_frontier_idx[group_index].append(
-                    frontier_idx.to(device="cpu", copy=True)
-                )
-                group_proposal_door_variant_idx[group_index].append(
-                    door_variant_idx.to(device="cpu", copy=True)
-                )
-                group_selected_candidate[group_index].append(
-                    action_index.to(device="cpu", copy=True)
-                )
-                group_proposal_target_logits[group_index].append(
-                    target_logits.to(device="cpu", copy=True)
-                )
-                profiler.add("python.record_proposal_data", profile_time)
-                profile_time = profile_start(profile)
-                step.group.previous_lookahead_outcomes = select_outcomes(
-                    candidate_batch.post_candidate_outcomes,
-                    action_index,
-                ).to(torch.device("cpu"))
-                step.group.previous_proposal_scores = selected_proposal_scores
-                profiler.add("python.cache_next_proposal", profile_time)
-                profile_time = profile_start(profile)
-                verify_and_step(
-                    step.group,
-                    selected_actions,
-                    device,
-                    verify_outcome_consistency,
-                )
-                profiler.add("python.step_environment", profile_time)
-                step.group.step += 1
-                if step.group.step < step.group.config.episode_length:
-                    start_generation_step(
-                        step.group,
-                        executor,
-                        pending_proposals,
-                    )
+    group_outputs = [
+        GroupPipelineOutput(
+            proposal_frontier_idx=[],
+            proposal_door_variant_idx=[],
+            selected_candidate=[],
+            target_logits=[],
+        )
+        for _ in groups
+    ]
+    stat_totals = {
+        "proposal_mask_rows": 0.0,
+        "proposal_valid_cells": 0.0,
+        "proposal_full_set_rows": 0.0,
+        "proposal_clean_candidates": 0.0,
+        "proposal_evaluated_candidates": 0.0,
+        "proposal_rejected_candidates": 0.0,
+        "proposal_exhausted_rows": 0.0,
+    }
+    cancellation_event = threading.Event()
+    shared = PipelineSharedState(
+        profiler=profiler,
+        stat_totals=stat_totals,
+        stat_lock=threading.Lock(),
+        gpu_lock=threading.Lock(),
+        cancellation_event=cancellation_event,
+        groups=groups,
+    )
+    cpu_ready_queue: Queue[CpuReadyMessage] = Queue(maxsize=len(groups))
+    worker_count = len(groups) + 1 + int(gpu_prefetch_batches > 0)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        if gpu_prefetch_batches > 0:
+            gpu_ready_queue: Queue[GpuReadyMessage] = Queue(maxsize=gpu_prefetch_batches)
+            transfer_future = executor.submit(
+                run_transfer_coordinator,
+                cpu_ready_queue,
+                gpu_ready_queue,
+                device,
+                transfer_stream,
+                shared,
+            )
+            scorer_future = executor.submit(
+                run_gpu_scorer,
+                gpu_ready_queue,
+                model,
+                device,
+                num_rooms,
+                shared,
+            )
+        else:
+            transfer_future = None
+            scorer_future = executor.submit(
+                run_direct_gpu_scorer,
+                cpu_ready_queue,
+                model,
+                device,
+                num_rooms,
+                shared,
+            )
+        producer_futures = [
+            executor.submit(
+                run_group_producer,
+                group,
+                group_index,
+                model,
+                device,
+                cpu_ready_queue,
+                group_outputs[group_index],
+                shared,
+                verify_outcome_consistency,
+            )
+            for group_index, group in enumerate(groups)
+        ]
+        producer_error = None
+        for future in producer_futures:
+            try:
+                future.result()
+            except BaseException as error:
+                producer_error = error
+                cancellation_event.set()
+                break
+        if producer_error is None:
+            put_queue_until_done(cpu_ready_queue, StopPipeline(), cancellation_event)
+        else:
+            broadcast_pipeline_failure(groups, producer_error)
+        if transfer_future is not None:
+            transfer_future.result()
+        scorer_future.result()
+        if producer_error is not None:
+            raise producer_error
         results = []
         for group_index, group in enumerate(groups):
             profile_time = profile_start(profile)
@@ -1429,19 +1713,20 @@ def run_generation_groups(
                     (
                         ProposalData(
                             frontier_idx=torch.stack(
-                                group_proposal_frontier_idx[group_index], dim=1
+                                group_outputs[group_index].proposal_frontier_idx, dim=1
                             ),
                             door_variant_idx=torch.stack(
-                                group_proposal_door_variant_idx[group_index], dim=1
+                                group_outputs[group_index].proposal_door_variant_idx,
+                                dim=1,
                             ),
                             selected_candidate=torch.stack(
-                                group_selected_candidate[group_index], dim=1
+                                group_outputs[group_index].selected_candidate, dim=1
                             ),
                             target_logits=torch.stack(
-                                group_proposal_target_logits[group_index], dim=1
+                                group_outputs[group_index].target_logits, dim=1
                             ),
                         )
-                        if group_proposal_frontier_idx[group_index]
+                        if group_outputs[group_index].proposal_frontier_idx
                         else empty_proposal_data(
                             group.config.temperature.shape[0],
                             group.config.recommended_candidates,

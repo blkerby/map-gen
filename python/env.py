@@ -19,6 +19,7 @@ class GenerateConfig:
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
+    gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
     reward_door: float

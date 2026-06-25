@@ -479,6 +479,7 @@ def create_generate_config(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
         shortlist_candidates=config.generation.shortlist_candidates,
+        gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=torch.full(
             [num_envs],
             temperature,

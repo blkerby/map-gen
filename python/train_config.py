@@ -76,6 +76,7 @@ class GenerationConfig(StrictBaseModel):
     num_iterations: int
     num_devices: int
     pipeline_groups: int
+    gpu_prefetch_batches: int
     recommended_candidates: ScheduleableInt
     shortlist_candidates: ScheduleableInt
     temperature: ScheduleableFloat
@@ -329,6 +330,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("generation.num_devices must be greater than zero")
     if config.generation.pipeline_groups <= 0:
         raise ValueError("generation.pipeline_groups must be greater than zero")
+    if config.generation.gpu_prefetch_batches < 0:
+        raise ValueError("generation.gpu_prefetch_batches must be greater than or equal to zero")
     if (
         isinstance(config.generation.recommended_candidates, int)
         and config.generation.recommended_candidates <= 0
