@@ -193,34 +193,23 @@ def compute_room_distances(adjacency: torch.Tensor) -> torch.Tensor:
 def sample_area_centers(
     room_idx: torch.Tensor, attempt_count: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    centers = []
-    valid_mask = []
-    for row in room_idx:
-        unique_rooms = torch.unique(row)
-        if unique_rooms.numel() < AREA_COUNT:
-            centers.append(
-                torch.zeros((attempt_count, AREA_COUNT), device=row.device, dtype=torch.int64)
-            )
-            valid_mask.append(False)
-            continue
-        selected_rooms = torch.stack(
-            [
-                unique_rooms[
-                    torch.randperm(unique_rooms.numel(), device=row.device)[:AREA_COUNT]
-                ]
-                for _ in range(attempt_count)
-            ]
+    environment_count, room_count = room_idx.shape
+    if room_count < AREA_COUNT:
+        return (
+            torch.zeros(
+                (environment_count, attempt_count, AREA_COUNT),
+                device=room_idx.device,
+                dtype=torch.int64,
+            ),
+            torch.zeros((environment_count,), device=room_idx.device, dtype=torch.bool),
         )
-        center_positions = torch.argmax(
-            (row[None, None, :] == selected_rooms[:, :, None]).to(torch.int64),
-            dim=2,
-        )
-        centers.append(center_positions)
-        valid_mask.append(True)
-    return (
-        torch.stack(centers),
-        torch.tensor(valid_mask, device=room_idx.device, dtype=torch.bool),
+    random_scores = torch.rand(
+        (environment_count, attempt_count, room_count),
+        device=room_idx.device,
     )
+    centers = torch.topk(random_scores, k=AREA_COUNT, dim=2).indices
+    valid_mask = torch.ones((environment_count,), device=room_idx.device, dtype=torch.bool)
+    return centers, valid_mask
 
 
 def assign_rooms_to_centers(distances: torch.Tensor, centers: torch.Tensor) -> torch.Tensor:
