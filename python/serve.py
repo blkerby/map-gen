@@ -279,6 +279,24 @@ def tensor_to_list(tensor: torch.Tensor) -> list:
     return tensor.detach().cpu().tolist()
 
 
+def tensor_has_invalid_outcome(tensor: torch.Tensor) -> torch.Tensor:
+    invalid = tensor > 0
+    if invalid.ndim == 1:
+        return invalid
+    return torch.any(invalid, dim=tuple(range(1, invalid.ndim)))
+
+
+def valid_map_mask(outcomes) -> torch.Tensor:
+    step_outcomes = outcomes.step_outcomes
+    invalid = (
+        tensor_has_invalid_outcome(step_outcomes.door_invalid)
+        | tensor_has_invalid_outcome(step_outcomes.connection_invalid)
+        | tensor_has_invalid_outcome(step_outcomes.toilet_invalid)
+        | tensor_has_invalid_outcome(step_outcomes.phantoon_invalid)
+    )
+    return ~invalid
+
+
 def initialize_serving_state(state: ServingState) -> None:
     global SERVING_STATE
     SERVING_STATE = state
@@ -300,7 +318,7 @@ def generate_response():
     with state.lock, torch.inference_mode():
         (
             episode_data,
-            _outcomes,
+            outcomes,
             _door_match_counts,
             _proposal_data,
             _generation_stats,
@@ -314,12 +332,15 @@ def generate_response():
             verify_outcome_consistency=state.serving_config.verify_outcome_consistency,
             profile=state.profile,
         )
+    valid_mask = valid_map_mask(outcomes)
     return jsonify(
         {
+            "num_generated": int(episode_data.actions.room_idx.shape[0]),
+            "num_valid": int(torch.sum(valid_mask).item()),
             "actions": {
-                "room_idx": tensor_to_list(episode_data.actions.room_idx),
-                "room_x": tensor_to_list(episode_data.actions.room_x),
-                "room_y": tensor_to_list(episode_data.actions.room_y),
+                "room_idx": tensor_to_list(episode_data.actions.room_idx[valid_mask]),
+                "room_x": tensor_to_list(episode_data.actions.room_x[valid_mask]),
+                "room_y": tensor_to_list(episode_data.actions.room_y[valid_mask]),
             },
         }
     )
