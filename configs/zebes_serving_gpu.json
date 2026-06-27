@@ -1,0 +1,13 @@
+{
+  "host": "127.0.0.1",
+  "port": 5000,
+  "device": "cuda:0",
+  "compile_model": true,
+  "autocast": false,
+  "verify_outcome_consistency": false,
+  "gpu_prefetch_batches": 1,
+  "room_set": "room_definitions/zebes.json",
+  "num_environments": 64,
+  "pipeline_groups": 1,
+  "num_threads": 16
+}

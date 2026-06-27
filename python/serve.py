@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from safetensors import safe_open
 from werkzeug.exceptions import BadRequest
 
+from area_assignment import assign_room_areas
 from env import Engine, GenerateConfig
 from generate import run_generation_groups
 from model import FrontierModel
@@ -20,6 +21,8 @@ from train_config import Config, validate_config
 
 
 MODEL_EXPORT_FORMAT = "map-gen-model-export-v1"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v3"
+MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 app = Flask(__name__)
 
@@ -95,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "model_export",
         type=Path,
-        help="Model export safetensors file produced by scripts/export_model.py.",
+        help="Model export or training checkpoint safetensors file.",
     )
     parser.add_argument(
         "--profile",
@@ -114,28 +117,28 @@ def load_serving_config(path: Path) -> ServingConfig:
     return ServingConfig.model_validate_json(path.read_text())
 
 
-def validate_model_export_metadata(path: Path, metadata: dict[str, str] | None) -> dict[str, str]:
+def validate_model_input_metadata(path: Path, metadata: dict[str, str] | None) -> dict[str, str]:
     if metadata is None:
-        raise ValueError(f"model export metadata missing in {path}")
-    if metadata["format"] != MODEL_EXPORT_FORMAT:
-        raise ValueError(f"unsupported model export format in {path}")
-    for field in ("config", "source_format", "source_num_episodes", "source_aim_run_hash"):
+        raise ValueError(f"model input metadata missing in {path}")
+    for field in ("format", "config"):
         if field not in metadata:
-            raise ValueError(f"model export metadata field {field!r} missing in {path}")
+            raise ValueError(f"model input metadata field {field!r} missing in {path}")
+    if metadata["format"] not in MODEL_INPUT_FORMATS:
+        raise ValueError(f"unsupported model input format in {path}")
     return metadata
 
 
-def load_model_export(path: Path) -> ModelExport:
-    with safe_open(path, framework="pt", device="cpu") as export:
-        metadata = validate_model_export_metadata(path, export.metadata())
-        tensors = {name: export.get_tensor(name) for name in export.keys()}
+def load_model_input(path: Path) -> ModelExport:
+    with safe_open(path, framework="pt", device="cpu") as model_input:
+        metadata = validate_model_input_metadata(path, model_input.metadata())
+        tensors = {name: model_input.get_tensor(name) for name in model_input.keys()}
     missing_prefixes = [
         prefix
         for prefix in MODEL_PREFIXES
         if not any(name.startswith(f"{prefix}.") for name in tensors)
     ]
     if missing_prefixes:
-        raise ValueError(f"model export missing tensor group(s): {', '.join(missing_prefixes)}")
+        raise ValueError(f"model input missing tensor group(s): {', '.join(missing_prefixes)}")
     training_config = Config.model_validate_json(metadata["config"])
     validate_config(training_config)
     return ModelExport(training_config=training_config, tensors=tensors)
@@ -333,15 +336,18 @@ def generate_response():
             profile=state.profile,
         )
     valid_mask = valid_map_mask(outcomes)
+    valid_room_idx = episode_data.actions.room_idx[valid_mask]
+    area = assign_room_areas(valid_room_idx)
     return jsonify(
         {
             "num_generated": int(episode_data.actions.room_idx.shape[0]),
             "num_valid": int(torch.sum(valid_mask).item()),
             "actions": {
-                "room_idx": tensor_to_list(episode_data.actions.room_idx[valid_mask]),
+                "room_idx": tensor_to_list(valid_room_idx),
                 "room_x": tensor_to_list(episode_data.actions.room_x[valid_mask]),
                 "room_y": tensor_to_list(episode_data.actions.room_y[valid_mask]),
             },
+            "area": tensor_to_list(area),
         }
     )
 
@@ -369,7 +375,7 @@ def bad_request_response(error: BadRequest):
 def main() -> None:
     args = parse_args()
     serving_config = load_serving_config(args.serving_config)
-    model_export = load_model_export(args.model_export)
+    model_export = load_model_input(args.model_export)
     state = create_serving_state(
         serving_config,
         model_export,
