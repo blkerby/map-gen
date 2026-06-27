@@ -39,7 +39,7 @@ def main() -> int:
     except urllib.error.HTTPError as error:
         print(error.read().decode("utf-8"))
         return 1
-    print(json.dumps(json.loads(response_body), indent=2))
+    print(response_body)
     return 0
 
 

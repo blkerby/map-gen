@@ -12,9 +12,15 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from safetensors import safe_open
 from werkzeug.exceptions import BadRequest
 
-from area_assignment import DoorRoomLookup, assign_room_areas, build_door_room_lookup
+from area_assignment import (
+    DoorRoomLookup,
+    RoomGeometry,
+    assign_room_areas,
+    build_door_room_lookup,
+    build_room_geometry,
+)
 from env import DoorMatches, Engine, GenerateConfig
-from generate import run_generation_groups
+from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from model import FrontierModel
 from train import create_balance_model, frontier_model_kwargs, without_prefix
 from train_config import Config, validate_config
@@ -39,6 +45,9 @@ class ServingConfig(StrictBaseModel):
     autocast: bool
     verify_outcome_consistency: bool
     gpu_prefetch_batches: int
+    area_assignment_attempts: int
+    area_bounding_box_width: int
+    area_bounding_box_height: int
     room_set: Path
     num_environments: int
     pipeline_groups: int
@@ -80,6 +89,7 @@ class ServingState:
     model: torch.nn.Module
     balance_model: torch.nn.Module
     door_room_lookup: DoorRoomLookup
+    room_geometry: RoomGeometry
     profile: bool
     lock: threading.Lock
 
@@ -164,6 +174,12 @@ def create_environment_groups(
         raise ValueError("num_threads must be greater than zero")
     if serving_config.gpu_prefetch_batches < 0:
         raise ValueError("gpu_prefetch_batches must be greater than or equal to zero")
+    if serving_config.area_assignment_attempts <= 0:
+        raise ValueError("area_assignment_attempts must be greater than zero")
+    if serving_config.area_bounding_box_width <= 0:
+        raise ValueError("area_bounding_box_width must be greater than zero")
+    if serving_config.area_bounding_box_height <= 0:
+        raise ValueError("area_bounding_box_height must be greater than zero")
     group_environments = serving_config.num_environments // serving_config.pipeline_groups
     group_threads = serving_config.num_threads // serving_config.pipeline_groups
     if group_threads <= 0:
@@ -210,6 +226,7 @@ def create_serving_state(
         balance_model = torch.compile(balance_model)
     envs = create_environment_groups(serving_config, model_export.training_config, engine, seed)
     door_room_lookup = build_door_room_lookup(rooms, device)
+    room_geometry = build_room_geometry(rooms, device)
     return ServingState(
         serving_config=serving_config,
         training_config=model_export.training_config,
@@ -219,6 +236,7 @@ def create_serving_state(
         model=model,
         balance_model=balance_model,
         door_room_lookup=door_room_lookup,
+        room_geometry=room_geometry,
         profile=profile,
         lock=threading.Lock(),
     )
@@ -333,21 +351,51 @@ def serving_state() -> ServingState:
     return SERVING_STATE
 
 
+def add_serving_profile(
+    profiler: GenerationProfiler,
+    device: torch.device,
+    name: str,
+    start: int,
+) -> None:
+    sync_profile_device(device, profiler.enabled)
+    profiler.add(name, start)
+
+
 @app.post("/generate")
 def generate_response():
     state = serving_state()
+    serving_profiler = GenerationProfiler(state.profile)
+    request_start = profile_start(state.profile)
+
+    profile_time = profile_start(state.profile)
     body = request.get_json(silent=False)
     generate_request = GenerateRequest.model_validate(body)
     validate_generate_request(generate_request, state.rooms)
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.parse_validate_request",
+        profile_time,
+    )
+
+    profile_time = profile_start(state.profile)
     configs = create_generate_configs(generate_request, state, state.envs, state.device)
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.create_generate_configs",
+        profile_time,
+    )
+
     with state.lock, torch.inference_mode():
+        profile_time = profile_start(state.profile)
         (
             episode_data,
             outcomes,
             _door_match_counts,
             _proposal_data,
             _generation_stats,
-            _profile_report,
+            profile_report,
         ) = run_generation_groups(
             state.envs,
             state.model,
@@ -357,23 +405,92 @@ def generate_response():
             verify_outcome_consistency=state.serving_config.verify_outcome_consistency,
             profile=state.profile,
         )
+        add_serving_profile(
+            serving_profiler,
+            state.device,
+            "python.serve.run_generation_groups",
+            profile_time,
+        )
+
+        profile_time = profile_start(state.profile)
         door_matches = collect_door_matches(state.envs, state.device)
+        add_serving_profile(
+            serving_profiler,
+            state.device,
+            "python.serve.collect_door_matches",
+            profile_time,
+        )
+
+    profile_time = profile_start(state.profile)
     valid_mask = valid_map_mask(outcomes)
     valid_room_idx = episode_data.actions.room_idx[valid_mask]
+    valid_room_x = episode_data.actions.room_x[valid_mask]
+    valid_room_y = episode_data.actions.room_y[valid_mask]
     valid_door_matches = filter_door_matches(door_matches, valid_mask)
-    area = assign_room_areas(valid_room_idx, valid_door_matches, state.door_room_lookup)
-    return jsonify(
-        {
-            "num_generated": int(episode_data.actions.room_idx.shape[0]),
-            "num_valid": int(torch.sum(valid_mask).item()),
-            "actions": {
-                "room_idx": tensor_to_list(valid_room_idx),
-                "room_x": tensor_to_list(episode_data.actions.room_x[valid_mask]),
-                "room_y": tensor_to_list(episode_data.actions.room_y[valid_mask]),
-            },
-            "area": tensor_to_list(area),
-        }
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.filter_valid_maps",
+        profile_time,
     )
+
+    profile_time = profile_start(state.profile)
+    area_assignment = assign_room_areas(
+        valid_room_idx,
+        valid_room_x,
+        valid_room_y,
+        valid_door_matches,
+        state.door_room_lookup,
+        state.room_geometry,
+        state.serving_config.area_assignment_attempts,
+        state.serving_config.area_bounding_box_width,
+        state.serving_config.area_bounding_box_height,
+        serving_profiler,
+    )
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.assign_room_areas",
+        profile_time,
+    )
+
+    profile_time = profile_start(state.profile)
+    area_valid_mask = area_assignment.valid_mask
+    final_room_idx = valid_room_idx[area_valid_mask]
+    final_room_x = valid_room_x[area_valid_mask]
+    final_room_y = valid_room_y[area_valid_mask]
+    num_generated = int(episode_data.actions.room_idx.shape[0])
+    num_pre_valid = int(torch.sum(valid_mask).item())
+    num_valid = int(torch.sum(area_valid_mask).item())
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.prepare_response_tensors",
+        profile_time,
+    )
+
+    profile_time = profile_start(state.profile)
+    response = {
+        "num_generated": num_generated,
+        "num_pre_valid": num_pre_valid,
+        "num_valid": num_valid,
+        "actions": {
+            "room_idx": tensor_to_list(final_room_idx),
+            "room_x": tensor_to_list(final_room_x),
+            "room_y": tensor_to_list(final_room_y),
+        },
+        "area": tensor_to_list(area_assignment.area),
+    }
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.build_response_json",
+        profile_time,
+    )
+    add_serving_profile(serving_profiler, state.device, "python.serve.total", request_start)
+    if state.profile:
+        response["profile"] = profile_report + serving_profiler.report()
+    return jsonify(response)
 
 
 @app.get("/health")
