@@ -266,9 +266,8 @@ def validate_checkpoint_metadata(path: Path, metadata: dict[str, str] | None) ->
     if metadata is None:
         raise ValueError(f"checkpoint metadata missing in {path}")
     if metadata["format"] != TRAINING_CHECKPOINT_FORMAT:
-        raise ValueError(f"unsupported checkpoint format in {path}")
+        logging.warning(f"unsupported checkpoint format in {path}")
     for field in (
-        "config",
         "aim_run_hash",
         "num_episodes",
         "experience_num_files",

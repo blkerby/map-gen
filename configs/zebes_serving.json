@@ -1,0 +1,12 @@
+{
+  "host": "127.0.0.1",
+  "port": 5000,
+  "device": "cpu",
+  "compile_model": false,
+  "verify_outcome_consistency": false,
+  "gpu_prefetch_batches": 0,
+  "room_set": "room_definitions/zebes.json",
+  "num_environments": 1,
+  "pipeline_groups": 1,
+  "num_threads": 16
+}
