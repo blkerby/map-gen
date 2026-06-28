@@ -97,6 +97,22 @@ def main() -> None:
         valid_area[0],
         map_station_data.map_station,
     )
+    area_two_map_positions = set()
+    for seed in range(100):
+        torch.manual_seed(seed)
+        sampled_room_idx = apply_map_station_swaps(room_idx, valid_area, map_station_data)
+        assert_one_map_station_per_area(
+            sampled_room_idx[0],
+            valid_area[0],
+            map_station_data.map_station,
+        )
+        area_two_positions = torch.where(valid_area[0] == 2)[0]
+        area_two_map_mask = map_station_data.map_station[
+            sampled_room_idx[0, area_two_positions].to(torch.int64)
+        ]
+        map_position = area_two_positions[area_two_map_mask][0]
+        area_two_map_positions.add(int(map_position.item()))
+    assert area_two_map_positions == {2, 6}
 
     overlap_area = torch.tensor([[0, 4, 1, 5, 4, 3, 2, 4]], device=device)
     overlap_valid_mask = map_station_area_valid_mask(

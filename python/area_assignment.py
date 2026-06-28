@@ -423,11 +423,10 @@ def map_station_target_direction(
     )
 
 
-def first_position_by_area(mask: torch.Tensor, area: torch.Tensor) -> torch.Tensor:
-    room_count = area.shape[1]
-    high = torch.full_like(area, room_count, dtype=torch.int64)
-    room_position = torch.arange(room_count, device=area.device, dtype=torch.int64)[None, :]
-    return torch.where(mask, room_position, high).amin(dim=1)
+def random_position(mask: torch.Tensor) -> torch.Tensor:
+    random_scores = torch.rand(mask.shape, device=mask.device)
+    ranked_scores = torch.where(mask, random_scores, torch.full_like(random_scores, 2.0))
+    return torch.argmin(ranked_scores, dim=1)
 
 
 def ranked_positions(mask: torch.Tensor, count: int) -> torch.Tensor:
@@ -467,7 +466,7 @@ def apply_map_station_swaps(
         for area_id in range(AREA_COUNT):
             area_target = direction_target_area[:, area_id]
             target_mask = area_target[:, None] & placed_slot & (area == area_id)
-            target_positions.append(first_position_by_area(target_mask, area))
+            target_positions.append(random_position(target_mask))
         target_positions = torch.stack(target_positions, dim=1)
         active_target_areas = ranked_positions(direction_target_area, max_target_count).clamp(
             max=AREA_COUNT - 1
