@@ -5,6 +5,7 @@ import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 from flask import Flask, jsonify, request
@@ -35,6 +36,13 @@ TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v3"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 app = Flask(__name__)
+DIRECTIONS = ("left", "right", "up", "down")
+OPPOSITE_DIRECTIONS = {
+    "left": "right",
+    "right": "left",
+    "up": "down",
+    "down": "up",
+}
 
 
 class StrictBaseModel(BaseModel):
@@ -86,6 +94,19 @@ class ModelExport:
     tensors: dict[str, torch.Tensor]
 
 
+class DoorLookup(NamedTuple):
+    room_idx: list[int]
+    door_idx: list[int]
+
+
+@dataclass
+class DoorLookups:
+    left: DoorLookup
+    right: DoorLookup
+    up: DoorLookup
+    down: DoorLookup
+
+
 @dataclass
 class ServingState:
     serving_config: ServingConfig
@@ -99,6 +120,7 @@ class ServingState:
     room_geometry: RoomGeometry
     map_station_data: MapStationData
     toilet_data: ToiletData
+    door_lookups: DoorLookups
     profile: bool
     lock: threading.Lock
 
@@ -253,6 +275,7 @@ def create_serving_state(
     room_geometry = build_room_geometry(rooms, device)
     map_station_data = build_map_station_data(rooms, device)
     toilet_data = build_toilet_data(rooms, device)
+    door_lookups = build_door_lookups(rooms)
     return ServingState(
         serving_config=serving_config,
         training_config=model_export.training_config,
@@ -265,6 +288,7 @@ def create_serving_state(
         room_geometry=room_geometry,
         map_station_data=map_station_data,
         toilet_data=toilet_data,
+        door_lookups=door_lookups,
         profile=profile,
         lock=threading.Lock(),
     )
@@ -331,6 +355,26 @@ def tensor_to_list(tensor: torch.Tensor) -> list:
     return tensor.detach().cpu().tolist()
 
 
+def flat_doors(room: dict) -> list[dict]:
+    return [door for door_group in room["doors"] for door in door_group]
+
+
+def build_door_lookups(rooms: list[dict]) -> DoorLookups:
+    door_rooms = {direction: [] for direction in DIRECTIONS}
+    door_indices = {direction: [] for direction in DIRECTIONS}
+    for room_idx, room in enumerate(rooms):
+        for door_idx, door in enumerate(flat_doors(room)):
+            direction = door["direction"]
+            door_rooms[direction].append(room_idx)
+            door_indices[direction].append(door_idx)
+    return DoorLookups(
+        left=DoorLookup(room_idx=door_rooms["left"], door_idx=door_indices["left"]),
+        right=DoorLookup(room_idx=door_rooms["right"], door_idx=door_indices["right"]),
+        up=DoorLookup(room_idx=door_rooms["up"], door_idx=door_indices["up"]),
+        down=DoorLookup(room_idx=door_rooms["down"], door_idx=door_indices["down"]),
+    )
+
+
 def tensor_has_invalid_outcome(tensor: torch.Tensor) -> torch.Tensor:
     invalid = tensor > 0
     if invalid.ndim == 1:
@@ -366,6 +410,94 @@ def filter_door_matches(door_matches: DoorMatches, mask: torch.Tensor) -> DoorMa
         up=door_matches.up[mask],
         down=door_matches.down[mask],
     )
+
+
+def placement_positions_by_room(room_idx: list[int]) -> dict[int, int]:
+    return {room: position for position, room in enumerate(room_idx)}
+
+
+def append_edge(
+    edges: dict[str, list[int]],
+    seen_edges: set[tuple[int, int, int, int]],
+    from_endpoint: tuple[int, int],
+    to_endpoint: tuple[int, int],
+) -> None:
+    if to_endpoint < from_endpoint:
+        from_endpoint, to_endpoint = to_endpoint, from_endpoint
+    edge = (*from_endpoint, *to_endpoint)
+    if edge in seen_edges:
+        return
+    seen_edges.add(edge)
+    edges["from_room_placement_idx"].append(from_endpoint[0])
+    edges["from_door_idx"].append(from_endpoint[1])
+    edges["to_room_placement_idx"].append(to_endpoint[0])
+    edges["to_door_idx"].append(to_endpoint[1])
+
+
+def collect_response_direction_edges(
+    edges: dict[str, list[int]],
+    seen_edges: set[tuple[int, int, int, int]],
+    source_matches: list[int],
+    source_lookup: DoorLookup,
+    target_lookup: DoorLookup,
+    room_position: dict[int, int],
+) -> None:
+    for source_direction_door_idx, target_direction_door_idx in enumerate(source_matches):
+        if target_direction_door_idx < 0:
+            continue
+        source_room_idx = source_lookup.room_idx[source_direction_door_idx]
+        target_room_idx = target_lookup.room_idx[target_direction_door_idx]
+        source_room_position = room_position.get(source_room_idx)
+        target_room_position = room_position.get(target_room_idx)
+        if source_room_position is None or target_room_position is None:
+            continue
+        append_edge(
+            edges,
+            seen_edges,
+            (source_room_position, source_lookup.door_idx[source_direction_door_idx]),
+            (target_room_position, target_lookup.door_idx[target_direction_door_idx]),
+        )
+
+
+def response_edges(
+    room_idx: list[list[int]],
+    door_matches: DoorMatches,
+    door_lookups: DoorLookups,
+) -> dict[str, list[list[int]]]:
+    edge_lists = {
+        "from_room_placement_idx": [],
+        "from_door_idx": [],
+        "to_room_placement_idx": [],
+        "to_door_idx": [],
+    }
+    direction_matches = {
+        "left": tensor_to_list(door_matches.left),
+        "right": tensor_to_list(door_matches.right),
+        "up": tensor_to_list(door_matches.up),
+        "down": tensor_to_list(door_matches.down),
+    }
+    direction_lookups = {
+        "left": door_lookups.left,
+        "right": door_lookups.right,
+        "up": door_lookups.up,
+        "down": door_lookups.down,
+    }
+    for map_idx, map_room_idx in enumerate(room_idx):
+        map_edges = {key: [] for key in edge_lists}
+        seen_edges = set()
+        room_position = placement_positions_by_room(map_room_idx)
+        for direction in DIRECTIONS:
+            collect_response_direction_edges(
+                map_edges,
+                seen_edges,
+                direction_matches[direction][map_idx],
+                direction_lookups[direction],
+                direction_lookups[OPPOSITE_DIRECTIONS[direction]],
+                room_position,
+            )
+        for key, values in map_edges.items():
+            edge_lists[key].append(values)
+    return edge_lists
 
 
 def initialize_serving_state(state: ServingState) -> None:
@@ -493,6 +625,8 @@ def generate_response():
     final_room_idx = area_assignment.room_idx
     final_room_x = valid_room_x[area_valid_mask]
     final_room_y = valid_room_y[area_valid_mask]
+    final_door_matches = filter_door_matches(valid_door_matches, area_valid_mask)
+    final_room_idx_list = tensor_to_list(final_room_idx)
     num_generated = int(episode_data.actions.room_idx.shape[0])
     num_pre_valid = int(torch.sum(valid_mask).item())
     num_valid = int(torch.sum(area_valid_mask).item())
@@ -509,10 +643,11 @@ def generate_response():
         "num_pre_valid": num_pre_valid,
         "num_valid": num_valid,
         "actions": {
-            "room_idx": tensor_to_list(final_room_idx),
+            "room_idx": final_room_idx_list,
             "room_x": tensor_to_list(final_room_x),
             "room_y": tensor_to_list(final_room_y),
         },
+        "edges": response_edges(final_room_idx_list, final_door_matches, state.door_lookups),
         "area": tensor_to_list(area_assignment.area),
         "area_crossings": tensor_to_list(area_assignment.crossing_count),
         "avg_area_crossings": (
