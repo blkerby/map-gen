@@ -22,6 +22,14 @@ _SPECIAL_TYPE_MARKERS = {
     "phantoon_boss": "P",
     "phantoon_map": "W",
 }
+_AREA_COLORS = {
+    0: "#7b2cbf",  # Crateria
+    1: "#2f9e44",  # Brinstar
+    2: "#d00000",  # Norfair
+    3: "#ffd43b",  # Wrecked Ship
+    4: "#228be6",  # Maridia
+    5: "#f08c00",  # Tourian
+}
 
 
 def _as_list(values: Any) -> List[Any]:
@@ -359,21 +367,15 @@ class MapVisualizer:
             self.ax.set_yticks(range(0, height + 1, 4))
 
 
-def display_map(
+def _display_map_with_fills(
     rooms: Sequence[dict],
     actions: Any,
-    *,
-    environment_index: int = 0,
-    ax: Optional[Any] = None,
-    show_names: bool = True,
-    show_count: bool = True,
+    placement_fills: Sequence[str],
+    environment_index: int,
+    ax: Optional[Any],
+    show_names: bool,
+    show_count: bool,
 ) -> Any:
-    """Display room placements returned by ``engine.get_actions()``.
-
-    ``rooms`` is the parsed room JSON. ``actions`` may be the raw
-    ``engine.get_actions()`` tuple of ``(room_idx, x, y)`` arrays, or any
-    iterable of ``(room_idx, x, y)`` placements.
-    """
     try:
         import matplotlib.pyplot as plt
         from matplotlib.collections import LineCollection, PolyCollection
@@ -382,8 +384,8 @@ def display_map(
 
     geometries = _room_geometries(rooms)
     placements = [
-        action
-        for action in _normalize_actions(actions, environment_index)
+        (action, fill)
+        for action, fill in zip(_normalize_actions(actions, environment_index), placement_fills)
         if 0 <= action[0] < len(rooms)
     ]
 
@@ -395,24 +397,24 @@ def display_map(
         ax.set_axis_off()
         return ax
 
-    min_x = min(x + geometries[room_idx]["min_x"] for room_idx, x, _ in placements)
-    max_x = max(x + geometries[room_idx]["max_x"] for room_idx, x, _ in placements)
-    min_y = min(y + geometries[room_idx]["min_y"] for room_idx, _, y in placements)
-    max_y = max(y + geometries[room_idx]["max_y"] for room_idx, _, y in placements)
+    min_x = min(x + geometries[room_idx]["min_x"] for (room_idx, x, _), _ in placements)
+    max_x = max(x + geometries[room_idx]["max_x"] for (room_idx, x, _), _ in placements)
+    min_y = min(y + geometries[room_idx]["min_y"] for (room_idx, _, y), _ in placements)
+    max_y = max(y + geometries[room_idx]["max_y"] for (room_idx, _, y), _ in placements)
 
     room_polygons = []
     room_colors = []
     wall_segments = []
     label_specs = []
 
-    for placement_index, (room_idx, room_x, room_y) in enumerate(placements):
+    for (room_idx, room_x, room_y), fill in placements:
         geometry = geometries[room_idx]
         cells = geometry["cells"]
         polygons, colors, segments = _placement_elements(
             geometry,
             room_x,
             room_y,
-            _COLORS[placement_index % len(_COLORS)],
+            fill,
         )
         room_polygons.extend(polygons)
         room_colors.extend(colors)
@@ -481,6 +483,61 @@ def display_map(
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     return ax
+
+
+def display_map(
+    rooms: Sequence[dict],
+    actions: Any,
+    *,
+    environment_index: int = 0,
+    ax: Optional[Any] = None,
+    show_names: bool = True,
+    show_count: bool = True,
+) -> Any:
+    """Display room placements returned by ``engine.get_actions()``.
+
+    ``rooms`` is the parsed room JSON. ``actions`` may be the raw
+    ``engine.get_actions()`` tuple of ``(room_idx, x, y)`` arrays, or any
+    iterable of ``(room_idx, x, y)`` placements.
+    """
+    placements = _normalize_actions(actions, environment_index)
+    placement_fills = [_COLORS[index % len(_COLORS)] for index in range(len(placements))]
+    return _display_map_with_fills(
+        rooms,
+        placements,
+        placement_fills,
+        0,
+        ax,
+        show_names,
+        show_count,
+    )
+
+
+def display_area_map(
+    rooms: Sequence[dict],
+    actions: Any,
+    areas: Sequence[int],
+    *,
+    environment_index: int = 0,
+    ax: Optional[Any] = None,
+    show_names: bool = True,
+    show_count: bool = True,
+) -> Any:
+    placements = _normalize_actions(actions, environment_index)
+    if len(placements) != len(areas):
+        raise ValueError(
+            f"area count {len(areas)} must match placement count {len(placements)}"
+        )
+    placement_fills = [_AREA_COLORS[int(area)] for area in areas]
+    return _display_map_with_fills(
+        rooms,
+        placements,
+        placement_fills,
+        0,
+        ax,
+        show_names,
+        show_count,
+    )
 
 
 def save_episode_frames(
@@ -601,12 +658,21 @@ def response_actions(response: dict, map_index: int) -> Tuple[Any, Any, Any]:
     )
 
 
+def response_areas(response: dict, map_index: int) -> List[int]:
+    area_by_map = response["area"]
+    map_count = len(area_by_map)
+    if not 0 <= map_index < map_count:
+        raise IndexError(f"map_index {map_index} is outside response area range 0..{map_count - 1}")
+    return [int(area) for area in area_by_map[map_index]]
+
+
 def main() -> None:
     args = parse_args()
     rooms = load_json(args.rooms)
     response = load_json(args.response_path)
     actions = response_actions(response, args.map_index)
-    display_map(rooms, actions, show_names=False, show_count=False)
+    areas = response_areas(response, args.map_index)
+    display_area_map(rooms, actions, areas, show_names=False, show_count=False)
 
     import matplotlib.pyplot as plt
 
