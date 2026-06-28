@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -563,3 +565,53 @@ def save_episode_frames(
         saved_paths.append(frame_path)
 
     return saved_paths
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Visualize a map from a saved serve.py /generate response."
+    )
+    parser.add_argument("response_path", type=Path)
+    parser.add_argument("map_index", type=int)
+    parser.add_argument("--rooms", type=Path, required=True)
+    return parser.parse_args()
+
+
+def load_json(path: Path) -> Any:
+    with path.open(encoding="utf-8") as file:
+        return json.load(file)
+
+
+def response_actions(response: dict, map_index: int) -> Tuple[Any, Any, Any]:
+    actions = response["actions"]
+    room_idx_by_map = actions["room_idx"]
+    room_x_by_map = actions["room_x"]
+    room_y_by_map = actions["room_y"]
+
+    map_count = len(room_idx_by_map)
+    if not 0 <= map_index < map_count:
+        raise IndexError(f"map_index {map_index} is outside response map range 0..{map_count - 1}")
+    if map_count != len(room_x_by_map) or map_count != len(room_y_by_map):
+        raise ValueError("response actions must have matching room_idx, room_x, and room_y map counts")
+
+    return (
+        room_idx_by_map[map_index],
+        room_x_by_map[map_index],
+        room_y_by_map[map_index],
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    rooms = load_json(args.rooms)
+    response = load_json(args.response_path)
+    actions = response_actions(response, args.map_index)
+    display_map(rooms, actions, show_names=False, show_count=False)
+
+    import matplotlib.pyplot as plt
+
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

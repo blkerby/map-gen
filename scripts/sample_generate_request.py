@@ -47,13 +47,13 @@ def main() -> int:
     except urllib.error.HTTPError as error:
         print(error.read().decode("utf-8"))
         return 1
-    # print(response_body)
-    response_data = json.loads(response_body)
+    print(response_body)
+    # response_data = json.loads(response_body)
     # print(json.dumps(area_room_counts(response_data["area"])))
-    for key in ["num_generated", "num_pre_valid", "num_valid"]:
-        print(key, response_data[key])
-    print(json.dumps(response_data["area_crossings"]))
-    print(response_data["avg_area_crossings"])
+    # for key in ["num_generated", "num_pre_valid", "num_valid"]:
+    #     print(key, response_data[key])
+    # print(json.dumps(response_data["area_crossings"]))
+    # print(response_data["avg_area_crossings"])
     return 0
 
 
