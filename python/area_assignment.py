@@ -46,6 +46,15 @@ class ToiletData:
 class AreaAssignment:
     room_idx: torch.Tensor
     area: torch.Tensor
+    subarea: torch.Tensor
+    valid_mask: torch.Tensor
+    crossing_count: torch.Tensor
+
+
+@dataclass(frozen=True)
+class SelectedAreaAssignment:
+    room_idx: torch.Tensor
+    area: torch.Tensor
     valid_mask: torch.Tensor
     crossing_count: torch.Tensor
 
@@ -440,6 +449,43 @@ def area_crossing_counts(area_by_attempt: torch.Tensor, adjacency: torch.Tensor)
     return torch.sum(crossing_edge.to(torch.int64), dim=(2, 3))
 
 
+def split_assignment_by_balanced_centers(
+    distances: torch.Tensor,
+    parent_assignment: torch.Tensor,
+    parent_count: int,
+) -> torch.Tensor:
+    environment_count, _room_count = parent_assignment.shape
+    child_assignment = torch.empty(
+        parent_assignment.shape,
+        device=parent_assignment.device,
+        dtype=torch.int64,
+    )
+    for environment_idx in range(environment_count):
+        environment_distances = distances[environment_idx]
+        for parent_id in range(parent_count):
+            member_positions = torch.where(parent_assignment[environment_idx] == parent_id)[0]
+            if member_positions.shape[0] < 2:
+                child_assignment[environment_idx, member_positions] = 0
+                continue
+
+            parent_distances = environment_distances[member_positions][:, member_positions]
+            nearer_second = parent_distances[:, None, :] < parent_distances[:, :, None]
+            second_count = torch.sum(nearer_second.to(torch.int64), dim=0)
+            first_count = member_positions.shape[0] - second_count
+            balance = torch.minimum(first_count, second_count)
+            diagonal = torch.arange(member_positions.shape[0], device=distances.device)
+            balance[diagonal, diagonal] = -1
+            best_pair = torch.argmax(balance.reshape(-1))
+            first_center = best_pair // member_positions.shape[0]
+            second_center = best_pair % member_positions.shape[0]
+            child_assignment[environment_idx, member_positions] = nearer_second[
+                :,
+                first_center,
+                second_center,
+            ].to(torch.int64)
+    return child_assignment
+
+
 def map_station_target_direction(
     area: torch.Tensor,
     room_idx: torch.Tensor,
@@ -569,7 +615,7 @@ def select_best_valid_assignment(
     area_by_attempt: torch.Tensor,
     valid_attempt_mask: torch.Tensor,
     crossing_counts: torch.Tensor,
-) -> AreaAssignment:
+) -> SelectedAreaAssignment:
     environment_count, _, _room_count = area_by_attempt.shape
     valid_map_mask = valid_attempt_mask.any(dim=1)
     high = torch.iinfo(crossing_counts.dtype).max
@@ -583,7 +629,7 @@ def select_best_valid_assignment(
         torch.arange(environment_count, device=area_by_attempt.device),
         best_attempt,
     ]
-    return AreaAssignment(
+    return SelectedAreaAssignment(
         room_idx=room_idx[valid_map_mask],
         area=selected_area[valid_map_mask],
         valid_mask=valid_map_mask,
@@ -677,7 +723,7 @@ def select_best_valid_assignment_compiled(
     valid_attempt_mask: torch.Tensor,
     center_valid_mask: torch.Tensor,
     crossing_counts: torch.Tensor,
-) -> AreaAssignment:
+) -> SelectedAreaAssignment:
     return select_best_valid_assignment(
         room_idx,
         area_by_attempt,
@@ -789,6 +835,19 @@ def assign_room_areas_from_centers(
     )
 
     profile_time = profile_start(profiler.enabled)
+    subarea = split_assignment_by_balanced_centers(
+        distances[assignment.valid_mask],
+        assignment.area,
+        AREA_COUNT,
+    )
+    add_area_profile(
+        profiler,
+        device,
+        "python.area_assignment.split_area_assignment",
+        profile_time,
+    )
+
+    profile_time = profile_start(profiler.enabled)
     swapped_room_idx = apply_map_station_swaps(
         assignment.room_idx,
         assignment.area,
@@ -803,6 +862,7 @@ def assign_room_areas_from_centers(
     return AreaAssignment(
         room_idx=swapped_room_idx,
         area=assignment.area,
+        subarea=subarea,
         valid_mask=assignment.valid_mask,
         crossing_count=assignment.crossing_count,
     )
@@ -829,6 +889,7 @@ def assign_room_areas(
         return AreaAssignment(
             room_idx=torch.empty(room_idx.shape, device=room_idx.device, dtype=room_idx.dtype),
             area=torch.empty(room_idx.shape, device=room_idx.device, dtype=torch.int64),
+            subarea=torch.empty(room_idx.shape, device=room_idx.device, dtype=torch.int64),
             valid_mask=torch.empty((0,), device=room_idx.device, dtype=torch.bool),
             crossing_count=torch.empty((0,), device=room_idx.device, dtype=torch.int64),
         )

@@ -7,6 +7,7 @@ from area_assignment import (
     build_toilet_data,
     map_station_area_valid_mask,
     map_station_area_valid_mask_compiled,
+    split_assignment_by_balanced_centers,
     toilet_area_valid_mask,
     toilet_area_valid_mask_compiled,
 )
@@ -78,6 +79,16 @@ def main() -> None:
     ]
     device = torch.device("cpu")
     map_station_data = build_map_station_data(rooms, device)
+
+    line_positions = torch.arange(6, device=device)
+    line_distances = torch.abs(line_positions[:, None] - line_positions[None, :])[None, :, :]
+    parent_assignment = torch.tensor([[0, 0, 0, 0, 1, 1]], device=device)
+    child_assignment = split_assignment_by_balanced_centers(
+        distances=line_distances,
+        parent_assignment=parent_assignment,
+        parent_count=2,
+    )
+    assert child_assignment.tolist() == [[0, 0, 1, 1, 0, 1]]
 
     room_idx = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]], device=device)
     valid_area = torch.tensor([[0, 1, 2, 5, 3, 5, 2, 4]], device=device)
