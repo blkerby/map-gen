@@ -1,7 +1,7 @@
 {
   "host": "127.0.0.1",
   "port": 5000,
-  "device": "cuda:1",
+  "device": "cuda:0",
   "compile_model": true,
   "model_dtype": "bfloat16",
   "autocast": false,
@@ -13,7 +13,7 @@
   "area_min_rooms": 15,
   "area_max_rooms": 70,
   "room_set": "room_definitions/zebes.json",
-  "num_environments": 128,
+  "num_environments": 64,
   "pipeline_groups": 1,
-  "num_threads": 8
+  "num_threads": 16
 }
