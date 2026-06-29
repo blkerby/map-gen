@@ -655,6 +655,7 @@ def generate_response():
         "edges": response_edges(final_room_idx_list, final_door_matches, state.door_lookups),
         "area": tensor_to_list(area_assignment.area),
         "subarea": tensor_to_list(area_assignment.subarea),
+        "subsubarea": tensor_to_list(area_assignment.subsubarea),
         "area_crossings": tensor_to_list(area_assignment.crossing_count),
         "avg_area_crossings": (
             None

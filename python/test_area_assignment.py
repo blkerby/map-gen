@@ -85,10 +85,16 @@ def main() -> None:
     parent_assignment = torch.tensor([[0, 0, 0, 0, 1, 1]], device=device)
     child_assignment = split_assignment_by_balanced_centers(
         distances=line_distances,
-        parent_assignment=parent_assignment,
-        parent_count=2,
+        parent_assignments=(parent_assignment,),
+        parent_counts=(2,),
     )
     assert child_assignment.tolist() == [[0, 0, 1, 1, 0, 1]]
+    grandchild_assignment = split_assignment_by_balanced_centers(
+        distances=line_distances,
+        parent_assignments=(parent_assignment, child_assignment),
+        parent_counts=(2, 2),
+    )
+    assert grandchild_assignment.tolist() == [[0, 1, 0, 1, 0, 0]]
 
     room_idx = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]], device=device)
     valid_area = torch.tensor([[0, 1, 2, 5, 3, 5, 2, 4]], device=device)
