@@ -32,8 +32,12 @@ _AREA_COLORS = {
     5: "#f08c00",  # Tourian
 }
 _SUBAREA_LIGHTNESS = {
-    0: 0.72,
-    1: 0.42,
+    0: 0.55,
+    1: 0.35,
+}
+_SUBSUBAREA_SATURATION_SCALE = {
+    0: 0.5,
+    1: 1.0,
 }
 
 
@@ -43,17 +47,18 @@ def _as_list(values: Any) -> List[Any]:
     return list(values)
 
 
-def _area_subarea_color(area: int, subarea: int) -> str:
+def _area_subarea_color(area: int, subarea: int, subsubarea: int) -> str:
     color = _AREA_COLORS[area].lstrip("#")
     red = int(color[0:2], 16) / 255.0
     green = int(color[2:4], 16) / 255.0
     blue = int(color[4:6], 16) / 255.0
     hue, _lightness, saturation = colorsys.rgb_to_hls(red, green, blue)
     adjusted_lightness = _SUBAREA_LIGHTNESS[subarea]
+    adjusted_saturation = min(1.0, saturation * _SUBSUBAREA_SATURATION_SCALE[subsubarea])
     adjusted_red, adjusted_green, adjusted_blue = colorsys.hls_to_rgb(
         hue,
         adjusted_lightness,
-        saturation,
+        adjusted_saturation,
     )
     return (
         f"#{round(adjusted_red * 255):02x}"
@@ -544,6 +549,7 @@ def display_area_map(
     actions: Any,
     areas: Sequence[int],
     subareas: Sequence[int],
+    subsubareas: Sequence[int],
     *,
     environment_index: int = 0,
     ax: Optional[Any] = None,
@@ -559,9 +565,13 @@ def display_area_map(
         raise ValueError(
             f"subarea count {len(subareas)} must match placement count {len(placements)}"
         )
+    if len(placements) != len(subsubareas):
+        raise ValueError(
+            f"subsubarea count {len(subsubareas)} must match placement count {len(placements)}"
+        )
     placement_fills = [
-        _area_subarea_color(int(area), int(subarea))
-        for area, subarea in zip(areas, subareas)
+        _area_subarea_color(int(area), int(subarea), int(subsubarea))
+        for area, subarea, subsubarea in zip(areas, subareas, subsubareas)
     ]
     return _display_map_with_fills(
         rooms,
@@ -710,6 +720,16 @@ def response_subareas(response: dict, map_index: int) -> List[int]:
     return [int(subarea) for subarea in subarea_by_map[map_index]]
 
 
+def response_subsubareas(response: dict, map_index: int) -> List[int]:
+    subsubarea_by_map = response["subsubarea"]
+    map_count = len(subsubarea_by_map)
+    if not 0 <= map_index < map_count:
+        raise IndexError(
+            f"map_index {map_index} is outside response subsubarea range 0..{map_count - 1}"
+        )
+    return [int(subsubarea) for subsubarea in subsubarea_by_map[map_index]]
+
+
 def main() -> None:
     args = parse_args()
     rooms = load_json(args.rooms)
@@ -717,7 +737,16 @@ def main() -> None:
     actions = response_actions(response, args.map_index)
     areas = response_areas(response, args.map_index)
     subareas = response_subareas(response, args.map_index)
-    display_area_map(rooms, actions, areas, subareas, show_names=False, show_count=False)
+    subsubareas = response_subsubareas(response, args.map_index)
+    display_area_map(
+        rooms,
+        actions,
+        areas,
+        subareas,
+        subsubareas,
+        show_names=False,
+        show_count=False,
+    )
 
     import matplotlib.pyplot as plt
 
