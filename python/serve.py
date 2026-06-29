@@ -35,7 +35,7 @@ MODEL_EXPORT_FORMAT = "map-gen-model-export-v1"
 TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v3"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
-app = Flask(__name__)
+
 DIRECTIONS = ("left", "right", "up", "down")
 OPPOSITE_DIRECTIONS = {
     "left": "right",
@@ -44,6 +44,8 @@ OPPOSITE_DIRECTIONS = {
     "down": "up",
 }
 
+app = Flask(__name__)
+app.json.sort_keys = False  # Disables alphabetical key sorting
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -656,12 +658,6 @@ def generate_response():
         "area": tensor_to_list(area_assignment.area),
         "subarea": tensor_to_list(area_assignment.subarea),
         "subsubarea": tensor_to_list(area_assignment.subsubarea),
-        "area_crossings": tensor_to_list(area_assignment.crossing_count),
-        "avg_area_crossings": (
-            None
-            if num_valid == 0
-            else float(torch.mean(area_assignment.crossing_count.to(torch.float32)).item())
-        ),
     }
     add_serving_profile(
         serving_profiler,
