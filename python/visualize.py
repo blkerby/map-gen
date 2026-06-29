@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import colorsys
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
@@ -30,12 +31,35 @@ _AREA_COLORS = {
     4: "#228be6",  # Maridia
     5: "#f08c00",  # Tourian
 }
+_SUBAREA_LIGHTNESS = {
+    0: 0.72,
+    1: 0.42,
+}
 
 
 def _as_list(values: Any) -> List[Any]:
     if hasattr(values, "tolist"):
         return values.tolist()
     return list(values)
+
+
+def _area_subarea_color(area: int, subarea: int) -> str:
+    color = _AREA_COLORS[area].lstrip("#")
+    red = int(color[0:2], 16) / 255.0
+    green = int(color[2:4], 16) / 255.0
+    blue = int(color[4:6], 16) / 255.0
+    hue, _lightness, saturation = colorsys.rgb_to_hls(red, green, blue)
+    adjusted_lightness = _SUBAREA_LIGHTNESS[subarea]
+    adjusted_red, adjusted_green, adjusted_blue = colorsys.hls_to_rgb(
+        hue,
+        adjusted_lightness,
+        saturation,
+    )
+    return (
+        f"#{round(adjusted_red * 255):02x}"
+        f"{round(adjusted_green * 255):02x}"
+        f"{round(adjusted_blue * 255):02x}"
+    )
 
 
 def _select_environment(values: Any, environment_index: int) -> List[Any]:
@@ -519,6 +543,7 @@ def display_area_map(
     rooms: Sequence[dict],
     actions: Any,
     areas: Sequence[int],
+    subareas: Sequence[int],
     *,
     environment_index: int = 0,
     ax: Optional[Any] = None,
@@ -530,7 +555,14 @@ def display_area_map(
         raise ValueError(
             f"area count {len(areas)} must match placement count {len(placements)}"
         )
-    placement_fills = [_AREA_COLORS[int(area)] for area in areas]
+    if len(placements) != len(subareas):
+        raise ValueError(
+            f"subarea count {len(subareas)} must match placement count {len(placements)}"
+        )
+    placement_fills = [
+        _area_subarea_color(int(area), int(subarea))
+        for area, subarea in zip(areas, subareas)
+    ]
     return _display_map_with_fills(
         rooms,
         placements,
@@ -668,13 +700,24 @@ def response_areas(response: dict, map_index: int) -> List[int]:
     return [int(area) for area in area_by_map[map_index]]
 
 
+def response_subareas(response: dict, map_index: int) -> List[int]:
+    subarea_by_map = response["subarea"]
+    map_count = len(subarea_by_map)
+    if not 0 <= map_index < map_count:
+        raise IndexError(
+            f"map_index {map_index} is outside response subarea range 0..{map_count - 1}"
+        )
+    return [int(subarea) for subarea in subarea_by_map[map_index]]
+
+
 def main() -> None:
     args = parse_args()
     rooms = load_json(args.rooms)
     response = load_json(args.response_path)
     actions = response_actions(response, args.map_index)
     areas = response_areas(response, args.map_index)
-    display_area_map(rooms, actions, areas, show_names=False, show_count=False)
+    subareas = response_subareas(response, args.map_index)
+    display_area_map(rooms, actions, areas, subareas, show_names=False, show_count=False)
 
     import matplotlib.pyplot as plt
 
