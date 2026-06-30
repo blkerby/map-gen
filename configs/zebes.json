@@ -103,7 +103,7 @@
     "known_distance": 1
   },
   "train": {
-    "batch_size": 1024,
+    "batch_size": 512,
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "sample_period": 16,
@@ -123,7 +123,7 @@
     "missing_connect_utility_weight": 1.0,
     "proposal_weight": 0.005,
     "pipeline_groups": 4,
-    "gradient_accumulation_steps": 2,
+    "gradient_accumulation_steps": 4,
     "shuffle_buffer_batches": 1
   }
 }
