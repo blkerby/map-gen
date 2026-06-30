@@ -516,6 +516,9 @@ def response_toilet_crossing_room_placement_idx(
         for map_room_idx, crossed_room_idx in zip(room_idx, toilet_crossed_room_idx)
     ]
 
+def response_room_ids(room_idx: list[list[int]], rooms: list[dict]) -> list[list[int]]:
+    return [[int(rooms[room]["room_id"]) for room in map_room_idx] for map_room_idx in room_idx]
+
 
 def initialize_serving_state(state: ServingState) -> None:
     global SERVING_STATE
@@ -646,6 +649,7 @@ def generate_response():
     final_door_matches = filter_door_matches(valid_door_matches, area_valid_mask)
     final_room_idx_list = tensor_to_list(final_room_idx)
     final_toilet_crossed_room_idx_list = tensor_to_list(final_toilet_crossed_room_idx)
+    final_room_id_list = response_room_ids(final_room_idx_list, state.rooms)
     num_generated = int(episode_data.actions.room_idx.shape[0])
     num_pre_valid = int(torch.sum(valid_mask).item())
     num_valid = int(torch.sum(area_valid_mask).item())
@@ -661,19 +665,19 @@ def generate_response():
         "num_generated": num_generated,
         "num_pre_valid": num_pre_valid,
         "num_valid": num_valid,
-        "actions": {
-            "room_idx": final_room_idx_list,
-            "room_x": tensor_to_list(final_room_x),
-            "room_y": tensor_to_list(final_room_y),
+        "rooms": {
+            "id": final_room_id_list,
+            "x": tensor_to_list(final_room_x),
+            "y": tensor_to_list(final_room_y),
+            "area": tensor_to_list(area_assignment.area),
+            "subarea": tensor_to_list(area_assignment.subarea),
+            "subsubarea": tensor_to_list(area_assignment.subsubarea),
         },
         "edges": response_edges(final_room_idx_list, final_door_matches, state.door_lookups),
         "toilet_crossing_room_placement_idx": response_toilet_crossing_room_placement_idx(
             final_room_idx_list,
             final_toilet_crossed_room_idx_list,
         ),
-        "area": tensor_to_list(area_assignment.area),
-        "subarea": tensor_to_list(area_assignment.subarea),
-        "subsubarea": tensor_to_list(area_assignment.subsubarea),
     }
     add_serving_profile(
         serving_profiler,

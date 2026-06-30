@@ -683,61 +683,82 @@ def load_json(path: Path) -> Any:
         return json.load(file)
 
 
-def response_actions(response: dict, map_index: int) -> Tuple[Any, Any, Any]:
-    actions = response["actions"]
-    room_idx_by_map = actions["room_idx"]
-    room_x_by_map = actions["room_x"]
-    room_y_by_map = actions["room_y"]
+def room_idx_by_id(rooms: Sequence[dict]) -> Dict[int, int]:
+    mapping: Dict[int, int] = {}
+    for room_idx, room in enumerate(rooms):
+        room_id = int(room["room_id"])
+        if room_id in mapping:
+            raise ValueError(f"duplicate room_id {room_id}")
+        mapping[room_id] = room_idx
+    return mapping
 
-    map_count = len(room_idx_by_map)
+
+def selected_response_rooms(response: dict, map_index: int) -> dict[str, list[Any]]:
+    response_rooms = response["rooms"]
+    room_id_by_map = response_rooms["id"]
+    room_x_by_map = response_rooms["x"]
+    room_y_by_map = response_rooms["y"]
+    area_by_map = response_rooms["area"]
+    subarea_by_map = response_rooms["subarea"]
+    subsubarea_by_map = response_rooms["subsubarea"]
+
+    map_count = len(room_id_by_map)
     if not 0 <= map_index < map_count:
         raise IndexError(f"map_index {map_index} is outside response map range 0..{map_count - 1}")
-    if map_count != len(room_x_by_map) or map_count != len(room_y_by_map):
-        raise ValueError("response actions must have matching room_idx, room_x, and room_y map counts")
-
-    return (
-        room_idx_by_map[map_index],
-        room_x_by_map[map_index],
-        room_y_by_map[map_index],
-    )
-
-
-def response_areas(response: dict, map_index: int) -> List[int]:
-    area_by_map = response["area"]
-    map_count = len(area_by_map)
-    if not 0 <= map_index < map_count:
-        raise IndexError(f"map_index {map_index} is outside response area range 0..{map_count - 1}")
-    return [int(area) for area in area_by_map[map_index]]
-
-
-def response_subareas(response: dict, map_index: int) -> List[int]:
-    subarea_by_map = response["subarea"]
-    map_count = len(subarea_by_map)
-    if not 0 <= map_index < map_count:
-        raise IndexError(
-            f"map_index {map_index} is outside response subarea range 0..{map_count - 1}"
+    if (
+        map_count != len(room_x_by_map)
+        or map_count != len(room_y_by_map)
+        or map_count != len(area_by_map)
+        or map_count != len(subarea_by_map)
+        or map_count != len(subsubarea_by_map)
+    ):
+        raise ValueError(
+            "response rooms must have matching id, x, y, area, subarea, and subsubarea map counts"
         )
-    return [int(subarea) for subarea in subarea_by_map[map_index]]
+
+    return {
+        "id": room_id_by_map[map_index],
+        "x": room_x_by_map[map_index],
+        "y": room_y_by_map[map_index],
+        "area": area_by_map[map_index],
+        "subarea": subarea_by_map[map_index],
+        "subsubarea": subsubarea_by_map[map_index],
+    }
 
 
-def response_subsubareas(response: dict, map_index: int) -> List[int]:
-    subsubarea_by_map = response["subsubarea"]
-    map_count = len(subsubarea_by_map)
-    if not 0 <= map_index < map_count:
-        raise IndexError(
-            f"map_index {map_index} is outside response subsubarea range 0..{map_count - 1}"
-        )
-    return [int(subsubarea) for subsubarea in subsubarea_by_map[map_index]]
+def response_actions(
+    response_rooms: dict[str, list[Any]], rooms: Sequence[dict]
+) -> Tuple[Any, Any, Any]:
+    room_ids = response_rooms["id"]
+    room_x = response_rooms["x"]
+    room_y = response_rooms["y"]
+
+    room_lookup = room_idx_by_id(rooms)
+    room_idx = [room_lookup[int(room_id)] for room_id in room_ids]
+    return (room_idx, room_x, room_y)
+
+
+def response_areas(response_rooms: dict[str, list[Any]]) -> List[int]:
+    return [int(area) for area in response_rooms["area"]]
+
+
+def response_subareas(response_rooms: dict[str, list[Any]]) -> List[int]:
+    return [int(subarea) for subarea in response_rooms["subarea"]]
+
+
+def response_subsubareas(response_rooms: dict[str, list[Any]]) -> List[int]:
+    return [int(subsubarea) for subsubarea in response_rooms["subsubarea"]]
 
 
 def main() -> None:
     args = parse_args()
     rooms = load_json(args.rooms)
     response = load_json(args.response_path)
-    actions = response_actions(response, args.map_index)
-    areas = response_areas(response, args.map_index)
-    subareas = response_subareas(response, args.map_index)
-    subsubareas = response_subsubareas(response, args.map_index)
+    selected_rooms = selected_response_rooms(response, args.map_index)
+    actions = response_actions(selected_rooms, rooms)
+    areas = response_areas(selected_rooms)
+    subareas = response_subareas(selected_rooms)
+    subsubareas = response_subsubareas(selected_rooms)
     display_area_map(
         rooms,
         actions,
