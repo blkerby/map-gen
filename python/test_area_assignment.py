@@ -2,7 +2,9 @@ import torch
 
 from area_assignment import (
     AREA_COUNT,
+    apply_door_match_swaps,
     apply_map_station_swaps,
+    build_door_room_lookup,
     build_map_station_data,
     build_toilet_data,
     map_station_area_valid_mask,
@@ -11,6 +13,7 @@ from area_assignment import (
     toilet_area_valid_mask,
     toilet_area_valid_mask_compiled,
 )
+from env import DoorMatches
 
 
 def room(
@@ -46,6 +49,20 @@ def nonslot_room(name: str) -> dict:
         "map": [[1, 1]],
         "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
         "connections": [],
+        "missing_connections": [],
+        "toilet_crossing_x": [],
+    }
+
+
+def two_door_room(name: str) -> dict:
+    return {
+        "name": name,
+        "map": [[1]],
+        "doors": [
+            [{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}],
+            [{"id": 1, "direction": "right", "x": 0, "y": 0, "kind": 0}],
+        ],
+        "connections": [[0, 1], [1, 0]],
         "missing_connections": [],
         "toilet_crossing_x": [],
     }
@@ -119,6 +136,30 @@ def main() -> None:
     )
     assert shortcut_child_assignment.tolist() == [[0, 0, 1, 1, 0]]
 
+    swap_rooms = [
+        room("Left Map", "left", True),
+        room("Left Slot", "left", False),
+        two_door_room("Neighbor A"),
+        two_door_room("Neighbor B"),
+    ]
+    door_room_lookup = build_door_room_lookup(swap_rooms, device)
+    door_matches = DoorMatches(
+        left=torch.tensor([[0, 1]], device=device, dtype=torch.int64),
+        right=torch.tensor([[0, 1]], device=device, dtype=torch.int64),
+        up=torch.empty((1, 0), device=device, dtype=torch.int64),
+        down=torch.empty((1, 0), device=device, dtype=torch.int64),
+    )
+    remapped_matches = apply_door_match_swaps(
+        door_matches=door_matches,
+        door_room_lookup=door_room_lookup,
+        before_room_idx=torch.tensor([[0, 1, 2, 3]], device=device),
+        swap_environment_idx=torch.tensor([0], device=device),
+        swap_source_positions=torch.tensor([0], device=device),
+        swap_target_positions=torch.tensor([1], device=device),
+    )
+    assert remapped_matches.left.tolist() == [[1, 0]]
+    assert remapped_matches.right.tolist() == [[1, 0]]
+
     room_idx = torch.tensor([[0, 1, 2, 3, 4, 5, 6, 7]], device=device)
     valid_area = torch.tensor([[0, 1, 2, 5, 3, 5, 2, 4]], device=device)
     valid_mask = map_station_area_valid_mask(
@@ -133,7 +174,7 @@ def main() -> None:
         map_station_data,
     )
     assert bool(compiled_valid_mask.item())
-    swapped_room_idx = apply_map_station_swaps(room_idx, valid_area, map_station_data)
+    swapped_room_idx, _, _, _ = apply_map_station_swaps(room_idx, valid_area, map_station_data)
     assert int(swapped_room_idx[0, 0].item()) == 0
     assert_one_map_station_per_area(
         swapped_room_idx[0],
@@ -143,7 +184,11 @@ def main() -> None:
     area_two_map_positions = set()
     for seed in range(100):
         torch.manual_seed(seed)
-        sampled_room_idx = apply_map_station_swaps(room_idx, valid_area, map_station_data)
+        sampled_room_idx, _, _, _ = apply_map_station_swaps(
+            room_idx,
+            valid_area,
+            map_station_data,
+        )
         assert_one_map_station_per_area(
             sampled_room_idx[0],
             valid_area[0],
@@ -164,7 +209,11 @@ def main() -> None:
         map_station_data,
     )
     assert bool(overlap_valid_mask.item())
-    overlap_swapped_room_idx = apply_map_station_swaps(room_idx, overlap_area, map_station_data)
+    overlap_swapped_room_idx, _, _, _ = apply_map_station_swaps(
+        room_idx,
+        overlap_area,
+        map_station_data,
+    )
     assert_one_map_station_per_area(
         overlap_swapped_room_idx[0],
         overlap_area[0],

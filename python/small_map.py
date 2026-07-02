@@ -148,6 +148,24 @@ def is_strongly_connected(adjacency: list[list[int]]) -> bool:
     )
 
 
+def add_room_part_edges(
+    adjacency: list[list[int]],
+    room_part_offset: int,
+    connections: list[tuple[int, int]],
+) -> None:
+    for from_part, to_part in connections:
+        adjacency[room_part_offset + from_part].append(room_part_offset + to_part)
+
+
+def add_bidirectional_door_edge(
+    adjacency: list[list[int]],
+    source_part_position: int,
+    target_part_position: int,
+) -> None:
+    adjacency[source_part_position].append(target_part_position)
+    adjacency[target_part_position].append(source_part_position)
+
+
 def subset_valid(
     area_mask: int,
     map_room_idx: list[int],
@@ -177,8 +195,11 @@ def subset_valid(
             continue
         room_idx = map_room_idx[room_position_idx]
         room_part_offset = room_part_offset_by_position[room_position_idx]
-        for from_part, to_part in room_part_data.connections[room_idx]:
-            adjacency[room_part_offset + from_part].append(room_part_offset + to_part)
+        add_room_part_edges(
+            adjacency,
+            room_part_offset,
+            room_part_data.connections[room_idx],
+        )
 
     for direction in DIRECTIONS:
         source_data = direction_data[direction]
@@ -208,8 +229,11 @@ def subset_valid(
                     room_part_offset_by_position[target_room_position]
                     + target_data.part_idx[target_direction_door_idx]
                 )
-                adjacency[source_part_position].append(target_part_position)
-                adjacency[target_part_position].append(source_part_position)
+                add_bidirectional_door_edge(
+                    adjacency,
+                    source_part_position,
+                    target_part_position,
+                )
                 continue
             if source_included == target_included:
                 continue
@@ -218,6 +242,7 @@ def subset_valid(
                 or target_data.kind[target_direction_door_idx] != 0
             ):
                 return False
+
     return is_strongly_connected(adjacency)
 
 

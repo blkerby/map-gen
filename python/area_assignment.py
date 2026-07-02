@@ -48,6 +48,7 @@ class AreaAssignment:
     area: torch.Tensor
     subarea: torch.Tensor
     subsubarea: torch.Tensor
+    door_matches: object
     valid_mask: torch.Tensor
     crossing_count: torch.Tensor
 
@@ -561,11 +562,15 @@ def apply_map_station_swaps(
     room_idx: torch.Tensor,
     area: torch.Tensor,
     map_station_data: MapStationData,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     if room_idx.shape[0] == 0:
-        return room_idx
+        empty_swaps = torch.empty((0,), device=room_idx.device, dtype=torch.int64)
+        return room_idx, empty_swaps, empty_swaps, empty_swaps
 
     swapped_room_idx = room_idx.clone()
+    swap_environment_idx = []
+    swap_source_positions = []
+    swap_target_positions = []
     room_idx_i64 = room_idx.to(torch.int64)
     target_direction = map_station_target_direction(area, room_idx, map_station_data)
     environment_idx = torch.arange(room_idx.shape[0], device=room_idx.device)
@@ -627,8 +632,98 @@ def apply_map_station_swaps(
         target_values = room_idx[active_environment_idx, active_target_positions]
         swapped_room_idx[active_environment_idx, active_source_positions] = target_values
         swapped_room_idx[active_environment_idx, active_target_positions] = source_values
+        swap_environment_idx.append(active_environment_idx)
+        swap_source_positions.append(active_source_positions)
+        swap_target_positions.append(active_target_positions)
 
-    return swapped_room_idx
+    if not swap_environment_idx:
+        empty_swaps = torch.empty((0,), device=room_idx.device, dtype=torch.int64)
+        return swapped_room_idx, empty_swaps, empty_swaps, empty_swaps
+    return (
+        swapped_room_idx,
+        torch.cat(swap_environment_idx),
+        torch.cat(swap_source_positions),
+        torch.cat(swap_target_positions),
+    )
+
+
+def room_direction_door_idx(room_by_door: torch.Tensor, room_idx: int) -> int | None:
+    matching_door_idx = torch.where(room_by_door == room_idx)[0]
+    if matching_door_idx.shape[0] == 0:
+        return None
+    if matching_door_idx.shape[0] > 1:
+        raise ValueError(f"room {room_idx} has multiple doors in one swap direction")
+    return int(matching_door_idx[0].item())
+
+
+def apply_direction_door_match_swap(
+    source_matches: torch.Tensor,
+    target_matches: torch.Tensor,
+    source_room_by_door: torch.Tensor,
+    swap_environment_idx: int,
+    source_room_idx: int,
+    target_room_idx: int,
+) -> bool:
+    source_door_idx = room_direction_door_idx(source_room_by_door, source_room_idx)
+    target_door_idx = room_direction_door_idx(source_room_by_door, target_room_idx)
+    if source_door_idx is None or target_door_idx is None:
+        return False
+
+    source_target = source_matches[swap_environment_idx, source_door_idx].clone()
+    target_target = source_matches[swap_environment_idx, target_door_idx].clone()
+    source_matches[swap_environment_idx, source_door_idx] = target_target
+    source_matches[swap_environment_idx, target_door_idx] = source_target
+
+    opposite_matches = target_matches[swap_environment_idx]
+    source_reference = opposite_matches == source_door_idx
+    target_reference = opposite_matches == target_door_idx
+    opposite_matches[source_reference] = target_door_idx
+    opposite_matches[target_reference] = source_door_idx
+    return True
+
+
+def apply_door_match_swaps(
+    door_matches,
+    door_room_lookup: DoorRoomLookup,
+    before_room_idx: torch.Tensor,
+    swap_environment_idx: torch.Tensor,
+    swap_source_positions: torch.Tensor,
+    swap_target_positions: torch.Tensor,
+):
+    swapped_matches = type(door_matches)(
+        left=door_matches.left.clone(),
+        right=door_matches.right.clone(),
+        up=door_matches.up.clone(),
+        down=door_matches.down.clone(),
+    )
+    direction_pairs = (
+        (swapped_matches.left, swapped_matches.right, door_room_lookup.left),
+        (swapped_matches.right, swapped_matches.left, door_room_lookup.right),
+        (swapped_matches.up, swapped_matches.down, door_room_lookup.up),
+        (swapped_matches.down, swapped_matches.up, door_room_lookup.down),
+    )
+    for swap_idx in range(swap_environment_idx.shape[0]):
+        environment_idx = int(swap_environment_idx[swap_idx].item())
+        source_position = int(swap_source_positions[swap_idx].item())
+        target_position = int(swap_target_positions[swap_idx].item())
+        source_room_idx = int(before_room_idx[environment_idx, source_position].item())
+        target_room_idx = int(before_room_idx[environment_idx, target_position].item())
+        applied = False
+        for source_matches, target_matches, source_room_by_door in direction_pairs:
+            applied = apply_direction_door_match_swap(
+                source_matches,
+                target_matches,
+                source_room_by_door,
+                environment_idx,
+                source_room_idx,
+                target_room_idx,
+            ) or applied
+        if not applied:
+            raise ValueError(
+                f"could not find shared swap door direction for rooms {source_room_idx} "
+                f"and {target_room_idx}"
+            )
+    return swapped_matches
 
 
 def select_best_valid_assignment(
@@ -882,10 +977,29 @@ def assign_room_areas_from_centers(
     )
 
     profile_time = profile_start(profiler.enabled)
-    swapped_room_idx = apply_map_station_swaps(
+    selected_door_matches = type(door_matches)(
+        left=door_matches.left[assignment.valid_mask],
+        right=door_matches.right[assignment.valid_mask],
+        up=door_matches.up[assignment.valid_mask],
+        down=door_matches.down[assignment.valid_mask],
+    )
+    (
+        swapped_room_idx,
+        swap_environment_idx,
+        swap_source_positions,
+        swap_target_positions,
+    ) = apply_map_station_swaps(
         assignment.room_idx,
         assignment.area,
         map_station_data,
+    )
+    swapped_door_matches = apply_door_match_swaps(
+        selected_door_matches,
+        door_room_lookup,
+        assignment.room_idx,
+        swap_environment_idx,
+        swap_source_positions,
+        swap_target_positions,
     )
     add_area_profile(
         profiler,
@@ -898,6 +1012,7 @@ def assign_room_areas_from_centers(
         area=assignment.area,
         subarea=subarea,
         subsubarea=subsubarea,
+        door_matches=swapped_door_matches,
         valid_mask=assignment.valid_mask,
         crossing_count=assignment.crossing_count,
     )
@@ -926,6 +1041,7 @@ def assign_room_areas(
             area=torch.empty(room_idx.shape, device=room_idx.device, dtype=torch.int64),
             subarea=torch.empty(room_idx.shape, device=room_idx.device, dtype=torch.int64),
             subsubarea=torch.empty(room_idx.shape, device=room_idx.device, dtype=torch.int64),
+            door_matches=door_matches,
             valid_mask=torch.empty((0,), device=room_idx.device, dtype=torch.bool),
             crossing_count=torch.empty((0,), device=room_idx.device, dtype=torch.int64),
         )

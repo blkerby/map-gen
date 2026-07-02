@@ -694,7 +694,7 @@ def generate_response():
     final_room_x = valid_room_x[area_valid_mask]
     final_room_y = valid_room_y[area_valid_mask]
     final_toilet_crossed_room_idx = valid_toilet_crossed_room_idx[area_valid_mask]
-    final_door_matches = filter_door_matches(valid_door_matches, area_valid_mask)
+    final_door_matches = area_assignment.door_matches
     final_room_idx_list = tensor_to_list(final_room_idx)
     final_room_x_list = tensor_to_list(final_room_x)
     final_room_y_list = tensor_to_list(final_room_y)
@@ -752,7 +752,7 @@ def generate_response():
         "stats": {
             "num_generated": num_generated,
             "num_pre_valid": num_pre_valid,
-            "num_valid": num_valid,            
+            "num_valid": num_valid,
         },
         "rooms": {
             "id": final_room_id_list,
