@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 import torch
 
@@ -7,6 +8,9 @@ from generate import GenerationProfiler, profile_start, sync_profile_device
 
 AREA_COUNT = 6
 DIRECTIONS = ("left", "right", "up", "down")
+AreaAssignmentBaseOrder = Literal["random", "depth", "size"]
+AREA_ORDER_SIZE = (2, 1, 4, 0, 5, 3)
+AREA_ORDER_DEPTH = (0, 3, 5, 1, 4, 2)
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,7 @@ class RoomGeometry:
     max_x: torch.Tensor
     min_y: torch.Tensor
     max_y: torch.Tensor
+    tile_count: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,7 @@ def build_room_geometry(rooms: list[dict], device: torch.device) -> RoomGeometry
     max_x = []
     min_y = []
     max_y = []
+    tile_count = []
     for room in rooms:
         cells = occupied_cells(room)
         xs = [x for x, _ in cells] or [0]
@@ -108,11 +114,13 @@ def build_room_geometry(rooms: list[dict], device: torch.device) -> RoomGeometry
         max_x.append(max(xs) + 1)
         min_y.append(min(ys))
         max_y.append(max(ys) + 1)
+        tile_count.append(len(cells))
     return RoomGeometry(
         min_x=torch.tensor(min_x, device=device, dtype=torch.int64),
         max_x=torch.tensor(max_x, device=device, dtype=torch.int64),
         min_y=torch.tensor(min_y, device=device, dtype=torch.int64),
         max_y=torch.tensor(max_y, device=device, dtype=torch.int64),
+        tile_count=torch.tensor(tile_count, device=device, dtype=torch.int64),
     )
 
 
@@ -449,6 +457,71 @@ def area_crossing_counts(area_by_attempt: torch.Tensor, adjacency: torch.Tensor)
     same_area = area_by_attempt[:, :, :, None] == area_by_attempt[:, :, None, :]
     crossing_edge = upper_adjacency[:, None, :, :] & ~same_area
     return torch.sum(crossing_edge.to(torch.int64), dim=(2, 3))
+
+
+def area_assignment_permutation(
+    area: torch.Tensor,
+    room_idx: torch.Tensor,
+    room_y: torch.Tensor,
+    room_geometry: RoomGeometry,
+    base_order: AreaAssignmentBaseOrder,
+) -> torch.Tensor:
+    environment_count = area.shape[0]
+    if base_order == "random":
+        random_scores = torch.rand((environment_count, AREA_COUNT), device=area.device)
+        return torch.argsort(random_scores, dim=1)
+
+    area_ids = torch.arange(AREA_COUNT, device=area.device, dtype=torch.int64)
+    area_mask = area[:, None, :] == area_ids[None, :, None]
+    if base_order == "size":
+        room_tile_count = room_geometry.tile_count[room_idx.to(torch.int64)]
+        area_size = torch.sum(
+            torch.where(
+                area_mask,
+                room_tile_count[:, None, :],
+                torch.zeros_like(room_tile_count[:, None, :]),
+            ),
+            dim=2,
+        )
+        ranked_internal_area = torch.argsort(-area_size, dim=1, stable=True)
+        target_area_by_rank = torch.tensor(AREA_ORDER_SIZE, device=area.device, dtype=torch.int64)
+    elif base_order == "depth":
+        high = torch.iinfo(torch.int64).max
+        room_top_y = room_y.to(torch.int64) + room_geometry.min_y[room_idx.to(torch.int64)]
+        area_top_y = torch.where(area_mask, room_top_y[:, None, :], high).amin(dim=2)
+        ranked_internal_area = torch.argsort(area_top_y, dim=1, stable=True)
+        target_area_by_rank = torch.tensor(AREA_ORDER_DEPTH, device=area.device, dtype=torch.int64)
+    else:
+        raise ValueError(f"unknown area_assignment_base_order: {base_order}")
+
+    permutation = torch.empty(
+        (environment_count, AREA_COUNT),
+        device=area.device,
+        dtype=torch.int64,
+    )
+    permutation.scatter_(
+        dim=1,
+        index=ranked_internal_area,
+        src=target_area_by_rank[None, :].expand(environment_count, AREA_COUNT),
+    )
+    return permutation
+
+
+def apply_area_assignment_base_order(
+    area: torch.Tensor,
+    room_idx: torch.Tensor,
+    room_y: torch.Tensor,
+    room_geometry: RoomGeometry,
+    base_order: AreaAssignmentBaseOrder,
+) -> torch.Tensor:
+    permutation = area_assignment_permutation(
+        area,
+        room_idx,
+        room_y,
+        room_geometry,
+        base_order,
+    )
+    return torch.gather(permutation, dim=1, index=area.to(torch.int64))
 
 
 def induced_distances(adjacency: torch.Tensor, member_positions: torch.Tensor) -> torch.Tensor:
@@ -864,6 +937,7 @@ def assign_room_areas_from_centers(
     max_height: int,
     min_rooms: int,
     max_rooms: int,
+    base_order: AreaAssignmentBaseOrder,
     profiler: GenerationProfiler,
 ) -> AreaAssignment:
     device = room_idx.device
@@ -943,6 +1017,13 @@ def assign_room_areas_from_centers(
         center_valid_mask,
         crossing_counts,
     )
+    area = apply_area_assignment_base_order(
+        assignment.area,
+        assignment.room_idx,
+        room_y[assignment.valid_mask],
+        room_geometry,
+        base_order,
+    )
     add_area_profile(
         profiler,
         device,
@@ -953,7 +1034,7 @@ def assign_room_areas_from_centers(
     profile_time = profile_start(profiler.enabled)
     subarea = split_assignment_by_balanced_centers(
         adjacency[assignment.valid_mask],
-        (assignment.area,),
+        (area,),
         (AREA_COUNT,),
     )
     add_area_profile(
@@ -966,7 +1047,7 @@ def assign_room_areas_from_centers(
     profile_time = profile_start(profiler.enabled)
     subsubarea = split_assignment_by_balanced_centers(
         adjacency[assignment.valid_mask],
-        (assignment.area, subarea),
+        (area, subarea),
         (AREA_COUNT, 2),
     )
     add_area_profile(
@@ -990,7 +1071,7 @@ def assign_room_areas_from_centers(
         swap_target_positions,
     ) = apply_map_station_swaps(
         assignment.room_idx,
-        assignment.area,
+        area,
         map_station_data,
     )
     swapped_door_matches = apply_door_match_swaps(
@@ -1009,7 +1090,7 @@ def assign_room_areas_from_centers(
     )
     return AreaAssignment(
         room_idx=swapped_room_idx,
-        area=assignment.area,
+        area=area,
         subarea=subarea,
         subsubarea=subsubarea,
         door_matches=swapped_door_matches,
@@ -1033,6 +1114,7 @@ def assign_room_areas(
     max_height: int,
     min_rooms: int,
     max_rooms: int,
+    base_order: AreaAssignmentBaseOrder,
     profiler: GenerationProfiler,
 ) -> AreaAssignment:
     if room_idx.shape[0] == 0:
@@ -1071,5 +1153,6 @@ def assign_room_areas(
         max_height,
         min_rooms,
         max_rooms,
+        base_order,
         profiler,
     )

@@ -2,10 +2,12 @@ import torch
 
 from area_assignment import (
     AREA_COUNT,
+    apply_area_assignment_base_order,
     apply_door_match_swaps,
     apply_map_station_swaps,
     build_door_room_lookup,
     build_map_station_data,
+    build_room_geometry,
     build_toilet_data,
     map_station_area_valid_mask,
     map_station_area_valid_mask_compiled,
@@ -68,6 +70,17 @@ def two_door_room(name: str) -> dict:
     }
 
 
+def tile_room(name: str, tile_count: int) -> dict:
+    return {
+        "name": name,
+        "map": [[1 for _ in range(tile_count)]],
+        "doors": [],
+        "connections": [],
+        "missing_connections": [],
+        "toilet_crossing_x": [],
+    }
+
+
 def assert_one_map_station_per_area(
     room_idx: torch.Tensor,
     area: torch.Tensor,
@@ -96,6 +109,65 @@ def main() -> None:
     ]
     device = torch.device("cpu")
     map_station_data = build_map_station_data(rooms, device)
+
+    order_rooms = [
+        tile_room("Size 4", 4),
+        tile_room("Size 6", 6),
+        tile_room("Size 1", 1),
+        tile_room("Size 5", 5),
+        tile_room("Size 2", 2),
+        tile_room("Size 3", 3),
+    ]
+    order_geometry = build_room_geometry(order_rooms, device)
+    order_room_idx = torch.tensor([[0, 1, 2, 3, 4, 5]], device=device)
+    order_area = torch.tensor([[0, 1, 2, 3, 4, 5]], device=device)
+    order_room_y = torch.tensor([[10, 5, 30, 0, 20, 15]], device=device)
+    size_ordered_area = apply_area_assignment_base_order(
+        order_area,
+        order_room_idx,
+        order_room_y,
+        order_geometry,
+        "size",
+    )
+    assert size_ordered_area.tolist() == [[4, 2, 3, 1, 5, 0]]
+    depth_ordered_area = apply_area_assignment_base_order(
+        order_area,
+        order_room_idx,
+        order_room_y,
+        order_geometry,
+        "depth",
+    )
+    assert depth_ordered_area.tolist() == [[5, 3, 2, 0, 4, 1]]
+
+    tied_rooms = [tile_room(f"Tie {room_idx}", 1) for room_idx in range(AREA_COUNT)]
+    tied_geometry = build_room_geometry(tied_rooms, device)
+    tied_room_y = torch.zeros_like(order_room_y)
+    tied_size_area = apply_area_assignment_base_order(
+        order_area,
+        order_room_idx,
+        tied_room_y,
+        tied_geometry,
+        "size",
+    )
+    assert tied_size_area.tolist() == [[2, 1, 4, 0, 5, 3]]
+    tied_depth_area = apply_area_assignment_base_order(
+        order_area,
+        order_room_idx,
+        tied_room_y,
+        tied_geometry,
+        "depth",
+    )
+    assert tied_depth_area.tolist() == [[0, 3, 5, 1, 4, 2]]
+
+    torch.manual_seed(0)
+    random_ordered_area = apply_area_assignment_base_order(
+        order_area,
+        order_room_idx,
+        order_room_y,
+        order_geometry,
+        "random",
+    )
+    assert sorted(random_ordered_area[0].tolist()) == list(range(AREA_COUNT))
 
     line_adjacency = torch.eye(6, device=device, dtype=torch.bool)[None, :, :]
     line_positions = torch.arange(5, device=device)

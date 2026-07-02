@@ -6,7 +6,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 import torch
 from flask import Flask, jsonify, request
@@ -100,6 +100,7 @@ class GenerateRequest(StrictBaseModel):
     reward_save_distance: float
     reward_refill_distance: float
     reward_missing_connect_utility: float
+    area_assignment_base_order: Literal["random", "depth", "size"]
     small_map: bool
     min_rooms: int | None = None
     max_rooms: int | None = None
@@ -709,6 +710,7 @@ def generate_response():
         state.serving_config.area_bounding_box_height,
         state.serving_config.area_min_rooms,
         state.serving_config.area_max_rooms,
+        generate_request.area_assignment_base_order,
         serving_profiler,
     )
     add_serving_profile(

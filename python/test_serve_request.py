@@ -21,6 +21,7 @@ def base_payload() -> dict:
         "reward_save_distance": 1.0,
         "reward_refill_distance": 1.0,
         "reward_missing_connect_utility": 1.0,
+        "area_assignment_base_order": "random",
     }
 
 
@@ -45,6 +46,28 @@ def main() -> None:
         pass
     else:
         raise AssertionError("small_map should be required")
+
+    missing_area_order_payload = base_payload() | {"small_map": False}
+    del missing_area_order_payload["area_assignment_base_order"]
+    try:
+        GenerateRequest.model_validate(missing_area_order_payload)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("area_assignment_base_order should be required")
+
+    try:
+        GenerateRequest.model_validate(
+            base_payload()
+            | {
+                "area_assignment_base_order": "invalid",
+                "small_map": False,
+            }
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("area_assignment_base_order should reject invalid values")
 
     assert_invalid_value(
         base_payload() | {"small_map": True},

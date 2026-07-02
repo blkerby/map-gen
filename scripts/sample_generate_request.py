@@ -33,6 +33,7 @@ def main() -> int:
         "reward_save_distance": 0.1,
         "reward_refill_distance": 0.1,
         "reward_missing_connect_utility": 0.5,
+        "area_assignment_base_order": "random",
         "small_map": False,
     }
     body = json.dumps(payload).encode("utf-8")
