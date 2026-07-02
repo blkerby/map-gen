@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -549,6 +550,7 @@ def generate_response():
 
     profile_time = profile_start(state.profile)
     body = request.get_json(silent=False)
+    logging.info("Request body: %s", body)
     generate_request = GenerateRequest.model_validate(body)
     validate_generate_request(generate_request, state.rooms)
     add_serving_profile(
@@ -690,7 +692,7 @@ def generate_response():
     add_serving_profile(serving_profiler, state.device, "python.serve.total", request_start)
     if state.profile:
         response["profile"] = profile_report + serving_profiler.report()
-    print(response)
+    logging.info("Response stats: %s", response["stats"])
     return jsonify(response)
 
 
@@ -715,6 +717,7 @@ def bad_request_response(error: BadRequest):
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     args = parse_args()
     serving_config = load_serving_config(args.serving_config)
     model_export = load_model_input(args.model_export)
