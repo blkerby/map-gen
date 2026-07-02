@@ -319,6 +319,9 @@ def prepare_feature_batches(
     log_recommended_candidates = torch.log(train_episode_data.recommended_candidates + 1).to(
         torch.device("cpu")
     )
+    generation_variable_floats = train_episode_data.generation_variable_floats.to(
+        torch.device("cpu")
+    )
     env.clear()
     feature_batches = []
     for step in range(episode_length):
@@ -357,6 +360,8 @@ def prepare_feature_batches(
                         config.features.temperature,
                         log_recommended_candidates,
                         config.features.recommended_candidates,
+                        generation_variable_floats,
+                        config.features.generation_variable_floats,
                         next_lookahead_outcomes,
                         config.features.lookahead_outcomes,
                         0,
@@ -455,8 +460,7 @@ def train_balance_batch_backward(
     prepared_batch: PreparedTrainBatch,
     loss_scale: float,
 ) -> torch.Tensor:
-    log_temperature = torch.log(prepared_batch.episode_data.temperature)
-    preds = balance_model(log_temperature)
+    preds = balance_model(prepared_batch.episode_data.generation_variable_floats)
     balance_loss = compute_balance_loss(
         preds,
         prepared_batch.door_matches,
@@ -590,7 +594,9 @@ def train_feature_batch_backward(
         door_match=step_outcomes.door_match.unsqueeze(1),
     )
     with torch.no_grad():
-        balance_preds = context.balance_model(torch.log(prepared_batch.episode_data.temperature))
+        balance_preds = context.balance_model(
+            prepared_batch.episode_data.generation_variable_floats
+        )
         balance_score_target_logits, balance_score_mask = compute_balance_score_target_logits(
             balance_preds,
             prepared_batch.door_matches,

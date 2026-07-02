@@ -32,6 +32,22 @@ type ScheduleableFloat = float | Schedule
 type ScheduleableInt = int | Schedule
 type VariableFloat = float | VariableSchedule
 
+GENERATION_VARIABLE_FLOAT_FIELDS = (
+    "temperature",
+    "proposal_temperature",
+    "reward_door",
+    "reward_connection",
+    "reward_toilet",
+    "reward_phantoon",
+    "reward_balance",
+    "reward_toilet_balance",
+    "reward_frontier",
+    "reward_graph_diameter",
+    "reward_save_distance",
+    "reward_refill_distance",
+    "reward_missing_connect_utility",
+)
+
 
 class ModelConfig(StrictBaseModel):
     compile: bool
@@ -117,6 +133,7 @@ class FeatureConfig(StrictBaseModel):
     inventory: bool
     temperature: bool
     recommended_candidates: bool
+    generation_variable_floats: bool
     lookahead_outcomes: int
     room_position: bool
     global_room_position: int
@@ -146,6 +163,7 @@ class FeatureConfig(StrictBaseModel):
             inventory=self.inventory,
             temperature=self.temperature,
             recommended_candidates=self.recommended_candidates,
+            generation_variable_floats=self.generation_variable_floats,
             lookahead_outcomes=self.lookahead_outcomes > 0,
             room_position=self.room_position,
             global_room_position=self.global_room_position > 0,
@@ -175,6 +193,7 @@ class EngineFeatureConfig(StrictBaseModel):
     inventory: bool
     temperature: bool
     recommended_candidates: bool
+    generation_variable_floats: bool
     lookahead_outcomes: bool
     room_position: bool
     global_room_position: bool

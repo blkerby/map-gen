@@ -69,6 +69,7 @@
     "inventory": true,
     "temperature": true,
     "recommended_candidates": true,
+    "generation_variable_floats": true,
     "lookahead_outcomes": 64,
     "room_position": true,
     "global_room_position": 256,

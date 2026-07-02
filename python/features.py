@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from env import Features, OutputMetadata
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 if TYPE_CHECKING:
     from train_config import FeatureConfig
@@ -144,6 +145,23 @@ class RecommendedCandidatesFeature(GlobalFeature):
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         return features.global_features.log_recommended_candidates.to(dtype).unsqueeze(-1)
+
+
+class GenerationVariableFloatsFeature(GlobalFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.generation_variable_floats
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return len(GENERATION_VARIABLE_FLOAT_FIELDS)
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> GenerationVariableFloatsFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        return features.global_features.generation_variable_floats.to(dtype)
 
 
 class LookaheadFeature(GlobalFeature):
@@ -537,6 +555,7 @@ GLOBAL_FEATURES: list[type[GlobalFeature]] = [
     InventoryFeature,
     TemperatureFeature,
     RecommendedCandidatesFeature,
+    GenerationVariableFloatsFeature,
     LookaheadFeature,
     ConnectionReachabilityFeature,
     ToiletCrossedRoomFeature,

@@ -49,6 +49,8 @@ enum SpecialType {
     Toilet,
     PhantoonBoss,
     PhantoonMap,
+    Ship,
+    MotherBrain,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -297,11 +299,20 @@ impl ConnectionsKey {
         let mut missing_connections = room.missing_connections.clone();
         missing_connections.sort_unstable();
         Self {
-            special_type: room.special_type,
+            special_type: room.special_type.and_then(SpecialType::connection_key_type),
             save: room.save,
             refill: room.refill,
             connections,
             missing_connections,
+        }
+    }
+}
+
+impl SpecialType {
+    fn connection_key_type(self) -> Option<Self> {
+        match self {
+            Self::Toilet | Self::PhantoonBoss | Self::PhantoonMap => Some(self),
+            Self::Ship | Self::MotherBrain => None,
         }
     }
 }
@@ -549,7 +560,7 @@ impl CommonData {
                     }
                     phantoon_map_room_idx = Some(room_idx as RoomIdx);
                 }
-                None => {}
+                Some(SpecialType::Ship | SpecialType::MotherBrain) | None => {}
             }
             if matches!(
                 room.special_type,
@@ -1098,6 +1109,49 @@ mod tests {
         assert!(CommonData::new(parse("[]")).is_err());
         assert!(CommonData::new(parse("[[0, 1], [1, 0], [0, 1]]")).is_err());
         assert!(CommonData::new(parse("[[0, 1], [0, 1]]")).is_err());
+    }
+
+    #[test]
+    fn ship_and_mother_brain_do_not_create_connection_variants() {
+        let rooms: Vec<Room> = serde_json::from_str(
+            r#"
+            [
+                {
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                    "connections": [],
+                    "missing_connections": []
+                },
+                {
+                    "special_type": "ship",
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                    "connections": [],
+                    "missing_connections": []
+                },
+                {
+                    "special_type": "mother_brain",
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                    "connections": [],
+                    "missing_connections": []
+                }
+            ]
+            "#,
+        )
+        .unwrap();
+
+        let common = CommonData::new(rooms).unwrap();
+        let room_connection_variant_idx: Vec<_> = common
+            .room
+            .iter()
+            .map(|room| room.connection_variant_idx)
+            .collect();
+        assert_eq!(room_connection_variant_idx, vec![0, 0, 0]);
+        assert_eq!(common.connection_variant_rooms.len(), 1);
     }
 
     #[test]

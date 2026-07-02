@@ -16,6 +16,8 @@ from features import (
 if TYPE_CHECKING:
     from train_config import FeatureConfig
 
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
+
 DETERMINISTIC_INVALID_LOGIT = 20.0
 ProfileCallback = Callable[[str, Callable[[], object]], object]
 
@@ -1065,7 +1067,7 @@ class BalanceModel(torch.nn.Module):
         )
 
         layers: list[torch.nn.Module] = []
-        input_width = 1
+        input_width = len(GENERATION_VARIABLE_FLOAT_FIELDS)
         for _ in range(num_layers):
             layers.extend(
                 [
@@ -1079,12 +1081,12 @@ class BalanceModel(torch.nn.Module):
         layers.append(output_layer)
         self.net = torch.nn.Sequential(*layers)
 
-    def forward(self, log_temperature: torch.Tensor) -> BalancePredictions:
+    def forward(self, generation_variable_floats: torch.Tensor) -> BalancePredictions:
         parameter_dtype = next(self.parameters()).dtype
         raw = self.net(
-            log_temperature.to(
-                activation_dtype(log_temperature.device, parameter_dtype)
-            ).unsqueeze(-1)
+            generation_variable_floats.to(
+                activation_dtype(generation_variable_floats.device, parameter_dtype)
+            )
         ).to(torch.float32)
         offset = 0
         left_size = self.left_count * self.right_count
@@ -1092,19 +1094,19 @@ class BalanceModel(torch.nn.Module):
         up_size = self.up_count * self.down_count
         down_size = self.down_count * self.up_count
         left = raw[:, offset : offset + left_size].reshape(
-            log_temperature.shape[0], self.left_count, self.right_count
+            generation_variable_floats.shape[0], self.left_count, self.right_count
         )
         offset += left_size
         right = raw[:, offset : offset + right_size].reshape(
-            log_temperature.shape[0], self.right_count, self.left_count
+            generation_variable_floats.shape[0], self.right_count, self.left_count
         )
         offset += right_size
         up = raw[:, offset : offset + up_size].reshape(
-            log_temperature.shape[0], self.up_count, self.down_count
+            generation_variable_floats.shape[0], self.up_count, self.down_count
         )
         offset += up_size
         down = raw[:, offset : offset + down_size].reshape(
-            log_temperature.shape[0], self.down_count, self.up_count
+            generation_variable_floats.shape[0], self.down_count, self.up_count
         )
         offset += down_size
         toilet_crossed_room = raw[:, offset : offset + self.num_rooms]

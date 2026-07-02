@@ -45,6 +45,11 @@ class RoomPartData:
 
 
 @dataclass(frozen=True)
+class RequiredRoomData:
+    required: list[bool]
+
+
+@dataclass(frozen=True)
 class SmallMapResult:
     source_map_idx: list[int]
     room_idx: list[list[int]]
@@ -115,6 +120,15 @@ def build_room_part_data(rooms: list[dict]) -> RoomPartData:
     )
 
 
+def build_required_room_data(rooms: list[dict]) -> RequiredRoomData:
+    return RequiredRoomData(
+        required=[
+            room.get("special_type") in ("ship", "mother_brain")
+            for room in rooms
+        ],
+    )
+
+
 def placement_positions_by_room(room_idx: list[int]) -> dict[int, int]:
     return {room: position for position, room in enumerate(room_idx)}
 
@@ -173,9 +187,17 @@ def subset_valid(
     direction_matches: dict[str, list[int]],
     direction_data: dict[str, DirectionDoorData],
     room_part_data: RoomPartData,
+    required_room_data: RequiredRoomData,
     config: SmallMapConfig,
 ) -> bool:
     included = [(area_mask & (1 << area)) != 0 for area in map_area]
+    required_included = all(
+        included[position]
+        for position, room_idx in enumerate(map_room_idx)
+        if required_room_data.required[room_idx]
+    )
+    if not required_included:
+        return False
     included_count = sum(1 for is_included in included if is_included)
     if included_count < config.min_rooms or included_count > config.max_rooms:
         return False
@@ -252,6 +274,7 @@ def select_area_mask(
     direction_matches: dict[str, list[int]],
     direction_data: dict[str, DirectionDoorData],
     room_part_data: RoomPartData,
+    required_room_data: RequiredRoomData,
     config: SmallMapConfig,
 ) -> int | None:
     best_mask = None
@@ -264,6 +287,7 @@ def select_area_mask(
             direction_matches,
             direction_data,
             room_part_data,
+            required_room_data,
             config,
         ):
             continue
@@ -290,6 +314,7 @@ def prune_small_maps(
     door_matches: DoorMatches,
     door_data: DoorData,
     room_part_data: RoomPartData,
+    required_room_data: RequiredRoomData,
     config: SmallMapConfig,
 ) -> SmallMapResult:
     direction_matches_by_map = {
@@ -324,6 +349,7 @@ def prune_small_maps(
             direction_matches,
             direction_data,
             room_part_data,
+            required_room_data,
             config,
         )
         if area_mask is None:

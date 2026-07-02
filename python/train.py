@@ -52,6 +52,7 @@ from train_config import (
     AdamOptimizerConfig,
     AdamParamsConfig,
     Config,
+    GENERATION_VARIABLE_FLOAT_FIELDS,
     MuonOptimizerConfig,
     OptimizerConfig,
     VariableFloat,
@@ -534,6 +535,61 @@ def create_generate_config(
             "generation.proposal_temperature",
         )
     )
+    generation_variable_floats_by_name = {
+        "temperature": temperature,
+        "proposal_temperature": proposal_temperature,
+        "reward_door": variable_float_tensor(
+            config.generation.reward_door,
+            "generation.reward_door",
+        ),
+        "reward_connection": variable_float_tensor(
+            config.generation.reward_connection,
+            "generation.reward_connection",
+        ),
+        "reward_toilet": variable_float_tensor(
+            config.generation.reward_toilet,
+            "generation.reward_toilet",
+        ),
+        "reward_phantoon": variable_float_tensor(
+            config.generation.reward_phantoon,
+            "generation.reward_phantoon",
+        ),
+        "reward_balance": variable_float_tensor(
+            config.generation.reward_balance,
+            "generation.reward_balance",
+        ),
+        "reward_toilet_balance": variable_float_tensor(
+            config.generation.reward_toilet_balance,
+            "generation.reward_toilet_balance",
+        ),
+        "reward_frontier": variable_float_tensor(
+            config.generation.reward_frontier,
+            "generation.reward_frontier",
+        ),
+        "reward_graph_diameter": variable_float_tensor(
+            config.generation.reward_graph_diameter,
+            "generation.reward_graph_diameter",
+        ),
+        "reward_save_distance": variable_float_tensor(
+            config.generation.reward_save_distance,
+            "generation.reward_save_distance",
+        ),
+        "reward_refill_distance": variable_float_tensor(
+            config.generation.reward_refill_distance,
+            "generation.reward_refill_distance",
+        ),
+        "reward_missing_connect_utility": variable_float_tensor(
+            config.generation.reward_missing_connect_utility,
+            "generation.reward_missing_connect_utility",
+        ),
+    }
+    generation_variable_floats = torch.stack(
+        [
+            generation_variable_floats_by_name[name]
+            for name in GENERATION_VARIABLE_FLOAT_FIELDS
+        ],
+        dim=1,
+    )
     return GenerateConfig(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
@@ -541,47 +597,20 @@ def create_generate_config(
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,
-        reward_door=variable_float_tensor(config.generation.reward_door, "generation.reward_door"),
-        reward_connection=variable_float_tensor(
-            config.generation.reward_connection,
-            "generation.reward_connection",
+        reward_door=generation_variable_floats_by_name["reward_door"],
+        reward_connection=generation_variable_floats_by_name["reward_connection"],
+        reward_toilet=generation_variable_floats_by_name["reward_toilet"],
+        reward_phantoon=generation_variable_floats_by_name["reward_phantoon"],
+        reward_balance=generation_variable_floats_by_name["reward_balance"],
+        reward_toilet_balance=generation_variable_floats_by_name["reward_toilet_balance"],
+        reward_frontier=generation_variable_floats_by_name["reward_frontier"],
+        reward_graph_diameter=generation_variable_floats_by_name["reward_graph_diameter"],
+        reward_save_distance=generation_variable_floats_by_name["reward_save_distance"],
+        reward_refill_distance=generation_variable_floats_by_name["reward_refill_distance"],
+        reward_missing_connect_utility=(
+            generation_variable_floats_by_name["reward_missing_connect_utility"]
         ),
-        reward_toilet=variable_float_tensor(
-            config.generation.reward_toilet,
-            "generation.reward_toilet",
-        ),
-        reward_phantoon=variable_float_tensor(
-            config.generation.reward_phantoon,
-            "generation.reward_phantoon",
-        ),
-        reward_balance=variable_float_tensor(
-            config.generation.reward_balance,
-            "generation.reward_balance",
-        ),
-        reward_toilet_balance=variable_float_tensor(
-            config.generation.reward_toilet_balance,
-            "generation.reward_toilet_balance",
-        ),
-        reward_frontier=variable_float_tensor(
-            config.generation.reward_frontier,
-            "generation.reward_frontier",
-        ),
-        reward_graph_diameter=variable_float_tensor(
-            config.generation.reward_graph_diameter,
-            "generation.reward_graph_diameter",
-        ),
-        reward_save_distance=variable_float_tensor(
-            config.generation.reward_save_distance,
-            "generation.reward_save_distance",
-        ),
-        reward_refill_distance=variable_float_tensor(
-            config.generation.reward_refill_distance,
-            "generation.reward_refill_distance",
-        ),
-        reward_missing_connect_utility=variable_float_tensor(
-            config.generation.reward_missing_connect_utility,
-            "generation.reward_missing_connect_utility",
-        ),
+        generation_variable_floats=generation_variable_floats,
         distance_proximity_scale=config.distance_proximity_scale,
         autocast=config.model.generation_autocast,
     )
@@ -961,6 +990,12 @@ class TrainingSession:
                         for episode_data in episode_data_iterations
                     ]
                 ),
+                generation_variable_floats=torch.cat(
+                    [
+                        episode_data.generation_variable_floats
+                        for episode_data in episode_data_iterations
+                    ]
+                ),
             ),
             EpisodeOutcomes(
                 step_outcomes=StepOutcomes(
@@ -1311,7 +1346,7 @@ class TrainingSession:
                 self.device,
                 False,
             )
-            balance_preds = self.balance_model(torch.log(generate_config.temperature))
+            balance_preds = self.balance_model(generate_config.generation_variable_floats)
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
             balance_left_topk = topk_or_zeros(
                 torch.softmax(balance_preds.left, dim=-1).flatten(),

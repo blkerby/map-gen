@@ -30,14 +30,16 @@ from generate import GenerationProfiler, profile_start, run_generation_groups, s
 from model import FrontierModel
 from small_map import (
     DoorData,
+    RequiredRoomData,
     RoomPartData,
     SmallMapConfig,
     build_door_data,
+    build_required_room_data,
     build_room_part_data,
     prune_small_maps,
 )
 from train import create_balance_model, frontier_model_kwargs, without_prefix
-from train_config import Config, validate_config
+from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, validate_config
 
 
 MODEL_EXPORT_FORMAT = "map-gen-model-export-v1"
@@ -139,6 +141,7 @@ class ServingState:
     door_lookups: DoorLookups
     door_data: DoorData
     room_part_data: RoomPartData
+    required_room_data: RequiredRoomData
     profile: bool
     lock: threading.Lock
 
@@ -300,6 +303,7 @@ def create_serving_state(
     door_lookups = build_door_lookups(rooms)
     door_data = build_door_data(rooms)
     room_part_data = build_room_part_data(rooms)
+    required_room_data = build_required_room_data(rooms)
     return ServingState(
         serving_config=serving_config,
         training_config=model_export.training_config,
@@ -315,6 +319,7 @@ def create_serving_state(
         door_lookups=door_lookups,
         door_data=door_data,
         room_part_data=room_part_data,
+        required_room_data=required_room_data,
         profile=profile,
         lock=threading.Lock(),
     )
@@ -360,6 +365,21 @@ def create_generate_configs(
     envs: list,
     device: torch.device,
 ) -> list[GenerateConfig]:
+    generation_variable_float_values = {
+        "temperature": generate_request.temperature,
+        "proposal_temperature": generate_request.proposal_temperature,
+        "reward_door": generate_request.reward_door,
+        "reward_connection": generate_request.reward_connection,
+        "reward_toilet": generate_request.reward_toilet,
+        "reward_phantoon": generate_request.reward_phantoon,
+        "reward_balance": generate_request.reward_balance,
+        "reward_toilet_balance": generate_request.reward_toilet_balance,
+        "reward_frontier": generate_request.reward_frontier,
+        "reward_graph_diameter": generate_request.reward_graph_diameter,
+        "reward_save_distance": generate_request.reward_save_distance,
+        "reward_refill_distance": generate_request.reward_refill_distance,
+        "reward_missing_connect_utility": generate_request.reward_missing_connect_utility,
+    }
     return [
         GenerateConfig(
             episode_length=generate_request.episode_length,
@@ -389,6 +409,16 @@ def create_generate_configs(
             reward_save_distance=generate_request.reward_save_distance,
             reward_refill_distance=generate_request.reward_refill_distance,
             reward_missing_connect_utility=generate_request.reward_missing_connect_utility,
+            generation_variable_floats=torch.tensor(
+                [
+                    [
+                        generation_variable_float_values[name]
+                        for name in GENERATION_VARIABLE_FLOAT_FIELDS
+                    ]
+                ],
+                dtype=torch.float32,
+                device=device,
+            ).expand(env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS)),
             distance_proximity_scale=state.training_config.distance_proximity_scale,
             autocast=state.serving_config.autocast,
         )
@@ -717,6 +747,7 @@ def generate_response():
             door_matches=final_door_matches,
             door_data=state.door_data,
             room_part_data=state.room_part_data,
+            required_room_data=state.required_room_data,
             config=SmallMapConfig(
                 min_rooms=generate_request.min_rooms,
                 max_rooms=generate_request.max_rooms,

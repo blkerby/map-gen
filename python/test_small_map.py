@@ -4,6 +4,7 @@ from env import DoorMatches
 from small_map import (
     SmallMapConfig,
     build_door_data,
+    build_required_room_data,
     build_room_part_data,
     prune_small_maps,
 )
@@ -51,6 +52,7 @@ def prune(
         door_matches=door_matches,
         door_data=build_door_data(rooms),
         room_part_data=build_room_part_data(rooms),
+        required_room_data=build_required_room_data(rooms),
         config=config,
     )
 
@@ -111,6 +113,24 @@ def test_selects_room_count_closest_to_target() -> None:
     assert result.room_idx == [[0, 1, 2]]
 
 
+def test_required_special_rooms_must_be_included() -> None:
+    rooms = [
+        room("A", [[door("right", 10)]], []),
+        room("B", [[door("left", 20), door("right", 21)]], []),
+        room("C", [[door("left", 30), door("right", 31)]], []),
+        room("D", [[door("left", 40)]], []),
+    ]
+    rooms[3]["special_type"] = "mother_brain"
+    result = prune(
+        rooms=rooms,
+        room_idx=[0, 1, 2, 3],
+        area=[0, 1, 2, 3],
+        door_matches=chain_door_matches(left_matches=[0, 1, 2], right_matches=[0, 1, 2]),
+        config=SmallMapConfig(min_rooms=2, max_rooms=4, target_rooms=3),
+    )
+    assert result.room_idx == [[1, 2, 3]]
+
+
 def test_room_part_graph_uses_directed_connections() -> None:
     rooms = [
         room("A", [[door("right", 10)]], []),
@@ -141,6 +161,7 @@ def main() -> None:
     test_prunes_room_columns_and_keeps_source_index()
     test_non_kind_zero_crossing_discards_map()
     test_selects_room_count_closest_to_target()
+    test_required_special_rooms_must_be_included()
     test_room_part_graph_uses_directed_connections()
 
 

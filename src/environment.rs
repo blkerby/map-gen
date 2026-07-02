@@ -267,6 +267,10 @@ pub struct FeatureConfig {
     pub inventory: bool,
     pub temperature: bool,
     pub recommended_candidates: bool,
+    // This is attached by Python from generated episode tensors; Rust only
+    // needs to accept the strict feature config field.
+    #[allow(dead_code)]
+    pub generation_variable_floats: bool,
     // This is attached by Python from outcome tensors; Rust only needs to accept
     // the strict feature config field.
     #[allow(dead_code)]
@@ -349,6 +353,7 @@ impl FeatureConfig {
             inventory: true,
             temperature: true,
             recommended_candidates: true,
+            generation_variable_floats: true,
             lookahead_outcomes: true,
             room_position: true,
             global_room_position: true,
@@ -380,6 +385,7 @@ impl FeatureConfig {
             inventory: false,
             temperature: false,
             recommended_candidates: false,
+            generation_variable_floats: false,
             lookahead_outcomes: false,
             room_position: false,
             global_room_position: false,

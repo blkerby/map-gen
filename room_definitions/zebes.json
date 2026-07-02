@@ -19,6 +19,7 @@
     {
         "room_id": 8,
         "name": "Landing Site",
+        "special_type": "ship",
         "save": true,
         "refill": true,
         "map": [
@@ -4354,6 +4355,7 @@
     {
         "room_id": 238,
         "name": "Mother Brain Room",
+        "special_type": "mother_brain",
         "map": [
             [1, 1, 1, 1]
         ],

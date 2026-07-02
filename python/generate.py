@@ -532,7 +532,7 @@ def sample_proposal_shortlist(
 def candidate_log_inputs(
     config: GenerateConfig,
     candidate_shape: torch.Size,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     candidate_log_temperature = config.temperature.to(torch.device("cpu")).log().unsqueeze(1)
     candidate_log_temperature = candidate_log_temperature.expand(candidate_shape).contiguous()
     candidate_log_recommended_candidates = torch.full(
@@ -541,16 +541,23 @@ def candidate_log_inputs(
         dtype=torch.float32,
         device=torch.device("cpu"),
     )
+    candidate_generation_variable_floats = (
+        config.generation_variable_floats.to(torch.device("cpu"))
+        .unsqueeze(1)
+        .expand(*candidate_shape, config.generation_variable_floats.shape[1])
+        .contiguous()
+    )
     return (
         candidate_log_temperature,
         candidate_log_recommended_candidates,
+        candidate_generation_variable_floats,
     )
 
 
 def state_log_inputs(
     config: GenerateConfig,
     environment_count: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     log_temperature = config.temperature.to(torch.device("cpu")).log()
     log_recommended_candidates = torch.full(
         [environment_count],
@@ -558,7 +565,8 @@ def state_log_inputs(
         dtype=torch.float32,
         device=torch.device("cpu"),
     )
-    return log_temperature, log_recommended_candidates
+    generation_variable_floats = config.generation_variable_floats.to(torch.device("cpu"))
+    return log_temperature, log_recommended_candidates, generation_variable_floats
 
 
 def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes:
@@ -590,6 +598,7 @@ def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
     (
         log_temperature,
         log_recommended_candidates,
+        generation_variable_floats,
     ) = state_log_inputs(group.config, environment_count)
     return ProposalInputs(
         features=group.env.extract_features(
@@ -598,6 +607,8 @@ def prepare_proposal_inputs(group: GenerationGroup) -> ProposalInputs:
             group.env.engine.features.temperature,
             log_recommended_candidates,
             group.env.engine.features.recommended_candidates,
+            generation_variable_floats,
+            group.env.engine.features.generation_variable_floats,
             group.previous_lookahead_outcomes,
             group.env.engine.features.lookahead_outcomes,
         ),
@@ -617,6 +628,7 @@ def prepare_candidate_features(
     (
         candidate_log_temperature,
         candidate_log_recommended_candidates,
+        candidate_generation_variable_floats,
     ) = candidate_log_inputs(
         config,
         candidates.room_idx.shape,
@@ -630,6 +642,8 @@ def prepare_candidate_features(
             env.engine.features.temperature,
             candidate_log_recommended_candidates,
             env.engine.features.recommended_candidates,
+            candidate_generation_variable_floats,
+            env.engine.features.generation_variable_floats,
             candidate_batch.post_candidate_outcomes,
             env.engine.features.lookahead_outcomes,
             candidate_batch.feature_requirements,
@@ -1389,6 +1403,9 @@ def merge_generation_results(
             recommended_candidates=torch.cat(
                 [episode_data.recommended_candidates for episode_data, _, _, _ in results]
             ),
+            generation_variable_floats=torch.cat(
+                [episode_data.generation_variable_floats for episode_data, _, _, _ in results]
+            ),
         ),
         EpisodeOutcomes(
             step_outcomes=StepOutcomes(
@@ -1610,7 +1627,7 @@ def run_generation_groups(
             step=0,
             feature_slot=FeatureSlot(env, pin_memory=device.type == "cuda"),
             candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
-            balance_preds=balance_model(torch.log(config.temperature)),
+            balance_preds=balance_model(config.generation_variable_floats),
             previous_lookahead_outcomes=None,
             previous_proposal_scores=None,
             score_result_queue=Queue(maxsize=1),
@@ -1725,6 +1742,7 @@ def run_generation_groups(
                             group.config.recommended_candidates,
                             dtype=torch.float32,
                         ),
+                        generation_variable_floats=group.config.generation_variable_floats,
                     ),
                     episode_outcomes,
                     door_match_counts,

@@ -33,6 +33,7 @@ class GenerateConfig:
     reward_save_distance: float | torch.Tensor
     reward_refill_distance: float | torch.Tensor
     reward_missing_connect_utility: float | torch.Tensor
+    generation_variable_floats: torch.Tensor
     distance_proximity_scale: float
     autocast: bool
 
@@ -73,12 +74,14 @@ class EpisodeData:
     actions: Actions
     temperature: torch.Tensor
     recommended_candidates: torch.Tensor
+    generation_variable_floats: torch.Tensor
 
     def to(self, device: torch.device) -> "EpisodeData":
         return EpisodeData(
             actions=self.actions.to(device),
             temperature=self.temperature.to(device),
             recommended_candidates=self.recommended_candidates.to(device),
+            generation_variable_floats=self.generation_variable_floats.to(device),
         )
 
     def slice(self, start: int, end: int) -> "EpisodeData":
@@ -86,6 +89,7 @@ class EpisodeData:
             actions=self.actions.slice(start, end),
             temperature=self.temperature[start:end],
             recommended_candidates=self.recommended_candidates[start:end],
+            generation_variable_floats=self.generation_variable_floats[start:end],
         )
 
 
@@ -450,6 +454,7 @@ class GlobalFeatures:
     known_refill_to_room_distance: torch.Tensor
     log_temperature: torch.Tensor
     log_recommended_candidates: torch.Tensor
+    generation_variable_floats: torch.Tensor
     lookahead_door_invalid: torch.Tensor
     lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
@@ -504,6 +509,9 @@ class GlobalFeatures:
             log_recommended_candidates=self.log_recommended_candidates.to(
                 device, non_blocking=non_blocking
             ),
+            generation_variable_floats=self.generation_variable_floats.to(
+                device, non_blocking=non_blocking
+            ),
             lookahead_door_invalid=self.lookahead_door_invalid.to(
                 device, non_blocking=non_blocking
             ),
@@ -551,6 +559,7 @@ class GlobalFeatures:
             known_refill_to_room_distance=self.known_refill_to_room_distance.flatten(0, 1),
             log_temperature=self.log_temperature.flatten(0, 1),
             log_recommended_candidates=self.log_recommended_candidates.flatten(0, 1),
+            generation_variable_floats=self.generation_variable_floats.flatten(0, 1),
             lookahead_door_invalid=self.lookahead_door_invalid.flatten(0, 1),
             lookahead_door_match=self.lookahead_door_match.flatten(0, 1),
             lookahead_connection_invalid=self.lookahead_connection_invalid.flatten(0, 1),
@@ -1108,6 +1117,8 @@ class EnvironmentGroup:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
+        generation_variable_floats: torch.Tensor,
+        include_generation_variable_floats: bool,
         lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         environment_start: int = 0,
@@ -1249,6 +1260,8 @@ class EnvironmentGroup:
             include_temperature,
             log_recommended_candidates,
             include_recommended_candidates,
+            generation_variable_floats,
+            include_generation_variable_floats,
             lookahead_outcomes,
             include_lookahead_outcomes,
             feature_requirements.frontier_row_count,
@@ -1524,6 +1537,8 @@ class FeatureSlot:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
+        generation_variable_floats: torch.Tensor,
+        include_generation_variable_floats: bool,
         lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         frontier_row_count: int,
@@ -1538,6 +1553,10 @@ class FeatureSlot:
                     *log_recommended_candidates.shape,
                     0,
                 ]
+            )
+        if not include_generation_variable_floats:
+            generation_variable_floats = generation_variable_floats.new_empty(
+                [*generation_variable_floats.shape[:-1], 0]
             )
         lookahead_door_invalid = lookahead_outcomes.door_invalid
         lookahead_door_match = lookahead_outcomes.door_match
@@ -1615,6 +1634,7 @@ class FeatureSlot:
                 ],
                 log_temperature=log_temperature,
                 log_recommended_candidates=log_recommended_candidates,
+                generation_variable_floats=generation_variable_floats,
                 lookahead_door_invalid=lookahead_door_invalid,
                 lookahead_door_match=lookahead_door_match,
                 lookahead_connection_invalid=lookahead_connection_invalid,
@@ -1698,6 +1718,8 @@ class FeatureSlot:
         include_temperature: bool,
         log_recommended_candidates: torch.Tensor,
         include_recommended_candidates: bool,
+        generation_variable_floats: torch.Tensor,
+        include_generation_variable_floats: bool,
         lookahead_outcomes: StepOutcomes,
         include_lookahead_outcomes: bool,
         frontier_row_count: int,
@@ -1709,6 +1731,10 @@ class FeatureSlot:
             log_temperature = log_temperature.new_empty([environment_count, candidate_count, 0])
         if not include_recommended_candidates:
             log_recommended_candidates = log_recommended_candidates.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+        if not include_generation_variable_floats:
+            generation_variable_floats = generation_variable_floats.new_empty(
                 [environment_count, candidate_count, 0]
             )
         lookahead_door_invalid = lookahead_outcomes.door_invalid
@@ -1784,6 +1810,7 @@ class FeatureSlot:
                 ].view(environment_count, candidate_count, self.known_distance_width),
                 log_temperature=log_temperature,
                 log_recommended_candidates=log_recommended_candidates,
+                generation_variable_floats=generation_variable_floats,
                 lookahead_door_invalid=lookahead_door_invalid,
                 lookahead_door_match=lookahead_door_match,
                 lookahead_connection_invalid=lookahead_connection_invalid,
@@ -1871,6 +1898,8 @@ def extract_candidate_features(
     include_temperature: bool,
     log_recommended_candidates: torch.Tensor,
     include_recommended_candidates: bool,
+    generation_variable_floats: torch.Tensor,
+    include_generation_variable_floats: bool,
     lookahead_outcomes: StepOutcomes,
     include_lookahead_outcomes: bool,
     feature_requirements: FeatureRequirements,
@@ -2011,6 +2040,8 @@ def extract_candidate_features(
         include_temperature,
         log_recommended_candidates,
         include_recommended_candidates,
+        generation_variable_floats,
+        include_generation_variable_floats,
         lookahead_outcomes,
         include_lookahead_outcomes,
         frontier_row_count,
