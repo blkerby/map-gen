@@ -4,6 +4,8 @@ import argparse
 import json
 import logging
 import threading
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -25,7 +27,7 @@ from area_assignment import (
     build_room_geometry,
     build_toilet_data,
 )
-from env import DoorMatches, Engine, GenerateConfig
+from env import DoorMatches, Engine, EpisodeData, EpisodeOutcomes, GenerateConfig
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from model import FrontierModel
 from small_map import (
@@ -73,6 +75,9 @@ class ServingConfig(StrictBaseModel):
     verify_outcome_consistency: bool
     gpu_prefetch_batches: int
     num_warmup_requests: int
+    prefetch_queue_max_size: int
+    prefetch_max_queues: int
+    prefetch_delay_seconds: float
     area_assignment_attempts: int
     area_bounding_box_width: int
     area_bounding_box_height: int
@@ -128,6 +133,31 @@ class DoorLookups:
 
 
 @dataclass
+class GenerationRunResult:
+    episode_data: EpisodeData
+    outcomes: EpisodeOutcomes
+    door_matches: DoorMatches
+    profile_report: list[tuple[str, int, int]]
+
+
+@dataclass
+class PrefetchQueueState:
+    request: GenerateRequest
+    responses: deque[dict]
+    refill_debt: int
+
+
+@dataclass
+class PrefetchState:
+    queues: OrderedDict[str, PrefetchQueueState]
+    condition: threading.Condition
+    refill_scheduled: bool
+    due_time: float
+    schedule_version: int
+    foreground_waiting: int
+
+
+@dataclass
 class ServingState:
     serving_config: ServingConfig
     training_config: Config
@@ -146,6 +176,7 @@ class ServingState:
     required_room_data: RequiredRoomData
     profile: bool
     lock: threading.Lock
+    prefetch: PrefetchState | None
 
 
 SERVING_STATE: ServingState | None = None
@@ -251,6 +282,12 @@ def validate_serving_config(serving_config: ServingConfig) -> None:
         raise ValueError("gpu_prefetch_batches must be greater than or equal to zero")
     if serving_config.num_warmup_requests < 0:
         raise ValueError("num_warmup_requests must be greater than or equal to zero")
+    if serving_config.prefetch_queue_max_size < 0:
+        raise ValueError("prefetch_queue_max_size must be greater than or equal to zero")
+    if serving_config.prefetch_max_queues < 0:
+        raise ValueError("prefetch_max_queues must be greater than or equal to zero")
+    if serving_config.prefetch_delay_seconds < 0:
+        raise ValueError("prefetch_delay_seconds must be greater than or equal to zero")
     if serving_config.area_assignment_attempts <= 0:
         raise ValueError("area_assignment_attempts must be greater than zero")
     if serving_config.area_bounding_box_width <= 0:
@@ -269,6 +306,25 @@ def serving_model_dtype(serving_config: ServingConfig) -> torch.dtype:
     if serving_config.model_dtype == "bfloat16":
         return torch.bfloat16
     raise ValueError('model_dtype must be "float32" or "bfloat16"')
+
+
+def create_prefetch_state() -> PrefetchState:
+    lock = threading.Lock()
+    return PrefetchState(
+        queues=OrderedDict(),
+        condition=threading.Condition(lock),
+        refill_scheduled=False,
+        due_time=0.0,
+        schedule_version=0,
+        foreground_waiting=0,
+    )
+
+
+def prefetch_enabled(serving_config: ServingConfig) -> bool:
+    return (
+        serving_config.prefetch_queue_max_size > 0
+        and serving_config.prefetch_max_queues > 0
+    )
 
 
 def create_serving_state(
@@ -312,7 +368,8 @@ def create_serving_state(
     door_data = build_door_data(rooms)
     room_part_data = build_room_part_data(rooms)
     required_room_data = build_required_room_data(rooms)
-    return ServingState(
+    prefetch = create_prefetch_state() if prefetch_enabled(serving_config) else None
+    state = ServingState(
         serving_config=serving_config,
         training_config=model_export.training_config,
         rooms=rooms,
@@ -330,7 +387,15 @@ def create_serving_state(
         required_room_data=required_room_data,
         profile=profile,
         lock=threading.Lock(),
+        prefetch=prefetch,
     )
+    if prefetch is not None:
+        threading.Thread(
+            target=run_prefetch_worker,
+            args=(state,),
+            daemon=True,
+        ).start()
+    return state
 
 
 def validate_generate_request(generate_request: GenerateRequest, rooms: list[dict]) -> None:
@@ -659,73 +724,152 @@ def add_serving_profile(
     profiler.add(name, start)
 
 
-@app.post("/generate")
-def generate_response():
-    state = serving_state()
-    body = request.get_json(silent=False)
-    logging.info("Request body: %s", body)
-    generate_request = GenerateRequest.model_validate(body)
-    return jsonify(generate_response_data(state, generate_request))
+def prefetch_request_key(generate_request: GenerateRequest) -> str:
+    return generate_request.model_dump_json()
 
 
-def generate_response_data(
+def touch_prefetch_queue(
+    state: ServingState,
+    key: str,
+    generate_request: GenerateRequest,
+) -> PrefetchQueueState:
+    if state.prefetch is None:
+        raise RuntimeError("prefetch is not enabled")
+    prefetch = state.prefetch
+    queue_state = prefetch.queues.get(key)
+    if queue_state is None:
+        queue_state = PrefetchQueueState(
+            request=generate_request,
+            responses=deque(),
+            refill_debt=0,
+        )
+        prefetch.queues[key] = queue_state
+        while len(prefetch.queues) > state.serving_config.prefetch_max_queues:
+            prefetch.queues.popitem(last=False)
+    else:
+        prefetch.queues.move_to_end(key)
+    return queue_state
+
+
+def schedule_prefetch_refill(
+    state: ServingState,
+    key: str,
+    generate_request: GenerateRequest,
+) -> None:
+    if state.prefetch is None:
+        return
+    prefetch = state.prefetch
+    with prefetch.condition:
+        queue_state = touch_prefetch_queue(state, key, generate_request)
+        queue_state.refill_debt += 2
+        prefetch.refill_scheduled = True
+        prefetch.due_time = time.monotonic() + state.serving_config.prefetch_delay_seconds
+        prefetch.schedule_version += 1
+        prefetch.condition.notify()
+
+
+def pop_prefetch_response(
+    state: ServingState,
+    key: str,
+    generate_request: GenerateRequest,
+) -> dict | None:
+    if state.prefetch is None:
+        return None
+    prefetch = state.prefetch
+    with prefetch.condition:
+        queue_state = touch_prefetch_queue(state, key, generate_request)
+        if not queue_state.responses:
+            return None
+        return queue_state.responses.popleft()
+
+
+def foreground_generation_waiting(state: ServingState) -> bool:
+    if state.prefetch is None:
+        return False
+    return state.prefetch.foreground_waiting > 0
+
+
+def acquire_foreground_generation_lock(state: ServingState) -> None:
+    if state.prefetch is not None:
+        with state.prefetch.condition:
+            state.prefetch.foreground_waiting += 1
+            state.prefetch.condition.notify()
+    state.lock.acquire()
+    if state.prefetch is not None:
+        with state.prefetch.condition:
+            state.prefetch.foreground_waiting -= 1
+            state.prefetch.condition.notify()
+
+
+def run_generation_with_generation_lock_held(
+    state: ServingState,
+    configs: list[GenerateConfig],
+    serving_profiler: GenerationProfiler,
+) -> GenerationRunResult:
+    profile_time = profile_start(state.profile)
+    (
+        episode_data,
+        outcomes,
+        _door_match_counts,
+        _proposal_data,
+        _generation_stats,
+        profile_report,
+    ) = run_generation_groups(
+        state.envs,
+        state.model,
+        state.balance_model,
+        configs,
+        state.device,
+        verify_outcome_consistency=state.serving_config.verify_outcome_consistency,
+        profile=state.profile,
+    )
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.run_generation_groups",
+        profile_time,
+    )
+
+    profile_time = profile_start(state.profile)
+    door_matches = collect_door_matches(state.envs, state.device)
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.collect_door_matches",
+        profile_time,
+    )
+    return GenerationRunResult(
+        episode_data=episode_data,
+        outcomes=outcomes,
+        door_matches=door_matches,
+        profile_report=profile_report,
+    )
+
+
+def run_foreground_generation(
+    state: ServingState,
+    configs: list[GenerateConfig],
+    serving_profiler: GenerationProfiler,
+) -> GenerationRunResult:
+    acquire_foreground_generation_lock(state)
+    try:
+        with torch.inference_mode():
+            return run_generation_with_generation_lock_held(state, configs, serving_profiler)
+    finally:
+        state.lock.release()
+
+
+def build_generate_response_data(
     state: ServingState,
     generate_request: GenerateRequest,
+    serving_profiler: GenerationProfiler,
+    request_start: int,
+    generation_result: GenerationRunResult,
 ) -> dict:
-    serving_profiler = GenerationProfiler(state.profile)
-    request_start = profile_start(state.profile)
-
-    profile_time = profile_start(state.profile)
-    validate_generate_request(generate_request, state.rooms)
-    add_serving_profile(
-        serving_profiler,
-        state.device,
-        "python.serve.validate_request",
-        profile_time,
-    )
-
-    profile_time = profile_start(state.profile)
-    configs = create_generate_configs(generate_request, state, state.envs, state.device)
-    add_serving_profile(
-        serving_profiler,
-        state.device,
-        "python.serve.create_generate_configs",
-        profile_time,
-    )
-
-    with state.lock, torch.inference_mode():
-        profile_time = profile_start(state.profile)
-        (
-            episode_data,
-            outcomes,
-            _door_match_counts,
-            _proposal_data,
-            _generation_stats,
-            profile_report,
-        ) = run_generation_groups(
-            state.envs,
-            state.model,
-            state.balance_model,
-            configs,
-            state.device,
-            verify_outcome_consistency=state.serving_config.verify_outcome_consistency,
-            profile=state.profile,
-        )
-        add_serving_profile(
-            serving_profiler,
-            state.device,
-            "python.serve.run_generation_groups",
-            profile_time,
-        )
-
-        profile_time = profile_start(state.profile)
-        door_matches = collect_door_matches(state.envs, state.device)
-        add_serving_profile(
-            serving_profiler,
-            state.device,
-            "python.serve.collect_door_matches",
-            profile_time,
-        )
+    episode_data = generation_result.episode_data
+    outcomes = generation_result.outcomes
+    door_matches = generation_result.door_matches
+    profile_report = generation_result.profile_report
 
     profile_time = profile_start(state.profile)
     valid_mask = valid_map_mask(outcomes)
@@ -858,6 +1002,198 @@ def generate_response_data(
     if state.profile:
         response["profile"] = profile_report + serving_profiler.report()
     logging.info("Response stats: %s", response["stats"])
+    return response
+
+
+def generate_response_data_uncached_validated(
+    state: ServingState,
+    generate_request: GenerateRequest,
+) -> dict:
+    serving_profiler = GenerationProfiler(state.profile)
+    request_start = profile_start(state.profile)
+
+    profile_time = profile_start(state.profile)
+    configs = create_generate_configs(generate_request, state, state.envs, state.device)
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.create_generate_configs",
+        profile_time,
+    )
+
+    generation_result = run_foreground_generation(state, configs, serving_profiler)
+    return build_generate_response_data(
+        state,
+        generate_request,
+        serving_profiler,
+        request_start,
+        generation_result,
+    )
+
+
+def generate_prefetch_response_with_generation_lock_held(
+    state: ServingState,
+    generate_request: GenerateRequest,
+) -> dict:
+    serving_profiler = GenerationProfiler(state.profile)
+    request_start = profile_start(state.profile)
+
+    profile_time = profile_start(state.profile)
+    configs = create_generate_configs(generate_request, state, state.envs, state.device)
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.create_generate_configs",
+        profile_time,
+    )
+
+    with torch.inference_mode():
+        generation_result = run_generation_with_generation_lock_held(
+            state,
+            configs,
+            serving_profiler,
+        )
+    return build_generate_response_data(
+        state,
+        generate_request,
+        serving_profiler,
+        request_start,
+        generation_result,
+    )
+
+
+def reschedule_prefetch_refill_locked(state: ServingState) -> None:
+    if state.prefetch is None:
+        return
+    state.prefetch.refill_scheduled = True
+    state.prefetch.due_time = (
+        time.monotonic() + state.serving_config.prefetch_delay_seconds
+    )
+    state.prefetch.schedule_version += 1
+    state.prefetch.condition.notify()
+
+
+def next_prefetch_refill_key(state: ServingState) -> str | None:
+    if state.prefetch is None:
+        return None
+    for key, queue_state in state.prefetch.queues.items():
+        if queue_state.refill_debt <= 0:
+            continue
+        if len(queue_state.responses) >= state.serving_config.prefetch_queue_max_size:
+            queue_state.refill_debt = 0
+            continue
+        return key
+    return None
+
+
+def append_prefetch_response(
+    state: ServingState,
+    key: str,
+    response: dict,
+) -> bool:
+    if state.prefetch is None:
+        return False
+    prefetch = state.prefetch
+    with prefetch.condition:
+        queue_state = prefetch.queues.get(key)
+        if queue_state is None:
+            return False
+        if len(queue_state.responses) >= state.serving_config.prefetch_queue_max_size:
+            queue_state.refill_debt = 0
+            return False
+        queue_state.responses.append(response)
+        queue_state.refill_debt -= 1
+        if len(queue_state.responses) >= state.serving_config.prefetch_queue_max_size:
+            queue_state.refill_debt = 0
+        return True
+
+
+def run_prefetch_refill_pass(state: ServingState, schedule_version: int) -> None:
+    if state.prefetch is None:
+        return
+    prefetch = state.prefetch
+    while True:
+        with prefetch.condition:
+            if prefetch.schedule_version != schedule_version:
+                return
+            if foreground_generation_waiting(state):
+                reschedule_prefetch_refill_locked(state)
+                return
+            key = next_prefetch_refill_key(state)
+            if key is None:
+                prefetch.refill_scheduled = False
+                return
+            generate_request = prefetch.queues[key].request
+        if not state.lock.acquire(blocking=False):
+            with prefetch.condition:
+                if prefetch.schedule_version == schedule_version:
+                    reschedule_prefetch_refill_locked(state)
+            return
+        try:
+            try:
+                response = generate_prefetch_response_with_generation_lock_held(
+                    state,
+                    generate_request,
+                )
+            except BaseException:
+                logging.exception("Prefetch refill failed")
+                with prefetch.condition:
+                    queue_state = prefetch.queues.get(key)
+                    if queue_state is not None:
+                        queue_state.refill_debt = 0
+                return
+        finally:
+            state.lock.release()
+        append_prefetch_response(state, key, response)
+
+
+def run_prefetch_worker(state: ServingState) -> None:
+    if state.prefetch is None:
+        return
+    prefetch = state.prefetch
+    while True:
+        with prefetch.condition:
+            while not prefetch.refill_scheduled:
+                prefetch.condition.wait()
+            delay_seconds = prefetch.due_time - time.monotonic()
+            if delay_seconds > 0:
+                prefetch.condition.wait(delay_seconds)
+                continue
+            schedule_version = prefetch.schedule_version
+        run_prefetch_refill_pass(state, schedule_version)
+
+
+@app.post("/generate")
+def generate_response():
+    state = serving_state()
+    body = request.get_json(silent=False)
+    logging.info("Request body: %s", body)
+    generate_request = GenerateRequest.model_validate(body)
+    return jsonify(generate_response_data(state, generate_request))
+
+
+def generate_response_data(
+    state: ServingState,
+    generate_request: GenerateRequest,
+) -> dict:
+    serving_profiler = GenerationProfiler(state.profile)
+    profile_time = profile_start(state.profile)
+    validate_generate_request(generate_request, state.rooms)
+    add_serving_profile(
+        serving_profiler,
+        state.device,
+        "python.serve.validate_request",
+        profile_time,
+    )
+    if state.prefetch is None:
+        return generate_response_data_uncached_validated(state, generate_request)
+    key = prefetch_request_key(generate_request)
+    response = pop_prefetch_response(state, key, generate_request)
+    if response is not None:
+        schedule_prefetch_refill(state, key, generate_request)
+        return response
+    response = generate_response_data_uncached_validated(state, generate_request)
+    schedule_prefetch_refill(state, key, generate_request)
     return response
 
 
