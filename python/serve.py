@@ -47,6 +47,7 @@ from small_map import (
     build_room_part_data,
     prune_small_maps,
 )
+from device_util import gpu_backend, is_gpu
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
 from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, validate_config
 
@@ -77,7 +78,7 @@ class ServingConfig(StrictBaseModel):
     port: int
     device: str
     compile_model: bool
-    cuda_memory_fraction: float
+    gpu_memory_fraction: float
     model_dtype: str
     autocast: bool
     verify_outcome_consistency: bool
@@ -345,10 +346,11 @@ def create_serving_state(
 ) -> ServingState:
     rooms = json.loads(serving_config.room_set.read_text())
     device = torch.device(serving_config.device)
-    if device.type == "cuda":
-        torch.cuda.set_device(device)
-        torch.cuda.memory.set_per_process_memory_fraction(
-            serving_config.cuda_memory_fraction,
+    if is_gpu(device):
+        backend = gpu_backend(device)
+        backend.set_device(device)
+        backend.set_per_process_memory_fraction(
+            serving_config.gpu_memory_fraction,
             device,
         )
         torch.set_float32_matmul_precision("high")

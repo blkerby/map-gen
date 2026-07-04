@@ -20,6 +20,13 @@ from aim import Run
 from aim.sdk.errors import MissingRunError
 from safetensors import safe_open
 
+from device_util import (
+    GPU_DEVICE_TYPES,
+    available_gpu_type,
+    backend_for_type,
+    gpu_backend,
+    is_gpu,
+)
 from env import (
     Actions,
     DoorMatchCounts,
@@ -606,7 +613,7 @@ class GenerationProcessState:
     balance_model: torch.nn.Module
     profile: bool
     ignore_scores: bool
-    cleared_cuda_cache_after_first_task: bool
+    cleared_gpu_cache_after_first_task: bool
 
 
 GENERATION_PROCESS_STATE: GenerationProcessState | None = None
@@ -624,8 +631,8 @@ def initialize_generation_process(
     config = Config.model_validate_json(config_json)
     rooms = json.loads(rooms_json)
     device = torch.device(device_text)
-    if device.type == "cuda":
-        torch.cuda.set_device(device)
+    if is_gpu(device):
+        gpu_backend(device).set_device(device)
         torch.set_float32_matmul_precision("high")
     engine = Engine(
         rooms,
@@ -656,7 +663,7 @@ def initialize_generation_process(
         balance_model=balance_model,
         profile=profile,
         ignore_scores=ignore_scores,
-        cleared_cuda_cache_after_first_task=False,
+        cleared_gpu_cache_after_first_task=False,
     )
 
 
@@ -712,9 +719,9 @@ def run_generation_process_task(
     door_match_counts_cpu = door_match_counts.to(torch.device("cpu"))
     proposal_data_cpu = proposal_data.to(torch.device("cpu"))
     del episode_data, outcomes, door_match_counts, proposal_data
-    if state.device.type == "cuda" and not state.cleared_cuda_cache_after_first_task:
-        torch.cuda.empty_cache()
-        state.cleared_cuda_cache_after_first_task = True
+    if is_gpu(state.device) and not state.cleared_gpu_cache_after_first_task:
+        gpu_backend(state.device).empty_cache()
+        state.cleared_gpu_cache_after_first_task = True
     return (
         episode_data_cpu,
         outcomes_cpu,
@@ -1818,7 +1825,8 @@ def parse_args() -> Args:
         "--device",
         default="auto",
         help=(
-            "device selection: auto, cpu, cuda, or a comma-separated CUDA device list "
+            "device selection: auto, cpu, cuda, xpu, or a comma-separated GPU device list "
+            "such as cuda:0,cuda:1 or xpu:0,xpu:1 "
             "(default: auto; training uses the first selected device)"
         ),
     )
@@ -1856,15 +1864,24 @@ def parse_args() -> Args:
 
 
 def select_devices(args: Args, config: Config) -> tuple[torch.device, list[torch.device]]:
-    if args.device == "cpu" or (args.device == "auto" and not torch.cuda.is_available()):
+    if args.device == "cpu" or (args.device == "auto" and available_gpu_type() is None):
         device = torch.device("cpu")
         generation_devices = [device]
     else:
-        if not torch.cuda.is_available():
-            raise RuntimeError(f"--device {args.device} requested, but CUDA is not available")
-        if args.device in ("auto", "cuda"):
+        if args.device == "auto":
+            gpu_type = available_gpu_type()
+        elif args.device in GPU_DEVICE_TYPES:
+            gpu_type = args.device
+        else:
+            gpu_type = None
+        if gpu_type is not None:
+            if not backend_for_type(gpu_type).is_available():
+                raise RuntimeError(
+                    f"--device {args.device} requested, but {gpu_type} is not available"
+                )
             generation_devices = [
-                torch.device(f"cuda:{index}") for index in range(config.generation.num_devices)
+                torch.device(f"{gpu_type}:{index}")
+                for index in range(config.generation.num_devices)
             ]
         else:
             try:
@@ -1873,49 +1890,57 @@ def select_devices(args: Args, config: Config) -> tuple[torch.device, list[torch
                 raise ValueError(f"invalid --device value: {args.device}") from error
             if (
                 not generation_devices
-                or any(
-                    generation_device.type != "cuda" for generation_device in generation_devices
-                )
+                or any(not is_gpu(generation_device) for generation_device in generation_devices)
                 or any(generation_device.index is None for generation_device in generation_devices)
             ):
                 raise ValueError(
-                    "--device must be auto, cpu, cuda, or a comma-separated list such as cuda:0,cuda:1"
+                    "--device must be auto, cpu, cuda, xpu, or a comma-separated list "
+                    "such as cuda:0,cuda:1 or xpu:0,xpu:1"
+                )
+            list_types = {generation_device.type for generation_device in generation_devices}
+            if len(list_types) != 1:
+                raise ValueError("--device GPU list must use a single device type")
+            list_type = generation_devices[0].type
+            if not backend_for_type(list_type).is_available():
+                raise RuntimeError(
+                    f"--device {args.device} requested, but {list_type} is not available"
                 )
             if len(set(generation_devices)) != len(generation_devices):
-                raise ValueError("--device CUDA list must not contain duplicates")
+                raise ValueError("--device GPU list must not contain duplicates")
         device = generation_devices[0]
         torch.set_float32_matmul_precision("high")
 
-    if device.type != "cuda" and config.generation.num_devices != 1:
-        raise RuntimeError("generation.num_devices must be 1 when CUDA is not in use")
+    if not is_gpu(device) and config.generation.num_devices != 1:
+        raise RuntimeError("generation.num_devices must be 1 when no GPU is in use")
     if len(generation_devices) != config.generation.num_devices:
         raise RuntimeError(
             f"generation.num_devices={config.generation.num_devices}, but --device selected "
             f"{len(generation_devices)} device(s)"
         )
-    invalid_cuda_devices = [
+    invalid_gpu_devices = [
         str(generation_device)
         for generation_device in generation_devices
-        if generation_device.type == "cuda"
-        and generation_device.index >= torch.cuda.device_count()
+        if is_gpu(generation_device)
+        and generation_device.index >= gpu_backend(generation_device).device_count()
     ]
-    if invalid_cuda_devices:
+    if invalid_gpu_devices:
         raise RuntimeError(
-            f"CUDA device(s) not available: {', '.join(invalid_cuda_devices)}; "
-            f"found {torch.cuda.device_count()} CUDA device(s)"
+            f"GPU device(s) not available: {', '.join(invalid_gpu_devices)}; "
+            f"found {gpu_backend(device).device_count()} {device.type} device(s)"
         )
-    if device.type == "cuda" and (config.model.autocast or config.model.generation_autocast):
+    if is_gpu(device) and (config.model.autocast or config.model.generation_autocast):
         unsupported_bf16_devices = []
         for generation_device in generation_devices:
-            with torch.cuda.device(generation_device):
-                if not torch.cuda.is_bf16_supported():
+            backend = gpu_backend(generation_device)
+            with backend.device(generation_device):
+                if not backend.is_bf16_supported():
                     unsupported_bf16_devices.append(str(generation_device))
         if unsupported_bf16_devices:
             raise RuntimeError(
-                "CUDA bfloat16 autocast requested, but these GPUs do not support bfloat16: "
+                "GPU bfloat16 autocast requested, but these GPUs do not support bfloat16: "
                 f"{', '.join(unsupported_bf16_devices)}. Use --device cpu for float32 CPU "
                 "execution or set model.autocast=false and model.generation_autocast=false "
-                "for float32 CUDA execution."
+                "for float32 GPU execution."
             )
     return device, generation_devices
 
@@ -2062,11 +2087,11 @@ def build_session(args: Args) -> TrainingSession:
     device, generation_devices = select_devices(args, config)
 
     train_precision = (
-        "bfloat16 autocast" if device.type == "cuda" and config.model.autocast else "float32"
+        "bfloat16 autocast" if is_gpu(device) and config.model.autocast else "float32"
     )
     generation_precision = (
         "bfloat16 autocast"
-        if device.type == "cuda" and config.model.generation_autocast
+        if is_gpu(device) and config.model.generation_autocast
         else "float32"
     )
     logging.info(

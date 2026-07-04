@@ -6,6 +6,7 @@ from typing import Literal
 
 import torch
 
+from device_util import is_gpu
 from env import (
     Actions,
     DoorMatches,
@@ -765,7 +766,7 @@ def prepare_feature_batch(
             proposal_data,
             env,
             episode_length,
-            device.type == "cuda",
+            is_gpu(device),
             generated_feature_batches,
         )
     )
@@ -829,7 +830,7 @@ def prepare_train_batch_task(
             None,
             env,
             context.episode_length,
-            context.device.type == "cuda",
+            is_gpu(context.device),
             None,
         )
     )
@@ -1092,9 +1093,9 @@ def train_feature_batch_backward(
             and feature_batch.proposal_target_logits is not None
         )
         with torch.amp.autocast(
-            "cuda",
+            context.device.type,
             dtype=torch.bfloat16,
-            enabled=context.device.type == "cuda" and context.config.model.autocast,
+            enabled=is_gpu(context.device) and context.config.model.autocast,
         ):
             preds = context.main_model(
                 features,
