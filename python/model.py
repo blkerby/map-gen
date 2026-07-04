@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 import math
 from dataclasses import dataclass
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 from env import OutputMetadata, Features
 from features import (
@@ -19,11 +19,6 @@ if TYPE_CHECKING:
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 DETERMINISTIC_INVALID_LOGIT = 20.0
-ProfileCallback = Callable[[str, Callable[[], object]], object]
-
-
-def no_profile(_name: str, fn: Callable[[], object]) -> object:
-    return fn()
 
 
 # These tensors are all f32 with shape
@@ -747,7 +742,6 @@ class FrontierModel(torch.nn.Module):
         self,
         features: Features,
         return_proposal_state: bool,
-        profile: ProfileCallback,
     ):
         # Shapes below use: s=snapshot, r=frontier row, k=neighbors, e=embedding width,
         # h=message hidden width.
@@ -873,20 +867,10 @@ class FrontierModel(torch.nn.Module):
         toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
         graph_diameter = self.graph_diameter_output(X).squeeze(-1).to(torch.float32)
-        (
-            save_to_room_utility,
-            save_from_room_utility,
-            refill_to_room_utility,
-            refill_from_room_utility,
-        ) = profile(
-            "python.model.save_refill_linear_heads",
-            lambda: (
-                self.save_to_room_utility_output(X).to(torch.float32),
-                self.save_from_room_utility_output(X).to(torch.float32),
-                self.refill_to_room_utility_output(X).to(torch.float32),
-                self.refill_from_room_utility_output(X).to(torch.float32),
-            ),
-        )
+        save_to_room_utility = self.save_to_room_utility_output(X).to(torch.float32)
+        save_from_room_utility = self.save_from_room_utility_output(X).to(torch.float32)
+        refill_to_room_utility = self.refill_to_room_utility_output(X).to(torch.float32)
+        refill_from_room_utility = self.refill_from_room_utility_output(X).to(torch.float32)
         missing_connect_utility = self.missing_connect_utility_output(X).to(torch.float32)
         preds = get_predictions(
             torch.cat(
@@ -944,46 +928,35 @@ class FrontierModel(torch.nn.Module):
             features.frontier_features.row_door_output_idx,
         )
         if self.save_refill_utility_query_output is not None:
-            query_save_refill_utility, query_save_refill_mask = profile(
-                "python.model.save_refill_query_head",
-                lambda: self.save_refill_utility_query_output(
+            query_save_refill_utility, query_save_refill_mask = (
+                self.save_refill_utility_query_output(
                     frontier_state,
                     row_count_by_snapshot,
                     row_start_by_snapshot,
                     features.save_refill_utility_query_features,
                     self.num_room_parts,
-                ),
+                )
             )
             query_save_refill_utility = query_save_refill_utility.to(torch.float32)
-            (
+            save_to_room_utility = torch.where(
+                query_save_refill_mask[0],
+                query_save_refill_utility[0],
                 save_to_room_utility,
+            )
+            save_from_room_utility = torch.where(
+                query_save_refill_mask[1],
+                query_save_refill_utility[1],
                 save_from_room_utility,
+            )
+            refill_to_room_utility = torch.where(
+                query_save_refill_mask[2],
+                query_save_refill_utility[2],
                 refill_to_room_utility,
+            )
+            refill_from_room_utility = torch.where(
+                query_save_refill_mask[3],
+                query_save_refill_utility[3],
                 refill_from_room_utility,
-            ) = profile(
-                "python.model.save_refill_query_replace",
-                lambda: (
-                    torch.where(
-                        query_save_refill_mask[0],
-                        query_save_refill_utility[0],
-                        save_to_room_utility,
-                    ),
-                    torch.where(
-                        query_save_refill_mask[1],
-                        query_save_refill_utility[1],
-                        save_from_room_utility,
-                    ),
-                    torch.where(
-                        query_save_refill_mask[2],
-                        query_save_refill_utility[2],
-                        refill_to_room_utility,
-                    ),
-                    torch.where(
-                        query_save_refill_mask[3],
-                        query_save_refill_utility[3],
-                        refill_from_room_utility,
-                    ),
-                ),
             )
         if self.known_save_refill_utility_override:
             save_to_room_utility = apply_known_distance_utility(

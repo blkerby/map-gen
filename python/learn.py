@@ -23,7 +23,6 @@ from loss import (
     compute_toilet_balance_score_target_logits,
     compute_loss_breakdown,
 )
-from model import no_profile
 from train_config import Config, episodes_per_round
 
 
@@ -681,7 +680,6 @@ def train_feature_batch_backward(
             preds = context.main_model(
                 features,
                 return_proposal_state=return_proposal_state,
-                profile=no_profile,
             )
         prefix_balance_score_mask = balance_score_mask
         if features.global_features.lookahead_door_match.shape[-1] > 0:

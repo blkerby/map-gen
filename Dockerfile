@@ -43,7 +43,7 @@ COPY . .
 
 RUN maturin develop --release
 
-ARG MODEL_FILENAME=2026-07-01T22:39:14.683967-zebes-testing-round_1400.safetensors
+ARG MODEL_FILENAME=2026-07-01T22:39:14.683967-zebes-testing-round_2300.safetensors
 
 RUN mkdir -p models \
     && curl -fL \

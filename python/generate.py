@@ -20,7 +20,7 @@ from env import (
     extract_candidate_features,
 )
 from loss import compute_step_balance_score_target_logits
-from model import BalancePredictions, Predictions, no_profile
+from model import BalancePredictions, Predictions
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from queue import Empty, Full, Queue
@@ -73,22 +73,6 @@ class GenerationProfiler:
     def report(self) -> ProfileReport:
         with self.lock:
             return [(name, self.counts[name], self.nanos[name]) for name in sorted(self.counts)]
-
-
-class TorchProfileCallback:
-    def __init__(self, device: torch.device, profiler: GenerationProfiler):
-        self.device = device
-        self.profiler = profiler
-
-    def __call__(self, name, fn):
-        if not self.profiler.enabled:
-            return fn()
-        sync_profile_device(self.device, True)
-        profile_time = profile_start(True)
-        result = fn()
-        sync_profile_device(self.device, True)
-        self.profiler.add(name, profile_time)
-        return result
 
 
 def profile_start(enabled: bool) -> int:
@@ -683,7 +667,6 @@ def select_candidate_actions(
 ) -> tuple[torch.Tensor, Actions, torch.Tensor, torch.Tensor | None]:
     environment_count, candidate_count = candidates.room_idx.shape
     profile = profiler.enabled
-    model_profile = TorchProfileCallback(device, profiler)
     sync_profile_device(device, profile)
     profile_time = profile_start(profile)
     with torch.amp.autocast(
@@ -695,7 +678,6 @@ def select_candidate_actions(
         preds = model(
             features,
             return_proposal_state=return_proposal_state,
-            profile=model_profile,
         )
     sync_profile_device(device, profile)
     profiler.add("python.score.model_forward", profile_time)
@@ -830,7 +812,6 @@ def compute_proposal_scores(
         preds = model(
             env_features,
             return_proposal_state=True,
-            profile=no_profile,
         )
     return row_scores_for_mask(
         model.proposal_output,
