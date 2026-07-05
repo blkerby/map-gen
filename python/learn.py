@@ -206,73 +206,8 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
     )
 
 
-def compute_candidate_diagnostics(
-    proposal_data: ProposalData | WaveProposalData,
-) -> CandidateDiagnostics:
-    if isinstance(proposal_data, WaveProposalData):
-        return compute_wave_candidate_diagnostics(proposal_data)
-    target_logits = proposal_data.target_logits.to(torch.float32)
-    frontier_valid = proposal_data.frontier_idx >= 0
-    while frontier_valid.ndim < target_logits.ndim:
-        frontier_valid = frontier_valid.unsqueeze(-1)
-    valid = frontier_valid & (proposal_data.door_variant_idx >= 0) & torch.isfinite(target_logits)
-    candidate_count = target_logits.shape[-1]
-    flat_logits = target_logits.reshape(-1, candidate_count)
-    flat_valid = valid.reshape(-1, candidate_count)
-    row_valid = torch.any(flat_valid, dim=1)
-    if not torch.any(row_valid):
-        zero = torch.sum(target_logits) * 0.0
-        return CandidateDiagnostics(
-            target_entropy=zero,
-            uniform_kl=zero,
-            selected_probability=target_logits.new_zeros(()),
-        )
-
-    row_logits = torch.where(
-        flat_valid[row_valid],
-        flat_logits[row_valid],
-        torch.full_like(flat_logits[row_valid], float("-inf")),
-    )
-    row_mask = flat_valid[row_valid]
-    target_log_probs = torch.nn.functional.log_softmax(row_logits, dim=1)
-    safe_target_log_probs = torch.where(
-        row_mask,
-        target_log_probs,
-        torch.zeros_like(target_log_probs),
-    )
-    target_probs = torch.where(
-        row_mask,
-        torch.exp(target_log_probs),
-        torch.zeros_like(target_log_probs),
-    )
-    entropy_per_row = torch.sum(-target_probs * safe_target_log_probs, dim=1)
-    target_entropy = torch.mean(entropy_per_row)
-    valid_counts = torch.sum(row_mask, dim=1).to(torch.float32)
-    uniform_kl = torch.mean(torch.log(valid_counts) - entropy_per_row)
-
-    selected_candidate = proposal_data.selected_candidate.reshape(-1)[row_valid].to(torch.int64)
-    selected_in_range = (selected_candidate >= 0) & (selected_candidate < candidate_count)
-    safe_selected_candidate = selected_candidate.clamp_min(0).clamp_max(candidate_count - 1)
-    selected_valid = selected_in_range & torch.gather(
-        row_mask,
-        1,
-        safe_selected_candidate.unsqueeze(1),
-    ).squeeze(1)
-    if torch.any(selected_valid):
-        selected_probability = torch.mean(
-            torch.gather(
-                target_probs[selected_valid],
-                1,
-                selected_candidate[selected_valid].unsqueeze(1),
-            ).squeeze(1)
-        )
-    else:
-        selected_probability = torch.sum(target_logits) * 0.0
-    return CandidateDiagnostics(
-        target_entropy=target_entropy,
-        uniform_kl=uniform_kl,
-        selected_probability=selected_probability,
-    )
+def compute_candidate_diagnostics(proposal_data: WaveProposalData) -> CandidateDiagnostics:
+    return compute_wave_candidate_diagnostics(proposal_data)
 
 
 def compute_wave_candidate_diagnostics(proposal_data: WaveProposalData) -> CandidateDiagnostics:
@@ -283,7 +218,7 @@ def compute_wave_candidate_diagnostics(proposal_data: WaveProposalData) -> Candi
     flat_valid = valid.reshape(-1, candidate_count)
     row_valid = torch.any(flat_valid, dim=1)
     if not torch.any(row_valid):
-        zero = torch.sum(target_logits) * 0.0
+        zero = target_logits.new_zeros(())
         return CandidateDiagnostics(
             target_entropy=zero,
             uniform_kl=zero,
@@ -1204,7 +1139,7 @@ def train_round(
     context: TrainRoundContext,
     episode_data: EpisodeData,
     episode_outcomes: EpisodeOutcomes,
-    proposal_data: ProposalData | WaveProposalData,
+    proposal_data: WaveProposalData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
     set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
@@ -1212,7 +1147,6 @@ def train_round(
     total_loss = empty_main_loss_breakdown()
     total_balance_loss = 0.0
     train_batch_count = 0
-    train_proposal_data = proposal_data if isinstance(proposal_data, ProposalData) else None
 
     train_batch_tasks = iter_train_batch_tasks(context.config, context.experience)
     prepared_batches = iter(
@@ -1223,7 +1157,7 @@ def train_round(
                 task,
                 episode_data,
                 episode_outcomes,
-                train_proposal_data,
+                None,
             ),
         )
     )
@@ -1252,15 +1186,14 @@ def train_round(
     if train_batch_count == 0:
         return empty_main_loss_breakdown(), 0.0
     averaged_loss = average_main_loss(total_loss, train_batch_count)
-    if isinstance(proposal_data, WaveProposalData):
-        proposal_loss, proposal_batch_count = train_wave_proposal_round(
-            context,
-            episode_data,
-            proposal_data,
-            train_batch_count,
-        )
-        if proposal_batch_count > 0:
-            add_averaged_main_loss(averaged_loss, proposal_loss, proposal_batch_count)
+    proposal_loss, proposal_batch_count = train_wave_proposal_round(
+        context,
+        episode_data,
+        proposal_data,
+        train_batch_count,
+    )
+    if proposal_batch_count > 0:
+        add_averaged_main_loss(averaged_loss, proposal_loss, proposal_batch_count)
     return (
         averaged_loss,
         total_balance_loss / train_batch_count,

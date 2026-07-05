@@ -29,11 +29,10 @@ from env import (
     EpisodeOutcomes,
     GenerateConfig,
     StepOutcomes,
-    ProposalData,
     WaveProposalData,
 )
 from experience import ExperienceStorage
-from generate import GenerationStats, run_generation_groups, run_wave_generation_groups
+from generate import GenerationStats, run_wave_generation_groups
 from learn import (
     CandidateDiagnostics,
     MainLossBreakdown,
@@ -612,7 +611,7 @@ def run_generation_process_task(
     EpisodeData,
     EpisodeOutcomes,
     DoorMatchCounts,
-    ProposalData | WaveProposalData,
+    WaveProposalData,
     GenerationStats,
     RustProfileReport,
 ]:
@@ -634,42 +633,22 @@ def run_generation_process_task(
         )
         for env in state.envs
     ]
-    if generation_config.generation.strategy == "sequential":
-        (
-            episode_data,
-            outcomes,
-            door_match_counts,
-            proposal_data,
-            generation_stats,
-            python_profile_report,
-        ) = run_generation_groups(
-            state.envs,
-            state.model,
-            state.balance_model,
-            gen_configs,
-            state.device,
-            verify_outcome_consistency=verify_outcome_consistency,
-            profile=state.profile,
-        )
-    elif generation_config.generation.strategy == "frontier_wave":
-        (
-            episode_data,
-            outcomes,
-            door_match_counts,
-            proposal_data,
-            generation_stats,
-            python_profile_report,
-        ) = run_wave_generation_groups(
-            state.envs,
-            state.model,
-            state.balance_model,
-            gen_configs,
-            state.device,
-            verify_outcome_consistency=verify_outcome_consistency,
-            profile=state.profile,
-        )
-    else:
-        raise ValueError(f"unknown generation strategy {generation_config.generation.strategy}")
+    (
+        episode_data,
+        outcomes,
+        door_match_counts,
+        proposal_data,
+        generation_stats,
+        python_profile_report,
+    ) = run_wave_generation_groups(
+        state.envs,
+        state.model,
+        state.balance_model,
+        gen_configs,
+        state.device,
+        verify_outcome_consistency=verify_outcome_consistency,
+        profile=state.profile,
+    )
     profile_report = map_gen.profile_report() + python_profile_report if state.profile else []
     episode_data_cpu = episode_data.to(torch.device("cpu"))
     outcomes_cpu = outcomes.to(torch.device("cpu"))
@@ -699,36 +678,10 @@ def merge_profile_reports(reports: list[RustProfileReport]) -> RustProfileReport
 
 
 def merge_generated_proposal_data(
-    proposal_data_iterations: list[ProposalData | WaveProposalData],
-) -> ProposalData | WaveProposalData:
+    proposal_data_iterations: list[WaveProposalData],
+) -> WaveProposalData:
     if not proposal_data_iterations:
         raise ValueError("proposal data merge requires at least one generation result")
-    first = proposal_data_iterations[0]
-    if isinstance(first, ProposalData):
-        if not all(
-            isinstance(proposal_data, ProposalData)
-            for proposal_data in proposal_data_iterations
-        ):
-            raise TypeError("cannot merge mixed proposal data types")
-        return ProposalData(
-            frontier_idx=torch.cat(
-                [proposal_data.frontier_idx for proposal_data in proposal_data_iterations]
-            ),
-            door_variant_idx=torch.cat(
-                [proposal_data.door_variant_idx for proposal_data in proposal_data_iterations]
-            ),
-            selected_candidate=torch.cat(
-                [proposal_data.selected_candidate for proposal_data in proposal_data_iterations]
-            ),
-            target_logits=torch.cat(
-                [proposal_data.target_logits for proposal_data in proposal_data_iterations]
-            ),
-        )
-    if not all(
-        isinstance(proposal_data, WaveProposalData)
-        for proposal_data in proposal_data_iterations
-    ):
-        raise TypeError("cannot merge mixed proposal data types")
     return WaveProposalData(
         episode_idx=torch.cat(
             [proposal_data.episode_idx for proposal_data in proposal_data_iterations]
@@ -915,7 +868,7 @@ class TrainingSession:
         EpisodeData,
         EpisodeOutcomes,
         DoorMatchCounts,
-        ProposalData | WaveProposalData,
+        WaveProposalData,
         GenerationStats,
         RustProfileReport,
     ]:
@@ -966,14 +919,13 @@ class TrainingSession:
                 outcome_iterations.append(iteration_outcomes.to(self.device))
                 door_match_count_iterations.append(iteration_door_match_counts)
                 proposal_data_device = iteration_proposal_data.to(self.device)
-                if isinstance(proposal_data_device, WaveProposalData):
-                    proposal_data_device = WaveProposalData(
-                        episode_idx=proposal_data_device.episode_idx + episode_offset,
-                        prefix_idx=proposal_data_device.prefix_idx,
-                        frontier_idx=proposal_data_device.frontier_idx,
-                        door_variant_idx=proposal_data_device.door_variant_idx,
-                        target_logits=proposal_data_device.target_logits,
-                    )
+                proposal_data_device = WaveProposalData(
+                    episode_idx=proposal_data_device.episode_idx + episode_offset,
+                    prefix_idx=proposal_data_device.prefix_idx,
+                    frontier_idx=proposal_data_device.frontier_idx,
+                    door_variant_idx=proposal_data_device.door_variant_idx,
+                    target_logits=proposal_data_device.target_logits,
+                )
                 proposal_data_iterations.append(proposal_data_device)
                 generation_stats_iterations.append(iteration_generation_stats)
                 profile_reports.append(iteration_profile_report)
@@ -1155,7 +1107,7 @@ class TrainingSession:
         self,
         episode_data: EpisodeData,
         episode_outcomes: EpisodeOutcomes,
-        proposal_data: ProposalData | WaveProposalData,
+        proposal_data: WaveProposalData,
         step_config: Config,
     ) -> tuple[MainLossBreakdown, float]:
         return run_train_round(
