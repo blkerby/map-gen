@@ -29,7 +29,7 @@ from area_assignment import (
 )
 from env import DoorMatches, Engine, EpisodeData, EpisodeOutcomes, GenerateConfig
 from generate import GenerationProfiler, profile_start, run_wave_generation_groups, sync_profile_device
-from model import FrontierModel
+from model import FrontierModel, ProposalModel
 from small_map import (
     DoorData,
     RequiredRoomData,
@@ -45,9 +45,9 @@ from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, validate_conf
 
 
 MODEL_EXPORT_FORMAT = "map-gen-model-export-v1"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v3"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v4"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
-MODEL_PREFIXES = ("ema_model", "balance_model")
+MODEL_PREFIXES = ("ema_model", "ema_proposal_model", "balance_model")
 
 DIRECTIONS = ("left", "right", "up", "down")
 OPPOSITE_DIRECTIONS = {
@@ -165,6 +165,7 @@ class ServingState:
     device: torch.device
     envs: list
     model: torch.nn.Module
+    proposal_model: torch.nn.Module
     balance_model: torch.nn.Module
     door_room_lookup: DoorRoomLookup
     room_geometry: RoomGeometry
@@ -344,13 +345,30 @@ def create_serving_state(
         torch.set_float32_matmul_precision("high")
     model_dtype = serving_model_dtype(serving_config)
     engine = Engine(rooms, model_export.training_config.features)
-    model = FrontierModel(**frontier_model_kwargs(model_export.training_config, rooms, engine)).to(
-        device
-    )
+    model = FrontierModel(
+        **frontier_model_kwargs(
+            model_export.training_config,
+            rooms,
+            engine,
+            include_proposal_output=False,
+        )
+    ).to(device)
     model.load_state_dict(without_prefix(model_export.tensors, "ema_model"))
     model.to(dtype=model_dtype)
     model.requires_grad_(False)
     model.eval()
+    proposal_model = ProposalModel(
+        **frontier_model_kwargs(
+            model_export.training_config,
+            rooms,
+            engine,
+            include_proposal_output=True,
+        )
+    ).to(device)
+    proposal_model.load_state_dict(without_prefix(model_export.tensors, "ema_proposal_model"))
+    proposal_model.to(dtype=model_dtype)
+    proposal_model.requires_grad_(False)
+    proposal_model.eval()
     balance_model = create_balance_model(model_export.training_config, rooms, device)
     balance_model.load_state_dict(without_prefix(model_export.tensors, "balance_model"))
     balance_model.to(dtype=model_dtype)
@@ -358,6 +376,7 @@ def create_serving_state(
     balance_model.eval()
     if serving_config.compile_model:
         model = torch.compile(model)
+        proposal_model = torch.compile(proposal_model)
         balance_model = torch.compile(balance_model)
     envs = create_environment_groups(serving_config, model_export.training_config, engine, seed)
     door_room_lookup = build_door_room_lookup(rooms, device)
@@ -376,6 +395,7 @@ def create_serving_state(
         device=device,
         envs=envs,
         model=model,
+        proposal_model=proposal_model,
         balance_model=balance_model,
         door_room_lookup=door_room_lookup,
         room_geometry=room_geometry,
@@ -821,6 +841,7 @@ def run_generation_with_generation_lock_held(
     ) = run_wave_generation_groups(
         state.envs,
         state.model,
+        state.proposal_model,
         state.balance_model,
         configs,
         state.device,

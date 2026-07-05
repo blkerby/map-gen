@@ -696,7 +696,7 @@ def score_candidate_logits(
 
 def compute_wave_proposal_scores(
     group: GenerationGroup,
-    model,
+    proposal_model,
     features: Features,
     proposal_mask: WaveProposalCandidateMask,
     device: torch.device,
@@ -708,9 +708,9 @@ def compute_wave_proposal_scores(
         dtype=torch.bfloat16,
         enabled=device.type == "cuda" and group.config.autocast,
     ):
-        preds = model(env_features, return_proposal_state=True)
+        preds = proposal_model(env_features, return_proposal_state=True)
     return row_scores_for_wave_mask(
-        model.proposal_output,
+        proposal_model.proposal_output,
         preds.proposal_state,
         preds.proposal_row_snapshot_idx,
         preds.proposal_row_frontier_idx,
@@ -919,6 +919,7 @@ def bootstrap_lookahead_outcomes(outcomes: StepOutcomes) -> StepOutcomes:
 def run_wave_generation_groups(
     envs: list[EnvironmentGroup],
     model,
+    proposal_model,
     balance_model,
     configs: list[GenerateConfig],
     device: torch.device,
@@ -996,7 +997,7 @@ def run_wave_generation_groups(
                 profile_time = profile_start(profile)
                 proposal_scores = compute_wave_proposal_scores(
                     group,
-                    model,
+                    proposal_model,
                     proposal_inputs.features,
                     proposal_inputs.mask,
                     device,

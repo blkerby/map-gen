@@ -253,6 +253,7 @@ class Config(StrictBaseModel):
     distance_proximity_scale: float
     model: ModelConfig
     optimizer: OptimizerConfig
+    proposal_optimizer: OptimizerConfig
     balance_model: BalanceModelConfig
     balance_optimizer: AdamOptimizerConfig
     generation: GenerationConfig
@@ -415,6 +416,7 @@ def validate_config(config: Config) -> None:
     validate_feature_width("toilet_crossed_room", config.features.toilet_crossed_room)
     validate_feature_width("known_distance", config.features.known_distance)
     validate_optimizer_config(config.optimizer, "optimizer")
+    validate_optimizer_config(config.proposal_optimizer, "proposal_optimizer")
     validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
         raise ValueError("generation.num_iterations must be greater than zero")

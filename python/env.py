@@ -94,30 +94,6 @@ class EpisodeData:
 
 
 @dataclass
-class ProposalData:
-    frontier_idx: torch.Tensor
-    door_variant_idx: torch.Tensor
-    selected_candidate: torch.Tensor
-    target_logits: torch.Tensor
-
-    def to(self, device: torch.device) -> "ProposalData":
-        return ProposalData(
-            frontier_idx=self.frontier_idx.to(device),
-            door_variant_idx=self.door_variant_idx.to(device),
-            selected_candidate=self.selected_candidate.to(device),
-            target_logits=self.target_logits.to(device),
-        )
-
-    def slice(self, start: int, end: int) -> "ProposalData":
-        return ProposalData(
-            frontier_idx=self.frontier_idx[start:end],
-            door_variant_idx=self.door_variant_idx[start:end],
-            selected_candidate=self.selected_candidate[start:end],
-            target_logits=self.target_logits[start:end],
-        )
-
-
-@dataclass
 class WaveProposalData:
     episode_idx: torch.Tensor
     prefix_idx: torch.Tensor

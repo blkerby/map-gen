@@ -37,6 +37,21 @@
       "beta2": 0.99
     }
   },
+  "proposal_optimizer": {
+    "type": "muon",
+    "muon": {
+      "lr": {"log": [0.0005, 0.0005, 0.0002, 0.00005, 0.00002]},
+      "momentum": 0.95,
+      "nesterov": true,
+      "backend": "newtonschulz5",
+      "backend_steps": 5
+    },
+    "adam": {
+      "lr": {"log": [0.001, 0.001, 0.0005, 0.0001, 0.00005]},
+      "beta1": 0.95,
+      "beta2": 0.99
+    }
+  },
   "balance_model": {
     "hidden_width": 64,
     "num_layers": 1

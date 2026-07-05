@@ -28,6 +28,7 @@ def frontier_model_kwargs(
     config: Config,
     rooms: list[dict],
     engine: Engine,
+    include_proposal_output: bool,
 ) -> dict[str, Any]:
     return {
         "num_rooms": len(rooms),
@@ -54,6 +55,7 @@ def frontier_model_kwargs(
         ),
         "frontier_window_size": config.generation.frontier_window_size,
         "features": config.features,
+        "include_proposal_output": include_proposal_output,
     }
 
 

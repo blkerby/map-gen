@@ -516,6 +516,7 @@ class FrontierModel(torch.nn.Module):
         door_counts,
         frontier_window_size,
         features: FeatureConfig,
+        include_proposal_output: bool,
     ):
         super().__init__()
         self.features = features
@@ -723,11 +724,12 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             self.num_connection_outputs,
         )
-        self.proposal_output = ProposalOutput(
-            embedding_width,
-            proposal_hidden_width,
-            output_metadata.num_door_variants,
-        )
+        if include_proposal_output:
+            self.proposal_output = ProposalOutput(
+                embedding_width,
+                proposal_hidden_width,
+                output_metadata.num_door_variants,
+            )
 
     def _pair_features(self, features, neighbor, dtype):
         values = []
@@ -1008,6 +1010,10 @@ class FrontierModel(torch.nn.Module):
                 else features.frontier_features.row_frontier_idx.new_empty([0])
             ),
         )
+
+
+class ProposalModel(FrontierModel):
+    pass
 
 
 class BalanceModel(torch.nn.Module):

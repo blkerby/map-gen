@@ -28,6 +28,12 @@
     "beta1": 0.95,
     "beta2": 0.99
   },
+  "proposal_optimizer": {
+    "type": "adam",
+    "lr": 0.001,
+    "beta1": 0.95,
+    "beta2": 0.99
+  },
   "balance_model": {
     "hidden_width": 64,
     "num_layers": 1

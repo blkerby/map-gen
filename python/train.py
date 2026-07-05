@@ -46,7 +46,7 @@ from loss import (
     compute_balance_toilet_crossed_room_ss,
     compute_balance_door_match_ss,
 )
-from model import FrontierModel
+from model import FrontierModel, ProposalModel
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
 from optimizers import Muon
 from train_config import (
@@ -79,7 +79,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v3"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v4"
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -354,6 +354,13 @@ def optimizer_metric_values(config: OptimizerConfig) -> dict[str, float]:
     return {"lr": config.lr}
 
 
+def prefixed_optimizer_metric_values(
+    prefix: str,
+    config: OptimizerConfig,
+) -> dict[str, float]:
+    return {f"{prefix}_{name}": value for name, value in optimizer_metric_values(config).items()}
+
+
 def variable_float_metric_value(value: VariableFloat, path: str) -> float:
     if isinstance(value, VariableSchedule):
         if (value.linear is None) == (value.log is None):
@@ -550,6 +557,7 @@ class GenerationProcessState:
     device: torch.device
     envs: list
     model: torch.nn.Module
+    proposal_model: torch.nn.Module
     balance_model: torch.nn.Module
     profile: bool
     ignore_scores: bool
@@ -580,11 +588,19 @@ def initialize_generation_process(
         engine,
         device_index,
     )
-    model = FrontierModel(**frontier_model_kwargs(config, rooms, engine)).to(device)
+    model = FrontierModel(
+        **frontier_model_kwargs(config, rooms, engine, include_proposal_output=False)
+    ).to(device)
     model.requires_grad_(False)
     model.eval()
+    proposal_model = ProposalModel(
+        **frontier_model_kwargs(config, rooms, engine, include_proposal_output=True)
+    ).to(device)
+    proposal_model.requires_grad_(False)
+    proposal_model.eval()
     if config.model.compile:
         model = torch.compile(model)
+        proposal_model = torch.compile(proposal_model)
     balance_model = create_balance_model(config, rooms, device)
     balance_model.requires_grad_(False)
     balance_model.eval()
@@ -595,6 +611,7 @@ def initialize_generation_process(
         device=device,
         envs=envs,
         model=model,
+        proposal_model=proposal_model,
         balance_model=balance_model,
         profile=profile,
         ignore_scores=ignore_scores,
@@ -604,6 +621,7 @@ def initialize_generation_process(
 
 def run_generation_process_task(
     model_state: dict[str, torch.Tensor],
+    proposal_model_state: dict[str, torch.Tensor],
     balance_model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
@@ -621,6 +639,7 @@ def run_generation_process_task(
     if state.profile:
         map_gen.reset_profile()
     unwrap_compiled_module(state.model).load_state_dict(model_state)
+    unwrap_compiled_module(state.proposal_model).load_state_dict(proposal_model_state)
     unwrap_compiled_module(state.balance_model).load_state_dict(balance_model_state)
     generation_config = Config.model_validate_json(generation_config_json)
     gen_configs = [
@@ -643,6 +662,7 @@ def run_generation_process_task(
     ) = run_wave_generation_groups(
         state.envs,
         state.model,
+        state.proposal_model,
         state.balance_model,
         gen_configs,
         state.device,
@@ -713,8 +733,11 @@ class TrainingSession:
     train_batch_envs: list
     main_model: torch.nn.Module
     ema_model: torch.nn.Module
+    proposal_model: torch.nn.Module
+    ema_proposal_model: torch.nn.Module
     balance_model: torch.nn.Module
     main_optimizer: Any
+    proposal_optimizer: Any
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
     experience: ExperienceStorage
@@ -789,6 +812,8 @@ class TrainingSession:
         tensors = {}
         tensors.update(prefixed_state_dict("main_model", self.main_model))
         tensors.update(prefixed_state_dict("ema_model", self.ema_model))
+        tensors.update(prefixed_state_dict("proposal_model", self.proposal_model))
+        tensors.update(prefixed_state_dict("ema_proposal_model", self.ema_proposal_model))
         tensors.update(prefixed_state_dict("balance_model", self.balance_model))
         metadata = {
             "format": TRAINING_CHECKPOINT_FORMAT,
@@ -802,6 +827,12 @@ class TrainingSession:
             metadata,
             self.main_optimizer,
             "optimizer",
+        )
+        save_named_optimizer_checkpoint_state(
+            tensors,
+            metadata,
+            self.proposal_optimizer,
+            "proposal_optimizer",
         )
         save_named_optimizer_checkpoint_state(
             tensors,
@@ -825,6 +856,12 @@ class TrainingSession:
         unwrap_compiled_module(self.ema_model).load_state_dict(
             without_prefix(tensors, "ema_model")
         )
+        unwrap_compiled_module(self.proposal_model).load_state_dict(
+            without_prefix(tensors, "proposal_model")
+        )
+        unwrap_compiled_module(self.ema_proposal_model).load_state_dict(
+            without_prefix(tensors, "ema_proposal_model")
+        )
         unwrap_compiled_module(self.balance_model).load_state_dict(
             without_prefix(tensors, "balance_model")
         )
@@ -833,6 +870,12 @@ class TrainingSession:
             tensors,
             metadata,
             "optimizer",
+        )
+        load_named_optimizer_checkpoint_state(
+            self.proposal_optimizer,
+            tensors,
+            metadata,
+            "proposal_optimizer",
         )
         load_named_optimizer_checkpoint_state(
             self.balance_optimizer,
@@ -861,6 +904,10 @@ class TrainingSession:
                 self.ema_model.parameters(), self.main_model.parameters()
             ):
                 ema_param.lerp_(main_param, 1.0 - ema_decay)
+            for ema_param, main_param in zip(
+                self.ema_proposal_model.parameters(), self.proposal_model.parameters()
+            ):
+                ema_param.lerp_(main_param, 1.0 - ema_decay)
 
     def generate_round(
         self,
@@ -882,6 +929,10 @@ class TrainingSession:
             name: as_checkpoint_tensor(value)
             for name, value in unwrap_compiled_module(self.ema_model).state_dict().items()
         }
+        proposal_model_state = {
+            name: as_checkpoint_tensor(value)
+            for name, value in unwrap_compiled_module(self.ema_proposal_model).state_dict().items()
+        }
         balance_model_state = {
             name: as_checkpoint_tensor(value)
             for name, value in unwrap_compiled_module(self.balance_model).state_dict().items()
@@ -895,6 +946,7 @@ class TrainingSession:
                 executor.submit(
                     run_generation_process_task,
                     model_state,
+                    proposal_model_state,
                     balance_model_state,
                     generation_config.model_dump_json(),
                     self.args.verify_outcome_consistency,
@@ -1117,8 +1169,10 @@ class TrainingSession:
                 device=self.device,
                 train_batch_envs=self.train_batch_envs,
                 main_model=self.main_model,
+                proposal_model=self.proposal_model,
                 balance_model=self.balance_model,
                 main_optimizer=self.main_optimizer,
+                proposal_optimizer=self.proposal_optimizer,
                 balance_optimizer=self.balance_optimizer,
                 loss_config=self.loss_config,
                 experience=self.experience,
@@ -1387,7 +1441,11 @@ class TrainingSession:
             "min_door": min_door,
             "min_conn": min_conn,
             "num_episodes": self.num_episodes,
-            **optimizer_metric_values(step_config.optimizer),
+            **prefixed_optimizer_metric_values("main", step_config.optimizer),
+            **prefixed_optimizer_metric_values(
+                "proposal",
+                step_config.proposal_optimizer,
+            ),
             "temperature": variable_float_metric_value(
                 step_config.generation.temperature,
                 "generation.temperature",
@@ -1490,7 +1548,7 @@ class TrainingSession:
         logging.info(
             "round %s, loss %.4f (d %.1f%%, c %.1f%%, t %.1f%%, ph %.1f%%, "
             "b %.1f%%, tb %.1f%%, d %.1f%%, "
-            "s %.1f%%, r %.1f%%, p %.1f%%), "
+            "s %.1f%%, r %.1f%%), prop %.4f, "
             "succ %.4f, total %.2f (min %s), door %.2f (min %s), "
             "conn %.2f (min %s), tube %.2f, diam %.2f, ss %.3f, "
             "p %.4f, "
@@ -1506,7 +1564,7 @@ class TrainingSession:
             graph_diameter_loss_pct,
             save_distance_loss_pct,
             refill_distance_loss_pct,
-            proposal_loss_pct,
+            loss.proposal,
             scalar(success_rate),
             scalar(avg_invalid),
             scalar(min_invalid),
@@ -1800,7 +1858,9 @@ def create_train_batch_environment_groups(config: Config, engine: Engine):
 def create_models(
     config: Config, rooms: list[dict], engine: Engine, device: torch.device, generation_devices
 ):
-    main_model = FrontierModel(**frontier_model_kwargs(config, rooms, engine)).to(device)
+    main_model = FrontierModel(
+        **frontier_model_kwargs(config, rooms, engine, include_proposal_output=False)
+    ).to(device)
     num_params = sum(p.numel() for p in main_model.parameters())
     logging.info(f"Main model parameters: {num_params}")
     logging.info(f"Main model: {main_model}")
@@ -1808,14 +1868,25 @@ def create_models(
     ema_model = copy.deepcopy(main_model).to(device)
     ema_model.requires_grad_(False)
     ema_model.eval()
+    proposal_model = ProposalModel(
+        **frontier_model_kwargs(config, rooms, engine, include_proposal_output=True)
+    ).to(device)
+    proposal_num_params = sum(p.numel() for p in proposal_model.parameters())
+    logging.info(f"Proposal model parameters: {proposal_num_params}")
+    logging.info(f"Proposal model: {proposal_model}")
+    ema_proposal_model = copy.deepcopy(proposal_model).to(device)
+    ema_proposal_model.requires_grad_(False)
+    ema_proposal_model.eval()
     balance_model = create_balance_model(config, rooms, device)
     balance_num_params = sum(p.numel() for p in balance_model.parameters())
     logging.info(f"Balance model parameters: {balance_num_params}")
     if config.model.compile:
         main_model = torch.compile(main_model)
         ema_model = torch.compile(ema_model)
+        proposal_model = torch.compile(proposal_model)
+        ema_proposal_model = torch.compile(ema_proposal_model)
 
-    return main_model, ema_model, balance_model
+    return main_model, ema_model, proposal_model, ema_proposal_model, balance_model
 
 
 def create_generation_process_executors(
@@ -1893,7 +1964,7 @@ def build_session(args: Args) -> TrainingSession:
 
     engine = Engine(rooms, config.features)
     train_batch_envs = create_train_batch_environment_groups(config, engine)
-    main_model, ema_model, balance_model = create_models(
+    main_model, ema_model, proposal_model, ema_proposal_model, balance_model = create_models(
         config,
         rooms,
         engine,
@@ -1913,6 +1984,11 @@ def build_session(args: Args) -> TrainingSession:
         config.optimizer,
         initial_config.optimizer,
     )
+    proposal_optimizer = create_main_optimizer(
+        proposal_model,
+        config.proposal_optimizer,
+        initial_config.proposal_optimizer,
+    )
     balance_optimizer = create_adam_optimizer(
         balance_model.parameters(),
         config.balance_optimizer,
@@ -1929,8 +2005,11 @@ def build_session(args: Args) -> TrainingSession:
         train_batch_envs=train_batch_envs,
         main_model=main_model,
         ema_model=ema_model,
+        proposal_model=proposal_model,
+        ema_proposal_model=ema_proposal_model,
         balance_model=balance_model,
         main_optimizer=main_optimizer,
+        proposal_optimizer=proposal_optimizer,
         balance_optimizer=balance_optimizer,
         loss_config=LossConfig(
             door_weight=config.train.door_weight,

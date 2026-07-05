@@ -13,7 +13,6 @@ from env import (
     Features,
     FeatureSlot,
     StepOutcomes,
-    ProposalData,
     WaveProposalData,
 )
 from experience import ExperienceStorage
@@ -48,9 +47,6 @@ class TrainBatchTask:
 @dataclass
 class FeatureTrainBatch:
     features: Features
-    proposal_frontier_idx: torch.Tensor | None
-    proposal_door_variant_idx: torch.Tensor | None
-    proposal_target_logits: torch.Tensor | None
 
 
 @dataclass
@@ -105,8 +101,10 @@ class TrainRoundContext:
     device: torch.device
     train_batch_envs: list
     main_model: torch.nn.Module
+    proposal_model: torch.nn.Module
     balance_model: torch.nn.Module
     main_optimizer: torch.optim.Optimizer
+    proposal_optimizer: torch.optim.Optimizer
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
     experience: ExperienceStorage
@@ -296,7 +294,6 @@ def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> lis
 def prepare_feature_batches(
     config: Config,
     train_episode_data: EpisodeData,
-    proposal_data: ProposalData | None,
     env,
     episode_length: int,
     pin_memory: bool,
@@ -333,13 +330,6 @@ def prepare_feature_batches(
                 )
             else:
                 next_lookahead_outcomes = None
-            proposal_frontier_idx = None
-            proposal_door_variant_idx = None
-            proposal_target_logits = None
-            if proposal_data is not None and step + 1 < episode_length:
-                proposal_frontier_idx = proposal_data.frontier_idx[:, step]
-                proposal_door_variant_idx = proposal_data.door_variant_idx[:, step]
-                proposal_target_logits = proposal_data.target_logits[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
             feature_batches.append(
                 FeatureTrainBatch(
@@ -355,10 +345,7 @@ def prepare_feature_batches(
                         config.features.lookahead_outcomes,
                         0,
                         train_actions.room_idx.shape[0],
-                    ),
-                    proposal_frontier_idx=proposal_frontier_idx,
-                    proposal_door_variant_idx=proposal_door_variant_idx,
-                    proposal_target_logits=proposal_target_logits,
+                    )
                 )
             )
     return feature_batches
@@ -370,14 +357,12 @@ def prepare_feature_batch(
     kind: Literal["fresh", "replay"],
     train_episode_data: EpisodeData,
     train_outcomes: EpisodeOutcomes,
-    proposal_data: ProposalData | None,
     env,
     episode_length: int,
 ) -> PreparedTrainBatch:
     feature_batches = prepare_feature_batches(
         config,
         train_episode_data,
-        proposal_data,
         env,
         episode_length,
         device.type == "cuda",
@@ -397,7 +382,6 @@ def prepare_train_batch_task(
     task: TrainBatchTask,
     fresh_episode_data: EpisodeData,
     fresh_outcomes: EpisodeOutcomes,
-    fresh_proposal_data: ProposalData | None,
 ) -> PreparedTrainBatch:
     env = context.train_batch_envs[task.env_index]
     if task.kind == "fresh":
@@ -406,16 +390,12 @@ def prepare_train_batch_task(
         end = task.start + context.config.train.batch_size
         train_episode_data = fresh_episode_data.slice(task.start, end)
         train_outcomes = fresh_outcomes.slice(task.start, end)
-        train_proposal_data = (
-            None if fresh_proposal_data is None else fresh_proposal_data.slice(task.start, end)
-        )
         return prepare_feature_batch(
             context.config,
             context.device,
             task.kind,
             train_episode_data,
             train_outcomes,
-            train_proposal_data,
             env,
             context.episode_length,
         )
@@ -428,7 +408,6 @@ def prepare_train_batch_task(
     feature_batches = prepare_feature_batches(
         context.config,
         replay_episode_data,
-        None,
         env,
         context.episode_length,
         context.device.type == "cuda",
@@ -534,37 +513,6 @@ def proposal_batch_loss(
         torch.sum(torch.where(row_mask, kl_terms, torch.zeros_like(kl_terms))) / row_mask.shape[0]
     )
     return proposal_loss
-
-
-def proposal_scores_for_frontier(
-    proposal_output: torch.nn.Module,
-    proposal_state: torch.Tensor,
-    row_snapshot_idx: torch.Tensor,
-    row_frontier_idx: torch.Tensor,
-    frontier_idx: torch.Tensor,
-    device: torch.device,
-) -> torch.Tensor:
-    frontier_idx = frontier_idx.to(device)
-    result = torch.full(
-        (frontier_idx.shape[0], proposal_output.out_features),
-        float("-inf"),
-        dtype=proposal_output.output_dtype,
-        device=device,
-    )
-    if proposal_state.shape[0] == 0:
-        return result
-    row_snapshot_idx = row_snapshot_idx.to(device)
-    row_frontier_idx = row_frontier_idx.to(device)
-    row_valid = (
-        (row_snapshot_idx >= 0)
-        & (row_snapshot_idx < frontier_idx.shape[0])
-        & (row_frontier_idx == frontier_idx[row_snapshot_idx])
-    )
-    if torch.any(row_valid):
-        result[row_snapshot_idx[row_valid]] = proposal_output(
-            proposal_state[row_valid].to(proposal_output.output_dtype)
-        )
-    return result
 
 
 def proposal_scores_for_rows(
@@ -708,12 +656,6 @@ def train_feature_batch_backward(
     for feature_batch in prepared_batch.feature_batches:
         features = feature_batch.features.to(context.device)
         features.mark_dynamic()
-        return_proposal_state = (
-            prepared_batch.kind == "fresh"
-            and feature_batch.proposal_frontier_idx is not None
-            and feature_batch.proposal_door_variant_idx is not None
-            and feature_batch.proposal_target_logits is not None
-        )
         with torch.amp.autocast(
             "cuda",
             dtype=torch.bfloat16,
@@ -721,7 +663,7 @@ def train_feature_batch_backward(
         ):
             preds = context.main_model(
                 features,
-                return_proposal_state=return_proposal_state,
+                return_proposal_state=False,
             )
         prefix_balance_score_mask = balance_score_mask
         if features.global_features.lookahead_door_match.shape[-1] > 0:
@@ -792,29 +734,6 @@ def train_feature_batch_backward(
         total_loss.missing_connect_utility_contribution += (
             prefix_loss.missing_connect_utility_contribution.item() * prefix_weight
         )
-        if return_proposal_state:
-            proposal_score = proposal_scores_for_frontier(
-                context.main_model.proposal_output,
-                preds.proposal_state,
-                preds.proposal_row_snapshot_idx,
-                preds.proposal_row_frontier_idx,
-                feature_batch.proposal_frontier_idx,
-                context.device,
-            )
-            batch_proposal_loss = proposal_batch_loss(
-                proposal_score,
-                feature_batch.proposal_frontier_idx,
-                feature_batch.proposal_door_variant_idx,
-                feature_batch.proposal_target_logits,
-                context.device,
-            )
-            weighted_proposal_loss = (
-                context.config.train.proposal_weight * batch_proposal_loss * prefix_weight
-            )
-            backward_loss = backward_loss + weighted_proposal_loss
-            total_loss.total += weighted_proposal_loss.item()
-            total_loss.proposal += batch_proposal_loss.item() * prefix_weight
-            total_loss.proposal_contribution += weighted_proposal_loss.item()
         (backward_loss * loss_scale).backward()
     return total_loss
 
@@ -859,6 +778,14 @@ def train_main_optimizer_step(context: TrainRoundContext) -> None:
     if not torch.isfinite(grad_norm):
         raise RuntimeError(f"non-finite gradient norm: {grad_norm.item()}")
     context.main_optimizer.step()
+    context.update_ema_model(context.step_config.train.ema_decay)
+
+
+def train_proposal_optimizer_step(context: TrainRoundContext) -> None:
+    grad_norm = torch.nn.utils.clip_grad_norm_(context.proposal_model.parameters(), max_norm=1.0)
+    if not torch.isfinite(grad_norm):
+        raise RuntimeError(f"non-finite proposal gradient norm: {grad_norm.item()}")
+    context.proposal_optimizer.step()
     context.update_ema_model(context.step_config.train.ema_decay)
 
 
@@ -997,11 +924,11 @@ def train_wave_proposal_prefix_backward(
         dtype=torch.bfloat16,
         enabled=context.device.type == "cuda" and context.config.model.autocast,
     ):
-        preds = context.main_model(features, return_proposal_state=True)
+        preds = context.proposal_model(features, return_proposal_state=True)
     row_episode_idx = proposal_data.episode_idx[row_idx]
     requested_snapshot_idx = row_episode_idx - int(chunk_episode_idx[0].item())
     proposal_score = proposal_scores_for_rows(
-        context.main_model.proposal_output,
+        context.proposal_model.proposal_output,
         preds.proposal_state,
         preds.proposal_row_snapshot_idx,
         preds.proposal_row_frontier_idx,
@@ -1042,7 +969,7 @@ def train_wave_proposal_round(
     processed_tasks = 0
     pending_group_size = 0
     current_group_size = 0
-    context.main_model.zero_grad()
+    context.proposal_model.zero_grad()
     actions_cpu = episode_data.actions.to(torch.device("cpu"))
     for chunk_start in range(0, episode_count, batch_size):
         chunk_end = min(chunk_start + batch_size, episode_count)
@@ -1082,7 +1009,7 @@ def train_wave_proposal_round(
                     context.config.train.gradient_accumulation_steps,
                     remaining_tasks,
                 )
-                context.main_model.zero_grad()
+                context.proposal_model.zero_grad()
             row_idx = wave_proposal_rows_for_prefix(
                 proposal_data,
                 chunk_start,
@@ -1105,7 +1032,7 @@ def train_wave_proposal_round(
             pending_group_size += 1
             processed_tasks += 1
             if pending_group_size == current_group_size:
-                train_main_optimizer_step(context)
+                train_proposal_optimizer_step(context)
                 pending_group_size = 0
                 current_group_size = 0
     if pending_group_size != 0:
@@ -1142,6 +1069,7 @@ def train_round(
     proposal_data: WaveProposalData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
+    set_optimizer_lrs(context.proposal_optimizer, context.step_config.proposal_optimizer)
     set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
 
     total_loss = empty_main_loss_breakdown()
@@ -1157,7 +1085,6 @@ def train_round(
                 task,
                 episode_data,
                 episode_outcomes,
-                None,
             ),
         )
     )
