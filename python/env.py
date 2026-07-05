@@ -284,6 +284,7 @@ class EpisodeOutcomes:
 @dataclass
 class FeatureRequirements:
     frontier_row_count: int
+    worker_snapshot_counts: list[int]
     worker_frontier_row_counts: list[int]
     missing_connect_query_row_count: int
     worker_missing_connect_query_row_counts: list[int]
@@ -1105,6 +1106,93 @@ class EnvironmentGroup:
             environment_count,
         )
 
+    def extract_compact_wave_candidates_from_proposals(
+        self,
+        candidate_slot: CandidateSlot,
+        row_env_idx: torch.Tensor,
+        sampled_frontier_idx: torch.Tensor,
+        sampled_door_variant_idx: torch.Tensor,
+        recommended_candidates: int,
+    ) -> tuple[
+        Actions,
+        torch.Tensor,
+        torch.Tensor,
+        StepOutcomes,
+        StepOutcomes,
+        FeatureRequirements,
+        CandidateStats,
+    ]:
+        candidate_count = recommended_candidates
+        environment_count = sampled_frontier_idx.shape[0]
+        candidate_slot.ensure(environment_count, candidate_count)
+        result = self.env.pack_compact_wave_candidates_from_proposals_into(
+            map_gen.CompactWaveProposalCandidateBuffers(
+                {
+                    "row_env_idx": row_env_idx.to(dtype=torch.int64).contiguous().cpu().numpy(),
+                    "sampled_frontier_idx": sampled_frontier_idx.contiguous().cpu().numpy(),
+                    "sampled_door_variant_idx": sampled_door_variant_idx.contiguous()
+                    .cpu()
+                    .numpy(),
+                    "recommended_candidates": recommended_candidates,
+                    "room_idx": candidate_slot.room_idx[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "room_x": candidate_slot.room_x[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "room_y": candidate_slot.room_y[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "proposal_frontier_idx": candidate_slot.proposal_frontier_idx[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "proposal_door_variant_idx": candidate_slot.proposal_door_variant_idx[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "pre_door_valid": candidate_slot.pre_door_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "pre_connections_valid": candidate_slot.pre_connection_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "pre_toilet_valid": candidate_slot.pre_toilet_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "pre_phantoon_valid": candidate_slot.pre_phantoon_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "door_valid": candidate_slot.door_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "connections_valid": candidate_slot.connection_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "toilet_valid": candidate_slot.toilet_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "phantoon_valid": candidate_slot.phantoon_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "door_match": candidate_slot.door_match[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "clean_counts": candidate_slot.clean_counts[:environment_count].numpy(),
+                    "evaluated_counts": candidate_slot.evaluated_counts[
+                        :environment_count
+                    ].numpy(),
+                    "rejected_counts": candidate_slot.rejected_counts[
+                        :environment_count
+                    ].numpy(),
+                }
+            )
+        )
+        return self._candidate_slot_result_for_count(
+            candidate_slot,
+            candidate_count,
+            result,
+            environment_count,
+        )
+
     def _candidate_slot_result(
         self,
         candidate_slot: CandidateSlot,
@@ -1149,6 +1237,7 @@ class EnvironmentGroup:
             candidate_slot.post_candidate_outcomes(environment_count, candidate_count),
             FeatureRequirements(
                 frontier_row_count=feature_requirements.frontier_row_count,
+                worker_snapshot_counts=feature_requirements.worker_snapshot_counts,
                 worker_frontier_row_counts=feature_requirements.worker_frontier_row_counts,
                 missing_connect_query_row_count=(
                     feature_requirements.missing_connect_query_row_count
@@ -1302,6 +1391,7 @@ class EnvironmentGroup:
         )
         return FeatureRequirements(
             frontier_row_count=result.frontier_row_count,
+            worker_snapshot_counts=result.worker_snapshot_counts,
             worker_frontier_row_counts=result.worker_frontier_row_counts,
             missing_connect_query_row_count=result.missing_connect_query_row_count,
             worker_missing_connect_query_row_counts=(
@@ -1346,6 +1436,163 @@ class EnvironmentGroup:
                     "candidate_count": 1,
                     "environment_start": environment_start,
                     "frontier_row_count": feature_requirements.frontier_row_count,
+                    "worker_snapshot_counts": feature_requirements.worker_snapshot_counts,
+                    "worker_frontier_row_counts": feature_requirements.worker_frontier_row_counts,
+                    "missing_connect_query_row_count": (
+                        feature_requirements.missing_connect_query_row_count
+                    ),
+                    "worker_missing_connect_query_row_counts": (
+                        feature_requirements.worker_missing_connect_query_row_counts
+                    ),
+                    "save_refill_utility_query_row_count": (
+                        feature_requirements.save_refill_utility_query_row_count
+                    ),
+                    "worker_save_refill_utility_query_row_counts": (
+                        feature_requirements.worker_save_refill_utility_query_row_counts
+                    ),
+                    "inventory": feature_slot.inventory.numpy(),
+                    "room_x": feature_slot.room_x.numpy(),
+                    "room_y": feature_slot.room_y.numpy(),
+                    "room_placed": feature_slot.room_placed.numpy(),
+                    "room_part_furthest_destination": feature_slot.room_part_furthest_destination.numpy(),
+                    "room_part_furthest_source": feature_slot.room_part_furthest_source.numpy(),
+                    "room_part_save_from_room_distance": (
+                        feature_slot.room_part_save_from_room_distance.numpy()
+                    ),
+                    "room_part_save_to_room_distance": (
+                        feature_slot.room_part_save_to_room_distance.numpy()
+                    ),
+                    "room_part_refill_from_room_distance": (
+                        feature_slot.room_part_refill_from_room_distance.numpy()
+                    ),
+                    "room_part_refill_to_room_distance": (
+                        feature_slot.room_part_refill_to_room_distance.numpy()
+                    ),
+                    "room_part_frontier_from_room_distance": (
+                        feature_slot.room_part_frontier_from_room_distance.numpy()
+                    ),
+                    "room_part_frontier_to_room_distance": (
+                        feature_slot.room_part_frontier_to_room_distance.numpy()
+                    ),
+                    "known_save_from_room_distance": (
+                        feature_slot.known_save_from_room_distance.numpy()
+                    ),
+                    "known_save_to_room_distance": (
+                        feature_slot.known_save_to_room_distance.numpy()
+                    ),
+                    "known_refill_from_room_distance": (
+                        feature_slot.known_refill_from_room_distance.numpy()
+                    ),
+                    "known_refill_to_room_distance": (
+                        feature_slot.known_refill_to_room_distance.numpy()
+                    ),
+                    "frontier": feature_slot.frontier.numpy(),
+                    "frontier_door_variant": feature_slot.frontier_door_variant.numpy(),
+                    "frontier_occupancy": feature_slot.frontier_occupancy.numpy(),
+                    "frontier_neighbor": feature_slot.frontier_neighbor.numpy(),
+                    "frontier_neighbor_pair": feature_slot.frontier_neighbor_pair.numpy(),
+                    "connection_reachability": feature_slot.connection_reachability.numpy(),
+                    "frontier_connection_reachability": feature_slot.frontier_connection_reachability.numpy(),
+                    "missing_connect_query_snapshot_idx": (
+                        feature_slot.missing_connect_query_snapshot_idx.numpy()
+                    ),
+                    "missing_connect_query_connection_idx": (
+                        feature_slot.missing_connect_query_connection_idx.numpy()
+                    ),
+                    "missing_connect_query_source_frontier": (
+                        feature_slot.missing_connect_query_source_frontier.numpy()
+                    ),
+                    "missing_connect_query_target_frontier": (
+                        feature_slot.missing_connect_query_target_frontier.numpy()
+                    ),
+                    "missing_connect_query_source_distance": (
+                        feature_slot.missing_connect_query_source_distance.numpy()
+                    ),
+                    "missing_connect_query_target_distance": (
+                        feature_slot.missing_connect_query_target_distance.numpy()
+                    ),
+                    "missing_connect_query_current_distance": (
+                        feature_slot.missing_connect_query_current_distance.numpy()
+                    ),
+                    "save_refill_utility_query_snapshot_idx": (
+                        feature_slot.save_refill_utility_query_snapshot_idx.numpy()
+                    ),
+                    "save_refill_utility_query_room_part_idx": (
+                        feature_slot.save_refill_utility_query_room_part_idx.numpy()
+                    ),
+                    "save_refill_utility_query_target_mask": (
+                        feature_slot.save_refill_utility_query_target_mask.numpy()
+                    ),
+                    "save_refill_utility_query_frontier": (
+                        feature_slot.save_refill_utility_query_frontier.numpy()
+                    ),
+                    "save_refill_utility_query_frontier_distance": (
+                        feature_slot.save_refill_utility_query_frontier_distance.numpy()
+                    ),
+                    "save_refill_utility_query_save_to_current_distance": (
+                        feature_slot.save_refill_utility_query_save_to_current_distance.numpy()
+                    ),
+                    "save_refill_utility_query_save_from_current_distance": (
+                        feature_slot.save_refill_utility_query_save_from_current_distance.numpy()
+                    ),
+                    "save_refill_utility_query_refill_to_current_distance": (
+                        feature_slot.save_refill_utility_query_refill_to_current_distance.numpy()
+                    ),
+                    "save_refill_utility_query_refill_from_current_distance": (
+                        feature_slot.save_refill_utility_query_refill_from_current_distance.numpy()
+                    ),
+                    "toilet_crossed_room_idx": feature_slot.toilet_crossed_room_idx.numpy(),
+                    "row_snapshot_idx": feature_slot.row_snapshot_idx.numpy(),
+                    "row_frontier_idx": feature_slot.row_frontier_idx.numpy(),
+                    "row_door_output_idx": feature_slot.row_door_output_idx.numpy(),
+                }
+            )
+        )
+        return feature_slot.state_features(
+            environment_count,
+            log_temperature,
+            include_temperature,
+            log_recommended_candidates,
+            include_recommended_candidates,
+            generation_variable_floats,
+            include_generation_variable_floats,
+            lookahead_outcomes,
+            include_lookahead_outcomes,
+            feature_requirements.frontier_row_count,
+            feature_requirements.missing_connect_query_row_count,
+            feature_requirements.save_refill_utility_query_row_count,
+        )
+
+    def extract_features_for_env_indices(
+        self,
+        feature_slot: "FeatureSlot",
+        env_idx: torch.Tensor,
+        log_temperature: torch.Tensor,
+        include_temperature: bool,
+        log_recommended_candidates: torch.Tensor,
+        include_recommended_candidates: bool,
+        generation_variable_floats: torch.Tensor,
+        include_generation_variable_floats: bool,
+        lookahead_outcomes: StepOutcomes,
+        include_lookahead_outcomes: bool,
+    ) -> Features:
+        env_idx = env_idx.to(dtype=torch.int64, device=torch.device("cpu")).contiguous()
+        environment_count = env_idx.shape[0]
+        feature_requirements = self.env.get_feature_requirements_for_env_indices(env_idx.numpy())
+        feature_slot.ensure(
+            environment_count,
+            feature_requirements.frontier_row_count,
+            feature_requirements.missing_connect_query_row_count,
+            feature_requirements.save_refill_utility_query_row_count,
+        )
+        self.env.pack_features_into(
+            map_gen.FeatureBuffers(
+                {
+                    "environment_count": environment_count,
+                    "candidate_count": 1,
+                    "environment_start": 0,
+                    "frontier_row_count": feature_requirements.frontier_row_count,
+                    "worker_snapshot_counts": feature_requirements.worker_snapshot_counts,
                     "worker_frontier_row_counts": feature_requirements.worker_frontier_row_counts,
                     "missing_connect_query_row_count": (
                         feature_requirements.missing_connect_query_row_count
@@ -2109,6 +2356,7 @@ def extract_candidate_features(
     feature_slot: FeatureSlot,
 ) -> Features:
     frontier_row_count = feature_requirements.frontier_row_count
+    worker_snapshot_counts = feature_requirements.worker_snapshot_counts
     worker_frontier_row_counts = feature_requirements.worker_frontier_row_counts
     missing_connect_query_row_count = feature_requirements.missing_connect_query_row_count
     worker_missing_connect_query_row_counts = (
@@ -2131,6 +2379,7 @@ def extract_candidate_features(
                 "candidate_count": candidates.room_idx.shape[1],
                 "environment_start": 0,
                 "frontier_row_count": frontier_row_count,
+                "worker_snapshot_counts": worker_snapshot_counts,
                 "worker_frontier_row_counts": worker_frontier_row_counts,
                 "missing_connect_query_row_count": missing_connect_query_row_count,
                 "worker_missing_connect_query_row_counts": (
