@@ -945,9 +945,7 @@ def train_wave_proposal_prefix_backward(
     )
     (batch_proposal_loss * loss_scale).backward()
     total_loss = empty_main_loss_breakdown()
-    total_loss.total += batch_proposal_loss.item()
     total_loss.proposal += batch_proposal_loss.item()
-    total_loss.proposal_contribution += batch_proposal_loss.item()
     return total_loss
 
 

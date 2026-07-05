@@ -1400,7 +1400,6 @@ class TrainingSession:
         missing_connect_utility_loss_pct = (
             100.0 * loss.missing_connect_utility_contribution / loss_denominator
         )
-        proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
 
         metrics = {
             "loss": loss.total,
@@ -1427,7 +1426,6 @@ class TrainingSession:
             "missing_connect_utility_loss": loss.missing_connect_utility,
             "missing_connect_utility_loss_pct": missing_connect_utility_loss_pct,
             "proposal_loss": loss.proposal,
-            "proposal_loss_pct": proposal_loss_pct,
             "candidate_target_entropy": candidate_diagnostics.target_entropy,
             "candidate_uniform_kl": candidate_diagnostics.uniform_kl,
             "candidate_selected_probability": candidate_diagnostics.selected_probability,

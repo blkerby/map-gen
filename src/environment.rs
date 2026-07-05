@@ -1984,8 +1984,18 @@ impl Environment {
         debug_assert_eq!(frontier_idx.len(), candidates.len());
         let mut applied = Vec::new();
         let sorted_frontier_locations = self.sorted_frontier_locations();
+        let mut frontier_resolved = vec![false; sorted_frontier_locations.len()];
+        let mut rejected_fallbacks = Vec::new();
         for (&frontier_idx, &candidate) in frontier_idx.iter().zip(candidates) {
             if self.finished || candidate.room_idx >= common.room.len() as RoomIdx {
+                continue;
+            }
+            if frontier_idx < 0
+                || frontier_resolved
+                    .get(frontier_idx as usize)
+                    .copied()
+                    .unwrap_or(true)
+            {
                 continue;
             }
             if !self.can_apply_wave_candidate(
@@ -2007,12 +2017,39 @@ impl Environment {
                 frontier_window_size,
                 scratch,
             )? {
-                CandidateOutcome::Rejected => {}
+                CandidateOutcome::Rejected => {
+                    rejected_fallbacks.push((frontier_idx, candidate));
+                }
                 CandidateOutcome::Clean(_, _, _) => {
                     self.step(candidate, common);
+                    frontier_resolved[frontier_idx as usize] = true;
                     applied.push(candidate);
                 }
             }
+        }
+        for (frontier_idx, candidate) in rejected_fallbacks {
+            if self.finished || candidate.room_idx >= common.room.len() as RoomIdx {
+                continue;
+            }
+            if frontier_idx < 0
+                || frontier_resolved
+                    .get(frontier_idx as usize)
+                    .copied()
+                    .unwrap_or(true)
+            {
+                continue;
+            }
+            if !self.can_apply_wave_candidate(
+                common,
+                &sorted_frontier_locations,
+                frontier_idx,
+                candidate,
+            ) {
+                continue;
+            }
+            self.step(candidate, common);
+            frontier_resolved[frontier_idx as usize] = true;
+            applied.push(candidate);
         }
         Ok(applied)
     }

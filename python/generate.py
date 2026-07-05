@@ -927,6 +927,44 @@ def append_applied_wave_actions(
         action_counts[env_idx] += count
 
 
+def wave_frame_data_from_prefixes(
+    wave_frame_prefixes: list[torch.Tensor],
+    env_count: int,
+    device: torch.device,
+) -> WaveFrameData:
+    if not wave_frame_prefixes:
+        return WaveFrameData(
+            prefix_counts=torch.zeros((env_count, 0), dtype=torch.int64, device=device),
+            frame_counts=torch.zeros(env_count, dtype=torch.int64, device=device),
+        )
+    prefixes = torch.stack(wave_frame_prefixes, dim=1)
+    episode_prefixes = []
+    frame_counts = []
+    for env_idx in range(env_count):
+        compacted = []
+        previous_prefix = None
+        for prefix in prefixes[env_idx].tolist():
+            prefix = int(prefix)
+            if previous_prefix != prefix:
+                compacted.append(prefix)
+                previous_prefix = prefix
+        episode_prefixes.append(compacted)
+        frame_counts.append(len(compacted))
+    max_frames = max(frame_counts)
+    prefix_counts = torch.zeros((env_count, max_frames), dtype=torch.int64, device=device)
+    for env_idx, compacted in enumerate(episode_prefixes):
+        if compacted:
+            prefix_counts[env_idx, : len(compacted)] = torch.tensor(
+                compacted,
+                dtype=torch.int64,
+                device=device,
+            )
+    return WaveFrameData(
+        prefix_counts=prefix_counts,
+        frame_counts=torch.tensor(frame_counts, dtype=torch.int64, device=device),
+    )
+
+
 def bootstrap_lookahead_outcomes(outcomes: StepOutcomes) -> StepOutcomes:
     return StepOutcomes(
         door_invalid=outcomes.door_invalid,
@@ -1007,6 +1045,7 @@ def run_wave_generation_groups(
             actions.room_x[:, 0] = initial_actions.room_x[:, 0]
             actions.room_y[:, 0] = initial_actions.room_y[:, 0]
             action_counts = torch.ones(group.env.num_envs, dtype=torch.int64)
+            active_env = action_counts < group.config.episode_length
             wave_frame_prefixes = [action_counts.clone()]
             group.previous_lookahead_outcomes = bootstrap_lookahead_outcomes(
                 group.env.get_outcomes(
@@ -1017,19 +1056,20 @@ def run_wave_generation_groups(
             profiler.add("python.wave.initialize_group", profile_time)
             stat_totals["wave_groups"] += 1.0
 
-            while torch.any(action_counts < group.config.episode_length):
-                active_env = action_counts < group.config.episode_length
+            while torch.any(active_env):
                 profile_time = profile_start(profile)
                 proposal_mask = mask_finished_wave_proposals(
                     group.env.get_all_proposal_candidate_masks(torch.device("cpu")),
                     active_env,
                 )
                 profiler.add("python.wave.prepare_proposal_mask", profile_time)
-                if proposal_mask.valid_counts.sum().item() == 0:
-                    break
                 proposal_active_env = torch.any(proposal_mask.valid_counts > 0, dim=1)
+                active_env = active_env & proposal_active_env
+                if not torch.any(active_env):
+                    break
+                proposal_mask = mask_finished_wave_proposals(proposal_mask, active_env)
                 stat_totals["wave_iterations"] += 1.0
-                stat_totals["wave_active_envs"] += float(proposal_active_env.sum().item())
+                stat_totals["wave_active_envs"] += float(active_env.sum().item())
                 stat_totals["wave_env_slots"] += float(proposal_active_env.numel())
                 profile_time = profile_start(profile)
                 proposal_inputs = prepare_wave_proposal_inputs(group, proposal_mask)
@@ -1119,6 +1159,7 @@ def run_wave_generation_groups(
                     applied_counts,
                 )
                 profiler.add("python.wave.apply_candidates", profile_time)
+                active_env = active_env & (action_counts < group.config.episode_length)
                 if not torch.any(applied_counts > 0):
                     break
                 wave_frame_prefixes.append(action_counts.clone())
@@ -1138,29 +1179,11 @@ def run_wave_generation_groups(
                 verify_consistency=verify_outcome_consistency,
             )
             door_match_counts = group.env.get_door_match_counts(device)
-            if wave_frame_prefixes:
-                wave_frame_data = WaveFrameData(
-                    prefix_counts=torch.stack(wave_frame_prefixes, dim=1).to(device),
-                    frame_counts=torch.full(
-                        (group.env.num_envs,),
-                        len(wave_frame_prefixes),
-                        dtype=torch.int64,
-                        device=device,
-                    ),
-                )
-            else:
-                wave_frame_data = WaveFrameData(
-                    prefix_counts=torch.zeros(
-                        (group.env.num_envs, 0),
-                        dtype=torch.int64,
-                        device=device,
-                    ),
-                    frame_counts=torch.zeros(
-                        group.env.num_envs,
-                        dtype=torch.int64,
-                        device=device,
-                    ),
-                )
+            wave_frame_data = wave_frame_data_from_prefixes(
+                wave_frame_prefixes,
+                group.env.num_envs,
+                device,
+            )
             results.append(
                 (
                     EpisodeData(
