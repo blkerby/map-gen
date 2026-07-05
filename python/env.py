@@ -117,6 +117,33 @@ class ProposalData:
         )
 
 
+@dataclass
+class WaveProposalData:
+    episode_idx: torch.Tensor
+    prefix_idx: torch.Tensor
+    frontier_idx: torch.Tensor
+    door_variant_idx: torch.Tensor
+    target_logits: torch.Tensor
+
+    def to(self, device: torch.device) -> "WaveProposalData":
+        return WaveProposalData(
+            episode_idx=self.episode_idx.to(device),
+            prefix_idx=self.prefix_idx.to(device),
+            frontier_idx=self.frontier_idx.to(device),
+            door_variant_idx=self.door_variant_idx.to(device),
+            target_logits=self.target_logits.to(device),
+        )
+
+    def slice(self, start: int, end: int) -> "WaveProposalData":
+        return WaveProposalData(
+            episode_idx=self.episode_idx[start:end],
+            prefix_idx=self.prefix_idx[start:end],
+            frontier_idx=self.frontier_idx[start:end],
+            door_variant_idx=self.door_variant_idx[start:end],
+            target_logits=self.target_logits[start:end],
+        )
+
+
 # Each tensor here is int8 with shape
 #    [batch, time, output]  during training,
 #    [batch, candidate, output]  during generation
@@ -261,6 +288,24 @@ class ProposalCandidateMask:
             mask=self.mask.to(device),
             valid_counts=self.valid_counts.to(device),
             door_variant_count=self.door_variant_count,
+        )
+
+
+@dataclass
+class WaveProposalCandidateMask:
+    proposal_frontier_idx: torch.Tensor
+    mask: torch.Tensor
+    valid_counts: torch.Tensor
+    door_variant_count: int
+    max_frontiers: int
+
+    def to(self, device: torch.device) -> "WaveProposalCandidateMask":
+        return WaveProposalCandidateMask(
+            proposal_frontier_idx=self.proposal_frontier_idx.to(device),
+            mask=self.mask.to(device),
+            valid_counts=self.valid_counts.to(device=device, dtype=torch.int64),
+            door_variant_count=self.door_variant_count,
+            max_frontiers=self.max_frontiers,
         )
 
 
@@ -879,6 +924,21 @@ class EnvironmentGroup:
             door_variant_count=result.door_variant_count,
         )
 
+    def get_all_proposal_candidate_masks(
+        self,
+        device: torch.device,
+    ) -> WaveProposalCandidateMask:
+        result = self.env.get_all_proposal_candidate_masks()
+        return WaveProposalCandidateMask(
+            proposal_frontier_idx=torch.from_numpy(result.proposal_frontier_idx).to(device),
+            mask=torch.from_numpy(result.mask).to(device),
+            valid_counts=torch.from_numpy(result.valid_counts).to(
+                device=device, dtype=torch.int64
+            ),
+            door_variant_count=result.door_variant_count,
+            max_frontiers=result.max_frontiers,
+        )
+
     def extract_candidates_from_proposals(
         self,
         candidate_slot: CandidateSlot,
@@ -944,6 +1004,91 @@ class EnvironmentGroup:
         )
         return self._candidate_slot_result(candidate_slot, candidate_count, result)
 
+    def extract_wave_candidates_from_proposals(
+        self,
+        candidate_slot: CandidateSlot,
+        sampled_frontier_idx: torch.Tensor,
+        sampled_door_variant_idx: torch.Tensor,
+        recommended_candidates: int,
+    ) -> tuple[
+        Actions,
+        torch.Tensor,
+        torch.Tensor,
+        StepOutcomes,
+        StepOutcomes,
+        FeatureRequirements,
+        CandidateStats,
+    ]:
+        candidate_count = recommended_candidates
+        environment_count = sampled_frontier_idx.shape[0] * sampled_frontier_idx.shape[1]
+        candidate_slot.ensure(environment_count, candidate_count)
+        result = self.env.pack_wave_candidates_from_proposals_into(
+            map_gen.WaveProposalCandidateBuffers(
+                {
+                    "sampled_frontier_idx": sampled_frontier_idx.contiguous().cpu().numpy(),
+                    "sampled_door_variant_idx": sampled_door_variant_idx.contiguous()
+                    .cpu()
+                    .numpy(),
+                    "recommended_candidates": recommended_candidates,
+                    "room_idx": candidate_slot.room_idx[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "room_x": candidate_slot.room_x[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "room_y": candidate_slot.room_y[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "proposal_frontier_idx": candidate_slot.proposal_frontier_idx[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "proposal_door_variant_idx": candidate_slot.proposal_door_variant_idx[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "pre_door_valid": candidate_slot.pre_door_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "pre_connections_valid": candidate_slot.pre_connection_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "pre_toilet_valid": candidate_slot.pre_toilet_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "pre_phantoon_valid": candidate_slot.pre_phantoon_invalid[
+                        :environment_count
+                    ].numpy(),
+                    "door_valid": candidate_slot.door_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "connections_valid": candidate_slot.connection_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "toilet_valid": candidate_slot.toilet_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "phantoon_valid": candidate_slot.phantoon_invalid[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "door_match": candidate_slot.door_match[
+                        :environment_count, :candidate_count
+                    ].numpy(),
+                    "clean_counts": candidate_slot.clean_counts[:environment_count].numpy(),
+                    "evaluated_counts": candidate_slot.evaluated_counts[
+                        :environment_count
+                    ].numpy(),
+                    "rejected_counts": candidate_slot.rejected_counts[
+                        :environment_count
+                    ].numpy(),
+                }
+            )
+        )
+        return self._candidate_slot_result_for_count(
+            candidate_slot,
+            candidate_count,
+            result,
+            environment_count,
+        )
+
     def _candidate_slot_result(
         self,
         candidate_slot: CandidateSlot,
@@ -958,12 +1103,34 @@ class EnvironmentGroup:
         FeatureRequirements,
         CandidateStats,
     ]:
+        return self._candidate_slot_result_for_count(
+            candidate_slot,
+            candidate_count,
+            feature_requirements,
+            self.num_envs,
+        )
+
+    def _candidate_slot_result_for_count(
+        self,
+        candidate_slot: CandidateSlot,
+        candidate_count: int,
+        feature_requirements,
+        environment_count: int,
+    ) -> tuple[
+        Actions,
+        torch.Tensor,
+        torch.Tensor,
+        StepOutcomes,
+        StepOutcomes,
+        FeatureRequirements,
+        CandidateStats,
+    ]:
         return (
-            candidate_slot.actions(self.num_envs, candidate_count),
-            candidate_slot.proposal_frontiers(self.num_envs, candidate_count),
-            candidate_slot.proposal_door_variants(self.num_envs, candidate_count),
-            candidate_slot.reward_outcomes(self.num_envs),
-            candidate_slot.post_candidate_outcomes(self.num_envs, candidate_count),
+            candidate_slot.actions(environment_count, candidate_count),
+            candidate_slot.proposal_frontiers(environment_count, candidate_count),
+            candidate_slot.proposal_door_variants(environment_count, candidate_count),
+            candidate_slot.reward_outcomes(environment_count),
+            candidate_slot.post_candidate_outcomes(environment_count, candidate_count),
             FeatureRequirements(
                 frontier_row_count=feature_requirements.frontier_row_count,
                 worker_frontier_row_counts=feature_requirements.worker_frontier_row_counts,
@@ -980,7 +1147,27 @@ class EnvironmentGroup:
                     feature_requirements.worker_save_refill_utility_query_row_counts
                 ),
             ),
-            candidate_slot.stats(self.num_envs),
+            candidate_slot.stats(environment_count),
+        )
+
+    def apply_wave_candidates(
+        self,
+        frontier_idx: torch.Tensor,
+        actions: Actions,
+    ) -> tuple[Actions, torch.Tensor]:
+        result = self.env.apply_wave_candidates(
+            frontier_idx.contiguous().cpu().numpy(),
+            actions.room_idx.contiguous().cpu().numpy(),
+            actions.room_x.contiguous().cpu().numpy(),
+            actions.room_y.contiguous().cpu().numpy(),
+        )
+        return (
+            Actions(
+                room_idx=torch.from_numpy(result.room_idx),
+                room_x=torch.from_numpy(result.room_x),
+                room_y=torch.from_numpy(result.room_y),
+            ),
+            torch.from_numpy(result.counts).to(dtype=torch.int64),
         )
 
     def get_outcomes(self, device: torch.device, verify_consistency: bool) -> EpisodeOutcomes:

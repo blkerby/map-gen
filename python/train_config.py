@@ -102,6 +102,7 @@ class BalanceModelConfig(StrictBaseModel):
 
 
 class GenerationConfig(StrictBaseModel):
+    strategy: Literal["sequential", "frontier_wave"]
     num_environments: int
     num_iterations: int
     num_devices: int

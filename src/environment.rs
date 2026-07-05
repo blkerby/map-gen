@@ -1861,6 +1861,158 @@ impl Environment {
         }
     }
 
+    pub fn all_proposal_candidate_masks(
+        &self,
+        common: &CommonData,
+        proposal_door_variant_count: usize,
+        max_frontiers: usize,
+        frontier_idx: &mut [FrontierIdx],
+        output: &mut [u8],
+        valid_counts: &mut [usize],
+    ) {
+        let mask_byte_count = proposal_door_variant_count.div_ceil(8);
+        debug_assert_eq!(frontier_idx.len(), max_frontiers);
+        debug_assert_eq!(output.len(), max_frontiers * mask_byte_count);
+        debug_assert_eq!(valid_counts.len(), max_frontiers);
+        frontier_idx.fill(-1);
+        output.fill(0);
+        valid_counts.fill(0);
+        if self.actions.is_empty() {
+            return;
+        }
+        for (row_idx, (_location, frontier)) in self.sorted_frontiers().iter().enumerate() {
+            if row_idx >= max_frontiers || frontier.candidates.is_empty() {
+                continue;
+            }
+            frontier_idx[row_idx] = row_idx as FrontierIdx;
+            let row_start = row_idx * mask_byte_count;
+            let row_end = row_start + mask_byte_count;
+            let mut valid_count = 0;
+            for candidate in &frontier.candidates {
+                for &connection_variant_idx in
+                    common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
+                {
+                    if self.connection_variant_unused_count[connection_variant_idx as usize] == 0 {
+                        continue;
+                    }
+                    let door_variant_idx = common.door_variant_idx(
+                        connection_variant_idx,
+                        candidate.door_direction,
+                        candidate.door_x,
+                        candidate.door_y,
+                        candidate.door_kind,
+                    ) as usize;
+                    assert!(door_variant_idx < proposal_door_variant_count);
+                    let byte = &mut output[row_start..row_end][door_variant_idx / 8];
+                    let mask = 1 << (door_variant_idx % 8);
+                    if *byte & mask == 0 {
+                        *byte |= mask;
+                        valid_count += 1;
+                    }
+                }
+            }
+            valid_counts[row_idx] = valid_count;
+        }
+    }
+
+    fn candidate_still_attaches_to_frontier(
+        &self,
+        common: &CommonData,
+        sorted_frontier_locations: &[DoorLocation],
+        frontier_idx: FrontierIdx,
+        action: Action,
+    ) -> bool {
+        if frontier_idx < 0 || action.room_idx >= common.room.len() as RoomIdx {
+            return false;
+        }
+        let Some(&frontier_location) = sorted_frontier_locations.get(frontier_idx as usize) else {
+            return false;
+        };
+        if !self.frontier.contains_key(&frontier_location) {
+            return false;
+        }
+        common.room[action.room_idx as usize]
+            .doors
+            .iter()
+            .any(|door| DoorLocation::new(door, action.x, action.y) == frontier_location)
+    }
+
+    fn can_apply_wave_candidate(
+        &mut self,
+        common: &CommonData,
+        sorted_frontier_locations: &[DoorLocation],
+        frontier_idx: FrontierIdx,
+        action: Action,
+    ) -> bool {
+        if !self.candidate_still_attaches_to_frontier(
+            common,
+            sorted_frontier_locations,
+            frontier_idx,
+            action,
+        ) {
+            return false;
+        }
+        if self.room_used[action.room_idx as usize] {
+            return false;
+        }
+        let room = &common.room[action.room_idx as usize];
+        if self.connection_variant_unused_count[room.connection_variant_idx as usize] == 0 {
+            return false;
+        }
+        let geometry = &common.geometry[room.geometry_idx as usize];
+        if action.x < room_min_x(geometry)
+            || action.x > self.map_size.0 - 1 - geometry.max_x
+            || action.y < room_min_y(geometry)
+            || action.y > self.map_size.1 - 1 - geometry.max_y
+        {
+            return false;
+        }
+        !self.candidate_intersects_placed_room(common, room.geometry_idx, action.x, action.y)
+    }
+
+    pub fn apply_wave_candidates(
+        &mut self,
+        common: &CommonData,
+        frontier_idx: &[FrontierIdx],
+        candidates: &[Action],
+        config: &FeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+        scratch: &mut FeatureScratch,
+    ) -> Result<Vec<Action>, String> {
+        debug_assert_eq!(frontier_idx.len(), candidates.len());
+        let mut applied = Vec::new();
+        for (&frontier_idx, &candidate) in frontier_idx.iter().zip(candidates) {
+            if self.finished || candidate.room_idx >= common.room.len() as RoomIdx {
+                continue;
+            }
+            let sorted_frontier_locations = self.sorted_frontier_locations();
+            if !self.can_apply_wave_candidate(common, &sorted_frontier_locations, frontier_idx, candidate)
+            {
+                continue;
+            }
+            let pre_candidate_outcomes = self.outcomes(common);
+            match self.evaluate_candidate_outcome(
+                common,
+                &pre_candidate_outcomes,
+                candidate,
+                config,
+                frontier_neighbor_algorithm,
+                frontier_neighbor_count,
+                frontier_window_size,
+                scratch,
+            )? {
+                CandidateOutcome::Rejected => {}
+                CandidateOutcome::Clean(_, _, _) => {
+                    self.step(candidate, common);
+                    applied.push(candidate);
+                }
+            }
+        }
+        Ok(applied)
+    }
+
     fn action_for_proposal_candidate(
         &mut self,
         common: &CommonData,

@@ -7,7 +7,8 @@ mod scc_dag;
 
 use engine::{
     EndOutcomes, Engine, EnvironmentGroup, EpisodeOutcomes, FeatureBuffers,
-    ProposalCandidateBuffers, StepOutcomes,
+    ProposalCandidateBuffers, StepOutcomes, WaveAppliedActions, WaveProposalCandidateBuffers,
+    WaveProposalCandidateMask,
 };
 
 #[pyfunction]
@@ -33,6 +34,9 @@ fn map_gen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EndOutcomes>()?;
     m.add_class::<EpisodeOutcomes>()?;
     m.add_class::<ProposalCandidateBuffers>()?;
+    m.add_class::<WaveProposalCandidateBuffers>()?;
+    m.add_class::<WaveProposalCandidateMask>()?;
+    m.add_class::<WaveAppliedActions>()?;
     m.add_class::<FeatureBuffers>()?;
     m.add_function(wrap_pyfunction!(set_profile_enabled, m)?)?;
     m.add_function(wrap_pyfunction!(reset_profile, m)?)?;

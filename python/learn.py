@@ -14,6 +14,7 @@ from env import (
     FeatureSlot,
     StepOutcomes,
     ProposalData,
+    WaveProposalData,
 )
 from experience import ExperienceStorage
 from loss import (
@@ -205,7 +206,11 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
     )
 
 
-def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagnostics:
+def compute_candidate_diagnostics(
+    proposal_data: ProposalData | WaveProposalData,
+) -> CandidateDiagnostics:
+    if isinstance(proposal_data, WaveProposalData):
+        return compute_wave_candidate_diagnostics(proposal_data)
     target_logits = proposal_data.target_logits.to(torch.float32)
     frontier_valid = proposal_data.frontier_idx >= 0
     while frontier_valid.ndim < target_logits.ndim:
@@ -267,6 +272,46 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
         target_entropy=target_entropy,
         uniform_kl=uniform_kl,
         selected_probability=selected_probability,
+    )
+
+
+def compute_wave_candidate_diagnostics(proposal_data: WaveProposalData) -> CandidateDiagnostics:
+    target_logits = proposal_data.target_logits.to(torch.float32)
+    valid = (proposal_data.door_variant_idx >= 0) & torch.isfinite(target_logits)
+    candidate_count = target_logits.shape[-1]
+    flat_logits = target_logits.reshape(-1, candidate_count)
+    flat_valid = valid.reshape(-1, candidate_count)
+    row_valid = torch.any(flat_valid, dim=1)
+    if not torch.any(row_valid):
+        zero = torch.sum(target_logits) * 0.0
+        return CandidateDiagnostics(
+            target_entropy=zero,
+            uniform_kl=zero,
+            selected_probability=zero,
+        )
+    row_target_logits = torch.where(
+        flat_valid[row_valid],
+        flat_logits[row_valid],
+        torch.full_like(flat_logits[row_valid], float("-inf")),
+    )
+    row_mask = flat_valid[row_valid]
+    target_log_probs = torch.nn.functional.log_softmax(row_target_logits, dim=1)
+    safe_target_log_probs = torch.where(
+        row_mask,
+        target_log_probs,
+        torch.zeros_like(target_log_probs),
+    )
+    target_probs = torch.where(
+        row_mask,
+        torch.exp(target_log_probs),
+        torch.zeros_like(target_log_probs),
+    )
+    entropy_per_row = torch.sum(-target_probs * safe_target_log_probs, dim=1)
+    valid_counts = torch.sum(row_mask, dim=1).to(torch.float32)
+    return CandidateDiagnostics(
+        target_entropy=torch.mean(entropy_per_row),
+        uniform_kl=torch.mean(torch.log(valid_counts) - entropy_per_row),
+        selected_probability=torch.sum(target_logits) * 0.0,
     )
 
 
@@ -407,7 +452,7 @@ def prepare_train_batch_task(
     task: TrainBatchTask,
     fresh_episode_data: EpisodeData,
     fresh_outcomes: EpisodeOutcomes,
-    fresh_proposal_data: ProposalData,
+    fresh_proposal_data: ProposalData | None,
 ) -> PreparedTrainBatch:
     env = context.train_batch_envs[task.env_index]
     if task.kind == "fresh":
@@ -416,7 +461,9 @@ def prepare_train_batch_task(
         end = task.start + context.config.train.batch_size
         train_episode_data = fresh_episode_data.slice(task.start, end)
         train_outcomes = fresh_outcomes.slice(task.start, end)
-        train_proposal_data = fresh_proposal_data.slice(task.start, end)
+        train_proposal_data = (
+            None if fresh_proposal_data is None else fresh_proposal_data.slice(task.start, end)
+        )
         return prepare_feature_batch(
             context.config,
             context.device,
@@ -571,6 +618,56 @@ def proposal_scores_for_frontier(
     if torch.any(row_valid):
         result[row_snapshot_idx[row_valid]] = proposal_output(
             proposal_state[row_valid].to(proposal_output.output_dtype)
+        )
+    return result
+
+
+def proposal_scores_for_rows(
+    proposal_output: torch.nn.Module,
+    proposal_state: torch.Tensor,
+    row_snapshot_idx: torch.Tensor,
+    row_frontier_idx: torch.Tensor,
+    requested_snapshot_idx: torch.Tensor,
+    requested_frontier_idx: torch.Tensor,
+    device: torch.device,
+) -> torch.Tensor:
+    requested_snapshot_idx = requested_snapshot_idx.to(device=device, dtype=torch.int64)
+    requested_frontier_idx = requested_frontier_idx.to(device=device, dtype=torch.int64)
+    result = torch.full(
+        (requested_frontier_idx.shape[0], proposal_output.out_features),
+        float("-inf"),
+        dtype=proposal_output.output_dtype,
+        device=device,
+    )
+    if proposal_state.shape[0] == 0 or requested_frontier_idx.shape[0] == 0:
+        return result
+    row_snapshot_idx = row_snapshot_idx.to(device=device, dtype=torch.int64)
+    row_frontier_idx = row_frontier_idx.to(device=device, dtype=torch.int64)
+    valid_model_row = (row_snapshot_idx >= 0) & (row_frontier_idx >= 0)
+    valid_request = (requested_snapshot_idx >= 0) & (requested_frontier_idx >= 0)
+    if not torch.any(valid_model_row) or not torch.any(valid_request):
+        return result
+    max_frontier_idx = torch.maximum(
+        row_frontier_idx[valid_model_row].max(),
+        requested_frontier_idx[valid_request].max(),
+    )
+    key_stride = max_frontier_idx + 1
+    model_keys = row_snapshot_idx[valid_model_row] * key_stride + row_frontier_idx[valid_model_row]
+    model_row_idx = torch.nonzero(valid_model_row, as_tuple=False).view(-1)
+    order = torch.argsort(model_keys)
+    sorted_model_keys = model_keys[order]
+    sorted_model_row_idx = model_row_idx[order]
+    request_keys = requested_snapshot_idx[valid_request] * key_stride
+    request_keys = request_keys + requested_frontier_idx[valid_request]
+    positions = torch.searchsorted(sorted_model_keys, request_keys)
+    in_range = positions < sorted_model_keys.shape[0]
+    safe_positions = positions.clamp_max(sorted_model_keys.shape[0] - 1)
+    matched = in_range & (sorted_model_keys[safe_positions] == request_keys)
+    if torch.any(matched):
+        request_row_idx = torch.nonzero(valid_request, as_tuple=False).view(-1)[matched]
+        matched_model_row_idx = sorted_model_row_idx[safe_positions[matched]]
+        result[request_row_idx] = proposal_output(
+            proposal_state[matched_model_row_idx].to(proposal_output.output_dtype)
         )
     return result
 
@@ -812,6 +909,14 @@ def train_optimizer_step(context: TrainRoundContext) -> None:
     context.update_ema_model(context.step_config.train.ema_decay)
 
 
+def train_main_optimizer_step(context: TrainRoundContext) -> None:
+    grad_norm = torch.nn.utils.clip_grad_norm_(context.main_model.parameters(), max_norm=1.0)
+    if not torch.isfinite(grad_norm):
+        raise RuntimeError(f"non-finite gradient norm: {grad_norm.item()}")
+    context.main_optimizer.step()
+    context.update_ema_model(context.step_config.train.ema_decay)
+
+
 def train_prepared_batch_group(
     context: TrainRoundContext,
     prepared_batches: Iterable[PreparedTrainBatch],
@@ -859,6 +964,212 @@ def add_completed_batch_group(
     return total_balance_loss + group_balance_loss, train_batch_count + group_count
 
 
+def wave_proposal_task_count(
+    proposal_data: WaveProposalData,
+    episode_count: int,
+    batch_size: int,
+) -> int:
+    total = 0
+    for chunk_start in range(0, episode_count, batch_size):
+        chunk_end = min(chunk_start + batch_size, episode_count)
+        chunk_mask = (proposal_data.episode_idx >= chunk_start) & (
+            proposal_data.episode_idx < chunk_end
+        )
+        if torch.any(chunk_mask):
+            total += torch.unique(proposal_data.prefix_idx[chunk_mask]).numel()
+    return total
+
+
+def wave_proposal_rows_for_prefix(
+    proposal_data: WaveProposalData,
+    chunk_start: int,
+    chunk_end: int,
+    prefix_idx: int,
+) -> torch.Tensor:
+    return torch.nonzero(
+        (proposal_data.episode_idx >= chunk_start)
+        & (proposal_data.episode_idx < chunk_end)
+        & (proposal_data.prefix_idx == prefix_idx),
+        as_tuple=False,
+    ).view(-1)
+
+
+def wave_proposal_prefixes_for_chunk(
+    proposal_data: WaveProposalData,
+    chunk_start: int,
+    chunk_end: int,
+) -> list[int]:
+    chunk_mask = (proposal_data.episode_idx >= chunk_start) & (
+        proposal_data.episode_idx < chunk_end
+    )
+    if not torch.any(chunk_mask):
+        return []
+    prefixes = torch.unique(proposal_data.prefix_idx[chunk_mask].to(torch.device("cpu")))
+    return sorted(int(prefix.item()) for prefix in prefixes)
+
+
+def train_wave_proposal_prefix_backward(
+    context: TrainRoundContext,
+    env,
+    feature_slot: FeatureSlot,
+    episode_data: EpisodeData,
+    proposal_data: WaveProposalData,
+    chunk_episode_idx: torch.Tensor,
+    row_idx: torch.Tensor,
+    loss_scale: float,
+) -> MainLossBreakdown:
+    log_temperature = torch.log(episode_data.temperature[chunk_episode_idx]).to(torch.device("cpu"))
+    log_recommended_candidates = torch.log(
+        episode_data.recommended_candidates[chunk_episode_idx] + 1
+    ).to(torch.device("cpu"))
+    generation_variable_floats = episode_data.generation_variable_floats[chunk_episode_idx].to(
+        torch.device("cpu")
+    )
+    if context.config.features.lookahead_outcomes:
+        lookahead_outcomes = env.get_current_feature_outcomes(
+            torch.device("cpu"),
+            0,
+            chunk_episode_idx.shape[0],
+        )
+    else:
+        lookahead_outcomes = None
+    features = env.extract_features(
+        feature_slot,
+        log_temperature,
+        context.config.features.temperature,
+        log_recommended_candidates,
+        context.config.features.recommended_candidates,
+        generation_variable_floats,
+        context.config.features.generation_variable_floats,
+        lookahead_outcomes,
+        context.config.features.lookahead_outcomes,
+        0,
+        chunk_episode_idx.shape[0],
+    ).to(context.device)
+    features.mark_dynamic()
+    with torch.amp.autocast(
+        "cuda",
+        dtype=torch.bfloat16,
+        enabled=context.device.type == "cuda" and context.config.model.autocast,
+    ):
+        preds = context.main_model(features, return_proposal_state=True)
+    row_episode_idx = proposal_data.episode_idx[row_idx]
+    requested_snapshot_idx = row_episode_idx - int(chunk_episode_idx[0].item())
+    proposal_score = proposal_scores_for_rows(
+        context.main_model.proposal_output,
+        preds.proposal_state,
+        preds.proposal_row_snapshot_idx,
+        preds.proposal_row_frontier_idx,
+        requested_snapshot_idx,
+        proposal_data.frontier_idx[row_idx],
+        context.device,
+    )
+    batch_proposal_loss = proposal_batch_loss(
+        proposal_score,
+        proposal_data.frontier_idx[row_idx],
+        proposal_data.door_variant_idx[row_idx],
+        proposal_data.target_logits[row_idx],
+        context.device,
+    )
+    weighted_proposal_loss = context.config.train.proposal_weight * batch_proposal_loss
+    (weighted_proposal_loss * loss_scale).backward()
+    total_loss = empty_main_loss_breakdown()
+    total_loss.total += weighted_proposal_loss.item()
+    total_loss.proposal += batch_proposal_loss.item()
+    total_loss.proposal_contribution += weighted_proposal_loss.item()
+    return total_loss
+
+
+def train_wave_proposal_round(
+    context: TrainRoundContext,
+    episode_data: EpisodeData,
+    proposal_data: WaveProposalData,
+    completed_value_batch_count: int,
+) -> tuple[MainLossBreakdown, int]:
+    if proposal_data.prefix_idx.numel() == 0:
+        return empty_main_loss_breakdown(), 0
+    episode_count = episode_data.actions.room_idx.shape[0]
+    batch_size = context.config.train.batch_size
+    total_tasks = wave_proposal_task_count(proposal_data, episode_count, batch_size)
+    if total_tasks == 0:
+        return empty_main_loss_breakdown(), 0
+    total_loss = empty_main_loss_breakdown()
+    processed_tasks = 0
+    pending_group_size = 0
+    current_group_size = 0
+    context.main_model.zero_grad()
+    actions_cpu = episode_data.actions.to(torch.device("cpu"))
+    for chunk_start in range(0, episode_count, batch_size):
+        chunk_end = min(chunk_start + batch_size, episode_count)
+        prefixes = wave_proposal_prefixes_for_chunk(proposal_data, chunk_start, chunk_end)
+        if not prefixes:
+            continue
+        env = context.train_batch_envs[
+            (completed_value_batch_count + processed_tasks) % context.config.train.pipeline_groups
+        ]
+        feature_slot = FeatureSlot(env, pin_memory=context.device.type == "cuda")
+        env.clear()
+        real_episode_idx = torch.arange(chunk_start, chunk_end, dtype=torch.int64)
+        if real_episode_idx.shape[0] < batch_size:
+            padding = torch.full(
+                [batch_size - real_episode_idx.shape[0]],
+                chunk_end - 1,
+                dtype=torch.int64,
+            )
+            chunk_episode_idx = torch.cat([real_episode_idx, padding])
+        else:
+            chunk_episode_idx = real_episode_idx
+        current_prefix = 0
+        for prefix_idx in prefixes:
+            if prefix_idx < 0 or prefix_idx > context.episode_length:
+                raise ValueError(f"wave proposal prefix_idx out of range: {prefix_idx}")
+            while current_prefix < prefix_idx:
+                next_actions = Actions(
+                    room_idx=actions_cpu.room_idx[chunk_episode_idx, current_prefix],
+                    room_x=actions_cpu.room_x[chunk_episode_idx, current_prefix],
+                    room_y=actions_cpu.room_y[chunk_episode_idx, current_prefix],
+                )
+                env.step_known(next_actions)
+                current_prefix += 1
+            if pending_group_size == 0:
+                remaining_tasks = total_tasks - processed_tasks
+                current_group_size = min(
+                    context.config.train.gradient_accumulation_steps,
+                    remaining_tasks,
+                )
+                context.main_model.zero_grad()
+            row_idx = wave_proposal_rows_for_prefix(
+                proposal_data,
+                chunk_start,
+                chunk_end,
+                prefix_idx,
+            )
+            if row_idx.numel() == 0:
+                continue
+            batch_loss = train_wave_proposal_prefix_backward(
+                context,
+                env,
+                feature_slot,
+                episode_data,
+                proposal_data,
+                chunk_episode_idx,
+                row_idx,
+                1.0 / current_group_size,
+            )
+            accumulate_main_loss(total_loss, batch_loss)
+            pending_group_size += 1
+            processed_tasks += 1
+            if pending_group_size == current_group_size:
+                train_main_optimizer_step(context)
+                pending_group_size = 0
+                current_group_size = 0
+    if pending_group_size != 0:
+        raise RuntimeError("wave proposal gradient accumulation ended mid-group")
+    if processed_tasks != total_tasks:
+        raise RuntimeError(f"expected {total_tasks} wave proposal task(s), got {processed_tasks}")
+    return total_loss, processed_tasks
+
+
 def pop_random_prepared_batch(buffer: list[PreparedTrainBatch]) -> PreparedTrainBatch:
     index = torch.randint(len(buffer), [1]).item()
     return buffer.pop(index)
@@ -883,7 +1194,7 @@ def train_round(
     context: TrainRoundContext,
     episode_data: EpisodeData,
     episode_outcomes: EpisodeOutcomes,
-    proposal_data: ProposalData,
+    proposal_data: ProposalData | WaveProposalData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
     set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
@@ -891,6 +1202,7 @@ def train_round(
     total_loss = empty_main_loss_breakdown()
     total_balance_loss = 0.0
     train_batch_count = 0
+    train_proposal_data = proposal_data if isinstance(proposal_data, ProposalData) else None
 
     train_batch_tasks = iter_train_batch_tasks(context.config, context.experience)
     prepared_batches = iter(
@@ -901,7 +1213,7 @@ def train_round(
                 task,
                 episode_data,
                 episode_outcomes,
-                proposal_data,
+                train_proposal_data,
             ),
         )
     )
@@ -929,8 +1241,18 @@ def train_round(
 
     if train_batch_count == 0:
         return empty_main_loss_breakdown(), 0.0
+    proposal_batch_count = 0
+    if isinstance(proposal_data, WaveProposalData):
+        proposal_loss, proposal_batch_count = train_wave_proposal_round(
+            context,
+            episode_data,
+            proposal_data,
+            train_batch_count,
+        )
+        accumulate_main_loss(total_loss, proposal_loss)
+    loss_batch_count = train_batch_count + proposal_batch_count
     return (
-        average_main_loss(total_loss, train_batch_count),
+        average_main_loss(total_loss, loss_batch_count),
         total_balance_loss / train_batch_count,
     )
 

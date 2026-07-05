@@ -39,6 +39,7 @@
     "beta2": 0.99
   },
   "generation": {
+    "strategy": "sequential",
     "num_environments": 256,
     "num_iterations": 1,
     "num_devices": 1,
