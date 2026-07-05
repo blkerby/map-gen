@@ -2,7 +2,7 @@
   "experiment_name": "crateria-testing",
   "room_set": "room_definitions/crateria.json",
   "map_size": [72, 72],
-  "knot_episodes": [0, 1024],
+  "knot_episodes": [0, 64],
   "checkpoint_period": 100,
   "visualize": 1,
   "distance_proximity_scale": 1.0,
@@ -45,7 +45,7 @@
     "beta2": 0.99
   },
   "generation": {
-    "num_environments": 256,
+    "num_environments": 64,
     "num_iterations": 1,
     "num_devices": 1,
     "pipeline_groups": 1,
@@ -101,7 +101,7 @@
     "known_distance": 1
   },
   "train": {
-    "batch_size": 256,
+    "batch_size": 64,
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "sample_period": 16,

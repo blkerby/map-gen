@@ -425,6 +425,7 @@ def sample_wave_proposal_shortlist(
     proposal_scores: torch.Tensor,
     wave_mask: WaveProposalCandidateMask,
     config: GenerateConfig,
+    proposal_temperature: torch.Tensor,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     env_count, max_frontiers, door_variant_count = proposal_scores.shape
@@ -443,7 +444,7 @@ def sample_wave_proposal_shortlist(
     valid = valid.view(env_count, max_frontiers, door_variant_count)
     valid = valid & valid_frontier.unsqueeze(2)
     sample_keys = proposal_scores.to(dtype=torch.float32, copy=True)
-    proposal_temperature = config.proposal_temperature.to(device).view(env_count, 1, 1)
+    proposal_temperature = proposal_temperature.to(device).view(env_count, 1, 1)
     sample_keys.div_(proposal_temperature.clamp_min(1e-6))
     sample_keys.masked_fill_(~valid, float("-inf"))
     shortlist_candidates = min(config.shortlist_candidates, sample_keys.shape[2])
@@ -554,6 +555,35 @@ def compact_candidate_log_inputs(
     )
 
 
+def indexed_state_log_inputs(
+    config: GenerateConfig,
+    env_idx: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    env_idx = env_idx.to(dtype=torch.int64, device=torch.device("cpu"))
+    log_temperature = config.temperature.to(torch.device("cpu"))[env_idx].log()
+    log_recommended_candidates = torch.full(
+        [env_idx.shape[0]],
+        math.log(config.recommended_candidates + 1),
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+    )
+    generation_variable_floats = config.generation_variable_floats.to(torch.device("cpu"))[
+        env_idx
+    ]
+    return log_temperature, log_recommended_candidates, generation_variable_floats
+
+
+def index_step_outcomes(outcomes: StepOutcomes, env_idx: torch.Tensor) -> StepOutcomes:
+    env_idx = env_idx.to(dtype=torch.int64, device=outcomes.door_invalid.device)
+    return StepOutcomes(
+        door_invalid=outcomes.door_invalid[env_idx],
+        connection_invalid=outcomes.connection_invalid[env_idx],
+        toilet_invalid=outcomes.toilet_invalid[env_idx],
+        phantoon_invalid=outcomes.phantoon_invalid[env_idx],
+        door_match=outcomes.door_match[env_idx],
+    )
+
+
 def state_log_inputs(
     config: GenerateConfig,
     environment_count: int,
@@ -648,28 +678,47 @@ def mask_finished_wave_proposals(
     return proposal_mask
 
 
+def index_wave_proposal_mask(
+    proposal_mask: WaveProposalCandidateMask,
+    env_idx: torch.Tensor,
+) -> WaveProposalCandidateMask:
+    env_idx = env_idx.to(dtype=torch.int64, device=proposal_mask.valid_counts.device)
+    return WaveProposalCandidateMask(
+        proposal_frontier_idx=proposal_mask.proposal_frontier_idx[env_idx],
+        mask=proposal_mask.mask[env_idx],
+        valid_counts=proposal_mask.valid_counts[env_idx],
+        door_variant_count=proposal_mask.door_variant_count,
+        max_frontiers=proposal_mask.max_frontiers,
+    )
+
+
 def prepare_wave_proposal_inputs(
     group: GenerationGroup,
     proposal_mask: WaveProposalCandidateMask,
+    active_env_idx: torch.Tensor,
 ) -> WaveProposalInputs:
     if group.previous_lookahead_outcomes is None:
         raise ValueError("wave proposal features require previous lookahead outcomes")
-    environment_count = group.config.temperature.shape[0]
+    lookahead_outcomes = index_step_outcomes(
+        group.previous_lookahead_outcomes,
+        active_env_idx,
+    )
     (
         log_temperature,
         log_recommended_candidates,
         generation_variable_floats,
-    ) = state_log_inputs(group.config, environment_count)
+    ) = indexed_state_log_inputs(group.config, active_env_idx)
     return WaveProposalInputs(
-        features=group.env.extract_features(
+        features=group.env.extract_features_for_env_indices(
             group.feature_slot,
+            active_env_idx,
             log_temperature,
             group.env.engine.features.temperature,
             log_recommended_candidates,
             group.env.engine.features.recommended_candidates,
             generation_variable_floats,
             group.env.engine.features.generation_variable_floats,
-            group.previous_lookahead_outcomes,
+            lookahead_outcomes,
             group.env.engine.features.lookahead_outcomes,
         ),
         mask=proposal_mask,
@@ -1202,11 +1251,17 @@ def run_wave_generation_groups(
                 if not torch.any(active_env):
                     break
                 proposal_mask = mask_finished_wave_proposals(proposal_mask, active_env)
+                active_env_idx = torch.nonzero(active_env, as_tuple=False).flatten()
+                active_proposal_mask = index_wave_proposal_mask(proposal_mask, active_env_idx)
                 stat_totals["wave_iterations"] += 1.0
                 stat_totals["wave_active_envs"] += float(active_env.sum().item())
                 stat_totals["wave_env_slots"] += float(proposal_active_env.numel())
                 profile_time = profile_start(profile)
-                proposal_inputs = prepare_wave_proposal_inputs(group, proposal_mask)
+                proposal_inputs = prepare_wave_proposal_inputs(
+                    group,
+                    active_proposal_mask,
+                    active_env_idx,
+                )
                 profiler.add("python.wave.prepare_proposal_features", profile_time)
                 profile_time = profile_start(profile)
                 proposal_scores = compute_wave_proposal_scores(
@@ -1224,17 +1279,16 @@ def run_wave_generation_groups(
                     proposal_scores,
                     proposal_inputs.mask,
                     group.config,
+                    group.config.proposal_temperature[active_env_idx],
                     device,
                 )
                 sync_profile_device(device, profile)
                 profiler.add("python.wave.sample_proposals", profile_time)
                 profile_time = profile_start(profile)
                 valid_proposal_rows = proposal_inputs.mask.valid_counts.flatten() > 0
-                flat_row_env_idx = torch.arange(
-                    group.env.num_envs,
-                    dtype=torch.int64,
-                    device=torch.device("cpu"),
-                ).repeat_interleave(proposal_inputs.mask.max_frontiers)
+                flat_row_env_idx = active_env_idx.repeat_interleave(
+                    proposal_inputs.mask.max_frontiers
+                )
                 compact_row_env_idx = flat_row_env_idx[valid_proposal_rows]
                 compact_sampled_frontier_idx = sampled_frontier_idx.to(
                     torch.device("cpu")
