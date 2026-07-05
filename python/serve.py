@@ -28,7 +28,7 @@ from area_assignment import (
     build_toilet_data,
 )
 from env import DoorMatches, Engine, EpisodeData, EpisodeOutcomes, GenerateConfig
-from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
+from generate import GenerationProfiler, profile_start, run_wave_generation_groups, sync_profile_device
 from model import FrontierModel
 from small_map import (
     DoorData,
@@ -818,7 +818,7 @@ def run_generation_with_generation_lock_held(
         _proposal_data,
         _generation_stats,
         profile_report,
-    ) = run_generation_groups(
+    ) = run_wave_generation_groups(
         state.envs,
         state.model,
         state.balance_model,
@@ -830,7 +830,7 @@ def run_generation_with_generation_lock_held(
     add_serving_profile(
         serving_profiler,
         state.device,
-        "python.serve.run_generation_groups",
+        "python.serve.run_wave_generation_groups",
         profile_time,
     )
 
