@@ -1594,6 +1594,19 @@ class TrainingSession:
             scalar(candidate_diagnostics.selected_probability),
             schedule_progress,
         )
+        logging.info(
+            "round %s wave density: active_frontier %.3f, valid_rows %.3f, "
+            "candidate_rows %.3f, real_slots %.3f, apply_env %.3f, "
+            "applied_env %.3f, applied_actions %.2f/iter",
+            round_idx,
+            generation_stats["wave_active_frontier_slot_fraction"],
+            generation_stats["wave_valid_proposal_row_fraction"],
+            generation_stats["wave_candidate_row_fraction_of_active_frontiers"],
+            generation_stats["wave_real_candidate_slot_fraction"],
+            generation_stats["wave_apply_env_fraction"],
+            generation_stats["wave_applied_env_fraction"],
+            generation_stats["wave_applied_actions_per_iteration"],
+        )
         # logging.info(
         #     "round %s horizontal_topk door connections: %s",
         #     round_idx,

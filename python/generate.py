@@ -917,6 +917,15 @@ def initial_generation_stats() -> GenerationStats:
         "wave_iterations": 0.0,
         "wave_active_envs": 0.0,
         "wave_env_slots": 0.0,
+        "wave_active_frontier_slots": 0.0,
+        "wave_dense_frontier_slots": 0.0,
+        "wave_valid_proposal_rows": 0.0,
+        "wave_candidate_rows": 0.0,
+        "wave_candidate_slots": 0.0,
+        "wave_real_candidate_slots": 0.0,
+        "wave_apply_env_rows": 0.0,
+        "wave_applied_env_rows": 0.0,
+        "wave_applied_actions": 0.0,
         "proposal_mask_rows": 0.0,
         "proposal_valid_cells": 0.0,
         "proposal_full_set_rows": 0.0,
@@ -931,12 +940,48 @@ def finalize_generation_stats(stat_totals: GenerationStats) -> GenerationStats:
     proposal_rows = max(stat_totals["proposal_mask_rows"], 1.0)
     evaluated = max(stat_totals["proposal_evaluated_candidates"], 1.0)
     wave_groups = max(stat_totals["wave_groups"], 1.0)
+    wave_iterations = max(stat_totals["wave_iterations"], 1.0)
     wave_env_slots = max(stat_totals["wave_env_slots"], 1.0)
+    active_frontier_slots = max(stat_totals["wave_active_frontier_slots"], 1.0)
+    dense_frontier_slots = max(stat_totals["wave_dense_frontier_slots"], 1.0)
+    candidate_slots = max(stat_totals["wave_candidate_slots"], 1.0)
+    apply_env_rows = max(stat_totals["wave_apply_env_rows"], 1.0)
     active_env_fraction = stat_totals["wave_active_envs"] / wave_env_slots
     return {
         "wave_iterations": stat_totals["wave_iterations"] / wave_groups,
         "wave_active_env_fraction": active_env_fraction,
         "wave_finished_env_fraction": 1.0 - active_env_fraction,
+        "wave_active_envs_per_iteration": stat_totals["wave_active_envs"] / wave_iterations,
+        "wave_active_frontier_slots_per_iteration": (
+            stat_totals["wave_active_frontier_slots"] / wave_iterations
+        ),
+        "wave_active_frontier_slot_fraction": (
+            stat_totals["wave_active_frontier_slots"] / dense_frontier_slots
+        ),
+        "wave_valid_proposal_rows_per_iteration": (
+            stat_totals["wave_valid_proposal_rows"] / wave_iterations
+        ),
+        "wave_valid_proposal_row_fraction": (
+            stat_totals["wave_valid_proposal_rows"] / active_frontier_slots
+        ),
+        "wave_candidate_rows_per_iteration": stat_totals["wave_candidate_rows"] / wave_iterations,
+        "wave_candidate_row_fraction_of_active_frontiers": (
+            stat_totals["wave_candidate_rows"] / active_frontier_slots
+        ),
+        "wave_real_candidate_slot_fraction": (
+            stat_totals["wave_real_candidate_slots"] / candidate_slots
+        ),
+        "wave_apply_env_rows_per_iteration": (
+            stat_totals["wave_apply_env_rows"] / wave_iterations
+        ),
+        "wave_apply_env_fraction": stat_totals["wave_apply_env_rows"] / wave_env_slots,
+        "wave_applied_env_rows_per_iteration": (
+            stat_totals["wave_applied_env_rows"] / wave_iterations
+        ),
+        "wave_applied_env_fraction": stat_totals["wave_applied_env_rows"] / apply_env_rows,
+        "wave_applied_actions_per_iteration": (
+            stat_totals["wave_applied_actions"] / wave_iterations
+        ),
         "proposal_valid_cells": stat_totals["proposal_valid_cells"] / proposal_rows,
         "proposal_full_set_rate": stat_totals["proposal_full_set_rows"] / proposal_rows,
         "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
@@ -1374,6 +1419,10 @@ def run_wave_generation_groups(
                 stat_totals["wave_iterations"] += 1.0
                 stat_totals["wave_active_envs"] += float(active_env.sum().item())
                 stat_totals["wave_env_slots"] += float(proposal_active_env.numel())
+                stat_totals["wave_dense_frontier_slots"] += float(proposal_mask.valid_counts.numel())
+                stat_totals["wave_active_frontier_slots"] += float(
+                    active_proposal_mask.valid_counts.numel()
+                )
                 profile_time = profile_start(profile)
                 proposal_inputs = prepare_wave_proposal_inputs(
                     group,
@@ -1404,6 +1453,9 @@ def run_wave_generation_groups(
                 profiler.add("python.wave.sample_proposals", profile_time)
                 profile_time = profile_start(profile)
                 valid_proposal_rows = proposal_inputs.mask.valid_counts.flatten() > 0
+                stat_totals["wave_valid_proposal_rows"] += float(
+                    valid_proposal_rows.sum().item()
+                )
                 flat_row_env_idx = active_env_idx.repeat_interleave(
                     proposal_inputs.mask.max_frontiers
                 )
@@ -1422,6 +1474,14 @@ def run_wave_generation_groups(
                     compact_row_env_idx,
                     compact_sampled_frontier_idx,
                     compact_sampled_door_variant_idx,
+                )
+                real_candidate_slots = candidate_batch.candidates.room_idx != num_rooms
+                stat_totals["wave_candidate_rows"] += float(candidate_batch.row_env_idx.numel())
+                stat_totals["wave_candidate_slots"] += float(
+                    candidate_batch.candidates.room_idx.numel()
+                )
+                stat_totals["wave_real_candidate_slots"] += float(
+                    real_candidate_slots.sum().item()
                 )
                 candidate_features = prepare_wave_candidate_features(group, candidate_batch)
                 profiler.add("python.wave.prepare_candidates", profile_time)
@@ -1478,6 +1538,7 @@ def run_wave_generation_groups(
                     group.env.num_envs,
                     num_rooms,
                 )
+                stat_totals["wave_apply_env_rows"] += float(apply_env_idx.numel())
                 profiler.add("python.wave.sort_candidates", profile_time)
                 profile_time = profile_start(profile)
                 applied_actions, applied_counts = group.env.apply_compact_wave_candidates(
@@ -1486,6 +1547,8 @@ def run_wave_generation_groups(
                     sorted_actions,
                     sorted_candidate_clean,
                 )
+                stat_totals["wave_applied_env_rows"] += float((applied_counts > 0).sum().item())
+                stat_totals["wave_applied_actions"] += float(applied_counts.sum().item())
                 profiler.add("python.wave.apply_candidates", profile_time)
                 profile_time = profile_start(profile)
                 append_applied_wave_actions(
