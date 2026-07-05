@@ -888,9 +888,6 @@ def sorted_wave_candidates(
     candidate_logits: torch.Tensor,
     env_count: int,
     max_frontiers: int,
-    num_rooms: int,
-    action_counts: torch.Tensor,
-    episode_length: int,
 ) -> tuple[torch.Tensor, Actions]:
     candidate_count = candidate_logits.shape[1]
     sorted_idx = torch.argsort(
@@ -908,23 +905,6 @@ def sorted_wave_candidates(
         room_idx=gather_rows(candidate_batch.candidates.room_idx),
         room_x=gather_rows(candidate_batch.candidates.room_x),
         room_y=gather_rows(candidate_batch.candidates.room_y),
-    )
-    slot_idx = torch.arange(sorted_idx.shape[1], dtype=torch.int64).unsqueeze(0)
-    remaining = (episode_length - action_counts).clamp_min(0).unsqueeze(1)
-    over_limit = slot_idx >= remaining
-    sorted_frontier_idx = torch.where(
-        over_limit,
-        torch.full_like(sorted_frontier_idx, -1),
-        sorted_frontier_idx,
-    )
-    sorted_actions = Actions(
-        room_idx=torch.where(
-            over_limit,
-            torch.full_like(sorted_actions.room_idx, num_rooms),
-            sorted_actions.room_idx,
-        ),
-        room_x=sorted_actions.room_x,
-        room_y=sorted_actions.room_y,
     )
     return sorted_frontier_idx, sorted_actions
 
@@ -1127,9 +1107,6 @@ def run_wave_generation_groups(
                     logits,
                     group.env.num_envs,
                     proposal_inputs.mask.max_frontiers,
-                    num_rooms,
-                    action_counts,
-                    group.config.episode_length,
                 )
                 applied_actions, applied_counts = group.env.apply_wave_candidates(
                     sorted_frontier_idx,
