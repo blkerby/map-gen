@@ -40,14 +40,14 @@
   "proposal_optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0001, 0.0001, 0.00005, 0.00001]},
+      "lr": {"log": [0.0003, 0.0003, 0.0001, 0.00002]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.0002, 0.0002, 0.0001, 0.00002]},
+      "lr": {"log": [0.0005, 0.0005, 0.0003, 0.00005]},
       "beta1": 0.95,
       "beta2": 0.99
     }
@@ -137,7 +137,6 @@
     "save_distance_weight": 0.5,
     "refill_distance_weight": 0.5,
     "missing_connect_utility_weight": 1.0,
-    "proposal_weight": 0.005,
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 2,
     "shuffle_buffer_batches": 1

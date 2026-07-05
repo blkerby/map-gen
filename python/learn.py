@@ -943,12 +943,11 @@ def train_wave_proposal_prefix_backward(
         proposal_data.target_logits[row_idx],
         context.device,
     )
-    weighted_proposal_loss = context.config.train.proposal_weight * batch_proposal_loss
-    (weighted_proposal_loss * loss_scale).backward()
+    (batch_proposal_loss * loss_scale).backward()
     total_loss = empty_main_loss_breakdown()
-    total_loss.total += weighted_proposal_loss.item()
+    total_loss.total += batch_proposal_loss.item()
     total_loss.proposal += batch_proposal_loss.item()
-    total_loss.proposal_contribution += weighted_proposal_loss.item()
+    total_loss.proposal_contribution += batch_proposal_loss.item()
     return total_loss
 
 

@@ -119,7 +119,6 @@
     "save_distance_weight": 0.0,
     "refill_distance_weight": 0.0,
     "missing_connect_utility_weight": 0.0,
-    "proposal_weight": 0.1,
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 1,
     "shuffle_buffer_batches": 16

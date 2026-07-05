@@ -236,7 +236,6 @@ class TrainConfig(StrictBaseModel):
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
-    proposal_weight: float
     ema_decay: ScheduleableFloat
     pipeline_groups: int
     gradient_accumulation_steps: int
@@ -504,8 +503,6 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.gradient_accumulation_steps must be greater than zero")
     if config.train.shuffle_buffer_batches <= 0:
         raise ValueError("train.shuffle_buffer_batches must be greater than zero")
-    if config.train.proposal_weight < 0:
-        raise ValueError("train.proposal_weight must be greater than or equal to zero")
     if config.train.toilet_weight < 0:
         raise ValueError("train.toilet_weight must be greater than or equal to zero")
     if config.train.phantoon_weight < 0:
