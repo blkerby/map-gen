@@ -225,7 +225,7 @@ def compute_candidate_diagnostics(
         return CandidateDiagnostics(
             target_entropy=zero,
             uniform_kl=zero,
-            selected_probability=zero,
+            selected_probability=target_logits.new_zeros(()),
         )
 
     row_logits = torch.where(
@@ -311,8 +311,18 @@ def compute_wave_candidate_diagnostics(proposal_data: WaveProposalData) -> Candi
     return CandidateDiagnostics(
         target_entropy=torch.mean(entropy_per_row),
         uniform_kl=torch.mean(torch.log(valid_counts) - entropy_per_row),
-        selected_probability=torch.sum(target_logits) * 0.0,
+        selected_probability=target_logits.new_zeros(()),
     )
+
+
+def add_averaged_main_loss(
+    target: MainLossBreakdown,
+    source: MainLossBreakdown,
+    count: int,
+) -> None:
+    if count <= 0:
+        raise ValueError("loss average count must be greater than zero")
+    accumulate_main_loss(target, average_main_loss(source, count))
 
 
 def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> list[TrainBatchTask]:
@@ -1241,7 +1251,7 @@ def train_round(
 
     if train_batch_count == 0:
         return empty_main_loss_breakdown(), 0.0
-    proposal_batch_count = 0
+    averaged_loss = average_main_loss(total_loss, train_batch_count)
     if isinstance(proposal_data, WaveProposalData):
         proposal_loss, proposal_batch_count = train_wave_proposal_round(
             context,
@@ -1249,10 +1259,10 @@ def train_round(
             proposal_data,
             train_batch_count,
         )
-        accumulate_main_loss(total_loss, proposal_loss)
-    loss_batch_count = train_batch_count + proposal_batch_count
+        if proposal_batch_count > 0:
+            add_averaged_main_loss(averaged_loss, proposal_loss, proposal_batch_count)
     return (
-        average_main_loss(total_loss, loss_batch_count),
+        averaged_loss,
         total_balance_loss / train_batch_count,
     )
 
