@@ -836,6 +836,7 @@ def run_generation_with_generation_lock_held(
         outcomes,
         _door_match_counts,
         _proposal_data,
+        _wave_frame_data,
         _generation_stats,
         profile_report,
     ) = run_wave_generation_groups(

@@ -94,6 +94,46 @@ class EpisodeData:
 
 
 @dataclass
+class WaveFrameData:
+    prefix_counts: torch.Tensor
+    frame_counts: torch.Tensor
+
+    def to(self, device: torch.device) -> "WaveFrameData":
+        return WaveFrameData(
+            prefix_counts=self.prefix_counts.to(device),
+            frame_counts=self.frame_counts.to(device),
+        )
+
+    def slice(self, start: int, end: int) -> "WaveFrameData":
+        return WaveFrameData(
+            prefix_counts=self.prefix_counts[start:end],
+            frame_counts=self.frame_counts[start:end],
+        )
+
+
+def merge_wave_frame_data(frame_data: list[WaveFrameData]) -> WaveFrameData:
+    if not frame_data:
+        raise ValueError("wave frame data merge requires at least one generation result")
+    max_frames = max(data.prefix_counts.shape[1] for data in frame_data)
+    padded_prefix_counts = []
+    for data in frame_data:
+        frame_count = data.prefix_counts.shape[1]
+        if frame_count == max_frames:
+            padded_prefix_counts.append(data.prefix_counts)
+            continue
+        padding = torch.zeros(
+            (data.prefix_counts.shape[0], max_frames - frame_count),
+            dtype=data.prefix_counts.dtype,
+            device=data.prefix_counts.device,
+        )
+        padded_prefix_counts.append(torch.cat([data.prefix_counts, padding], dim=1))
+    return WaveFrameData(
+        prefix_counts=torch.cat(padded_prefix_counts),
+        frame_counts=torch.cat([data.frame_counts for data in frame_data]),
+    )
+
+
+@dataclass
 class WaveProposalData:
     episode_idx: torch.Tensor
     prefix_idx: torch.Tensor

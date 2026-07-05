@@ -28,8 +28,10 @@ from env import (
     EpisodeData,
     EpisodeOutcomes,
     GenerateConfig,
+    WaveFrameData,
     StepOutcomes,
     WaveProposalData,
+    merge_wave_frame_data,
 )
 from experience import ExperienceStorage
 from generate import GenerationStats, run_wave_generation_groups
@@ -630,6 +632,7 @@ def run_generation_process_task(
     EpisodeOutcomes,
     DoorMatchCounts,
     WaveProposalData,
+    WaveFrameData,
     GenerationStats,
     RustProfileReport,
 ]:
@@ -657,6 +660,7 @@ def run_generation_process_task(
         outcomes,
         door_match_counts,
         proposal_data,
+        wave_frame_data,
         generation_stats,
         python_profile_report,
     ) = run_wave_generation_groups(
@@ -674,7 +678,8 @@ def run_generation_process_task(
     outcomes_cpu = outcomes.to(torch.device("cpu"))
     door_match_counts_cpu = door_match_counts.to(torch.device("cpu"))
     proposal_data_cpu = proposal_data.to(torch.device("cpu"))
-    del episode_data, outcomes, door_match_counts, proposal_data
+    wave_frame_data_cpu = wave_frame_data.to(torch.device("cpu"))
+    del episode_data, outcomes, door_match_counts, proposal_data, wave_frame_data
     if state.device.type == "cuda" and not state.cleared_cuda_cache_after_first_task:
         torch.cuda.empty_cache()
         state.cleared_cuda_cache_after_first_task = True
@@ -683,6 +688,7 @@ def run_generation_process_task(
         outcomes_cpu,
         door_match_counts_cpu,
         proposal_data_cpu,
+        wave_frame_data_cpu,
         generation_stats,
         profile_report,
     )
@@ -916,6 +922,7 @@ class TrainingSession:
         EpisodeOutcomes,
         DoorMatchCounts,
         WaveProposalData,
+        WaveFrameData,
         GenerationStats,
         RustProfileReport,
     ]:
@@ -923,6 +930,7 @@ class TrainingSession:
         outcome_iterations = []
         door_match_count_iterations = []
         proposal_data_iterations = []
+        wave_frame_data_iterations = []
         generation_stats_iterations = []
         profile_reports = []
         model_state = {
@@ -960,6 +968,7 @@ class TrainingSession:
                 iteration_outcomes,
                 iteration_door_match_counts,
                 iteration_proposal_data,
+                iteration_wave_frame_data,
                 iteration_generation_stats,
                 iteration_profile_report,
             ) in shard_results:
@@ -979,6 +988,7 @@ class TrainingSession:
                     target_logits=proposal_data_device.target_logits,
                 )
                 proposal_data_iterations.append(proposal_data_device)
+                wave_frame_data_iterations.append(iteration_wave_frame_data.to(self.device))
                 generation_stats_iterations.append(iteration_generation_stats)
                 profile_reports.append(iteration_profile_report)
 
@@ -1151,6 +1161,7 @@ class TrainingSession:
                 ),
             ),
             merge_generated_proposal_data(proposal_data_iterations),
+            merge_wave_frame_data(wave_frame_data_iterations),
             generation_stats,
             merge_profile_reports(profile_reports),
         )
@@ -1186,7 +1197,12 @@ class TrainingSession:
             proposal_data,
         )
 
-    def visualize_round(self, episode_data: EpisodeData, round_idx: int) -> None:
+    def visualize_round(
+        self,
+        episode_data: EpisodeData,
+        wave_frame_data: WaveFrameData,
+        round_idx: int,
+    ) -> None:
         output_root = Path(self.run_path) / "visualizations" / f"round_{round_idx:04d}"
         actions = (
             episode_data.actions.room_idx.cpu(),
@@ -1202,6 +1218,8 @@ class TrainingSession:
                 output_root / f"episode_{episode_idx:04d}",
                 self.config.map_size,
                 episode_idx,
+                wave_frame_data.prefix_counts[episode_idx].cpu(),
+                int(wave_frame_data.frame_counts[episode_idx].item()),
             )
             total_frames += len(saved_paths)
 
@@ -1640,11 +1658,12 @@ class TrainingSession:
                     episode_outcomes,
                     door_match_counts,
                     proposal_data,
+                    wave_frame_data,
                     generation_stats,
                     generation_profile,
                 ) = self.generate_round()
                 if self.config.visualize > 0:
-                    self.visualize_round(episode_data, round_idx)
+                    self.visualize_round(episode_data, wave_frame_data, round_idx)
                 candidate_diagnostics = compute_candidate_diagnostics(proposal_data)
                 self.num_episodes += self.episodes_per_round
                 step_config = instantiate_scheduleable_config(self.config, self.num_episodes)

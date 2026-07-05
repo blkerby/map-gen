@@ -1983,13 +1983,17 @@ impl Environment {
     ) -> Result<Vec<Action>, String> {
         debug_assert_eq!(frontier_idx.len(), candidates.len());
         let mut applied = Vec::new();
+        let sorted_frontier_locations = self.sorted_frontier_locations();
         for (&frontier_idx, &candidate) in frontier_idx.iter().zip(candidates) {
             if self.finished || candidate.room_idx >= common.room.len() as RoomIdx {
                 continue;
             }
-            let sorted_frontier_locations = self.sorted_frontier_locations();
-            if !self.can_apply_wave_candidate(common, &sorted_frontier_locations, frontier_idx, candidate)
-            {
+            if !self.can_apply_wave_candidate(
+                common,
+                &sorted_frontier_locations,
+                frontier_idx,
+                candidate,
+            ) {
                 continue;
             }
             let pre_candidate_outcomes = self.outcomes(common);

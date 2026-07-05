@@ -590,8 +590,10 @@ def save_episode_frames(
     output_dir: Path,
     map_size: Tuple[int, int],
     environment_index: int,
+    frame_prefix_counts: Any,
+    frame_count: int,
 ) -> List[Path]:
-    """Save one PNG after each placement in a generated episode."""
+    """Save one PNG after each wave iteration in a generated episode."""
     from PIL import Image, ImageDraw
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -605,27 +607,30 @@ def save_episode_frames(
     wall_segments: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
     saved_paths = []
     placements = _normalize_actions(actions, environment_index)
+    frame_prefixes = [int(prefix) for prefix in _as_list(frame_prefix_counts)[:frame_count]]
     label_positions: List[Tuple[float, float, str]] = []
-    for step_idx, action in enumerate(placements):
-        room_idx, room_x, room_y = action
-        if not 0 <= room_idx < len(rooms):
-            continue
-
-        geometry = geometries[room_idx]
-        polygons, colors, segments = _placement_elements(
-            geometry,
-            room_x,
-            room_y,
-            _COLORS[step_idx % len(_COLORS)],
-        )
-        room_polygons.extend(polygons)
-        room_colors.extend(colors)
-        wall_segments.extend(segments)
-        marker = geometry["special_marker"]
-        if marker is not None:
-            label_positions.append((*_room_center(geometry, room_x, room_y), marker))
-        elif rooms[room_idx].get("save", False):
-            label_positions.append((*_room_center(geometry, room_x, room_y), "S"))
+    placement_idx = 0
+    for frame_idx, prefix_count in enumerate(frame_prefixes):
+        target_placement_count = min(max(prefix_count, 0), len(placements))
+        while placement_idx < target_placement_count:
+            room_idx, room_x, room_y = placements[placement_idx]
+            if 0 <= room_idx < len(rooms):
+                geometry = geometries[room_idx]
+                polygons, colors, segments = _placement_elements(
+                    geometry,
+                    room_x,
+                    room_y,
+                    _COLORS[placement_idx % len(_COLORS)],
+                )
+                room_polygons.extend(polygons)
+                room_colors.extend(colors)
+                wall_segments.extend(segments)
+                marker = geometry["special_marker"]
+                if marker is not None:
+                    label_positions.append((*_room_center(geometry, room_x, room_y), marker))
+                elif rooms[room_idx].get("save", False):
+                    label_positions.append((*_room_center(geometry, room_x, room_y), "S"))
+            placement_idx += 1
 
         image = Image.new("RGB", canvas_size, "white")
         draw = ImageDraw.Draw(image)
@@ -661,7 +666,7 @@ def save_episode_frames(
                 label,
                 fill="black",
             )
-        frame_path = output_dir / f"step_{step_idx + 1:03d}.png"
+        frame_path = output_dir / f"wave_{frame_idx + 1:03d}.png"
         image.save(frame_path)
         saved_paths.append(frame_path)
 
