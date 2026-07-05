@@ -1275,6 +1275,30 @@ class EnvironmentGroup:
             torch.from_numpy(result.counts).to(dtype=torch.int64),
         )
 
+    def apply_compact_wave_candidates(
+        self,
+        env_idx: torch.Tensor,
+        frontier_idx: torch.Tensor,
+        actions: Actions,
+        candidate_clean: torch.Tensor,
+    ) -> tuple[Actions, torch.Tensor]:
+        result = self.env.apply_compact_wave_candidates(
+            env_idx.contiguous().cpu().numpy(),
+            frontier_idx.contiguous().cpu().numpy(),
+            actions.room_idx.contiguous().cpu().numpy(),
+            actions.room_x.contiguous().cpu().numpy(),
+            actions.room_y.contiguous().cpu().numpy(),
+            candidate_clean.contiguous().cpu().numpy(),
+        )
+        return (
+            Actions(
+                room_idx=torch.from_numpy(result.room_idx),
+                room_x=torch.from_numpy(result.room_x),
+                room_y=torch.from_numpy(result.room_y),
+            ),
+            torch.from_numpy(result.counts).to(dtype=torch.int64),
+        )
+
     def get_outcomes(self, device: torch.device, verify_consistency: bool) -> EpisodeOutcomes:
         result = self.env.get_outcomes(verify_consistency)
         return EpisodeOutcomes(

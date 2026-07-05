@@ -2054,6 +2054,69 @@ impl Environment {
         Ok(applied)
     }
 
+    pub fn apply_wave_candidates_with_status(
+        &mut self,
+        common: &CommonData,
+        frontier_idx: &[FrontierIdx],
+        candidates: &[Action],
+        candidate_clean: &[i8],
+    ) -> Result<Vec<Action>, String> {
+        debug_assert_eq!(frontier_idx.len(), candidates.len());
+        debug_assert_eq!(candidate_clean.len(), candidates.len());
+        let mut applied = Vec::new();
+        let sorted_frontier_locations = self.sorted_frontier_locations();
+        let mut frontier_resolved = vec![false; sorted_frontier_locations.len()];
+        for ((&frontier_idx, &candidate), &clean) in
+            frontier_idx.iter().zip(candidates).zip(candidate_clean)
+        {
+            if clean == 0
+                || self.finished
+                || candidate.room_idx >= common.room.len() as RoomIdx
+                || frontier_idx < 0
+                || frontier_resolved
+                    .get(frontier_idx as usize)
+                    .copied()
+                    .unwrap_or(true)
+                || !self.can_apply_wave_candidate(
+                    common,
+                    &sorted_frontier_locations,
+                    frontier_idx,
+                    candidate,
+                )
+            {
+                continue;
+            }
+            self.step(candidate, common);
+            frontier_resolved[frontier_idx as usize] = true;
+            applied.push(candidate);
+        }
+        for ((&frontier_idx, &candidate), &clean) in
+            frontier_idx.iter().zip(candidates).zip(candidate_clean)
+        {
+            if clean != 0
+                || self.finished
+                || candidate.room_idx >= common.room.len() as RoomIdx
+                || frontier_idx < 0
+                || frontier_resolved
+                    .get(frontier_idx as usize)
+                    .copied()
+                    .unwrap_or(true)
+                || !self.can_apply_wave_candidate(
+                    common,
+                    &sorted_frontier_locations,
+                    frontier_idx,
+                    candidate,
+                )
+            {
+                continue;
+            }
+            self.step(candidate, common);
+            frontier_resolved[frontier_idx as usize] = true;
+            applied.push(candidate);
+        }
+        Ok(applied)
+    }
+
     fn action_for_proposal_candidate(
         &mut self,
         common: &CommonData,

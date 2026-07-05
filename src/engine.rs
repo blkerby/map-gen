@@ -403,6 +403,19 @@ enum WorkerCommand {
         applied_room_y: OutputShard<Coord>,
         applied_counts: OutputShard<usize>,
     },
+    ApplyCompactWaveCandidates {
+        candidate_count: usize,
+        env_idx: InputShard<usize>,
+        frontier_idx: InputShard<FrontierIdx>,
+        room_idx: InputShard<RoomIdx>,
+        room_x: InputShard<Coord>,
+        room_y: InputShard<Coord>,
+        candidate_clean: InputShard<i8>,
+        applied_room_idx: OutputShard<RoomIdx>,
+        applied_room_x: OutputShard<Coord>,
+        applied_room_y: OutputShard<Coord>,
+        applied_counts: OutputShard<usize>,
+    },
     GetActions {
         action_count: usize,
         room_idx: OutputShard<RoomIdx>,
@@ -517,7 +530,8 @@ impl WorkerCommand {
             WorkerCommand::GetCompactWaveCandidatesFromProposals { .. } => {
                 Some(ProfileMetric::WorkerGetCandidatesFromProposals)
             }
-            WorkerCommand::ApplyWaveCandidates { .. } => Some(ProfileMetric::WorkerStep),
+            WorkerCommand::ApplyWaveCandidates { .. }
+            | WorkerCommand::ApplyCompactWaveCandidates { .. } => Some(ProfileMetric::WorkerStep),
             WorkerCommand::Shutdown => None,
         }
     }
@@ -1331,6 +1345,94 @@ fn worker_loop(
                     None => WorkerResponse::Done,
                 }
             }
+            WorkerCommand::ApplyCompactWaveCandidates {
+                candidate_count,
+                env_idx,
+                frontier_idx,
+                room_idx,
+                room_x,
+                room_y,
+                candidate_clean,
+                applied_room_idx,
+                applied_room_x,
+                applied_room_y,
+                applied_counts,
+            } => {
+                let env_idx = unsafe { env_idx.into_slice() };
+                let frontier_idx = unsafe { frontier_idx.into_slice() };
+                let room_idx = unsafe { room_idx.into_slice() };
+                let room_x = unsafe { room_x.into_slice() };
+                let room_y = unsafe { room_y.into_slice() };
+                let candidate_clean = unsafe { candidate_clean.into_slice() };
+                let applied_room_idx = unsafe { applied_room_idx.into_mut_slice() };
+                let applied_room_x = unsafe { applied_room_x.into_mut_slice() };
+                let applied_room_y = unsafe { applied_room_y.into_mut_slice() };
+                let applied_counts = unsafe { applied_counts.into_mut_slice() };
+                let row_count = env_idx.len();
+                debug_assert_eq!(frontier_idx.len(), row_count * candidate_count);
+                debug_assert_eq!(room_idx.len(), row_count * candidate_count);
+                debug_assert_eq!(room_x.len(), row_count * candidate_count);
+                debug_assert_eq!(room_y.len(), row_count * candidate_count);
+                debug_assert_eq!(candidate_clean.len(), row_count * candidate_count);
+                debug_assert_eq!(applied_room_idx.len(), row_count * candidate_count);
+                debug_assert_eq!(applied_room_x.len(), row_count * candidate_count);
+                debug_assert_eq!(applied_room_y.len(), row_count * candidate_count);
+                debug_assert_eq!(applied_counts.len(), row_count);
+
+                let dummy_candidate = Action {
+                    room_idx: common_data.room.len() as RoomIdx,
+                    x: 0,
+                    y: 0,
+                };
+                applied_room_idx.fill(dummy_candidate.room_idx);
+                applied_room_x.fill(dummy_candidate.x);
+                applied_room_y.fill(dummy_candidate.y);
+                applied_counts.fill(0);
+                let mut first_error: Option<String> = None;
+                for (row_idx, &env_idx) in env_idx.iter().enumerate() {
+                    let Some(env) = environments.get_mut(env_idx) else {
+                        first_error = Some(format!(
+                            "compact wave apply environment index {env_idx} is outside worker shard"
+                        ));
+                        break;
+                    };
+                    let row_start = row_idx * candidate_count;
+                    let row_end = row_start + candidate_count;
+                    let candidates = (row_start..row_end)
+                        .map(|idx| Action {
+                            room_idx: room_idx[idx],
+                            x: room_x[idx],
+                            y: room_y[idx],
+                        })
+                        .collect::<Vec<_>>();
+                    match env.apply_wave_candidates_with_status(
+                        &common_data,
+                        &frontier_idx[row_start..row_end],
+                        &candidates,
+                        &candidate_clean[row_start..row_end],
+                    ) {
+                        Ok(applied) => {
+                            applied_counts[row_idx] = applied.len();
+                            for (applied_idx, action) in applied.into_iter().enumerate() {
+                                let idx = row_start + applied_idx;
+                                applied_room_idx[idx] = action.room_idx;
+                                applied_room_x[idx] = action.x;
+                                applied_room_y[idx] = action.y;
+                            }
+                        }
+                        Err(err) => {
+                            if first_error.is_none() {
+                                first_error = Some(err);
+                            }
+                            break;
+                        }
+                    }
+                }
+                match first_error {
+                    Some(err) => WorkerResponse::Error(err),
+                    None => WorkerResponse::Done,
+                }
+            }
             WorkerCommand::GetCompactWaveCandidatesFromProposals {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
@@ -1505,19 +1607,6 @@ fn worker_loop(
                             .get(candidate_idx)
                             .or(dummy_door_match)
                             .expect("dummy door match must exist for padded candidates");
-                        if candidate_idx >= candidate_plans.len() {
-                            let mut plan = env.feature_plan_after_candidate_with_scratch(
-                                &common_data,
-                                dummy_candidate,
-                                &features,
-                                frontier_neighbor_algorithm,
-                                frontier_neighbor_count,
-                                frontier_window_size,
-                                &mut feature_scratch,
-                            );
-                            plan.environment_idx = env_idx;
-                            candidate_plans.push(plan);
-                        }
                         let door_start = idx * door_outcome_count;
                         let connection_start = idx * connection_outcome_count;
                         for (dst, &outcome) in door_valid
@@ -4540,6 +4629,142 @@ impl EnvironmentGroup {
         })
     }
 
+    fn apply_compact_wave_candidates<'py>(
+        &mut self,
+        py: Python<'py>,
+        env_idx: PyReadonlyArray1<'py, i64>,
+        frontier_idx: PyReadonlyArray2<'py, FrontierIdx>,
+        room_idx: PyReadonlyArray2<'py, RoomIdx>,
+        room_x: PyReadonlyArray2<'py, Coord>,
+        room_y: PyReadonlyArray2<'py, Coord>,
+        candidate_clean: PyReadonlyArray2<'py, i8>,
+    ) -> PyResult<WaveAppliedActions> {
+        let env_idx = env_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("env_idx must be contiguous"))?;
+        if env_idx.windows(2).any(|pair| pair[0] > pair[1]) {
+            return Err(PyValueError::new_err("env_idx must be sorted"));
+        }
+        if env_idx
+            .iter()
+            .any(|&idx| idx < 0 || idx as usize >= self.num_environments)
+        {
+            return Err(PyValueError::new_err(
+                "env_idx values must fit within the environment group",
+            ));
+        }
+        let shape = frontier_idx.as_array().shape().to_vec();
+        if shape.len() != 2
+            || room_idx.as_array().shape() != shape
+            || room_x.as_array().shape() != shape
+            || room_y.as_array().shape() != shape
+            || candidate_clean.as_array().shape() != shape
+            || shape[0] != env_idx.len()
+        {
+            return Err(PyValueError::new_err(
+                "compact wave candidate arrays must have shape [selected_environment, candidate]",
+            ));
+        }
+        let candidate_count = shape[1];
+        let frontier_idx = frontier_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("frontier_idx must be contiguous"))?;
+        let room_idx = room_idx
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_idx must be contiguous"))?;
+        let room_x = room_x
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_x must be contiguous"))?;
+        let room_y = room_y
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_y must be contiguous"))?;
+        let candidate_clean = candidate_clean
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("candidate_clean must be contiguous"))?;
+        let row_count = env_idx.len();
+        let output_len = row_count * candidate_count;
+        let mut applied_room_idx = vec![self.common_data.room.len() as RoomIdx; output_len];
+        let mut applied_room_x = vec![0; output_len];
+        let mut applied_room_y = vec![0; output_len];
+        let mut applied_counts = vec![0; row_count];
+        let mut worker_row_ranges = Vec::with_capacity(self.workers.len());
+        let mut next_row = 0;
+        for worker in &self.workers {
+            let start_row = next_row;
+            while next_row < row_count && (env_idx[next_row] as usize) < worker.end() {
+                next_row += 1;
+            }
+            worker_row_ranges.push(start_row..next_row);
+        }
+        let worker_local_env_idx = worker_row_ranges
+            .iter()
+            .zip(&self.workers)
+            .map(|(range, worker)| {
+                env_idx[range.clone()]
+                    .iter()
+                    .map(|&idx| idx as usize - worker.start)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let row_range = worker_row_ranges[worker_idx].clone();
+                if row_range.is_empty() {
+                    continue;
+                }
+                let candidate_start = row_range.start * candidate_count;
+                let candidate_end = row_range.end * candidate_count;
+                if let Err(err) = worker.send(WorkerCommand::ApplyCompactWaveCandidates {
+                    candidate_count,
+                    env_idx: InputShard::from_slice(&worker_local_env_idx[worker_idx]),
+                    frontier_idx: InputShard::from_slice(
+                        &frontier_idx[candidate_start..candidate_end],
+                    ),
+                    room_idx: InputShard::from_slice(&room_idx[candidate_start..candidate_end]),
+                    room_x: InputShard::from_slice(&room_x[candidate_start..candidate_end]),
+                    room_y: InputShard::from_slice(&room_y[candidate_start..candidate_end]),
+                    candidate_clean: InputShard::from_slice(
+                        &candidate_clean[candidate_start..candidate_end],
+                    ),
+                    applied_room_idx: OutputShard::from_slice(
+                        &mut applied_room_idx[candidate_start..candidate_end],
+                    ),
+                    applied_room_x: OutputShard::from_slice(
+                        &mut applied_room_x[candidate_start..candidate_end],
+                    ),
+                    applied_room_y: OutputShard::from_slice(
+                        &mut applied_room_y[candidate_start..candidate_end],
+                    ),
+                    applied_counts: OutputShard::from_slice(
+                        &mut applied_counts[row_range.start..row_range.end],
+                    ),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
+
+        let max_applied = applied_counts.iter().copied().max().unwrap_or(0);
+        if max_applied > 0 {
+            self.action_count += max_applied;
+        }
+        Ok(WaveAppliedActions {
+            room_idx: pyarray2_from_flat_vec(py, applied_room_idx, row_count, candidate_count)?
+                .unbind(),
+            room_x: pyarray2_from_flat_vec(py, applied_room_x, row_count, candidate_count)?
+                .unbind(),
+            room_y: pyarray2_from_flat_vec(py, applied_room_y, row_count, candidate_count)?
+                .unbind(),
+            counts: applied_counts.into_pyarray(py).unbind(),
+        })
+    }
+
     fn get_proposal_candidate_mask<'py>(
         &mut self,
         py: Python<'py>,
@@ -5620,7 +5845,7 @@ impl EnvironmentGroup {
             .collect::<Vec<_>>();
         let worker_snapshot_counts = worker_row_ranges
             .iter()
-            .map(|&(row_start, row_end)| (row_end - row_start) * recommended_candidates)
+            .map(|&(row_start, row_end)| worker_clean_counts[row_start..row_end].iter().sum())
             .collect::<Vec<_>>();
         for (out, count) in stats_clean_counts
             .iter_mut()
@@ -6437,7 +6662,10 @@ impl EnvironmentGroup {
         let mut row_snapshot_idx = buffers.row_snapshot_idx.bind(py).readwrite();
         let mut row_frontier_idx = buffers.row_frontier_idx.bind(py).readwrite();
         let mut row_door_output_idx = buffers.row_door_output_idx.bind(py).readwrite();
-        if candidate_count == 1 && environment_start + environment_count > self.num_environments {
+        if candidate_count == 1
+            && environment_count <= self.num_environments
+            && environment_start + environment_count > self.num_environments
+        {
             return Err(PyValueError::new_err(
                 "candidate dimensions must fit within the environment group",
             ));

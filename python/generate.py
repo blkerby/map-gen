@@ -229,6 +229,24 @@ def transfer_features(
     return result
 
 
+def select_candidate_actions(actions: Actions, mask: torch.Tensor) -> Actions:
+    return Actions(
+        room_idx=actions.room_idx.flatten(0, 1)[mask].unsqueeze(1),
+        room_x=actions.room_x.flatten(0, 1)[mask].unsqueeze(1),
+        room_y=actions.room_y.flatten(0, 1)[mask].unsqueeze(1),
+    )
+
+
+def select_candidate_step_outcomes(outcomes: StepOutcomes, mask: torch.Tensor) -> StepOutcomes:
+    return StepOutcomes(
+        door_invalid=outcomes.door_invalid.flatten(0, 1)[mask].unsqueeze(1),
+        connection_invalid=outcomes.connection_invalid.flatten(0, 1)[mask].unsqueeze(1),
+        toilet_invalid=outcomes.toilet_invalid.flatten(0, 1)[mask].unsqueeze(1),
+        phantoon_invalid=outcomes.phantoon_invalid.flatten(0, 1)[mask].unsqueeze(1),
+        door_match=outcomes.door_match.flatten(0, 1)[mask].unsqueeze(1),
+    )
+
+
 @dataclass
 class WaveCandidateBatch:
     row_env_idx: torch.Tensor
@@ -732,14 +750,32 @@ def prepare_wave_candidate_features(
     candidates = candidate_batch.candidates
     if candidates.room_idx.shape[1] == 1:
         return None
-    candidate_count = candidates.room_idx.shape[1]
+    num_rooms = len(group.env.engine.rooms)
+    real_candidate = candidates.room_idx != num_rooms
+    if not torch.any(real_candidate):
+        return None
+    flat_real_candidate = real_candidate.flatten(0, 1)
+    if not torch.all(real_candidate):
+        compact_row_env_idx = candidate_batch.row_env_idx.unsqueeze(1).expand_as(real_candidate)[
+            real_candidate
+        ]
+        candidates = select_candidate_actions(candidates, flat_real_candidate)
+        post_candidate_outcomes = select_candidate_step_outcomes(
+            candidate_batch.post_candidate_outcomes,
+            flat_real_candidate,
+        )
+        candidate_count = 1
+    else:
+        compact_row_env_idx = candidate_batch.row_env_idx
+        post_candidate_outcomes = candidate_batch.post_candidate_outcomes
+        candidate_count = candidates.room_idx.shape[1]
     (
         candidate_log_temperature,
         candidate_log_recommended_candidates,
         candidate_generation_variable_floats,
     ) = compact_candidate_log_inputs(
         group.config,
-        candidate_batch.row_env_idx,
+        compact_row_env_idx,
         candidate_count,
     )
     return extract_candidate_features(
@@ -751,7 +787,7 @@ def prepare_wave_candidate_features(
         group.env.engine.features.recommended_candidates,
         candidate_generation_variable_floats,
         group.env.engine.features.generation_variable_floats,
-        candidate_batch.post_candidate_outcomes,
+        post_candidate_outcomes,
         group.env.engine.features.lookahead_outcomes,
         candidate_batch.feature_requirements,
         group.feature_slot,
@@ -1008,6 +1044,60 @@ def wave_candidate_logits(
             logits,
         )
     device_features = transfer_features(features, device)
+    real_candidate = candidates.room_idx != num_rooms
+    if not torch.any(real_candidate):
+        return torch.full(
+            candidates.room_idx.shape,
+            float("-inf"),
+            dtype=torch.float32,
+            device=device,
+        )
+
+    if not torch.all(real_candidate):
+        flat_real_candidate = real_candidate.flatten(0, 1)
+        compact_candidates = select_candidate_actions(candidates, flat_real_candidate)
+        compact_post_candidate_outcomes = select_candidate_step_outcomes(
+            batch.post_candidate_outcomes,
+            flat_real_candidate,
+        )
+        compact_row_env_idx = (
+            batch.row_env_idx.unsqueeze(1).expand_as(real_candidate)[real_candidate]
+        )
+
+        def select_reward_values(values: torch.Tensor) -> torch.Tensor:
+            values = values.unsqueeze(1)
+            values = values.expand(values.shape[0], candidate_count, *values.shape[2:])
+            return values.flatten(0, 1)[flat_real_candidate].unsqueeze(1).contiguous()
+
+        compact_reward_outcomes = StepOutcomes(
+            door_invalid=select_reward_values(batch.reward_outcomes.door_invalid),
+            connection_invalid=select_reward_values(batch.reward_outcomes.connection_invalid),
+            toilet_invalid=select_reward_values(batch.reward_outcomes.toilet_invalid),
+            phantoon_invalid=select_reward_values(batch.reward_outcomes.phantoon_invalid),
+            door_match=batch.reward_outcomes.door_match.new_empty(
+                (compact_candidates.room_idx.shape[0], 1, 0)
+            ),
+        )
+        compact_logits = score_candidate_logits(
+            group,
+            model,
+            compact_candidates,
+            compact_reward_outcomes,
+            compact_post_candidate_outcomes.door_match,
+            device_features,
+            device,
+            num_rooms,
+            compact_row_env_idx.to(device=device, dtype=torch.int64),
+        )
+        logits = torch.full(
+            candidates.room_idx.shape,
+            float("-inf"),
+            dtype=torch.float32,
+            device=device,
+        )
+        flat_logits = logits.flatten(0, 1)
+        flat_logits[flat_real_candidate] = compact_logits.flatten(0, 1)
+        return logits
 
     def expand_row_values(values: torch.Tensor) -> torch.Tensor:
         values = values.unsqueeze(1)
@@ -1036,78 +1126,106 @@ def wave_candidate_logits(
     return row_logits
 
 
-def sorted_wave_candidates(
+def sorted_compact_wave_candidates(
     candidate_batch: WaveCandidateBatch,
     candidate_logits: torch.Tensor,
     env_count: int,
     num_rooms: int,
-) -> tuple[torch.Tensor, Actions]:
+) -> tuple[torch.Tensor, torch.Tensor, Actions, torch.Tensor]:
     row_env_idx = candidate_batch.row_env_idx.to(dtype=torch.int64, device=torch.device("cpu"))
     candidate_count = candidate_batch.candidates.room_idx.shape[1]
     attempts_per_env = torch.bincount(row_env_idx, minlength=env_count) * candidate_count
+    apply_env_idx = torch.nonzero(attempts_per_env > 0, as_tuple=False).flatten()
     max_attempts = int(attempts_per_env.max().item()) if attempts_per_env.numel() else 0
     if max_attempts == 0:
         return (
-            torch.full((env_count, 0), -1, dtype=torch.int16),
+            apply_env_idx,
+            torch.full((0, 0), -1, dtype=torch.int16),
             Actions(
-                room_idx=torch.full((env_count, 0), num_rooms, dtype=torch.uint8),
-                room_x=torch.zeros((env_count, 0), dtype=torch.int8),
-                room_y=torch.zeros((env_count, 0), dtype=torch.int8),
+                room_idx=torch.full((0, 0), num_rooms, dtype=torch.uint8),
+                room_x=torch.zeros((0, 0), dtype=torch.int8),
+                room_y=torch.zeros((0, 0), dtype=torch.int8),
             ),
+            torch.zeros((0, 0), dtype=torch.int8),
         )
-    sorted_frontier_idx = torch.full((env_count, max_attempts), -1, dtype=torch.int16)
+    apply_env_count = int(apply_env_idx.shape[0])
+    sorted_frontier_idx = torch.full((apply_env_count, max_attempts), -1, dtype=torch.int16)
     sorted_actions = Actions(
         room_idx=torch.full(
-            (env_count, max_attempts),
+            (apply_env_count, max_attempts),
             num_rooms,
             dtype=candidate_batch.candidates.room_idx.dtype,
         ),
         room_x=torch.zeros(
-            (env_count, max_attempts),
+            (apply_env_count, max_attempts),
             dtype=candidate_batch.candidates.room_x.dtype,
         ),
         room_y=torch.zeros(
-            (env_count, max_attempts),
+            (apply_env_count, max_attempts),
             dtype=candidate_batch.candidates.room_y.dtype,
         ),
     )
+    env_to_apply_row = torch.full((env_count,), -1, dtype=torch.int64)
+    env_to_apply_row[apply_env_idx] = torch.arange(apply_env_count, dtype=torch.int64)
     flat_logits = candidate_logits.to(torch.device("cpu")).flatten()
     flat_frontier_idx = candidate_batch.proposal_frontier_idx.flatten()
     flat_room_idx = candidate_batch.candidates.room_idx.flatten()
     flat_room_x = candidate_batch.candidates.room_x.flatten()
     flat_room_y = candidate_batch.candidates.room_y.flatten()
+    candidate_slot_idx = torch.arange(candidate_count, dtype=torch.int64).expand(
+        candidate_batch.candidates.room_idx.shape[0],
+        candidate_count,
+    )
+    flat_candidate_clean = (
+        candidate_slot_idx < candidate_batch.stats.clean_counts.unsqueeze(1)
+    ).flatten()
     flat_env_idx = row_env_idx.repeat_interleave(candidate_count)
-    for env_idx in torch.unique_consecutive(row_env_idx).tolist():
-        env_attempt = flat_env_idx == env_idx
-        if not torch.any(env_attempt):
-            continue
-        attempt_idx = torch.nonzero(env_attempt, as_tuple=False).flatten()
-        env_order = torch.argsort(flat_logits[attempt_idx], descending=True)
-        attempt_idx = attempt_idx[env_order]
-        count = attempt_idx.shape[0]
-        sorted_frontier_idx[env_idx, :count] = flat_frontier_idx[attempt_idx]
-        sorted_actions.room_idx[env_idx, :count] = flat_room_idx[attempt_idx]
-        sorted_actions.room_x[env_idx, :count] = flat_room_x[attempt_idx]
-        sorted_actions.room_y[env_idx, :count] = flat_room_y[attempt_idx]
-    return sorted_frontier_idx, sorted_actions
+    sorted_candidate_clean = torch.zeros((apply_env_count, max_attempts), dtype=torch.int8)
+    score_order = torch.argsort(flat_logits, descending=True, stable=True)
+    env_order = torch.argsort(flat_env_idx[score_order], stable=True)
+    attempt_idx = score_order[env_order]
+    sorted_env_idx = flat_env_idx[attempt_idx]
+    env_counts = attempts_per_env[apply_env_idx]
+    env_start = torch.cumsum(env_counts, dim=0) - env_counts
+    attempt_position = torch.arange(attempt_idx.shape[0], dtype=torch.int64) - torch.repeat_interleave(
+        env_start,
+        env_counts,
+    )
+    apply_row_idx = env_to_apply_row[sorted_env_idx]
+    sorted_frontier_idx[apply_row_idx, attempt_position] = flat_frontier_idx[attempt_idx]
+    sorted_actions.room_idx[apply_row_idx, attempt_position] = flat_room_idx[attempt_idx]
+    sorted_actions.room_x[apply_row_idx, attempt_position] = flat_room_x[attempt_idx]
+    sorted_actions.room_y[apply_row_idx, attempt_position] = flat_room_y[attempt_idx]
+    sorted_candidate_clean[apply_row_idx, attempt_position] = flat_candidate_clean[
+        attempt_idx
+    ].to(torch.int8)
+    return apply_env_idx, sorted_frontier_idx, sorted_actions, sorted_candidate_clean
 
 
 def append_applied_wave_actions(
     actions: Actions,
     action_counts: torch.Tensor,
+    applied_env_idx: torch.Tensor,
     applied_actions: Actions,
     applied_counts: torch.Tensor,
 ) -> None:
-    for env_idx, applied_count in enumerate(applied_counts.tolist()):
-        start = int(action_counts[env_idx].item())
-        count = min(applied_count, actions.room_idx.shape[1] - start)
-        if count <= 0:
-            continue
-        end = start + count
-        actions.room_idx[env_idx, start:end] = applied_actions.room_idx[env_idx, :count]
-        actions.room_x[env_idx, start:end] = applied_actions.room_x[env_idx, :count]
-        actions.room_y[env_idx, start:end] = applied_actions.room_y[env_idx, :count]
-        action_counts[env_idx] += count
+    if applied_counts.numel() == 0 or applied_actions.room_idx.shape[1] == 0:
+        return
+    max_count = applied_actions.room_idx.shape[1]
+    slot_idx = torch.arange(max_count, dtype=torch.int64)
+    remaining = actions.room_idx.shape[1] - action_counts[applied_env_idx]
+    clipped_counts = torch.minimum(applied_counts, remaining)
+    applied_mask = slot_idx.unsqueeze(0) < clipped_counts.unsqueeze(1)
+    if not torch.any(applied_mask):
+        return
+    dst_env_idx = applied_env_idx.unsqueeze(1).expand(-1, max_count)[applied_mask]
+    dst_action_idx = (
+        action_counts[applied_env_idx].unsqueeze(1) + slot_idx.unsqueeze(0)
+    )[applied_mask]
+    actions.room_idx[dst_env_idx, dst_action_idx] = applied_actions.room_idx[applied_mask]
+    actions.room_x[dst_env_idx, dst_action_idx] = applied_actions.room_x[applied_mask]
+    actions.room_y[dst_env_idx, dst_action_idx] = applied_actions.room_y[applied_mask]
+    action_counts[applied_env_idx] += clipped_counts
 
 
 def wave_frame_data_from_prefixes(
@@ -1346,23 +1464,38 @@ def run_wave_generation_groups(
                     group.config.recommended_candidates,
                 )
                 profile_time = profile_start(profile)
-                sorted_frontier_idx, sorted_actions = sorted_wave_candidates(
+                sync_profile_device(device, profile)
+                profiler.add("python.wave.sync_candidate_logits", profile_time)
+                profile_time = profile_start(profile)
+                (
+                    apply_env_idx,
+                    sorted_frontier_idx,
+                    sorted_actions,
+                    sorted_candidate_clean,
+                ) = sorted_compact_wave_candidates(
                     candidate_batch,
                     logits,
                     group.env.num_envs,
                     num_rooms,
                 )
-                applied_actions, applied_counts = group.env.apply_wave_candidates(
+                profiler.add("python.wave.sort_candidates", profile_time)
+                profile_time = profile_start(profile)
+                applied_actions, applied_counts = group.env.apply_compact_wave_candidates(
+                    apply_env_idx,
                     sorted_frontier_idx,
                     sorted_actions,
+                    sorted_candidate_clean,
                 )
+                profiler.add("python.wave.apply_candidates", profile_time)
+                profile_time = profile_start(profile)
                 append_applied_wave_actions(
                     actions,
                     action_counts,
+                    apply_env_idx,
                     applied_actions,
                     applied_counts,
                 )
-                profiler.add("python.wave.apply_candidates", profile_time)
+                profiler.add("python.wave.append_actions", profile_time)
                 active_env = active_env & (action_counts < group.config.episode_length)
                 if not torch.any(applied_counts > 0):
                     break
