@@ -227,6 +227,12 @@ class ProposalCache:
 
 
 @dataclass
+class ProposalScoreState:
+    proposal_scores: torch.Tensor
+    frontier_state: torch.Tensor
+
+
+@dataclass
 class CandidateBatch:
     candidates: Actions
     proposal_frontier_idx: torch.Tensor
@@ -448,6 +454,50 @@ def row_scores_for_mask(
     return result
 
 
+def row_state_for_mask(
+    proposal_state: torch.Tensor,
+    row_snapshot_idx: torch.Tensor,
+    row_frontier_idx: torch.Tensor,
+    proposal_mask: ProposalCandidateMask,
+    device: torch.device,
+) -> torch.Tensor:
+    proposal_frontier_idx = proposal_mask.proposal_frontier_idx.to(device)
+    result = torch.zeros(
+        (proposal_frontier_idx.shape[0], proposal_state.shape[1]),
+        dtype=proposal_state.dtype,
+        device=device,
+    )
+    if proposal_state.shape[0] == 0:
+        return result
+    row_snapshot_idx = row_snapshot_idx.to(device)
+    row_frontier_idx = row_frontier_idx.to(device)
+    row_valid = (
+        (row_snapshot_idx >= 0)
+        & (row_snapshot_idx < proposal_frontier_idx.shape[0])
+        & (row_frontier_idx == proposal_frontier_idx[row_snapshot_idx])
+    )
+    if torch.any(row_valid):
+        result[row_snapshot_idx[row_valid]] = proposal_state[row_valid]
+    return result
+
+
+def shortlist_scores_for_sample(
+    shortlist_output: torch.nn.Module,
+    frontier_state: torch.Tensor,
+    sampled_door_variant_idx: torch.Tensor,
+) -> torch.Tensor:
+    if frontier_state.shape[0] == 0 or sampled_door_variant_idx.shape[1] == 0:
+        return torch.empty(
+            sampled_door_variant_idx.shape,
+            dtype=shortlist_output.output_dtype,
+            device=sampled_door_variant_idx.device,
+        )
+    return shortlist_output(
+        frontier_state.to(shortlist_output.output_dtype),
+        sampled_door_variant_idx.to(frontier_state.device),
+    )
+
+
 def sample_proposal_shortlist(
     proposal_scores: torch.Tensor,
     proposal_mask: ProposalCandidateMask,
@@ -507,15 +557,41 @@ def sample_proposal_shortlist(
     )
 
 
+def resample_shortlist(
+    shortlist_scores: torch.Tensor,
+    sampled_frontier_idx: torch.Tensor,
+    sampled_door_variant_idx: torch.Tensor,
+    config: GenerateConfig,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if sampled_door_variant_idx.shape[1] == 0:
+        return sampled_frontier_idx, sampled_door_variant_idx
+    valid = sampled_door_variant_idx >= 0
+    sample_keys = shortlist_scores.to(dtype=torch.float32, copy=True)
+    sample_keys.div_(config.shortlist_temperature.to(device).view(-1, 1).clamp_min(1e-6))
+    sample_keys.masked_fill_(~valid, float("-inf"))
+    gumbel = torch.empty_like(sample_keys).exponential_().log_().neg_()
+    sample_keys.add_(gumbel)
+    permutation = torch.topk(
+        sample_keys,
+        sample_keys.shape[1],
+        dim=1,
+        sorted=True,
+    ).indices
+    reordered_frontier_idx = torch.gather(sampled_frontier_idx, 1, permutation)
+    reordered_door_variant_idx = torch.gather(sampled_door_variant_idx, 1, permutation)
+    return reordered_frontier_idx, reordered_door_variant_idx
+
+
 def candidate_log_inputs(
     config: GenerateConfig,
     candidate_shape: torch.Size,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     environment_count, candidate_count = candidate_shape
     return (
-        config.candidate_log_temperature_cpu[:environment_count, :candidate_count],
-        config.candidate_log_recommended_candidates_cpu[:environment_count, :candidate_count],
-        config.candidate_generation_variable_floats_cpu[
+        config.candidate_log_temperature_model[:environment_count, :candidate_count],
+        config.candidate_log_recommended_candidates_model[:environment_count, :candidate_count],
+        config.candidate_generation_variable_floats_model[
             :environment_count,
             :candidate_count,
         ],
@@ -527,9 +603,9 @@ def state_log_inputs(
     environment_count: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     return (
-        config.log_temperature_cpu[:environment_count],
-        config.log_recommended_candidates_cpu[:environment_count],
-        config.generation_variable_floats_cpu[:environment_count],
+        config.log_temperature_model[:environment_count],
+        config.log_recommended_candidates_model[:environment_count],
+        config.generation_variable_floats_model[:environment_count],
     )
 
 
@@ -781,7 +857,7 @@ def compute_proposal_scores(
     proposal_mask: ProposalCandidateMask,
     device: torch.device,
     transfer_stream: torch.cuda.Stream | None,
-) -> torch.Tensor:
+) -> ProposalScoreState:
     env_features = transfer_features(features, device, transfer_stream)
     with torch.amp.autocast(
         "cuda",
@@ -792,13 +868,22 @@ def compute_proposal_scores(
             env_features,
             return_proposal_state=True,
         )
-    return row_scores_for_mask(
-        model.proposal_output,
-        preds.proposal_state,
-        preds.proposal_row_snapshot_idx,
-        preds.proposal_row_frontier_idx,
-        proposal_mask,
-        device,
+    return ProposalScoreState(
+        proposal_scores=row_scores_for_mask(
+            model.proposal_output,
+            preds.proposal_state,
+            preds.proposal_row_snapshot_idx,
+            preds.proposal_row_frontier_idx,
+            proposal_mask,
+            device,
+        ),
+        frontier_state=row_state_for_mask(
+            preds.proposal_state,
+            preds.proposal_row_snapshot_idx,
+            preds.proposal_row_frontier_idx,
+            proposal_mask,
+            device,
+        ),
     )
 
 
@@ -808,15 +893,21 @@ def compute_cached_proposal_scores(
     cache: ProposalCache,
     proposal_mask: ProposalCandidateMask,
     device: torch.device,
-) -> torch.Tensor:
+) -> ProposalScoreState:
     proposal_frontier_idx = proposal_mask.proposal_frontier_idx.to(
         device=device,
         dtype=torch.int64,
     )
     door_variant_count = model.proposal_output.out_features
     if cache.state.shape[0] == 0:
-        return cache.state.new_zeros(
-            (proposal_frontier_idx.shape[0], door_variant_count),
+        empty_state = cache.state.new_zeros(
+            (proposal_frontier_idx.shape[0], cache.state.shape[1]),
+        )
+        return ProposalScoreState(
+            proposal_scores=cache.state.new_zeros(
+                (proposal_frontier_idx.shape[0], door_variant_count),
+            ),
+            frontier_state=empty_state,
         )
     row_start_idx = cache.row_start_idx.to(device)
     row_count = cache.row_count.to(device)
@@ -837,7 +928,11 @@ def compute_cached_proposal_scores(
         dtype=torch.bfloat16,
         enabled=device.type == "cuda" and group.config.autocast,
     ):
-        return model.proposal_output(cache.state[row_idx])
+        frontier_state = cache.state[row_idx]
+        return ProposalScoreState(
+            proposal_scores=model.proposal_output(frontier_state),
+            frontier_state=frontier_state,
+        )
 
 
 def verify_and_step(
@@ -1190,7 +1285,7 @@ def compute_group_proposal_shortlist(
     with shared.gpu_lock:
         if group.previous_proposal_scores is not None:
             profile_time = profile_start(profile)
-            proposal_scores = compute_cached_proposal_scores(
+            proposal_score_state = compute_cached_proposal_scores(
                 group,
                 model,
                 group.previous_proposal_scores,
@@ -1203,7 +1298,7 @@ def compute_group_proposal_shortlist(
             if proposal_inputs.features is None:
                 raise ValueError("proposal scores require proposal features")
             profile_time = profile_start(profile)
-            proposal_scores = compute_proposal_scores(
+            proposal_score_state = compute_proposal_scores(
                 group,
                 model,
                 proposal_inputs.features,
@@ -1219,13 +1314,31 @@ def compute_group_proposal_shortlist(
             sampled_frontier_idx,
             sampled_door_variant_idx,
         ) = sample_proposal_shortlist(
-            proposal_scores,
+            proposal_score_state.proposal_scores,
             proposal_inputs.mask,
             group.config,
             device,
         )
         sync_profile_device(device, profile)
         shared.profiler.add("python.proposal.sample_shortlist", profile_time)
+        profile_time = profile_start(profile)
+        shortlist_scores = shortlist_scores_for_sample(
+            model.shortlist_output,
+            proposal_score_state.frontier_state,
+            sampled_door_variant_idx,
+        )
+        (
+            sampled_frontier_idx,
+            sampled_door_variant_idx,
+        ) = resample_shortlist(
+            shortlist_scores,
+            sampled_frontier_idx,
+            sampled_door_variant_idx,
+            group.config,
+            device,
+        )
+        sync_profile_device(device, profile)
+        shared.profiler.add("python.proposal.sample_refined_shortlist", profile_time)
     return (
         sampled_frontier_idx.to(torch.device("cpu")),
         sampled_door_variant_idx.to(torch.device("cpu")),

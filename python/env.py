@@ -22,6 +22,7 @@ class GenerateConfig:
     gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
+    shortlist_temperature: torch.Tensor
     reward_door: float | torch.Tensor
     reward_connection: float | torch.Tensor
     reward_toilet: float | torch.Tensor
@@ -34,12 +35,12 @@ class GenerateConfig:
     reward_refill_distance: float | torch.Tensor
     reward_missing_connect_utility: float | torch.Tensor
     generation_variable_floats: torch.Tensor
-    log_temperature_cpu: torch.Tensor
-    log_recommended_candidates_cpu: torch.Tensor
-    generation_variable_floats_cpu: torch.Tensor
-    candidate_log_temperature_cpu: torch.Tensor
-    candidate_log_recommended_candidates_cpu: torch.Tensor
-    candidate_generation_variable_floats_cpu: torch.Tensor
+    log_temperature_model: torch.Tensor
+    log_recommended_candidates_model: torch.Tensor
+    generation_variable_floats_model: torch.Tensor
+    candidate_log_temperature_model: torch.Tensor
+    candidate_log_recommended_candidates_model: torch.Tensor
+    candidate_generation_variable_floats_model: torch.Tensor
     distance_proximity_scale: float
     autocast: bool
 

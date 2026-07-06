@@ -39,3 +39,5 @@
   follow-up debugging after a reported regression: investigate and explain the
   likely cause first, but do not apply a speculative fix or design change until
   the user confirms that specific change.
+- If the worktree is dirty when beginning a new task, stop and let the user
+  know, as they may want to commit the work first.

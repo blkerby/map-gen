@@ -35,6 +35,7 @@ type VariableFloat = float | VariableSchedule
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "temperature",
     "proposal_temperature",
+    "shortlist_temperature",
     "reward_door",
     "reward_connection",
     "reward_toilet",
@@ -57,6 +58,7 @@ class ModelConfig(StrictBaseModel):
     global_embedding_width: int
     hidden_width: int
     proposal_hidden_width: int
+    shortlist_hidden_width: int
     missing_connect_query_hidden_width: int
     missing_connect_query_frontier_width: int
     missing_connect_query_distance_width: int
@@ -111,6 +113,7 @@ class GenerationConfig(StrictBaseModel):
     shortlist_candidates: ScheduleableInt
     temperature: VariableFloat
     proposal_temperature: VariableFloat
+    shortlist_temperature: VariableFloat
     reward_door: VariableFloat
     reward_connection: VariableFloat
     reward_toilet: VariableFloat
@@ -237,6 +240,7 @@ class TrainConfig(StrictBaseModel):
     refill_distance_weight: float
     missing_connect_utility_weight: float
     proposal_weight: float
+    shortlist_weight: float
     ema_decay: ScheduleableFloat
     pipeline_groups: int
     gradient_accumulation_steps: int
@@ -381,6 +385,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("model.global_embedding_width must be greater than zero")
     if config.model.proposal_hidden_width <= 0:
         raise ValueError("model.proposal_hidden_width must be greater than zero")
+    if config.model.shortlist_hidden_width <= 0:
+        raise ValueError("model.shortlist_hidden_width must be greater than zero")
     if config.model.missing_connect_query_hidden_width <= 0:
         raise ValueError("model.missing_connect_query_hidden_width must be greater than zero")
     if config.model.missing_connect_query_frontier_width <= 0:
@@ -462,6 +468,10 @@ def validate_config(config: Config) -> None:
     validate_positive_variable_float(
         config.generation.proposal_temperature,
         "generation.proposal_temperature",
+    )
+    validate_positive_variable_float(
+        config.generation.shortlist_temperature,
+        "generation.shortlist_temperature",
     )
     validate_nonnegative_variable_float(
         config.generation.reward_phantoon,
