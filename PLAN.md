@@ -78,8 +78,10 @@ Thread `room_area` through the Python wrappers and training data classes.
 - Extend `env.Actions` with `room_area`, including `select`, `to`, and `slice`.
 - Extend `EpisodeData`, `CandidateSlot`, `EnvironmentGroup.step`, `step_known`,
   `get_actions`, and candidate extraction to pass area tensors.
-- Extend `ProposalData` with `room_area` or a flattened proposal action index,
-  depending on the proposal representation selected in Phase 3.
+- Extend `ProposalData` with flattened `proposal_action_idx`, where
+  `proposal_action_idx = door_variant_idx * AREA_COUNT + room_area`. Keep
+  `proposal_door_variant_idx` and `proposal_room_area` only where useful as
+  diagnostics or candidate metadata.
 - Update training batch construction in `python/learn.py` so next-action tensors
   include the selected area.
 - Update serialization/checkpoint/export paths that persist actions and proposal
@@ -102,8 +104,9 @@ and area.
   `num_door_variants * AREA_COUNT`.
 - Define helper functions for flattening/unflattening:
   `proposal_action_idx = door_variant_idx * AREA_COUNT + room_area`.
-- Keep `proposal_door_variant_idx` as a stored diagnostic field, but add
-  `proposal_room_area` or `proposal_action_idx` for model/loss indexing.
+- Use flattened `proposal_action_idx` for model/loss indexing, proposal masks,
+  shortlist sampling, and cached proposal scores. Use helper functions to
+  recover `door_variant_idx` and `room_area` for diagnostics.
 - Update `ProposalCandidateMask` so the packed mask covers flattened proposal
   actions. A placement that is geometrically valid may still have only a subset
   of its six areas enabled.

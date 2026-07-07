@@ -9,9 +9,9 @@ use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    Action, ActionIdx, CommonData, ConnectionVariantIdx, Coord, DirDoorIdx, Direction, DoorKind,
-    DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx, GeometryData, GeometryIdx,
-    GraphDistance, NUM_DIRS, PartIdx, RoomIdx, RoomPartIdx, SpatialCellIdx,
+    Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx, Coord, DUMMY_AREA, DirDoorIdx,
+    Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx, GeometryData,
+    GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, RoomIdx, RoomPartIdx, SpatialCellIdx,
     get_behind_door_position,
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
@@ -1086,8 +1086,9 @@ pub struct Environment {
     // Grouped by door direction: for each door, the index of the matching door on the other side (or DirDoorIdx::MAX if none):
     door_matches: [Vec<DirDoorIdx>; NUM_DIRS],
     room_used: BitVec,                           // whether each room has been used
-    room_x: Vec<Coord>, // x position of each room (only valid for used rooms)
-    room_y: Vec<Coord>, // y position of each room (only valid for used rooms)
+    room_x: Vec<Coord>,      // x position of each room (only valid for used rooms)
+    room_y: Vec<Coord>,      // y position of each room (only valid for used rooms)
+    room_area: Vec<AreaIdx>, // area of each room (only valid for used rooms)
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
     room_part_component: Vec<usize>,             // maps placed room door groups to SCC components
@@ -1132,6 +1133,7 @@ struct LookaheadSnapshot {
     room_used: bool,
     room_x: Coord,
     room_y: Coord,
+    room_area: AreaIdx,
     geometry_idx: Option<GeometryIdx>,
     geometry_unused_count: usize,
     connection_variant_idx: Option<ConnectionVariantIdx>,
@@ -1700,6 +1702,7 @@ impl Environment {
             room_used: BitVec::repeat(false, common.room.len()),
             room_x: vec![0; common.room.len()],
             room_y: vec![0; common.room.len()],
+            room_area: vec![DUMMY_AREA; common.room.len()],
             geometry_unused_count: common
                 .geometry_rooms
                 .iter()
@@ -1746,6 +1749,7 @@ impl Environment {
             .iter_mut()
             .for_each(|matches| matches.fill(DirDoorIdx::MAX));
         self.room_used.fill(false);
+        self.room_area.fill(DUMMY_AREA);
         self.geometry_unused_count.clear();
         self.geometry_unused_count
             .extend(common.geometry_rooms.iter().map(|rooms| rooms.len()));
@@ -1787,7 +1791,12 @@ impl Environment {
         let max_y = self.map_size.1 - 1 - geometry.max_y;
         let x = self.rng.random_range(min_x..=max_x);
         let y = self.rng.random_range(min_y..=max_y);
-        Action { room_idx, x, y }
+        Action {
+            room_idx,
+            x,
+            y,
+            area: 0,
+        }
     }
 
     fn sorted_frontiers(&self) -> Vec<(&DoorLocation, &Frontier)> {
@@ -1907,6 +1916,7 @@ impl Environment {
                         room_idx,
                         x: candidate.x,
                         y: candidate.y,
+                        area: 0,
                     };
                     if self.rng.random_range(0..matching_count) == 0 {
                         selected = Some(action);
@@ -2395,11 +2405,17 @@ impl Environment {
             return;
         }
         if action.room_idx >= common.room.len() as RoomIdx {
+            assert_eq!(action.area, DUMMY_AREA, "dummy action must use DUMMY_AREA");
             // Dummy/invalid action: do nothing more.
             self.finished = true;
             return;
         }
         let room = &common.room[action.room_idx as usize];
+        assert!(
+            (action.area as usize) < crate::common::AREA_COUNT,
+            "real action area must be in 0..{}",
+            crate::common::AREA_COUNT
+        );
         let action_geometry_idx = room.geometry_idx;
         let connection_variant_idx = room.connection_variant_idx;
         assert!(!self.room_used[action.room_idx as usize]);
@@ -2414,6 +2430,7 @@ impl Environment {
         self.room_used.set(action.room_idx as usize, true);
         self.room_x[action.room_idx as usize] = action.x;
         self.room_y[action.room_idx as usize] = action.y;
+        self.room_area[action.room_idx as usize] = action.area;
         if mode.updates_geometry_inventory() {
             self.geometry_unused_count[action_geometry_idx as usize] -= 1;
         }
@@ -3586,6 +3603,7 @@ impl Environment {
             room_used: room_idx.is_some_and(|room_idx| self.room_used[room_idx as usize]),
             room_x: room_idx.map_or(0, |room_idx| self.room_x[room_idx as usize]),
             room_y: room_idx.map_or(0, |room_idx| self.room_y[room_idx as usize]),
+            room_area: room_idx.map_or(DUMMY_AREA, |room_idx| self.room_area[room_idx as usize]),
             geometry_idx,
             geometry_unused_count: geometry_idx
                 .map_or(0, |idx| self.geometry_unused_count[idx as usize]),
@@ -3617,6 +3635,7 @@ impl Environment {
             self.room_used.set(room_idx as usize, snapshot.room_used);
             self.room_x[room_idx as usize] = snapshot.room_x;
             self.room_y[room_idx as usize] = snapshot.room_y;
+            self.room_area[room_idx as usize] = snapshot.room_area;
         }
         if let Some(geometry_idx) = snapshot.geometry_idx {
             self.geometry_unused_count[geometry_idx as usize] = snapshot.geometry_unused_count;
@@ -5499,6 +5518,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             common,
         );
@@ -5529,6 +5549,87 @@ mod tests {
     }
 
     #[test]
+    fn environment_tracks_room_area_for_step_clear_and_step_known() {
+        let common = spatial_index_test_common();
+        let mut env = Environment::new(&common, (8, 8), 8, 0);
+
+        assert_eq!(env.room_area, [DUMMY_AREA, DUMMY_AREA]);
+
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 2,
+            },
+            &common,
+        );
+        assert_eq!(env.room_area, [2, DUMMY_AREA]);
+
+        env.clear(&common);
+        assert_eq!(env.room_area, [DUMMY_AREA, DUMMY_AREA]);
+
+        env.step_known(
+            Action {
+                room_idx: 1,
+                x: 2,
+                y: 0,
+                area: 4,
+            },
+            &common,
+        );
+        assert_eq!(env.room_area, [DUMMY_AREA, 4]);
+    }
+
+    #[test]
+    fn dummy_action_requires_dummy_area_and_does_not_assign_room_area() {
+        let common = spatial_index_test_common();
+        let mut env = Environment::new(&common, (8, 8), 8, 0);
+
+        env.step(
+            Action {
+                room_idx: common.room.len() as RoomIdx,
+                x: 0,
+                y: 0,
+                area: DUMMY_AREA,
+            },
+            &common,
+        );
+
+        assert!(env.finished);
+        assert_eq!(env.room_area, [DUMMY_AREA, DUMMY_AREA]);
+    }
+
+    #[test]
+    fn outcomes_after_candidate_restores_room_area() {
+        let common = spatial_index_test_common();
+        let mut env = Environment::new(&common, (8, 8), 8, 0);
+
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 1,
+            },
+            &common,
+        );
+        let expected_room_area = env.room_area.clone();
+
+        env.outcomes_after_candidate(
+            &common,
+            Action {
+                room_idx: 1,
+                x: 2,
+                y: 0,
+                area: 5,
+            },
+        );
+
+        assert_eq!(env.room_area, expected_room_area);
+    }
+
+    #[test]
     fn spatial_index_shortlists_without_over_rejecting_coarse_cell_matches() {
         let common = spatial_index_test_common();
         let mut env = Environment::new(&common, (8, 8), 8, 0);
@@ -5537,6 +5638,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -5603,6 +5705,7 @@ mod tests {
                 room_idx: 0,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -5629,6 +5732,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -5640,6 +5744,7 @@ mod tests {
                 room_idx: 1,
                 x: 2,
                 y: 0,
+                area: 0,
             },
         );
 
@@ -5701,6 +5806,7 @@ mod tests {
                 room_idx: 0,
                 x: 2,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -5747,6 +5853,7 @@ mod tests {
             room_idx: 0,
             x: 2,
             y: 2,
+            area: 0,
         });
         let candidate = GeometryAction {
             geometry_idx: 0,
@@ -5836,6 +5943,7 @@ mod tests {
                 room_idx: 0,
                 x: 2,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -6120,6 +6228,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6132,6 +6241,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6196,6 +6306,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6206,6 +6317,7 @@ mod tests {
             room_idx: 1,
             x: 1,
             y: 0,
+            area: 0,
         };
         let config = FeatureConfig::all();
         let expected_active_save_room_parts = env.active_save_room_parts.clone();
@@ -6256,6 +6368,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6312,6 +6425,7 @@ mod tests {
                 room_idx: 0,
                 x: 1,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -6387,6 +6501,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6403,6 +6518,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6421,6 +6537,7 @@ mod tests {
                 room_idx: 2,
                 x: 2,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6471,6 +6588,7 @@ mod tests {
             room_idx: 0,
             x: 0,
             y: 0,
+            area: 0,
         };
         fast_env.step(first_action, &common);
         full_env.step(first_action, &common);
@@ -6480,6 +6598,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6538,6 +6657,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6546,6 +6666,7 @@ mod tests {
                 room_idx: 1,
                 x: 2,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6561,6 +6682,7 @@ mod tests {
                 room_idx: 2,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6617,6 +6739,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6626,6 +6749,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6635,6 +6759,7 @@ mod tests {
                 room_idx: 2,
                 x: 2,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6687,6 +6812,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6695,6 +6821,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6703,6 +6830,7 @@ mod tests {
                 room_idx: 2,
                 x: 2,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6759,6 +6887,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6767,6 +6896,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6775,6 +6905,7 @@ mod tests {
                 room_idx: 2,
                 x: 2,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6819,6 +6950,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -6827,6 +6959,7 @@ mod tests {
                 room_idx: 1,
                 x: 2,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7520,6 +7653,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7528,6 +7662,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7536,6 +7671,7 @@ mod tests {
                 room_idx: 2,
                 x: 0,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -7544,6 +7680,7 @@ mod tests {
                 room_idx: 3,
                 x: 3,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -7592,6 +7729,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7625,6 +7763,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7720,6 +7859,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7733,6 +7873,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7787,6 +7928,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7832,6 +7974,7 @@ mod tests {
                 room_idx: 1,
                 x: 2,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -7841,11 +7984,13 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             Action {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
         ];
         env.clear(&common);
@@ -7902,6 +8047,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -7909,6 +8055,7 @@ mod tests {
             room_idx: 1,
             x: 1,
             y: 0,
+            area: 0,
         };
         let config = FeatureConfig::all();
         let expected_actions = env.actions.clone();
@@ -7960,6 +8107,7 @@ mod tests {
             room_idx: common.room.len() as RoomIdx,
             x: 0,
             y: 0,
+            area: DUMMY_AREA,
         };
         let simulated = env.features_after_candidate(
             &common,
@@ -8008,6 +8156,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8036,6 +8185,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8075,6 +8225,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8087,6 +8238,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
         );
 
@@ -8103,11 +8255,13 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
             Action {
                 room_idx: common.room.len() as RoomIdx,
                 x: 0,
                 y: 0,
+                area: DUMMY_AREA,
             },
         ];
 
@@ -8157,11 +8311,13 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             Action {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
         ];
         let mut full_env = Environment::new(&common, (4, 4), 8, 0);
@@ -8210,11 +8366,13 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             Action {
                 room_idx: 1,
                 x: 1,
                 y: 0,
+                area: 0,
             },
         ];
         let mut full_env = Environment::new(&common, (4, 4), 8, 0);
@@ -8315,6 +8473,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8353,6 +8512,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Delaunay,
@@ -8417,6 +8577,7 @@ mod tests {
                 room_idx: 2,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8436,6 +8597,7 @@ mod tests {
                 room_idx: 2,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8444,6 +8606,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -8466,6 +8629,7 @@ mod tests {
                 room_idx: 2,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8474,6 +8638,7 @@ mod tests {
                 room_idx: 0,
                 x: 0,
                 y: 2,
+                area: 0,
             },
             &common,
         );
@@ -8485,6 +8650,7 @@ mod tests {
                     room_idx: 1,
                     x: 0,
                     y: 4,
+                    area: 0,
                 },
             )
             .step_outcomes;
@@ -8495,6 +8661,7 @@ mod tests {
                 room_idx: 1,
                 x: 0,
                 y: 4,
+                area: 0,
             },
             &common,
         );
@@ -8514,6 +8681,7 @@ mod tests {
                 room_idx: 2,
                 x: 0,
                 y: 0,
+                area: 0,
             },
             &common,
         );
@@ -8525,6 +8693,7 @@ mod tests {
                     room_idx: common.room.len() as RoomIdx,
                     x: 0,
                     y: 0,
+                    area: DUMMY_AREA,
                 },
             )
             .step_outcomes;
@@ -8653,6 +8822,7 @@ mod tests {
                 room_idx: 0,
                 x: 2,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8661,6 +8831,7 @@ mod tests {
                 room_idx: 2,
                 x: 1,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8673,6 +8844,7 @@ mod tests {
                 room_idx: 3,
                 x: 3,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8692,6 +8864,7 @@ mod tests {
                 room_idx: 0,
                 x: 2,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8700,6 +8873,7 @@ mod tests {
                 room_idx: 1,
                 x: 4,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8708,6 +8882,7 @@ mod tests {
                 room_idx: 2,
                 x: 1,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8716,6 +8891,7 @@ mod tests {
                 room_idx: 3,
                 x: 5,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8735,6 +8911,7 @@ mod tests {
                 room_idx: 0,
                 x: 2,
                 y: 1,
+                area: 0,
             },
             &common,
         );
@@ -8743,6 +8920,7 @@ mod tests {
                 room_idx: 1,
                 x: 1,
                 y: 1,
+                area: 0,
             },
             &common,
         );

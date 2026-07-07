@@ -4,6 +4,7 @@ use hashbrown::HashMap;
 use serde::Deserialize;
 
 pub type RoomIdx = u8; // index into provided room geometry JSON array
+pub type AreaIdx = u8; // semantic area id assigned to a placed room
 pub type ActionIdx = u8; // index into an environment's placed action history
 pub type SpatialCellIdx = u8; // index into an environment's coarse spatial grid
 pub type GeometryIdx = u8; // flat index of unique room geometries (map + door layout)
@@ -25,6 +26,8 @@ pub enum DoorValidOutcome {
     Invalid = 1,
 }
 
+pub const AREA_COUNT: usize = 6;
+pub const DUMMY_AREA: AreaIdx = AREA_COUNT as AreaIdx;
 pub const NUM_DIRS: usize = 4; // left, right, up, down
 
 #[derive(Clone, Deserialize)]
@@ -90,6 +93,7 @@ pub struct Action {
     pub room_idx: RoomIdx,
     pub x: Coord,
     pub y: Coord,
+    pub area: AreaIdx,
 }
 
 // Get the coordinates of the tile behind a door:

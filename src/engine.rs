@@ -2,8 +2,8 @@
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
 use crate::common::{
-    Action, CommonData, Coord, Direction, DoorLocation, DoorValidOutcome, DoorVariantIdx,
-    FrontierIdx, Room, RoomIdx,
+    AREA_COUNT, Action, AreaIdx, CommonData, Coord, DUMMY_AREA, Direction, DoorLocation,
+    DoorValidOutcome, DoorVariantIdx, FrontierIdx, Room, RoomIdx,
 };
 #[cfg(test)]
 use crate::environment::Features;
@@ -279,11 +279,13 @@ enum WorkerCommand {
         room_idx: InputShard<RoomIdx>,
         room_x: InputShard<Coord>,
         room_y: InputShard<Coord>,
+        room_area: InputShard<AreaIdx>,
     },
     StepKnown {
         room_idx: InputShard<RoomIdx>,
         room_x: InputShard<Coord>,
         room_y: InputShard<Coord>,
+        room_area: InputShard<AreaIdx>,
     },
     GetProposalCandidateMask {
         proposal_door_variant_count: usize,
@@ -303,6 +305,7 @@ enum WorkerCommand {
         room_idx: OutputShard<RoomIdx>,
         room_x: OutputShard<Coord>,
         room_y: OutputShard<Coord>,
+        room_area: OutputShard<AreaIdx>,
         proposal_frontier_idx: OutputShard<FrontierIdx>,
         proposal_door_variant_idx: OutputShard<DoorVariantIdx>,
         door_outcome_count: usize,
@@ -325,6 +328,7 @@ enum WorkerCommand {
         room_idx: OutputShard<RoomIdx>,
         room_x: OutputShard<Coord>,
         room_y: OutputShard<Coord>,
+        room_area: OutputShard<AreaIdx>,
     },
     GetOutcomes {
         door_outcome_count: usize,
@@ -533,15 +537,18 @@ fn worker_loop(
                 room_idx,
                 room_x,
                 room_y,
+                room_area,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the input slices remain valid and that no other thread mutates them.
                 let room_idx = unsafe { room_idx.into_slice() };
                 let room_x = unsafe { room_x.into_slice() };
                 let room_y = unsafe { room_y.into_slice() };
+                let room_area = unsafe { room_area.into_slice() };
                 debug_assert_eq!(room_idx.len(), environments.len());
                 debug_assert_eq!(room_x.len(), environments.len());
                 debug_assert_eq!(room_y.len(), environments.len());
+                debug_assert_eq!(room_area.len(), environments.len());
 
                 for (env_idx, env) in environments.iter_mut().enumerate() {
                     env.step(
@@ -549,6 +556,7 @@ fn worker_loop(
                             room_idx: room_idx[env_idx],
                             x: room_x[env_idx],
                             y: room_y[env_idx],
+                            area: room_area[env_idx],
                         },
                         &common_data,
                     );
@@ -559,15 +567,18 @@ fn worker_loop(
                 room_idx,
                 room_x,
                 room_y,
+                room_area,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the input slices remain valid and that no other thread mutates them.
                 let room_idx = unsafe { room_idx.into_slice() };
                 let room_x = unsafe { room_x.into_slice() };
                 let room_y = unsafe { room_y.into_slice() };
+                let room_area = unsafe { room_area.into_slice() };
                 debug_assert_eq!(room_idx.len(), environments.len());
                 debug_assert_eq!(room_x.len(), environments.len());
                 debug_assert_eq!(room_y.len(), environments.len());
+                debug_assert_eq!(room_area.len(), environments.len());
 
                 for (env_idx, env) in environments.iter_mut().enumerate() {
                     env.step_known(
@@ -575,6 +586,7 @@ fn worker_loop(
                             room_idx: room_idx[env_idx],
                             x: room_x[env_idx],
                             y: room_y[env_idx],
+                            area: room_area[env_idx],
                         },
                         &common_data,
                     );
@@ -619,6 +631,7 @@ fn worker_loop(
                 room_idx,
                 room_x,
                 room_y,
+                room_area,
                 proposal_frontier_idx,
                 proposal_door_variant_idx,
                 door_outcome_count,
@@ -641,6 +654,7 @@ fn worker_loop(
                 let room_idx = unsafe { room_idx.into_mut_slice() };
                 let room_x = unsafe { room_x.into_mut_slice() };
                 let room_y = unsafe { room_y.into_mut_slice() };
+                let room_area = unsafe { room_area.into_mut_slice() };
                 let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
                 let proposal_door_variant_idx =
                     unsafe { proposal_door_variant_idx.into_mut_slice() };
@@ -668,6 +682,7 @@ fn worker_loop(
                 debug_assert_eq!(room_idx.len(), environments.len() * recommended_candidates);
                 debug_assert_eq!(room_x.len(), environments.len() * recommended_candidates);
                 debug_assert_eq!(room_y.len(), environments.len() * recommended_candidates);
+                debug_assert_eq!(room_area.len(), environments.len() * recommended_candidates);
                 debug_assert_eq!(
                     proposal_frontier_idx.len(),
                     environments.len() * recommended_candidates
@@ -780,6 +795,7 @@ fn worker_loop(
                         room_idx: common_data.room.len() as RoomIdx,
                         x: 0,
                         y: 0,
+                        area: DUMMY_AREA,
                     };
                     for candidate_idx in 0..recommended_candidates {
                         let idx = row_start + candidate_idx;
@@ -787,6 +803,7 @@ fn worker_loop(
                             room_idx[idx] = candidate.room_idx;
                             room_x[idx] = candidate.x;
                             room_y[idx] = candidate.y;
+                            room_area[idx] = candidate.area;
                         }
                         if let Some(&frontier_idx) = candidate_frontier_idx.get(candidate_idx) {
                             proposal_frontier_idx[idx] = frontier_idx;
@@ -858,15 +875,18 @@ fn worker_loop(
                 room_idx,
                 room_x,
                 room_y,
+                room_area,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
                 // the output slices remain valid and that no other thread accesses them.
                 let room_idx = unsafe { room_idx.into_mut_slice() };
                 let room_x = unsafe { room_x.into_mut_slice() };
                 let room_y = unsafe { room_y.into_mut_slice() };
+                let room_area = unsafe { room_area.into_mut_slice() };
                 debug_assert_eq!(room_idx.len(), environments.len() * action_count);
                 debug_assert_eq!(room_x.len(), environments.len() * action_count);
                 debug_assert_eq!(room_y.len(), environments.len() * action_count);
+                debug_assert_eq!(room_area.len(), environments.len() * action_count);
 
                 for (env_idx, env) in environments.iter_mut().enumerate() {
                     debug_assert_eq!(env.actions().len(), action_count);
@@ -876,6 +896,7 @@ fn worker_loop(
                         room_idx[idx] = action.room_idx;
                         room_x[idx] = action.x;
                         room_y[idx] = action.y;
+                        room_area[idx] = action.area;
                     }
                 }
                 WorkerResponse::Done
@@ -1515,6 +1536,7 @@ pub struct ProposalCandidateBuffers {
     room_idx: Py<PyArray2<RoomIdx>>,
     room_x: Py<PyArray2<Coord>>,
     room_y: Py<PyArray2<Coord>>,
+    room_area: Py<PyArray2<AreaIdx>>,
     proposal_frontier_idx: Py<PyArray2<FrontierIdx>>,
     proposal_door_variant_idx: Py<PyArray2<DoorVariantIdx>>,
     pre_door_valid: Py<PyArray2<i8>>,
@@ -1607,6 +1629,7 @@ impl ProposalCandidateBuffers {
             room_idx: required_py_field!(fields, "room_idx"),
             room_x: required_py_field!(fields, "room_x"),
             room_y: required_py_field!(fields, "room_y"),
+            room_area: required_py_field!(fields, "room_area"),
             proposal_frontier_idx: required_py_field!(fields, "proposal_frontier_idx"),
             proposal_door_variant_idx: required_py_field!(fields, "proposal_door_variant_idx"),
             pre_door_valid: required_py_field!(fields, "pre_door_valid"),
@@ -3199,6 +3222,7 @@ impl EnvironmentGroup {
         room_idx: PyReadonlyArray1<'py, RoomIdx>,
         room_x: PyReadonlyArray1<'py, Coord>,
         room_y: PyReadonlyArray1<'py, Coord>,
+        room_area: PyReadonlyArray1<'py, AreaIdx>,
         kind: StepCommandKind,
     ) -> PyResult<()> {
         let room_idx = room_idx
@@ -3210,13 +3234,20 @@ impl EnvironmentGroup {
         let room_y = room_y
             .as_slice()
             .map_err(|_| PyValueError::new_err("room_y must be a contiguous 1D numpy array"))?;
+        let room_area = room_area
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_area must be a contiguous 1D numpy array"))?;
 
-        if room_idx.len() != room_x.len() || room_idx.len() != room_y.len() {
+        if room_idx.len() != room_x.len()
+            || room_idx.len() != room_y.len()
+            || room_idx.len() != room_area.len()
+        {
             return Err(PyValueError::new_err(format!(
-                "room_idx, room_x, and room_y must have the same length; got {}, {}, and {}",
+                "room_idx, room_x, room_y, and room_area must have the same length; got {}, {}, {}, and {}",
                 room_idx.len(),
                 room_x.len(),
-                room_y.len()
+                room_y.len(),
+                room_area.len()
             )));
         }
 
@@ -3226,6 +3257,20 @@ impl EnvironmentGroup {
                 self.num_environments,
                 room_idx.len(),
             )));
+        }
+        for (idx, (&room_idx, &area)) in room_idx.iter().zip(room_area).enumerate() {
+            let is_dummy = room_idx as usize >= self.common_data.room.len();
+            if is_dummy {
+                if area != DUMMY_AREA {
+                    return Err(PyValueError::new_err(format!(
+                        "dummy action at index {idx} must use room_area {DUMMY_AREA}; got {area}"
+                    )));
+                }
+            } else if area as usize >= AREA_COUNT {
+                return Err(PyValueError::new_err(format!(
+                    "room_area at index {idx} must be in 0..{AREA_COUNT}; got {area}"
+                )));
+            }
         }
 
         py.detach(|| {
@@ -3239,11 +3284,13 @@ impl EnvironmentGroup {
                         room_idx: InputShard::from_slice(&room_idx[action_start..action_end]),
                         room_x: InputShard::from_slice(&room_x[action_start..action_end]),
                         room_y: InputShard::from_slice(&room_y[action_start..action_end]),
+                        room_area: InputShard::from_slice(&room_area[action_start..action_end]),
                     },
                     StepCommandKind::StepKnown => WorkerCommand::StepKnown {
                         room_idx: InputShard::from_slice(&room_idx[action_start..action_end]),
                         room_x: InputShard::from_slice(&room_x[action_start..action_end]),
                         room_y: InputShard::from_slice(&room_y[action_start..action_end]),
+                        room_area: InputShard::from_slice(&room_area[action_start..action_end]),
                     },
                 };
                 if let Err(err) = worker.send(command) {
@@ -3481,12 +3528,14 @@ impl EnvironmentGroup {
         Bound<'py, PyArray2<RoomIdx>>,
         Bound<'py, PyArray2<Coord>>,
         Bound<'py, PyArray2<Coord>>,
+        Bound<'py, PyArray2<AreaIdx>>,
     )> {
         let action_count = self.action_count;
         let output_len = self.num_environments * action_count;
         let mut room_idx = vec![0; output_len];
         let mut room_x = vec![0; output_len];
         let mut room_y = vec![0; output_len];
+        let mut room_area = vec![DUMMY_AREA; output_len];
 
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -3500,6 +3549,7 @@ impl EnvironmentGroup {
                     room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
                     room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
                     room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
+                    room_area: OutputShard::from_slice(&mut room_area[output_start..output_end]),
                 }) {
                     set_first_error(&mut first_error, err);
                     break;
@@ -3514,6 +3564,7 @@ impl EnvironmentGroup {
             pyarray2_from_flat_vec(py, room_idx, self.num_environments, action_count)?,
             pyarray2_from_flat_vec(py, room_x, self.num_environments, action_count)?,
             pyarray2_from_flat_vec(py, room_y, self.num_environments, action_count)?,
+            pyarray2_from_flat_vec(py, room_area, self.num_environments, action_count)?,
         ))
     }
 
@@ -3523,8 +3574,16 @@ impl EnvironmentGroup {
         room_idx: PyReadonlyArray1<'py, RoomIdx>,
         room_x: PyReadonlyArray1<'py, Coord>,
         room_y: PyReadonlyArray1<'py, Coord>,
+        room_area: PyReadonlyArray1<'py, AreaIdx>,
     ) -> PyResult<()> {
-        self.step_with_kind(py, room_idx, room_x, room_y, StepCommandKind::Step)
+        self.step_with_kind(
+            py,
+            room_idx,
+            room_x,
+            room_y,
+            room_area,
+            StepCommandKind::Step,
+        )
     }
 
     fn step_known<'py>(
@@ -3533,8 +3592,16 @@ impl EnvironmentGroup {
         room_idx: PyReadonlyArray1<'py, RoomIdx>,
         room_x: PyReadonlyArray1<'py, Coord>,
         room_y: PyReadonlyArray1<'py, Coord>,
+        room_area: PyReadonlyArray1<'py, AreaIdx>,
     ) -> PyResult<()> {
-        self.step_with_kind(py, room_idx, room_x, room_y, StepCommandKind::StepKnown)
+        self.step_with_kind(
+            py,
+            room_idx,
+            room_x,
+            room_y,
+            room_area,
+            StepCommandKind::StepKnown,
+        )
     }
 
     fn get_proposal_candidate_mask<'py>(
@@ -3598,6 +3665,7 @@ impl EnvironmentGroup {
         let mut room_idx = buffers.room_idx.bind(py).readwrite();
         let mut room_x = buffers.room_x.bind(py).readwrite();
         let mut room_y = buffers.room_y.bind(py).readwrite();
+        let mut room_area = buffers.room_area.bind(py).readwrite();
         let mut proposal_frontier_idx = buffers.proposal_frontier_idx.bind(py).readwrite();
         let mut proposal_door_variant_idx = buffers.proposal_door_variant_idx.bind(py).readwrite();
         let mut pre_door_valid = buffers.pre_door_valid.bind(py).readwrite();
@@ -3633,6 +3701,7 @@ impl EnvironmentGroup {
             room_idx: self.common_data.room.len() as RoomIdx,
             x: 0,
             y: 0,
+            area: DUMMY_AREA,
         };
 
         check_shape(
@@ -3648,6 +3717,11 @@ impl EnvironmentGroup {
         check_shape(
             "room_y",
             room_y.as_array().shape(),
+            &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "room_area",
+            room_area.as_array().shape(),
             &[self.num_environments, recommended_candidates],
         )?;
         check_shape(
@@ -3742,6 +3816,9 @@ impl EnvironmentGroup {
         let room_y = room_y
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("room_y must be contiguous"))?;
+        let room_area = room_area
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("room_area must be contiguous"))?;
         let proposal_frontier_idx = proposal_frontier_idx
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("proposal_frontier_idx must be contiguous"))?;
@@ -3788,6 +3865,7 @@ impl EnvironmentGroup {
         room_idx.fill(dummy_candidate.room_idx);
         room_x.fill(dummy_candidate.x);
         room_y.fill(dummy_candidate.y);
+        room_area.fill(dummy_candidate.area);
         proposal_frontier_idx.fill(-1);
         proposal_door_variant_idx.fill(-1);
         pre_door_valid.fill(DoorValidOutcome::Unknown as i8);
@@ -3835,6 +3913,7 @@ impl EnvironmentGroup {
                     room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
                     room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
                     room_y: OutputShard::from_slice(&mut room_y[output_start..output_end]),
+                    room_area: OutputShard::from_slice(&mut room_area[output_start..output_end]),
                     proposal_frontier_idx: OutputShard::from_slice(
                         &mut proposal_frontier_idx[output_start..output_end],
                     ),
