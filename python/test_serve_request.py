@@ -19,6 +19,7 @@ def base_payload() -> dict:
         "episode_length": 3,
         "recommended_candidates": 1,
         "shortlist_candidates": 1,
+        "max_candidate_areas_per_placement": 2,
         "temperature": 1.0,
         "proposal_temperature": 1.0,
         "reward_door": 1.0,
@@ -358,6 +359,14 @@ def main() -> None:
     full_map_payload = base_payload() | {"small_map": False}
     full_map_request = GenerateRequest.model_validate(full_map_payload)
     validate_generate_request(full_map_request, rooms=[{}, {}, {}])
+    assert_invalid_value(
+        base_payload() | {"small_map": False, "max_candidate_areas_per_placement": 0},
+        "max_candidate_areas_per_placement must be greater than zero",
+    )
+    assert_invalid_value(
+        base_payload() | {"small_map": False, "max_candidate_areas_per_placement": 7},
+        "max_candidate_areas_per_placement must be at most AREA_COUNT",
+    )
 
     try:
         GenerateRequest.model_validate(base_payload())
@@ -487,6 +496,7 @@ def main() -> None:
     assert warmup_request.episode_length == 253
     assert warmup_request.recommended_candidates == 4
     assert warmup_request.shortlist_candidates == 16
+    assert warmup_request.max_candidate_areas_per_placement == 2
     assert warmup_request.temperature == 0.03
     assert warmup_request.proposal_temperature == 0.3
     assert warmup_request.reward_balance == 0.1

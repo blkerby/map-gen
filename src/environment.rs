@@ -3547,6 +3547,7 @@ impl Environment {
         sampled_frontier_idx: &[FrontierIdx],
         sampled_proposal_action_idx: &[ProposalActionIdx],
         recommended_candidates: usize,
+        max_candidate_areas_per_placement: usize,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -3586,7 +3587,7 @@ impl Environment {
         let mut clean: Vec<CandidateWithOutcomes> = Vec::with_capacity(recommended_candidates);
         let mut rejected = Vec::new();
         let mut postponed = Vec::new();
-        let mut seen_clean_keys = Vec::new();
+        let mut clean_count_by_key = Vec::new();
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
         for (&frontier_idx, &proposal_action_idx) in
@@ -3596,7 +3597,11 @@ impl Environment {
                 break;
             }
             let placement_key = Self::proposal_placement_key(frontier_idx, proposal_action_idx);
-            if placement_key.is_some_and(|key| seen_clean_keys.contains(&key)) {
+            if placement_key.is_some_and(|key| {
+                clean_count_by_key.iter().any(|(seen_key, count)| {
+                    *seen_key == key && *count >= max_candidate_areas_per_placement
+                })
+            }) {
                 postponed.push((frontier_idx, proposal_action_idx));
                 continue;
             }
@@ -3621,7 +3626,14 @@ impl Environment {
                 ProposalEvaluation::Clean(candidate) => {
                     evaluated_count += 1;
                     if let Some(key) = placement_key {
-                        seen_clean_keys.push(key);
+                        if let Some((_, count)) = clean_count_by_key
+                            .iter_mut()
+                            .find(|(seen_key, _)| *seen_key == key)
+                        {
+                            *count += 1;
+                        } else {
+                            clean_count_by_key.push((key, 1));
+                        }
                     }
                     clean.push(candidate);
                 }
@@ -7040,6 +7052,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 2,
+                1,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -7157,6 +7170,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 2,
+                1,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -7167,6 +7181,123 @@ mod tests {
 
         assert_eq!(candidate_frontier_idx, [0, 1]);
         assert_eq!(evaluated_count, 2);
+        assert_eq!(rejected_count, 0);
+    }
+
+    #[test]
+    fn proposal_shortlist_allows_configured_clean_area_variants_per_placement() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (6, 2), 8, 100, 100, 0);
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 0,
+            },
+            &common,
+        );
+        let candidate = GeometryAction {
+            geometry_idx: common.room[1].geometry_idx,
+            x: 1,
+            y: 0,
+            door_direction: Direction::Left,
+            door_x: 0,
+            door_y: 0,
+            door_kind: 0,
+        };
+        env.frontier.insert(
+            door_location(0, 0, false),
+            Frontier {
+                direction: Direction::Right,
+                dir_door_idx: 0,
+                door_output_idx: -1,
+                door_variant_idx: 0,
+                room_part_idx: 0,
+                component: 0,
+                kind: 0,
+                candidates: vec![candidate],
+            },
+        );
+        env.frontier.insert(
+            door_location(1, 0, false),
+            Frontier {
+                direction: Direction::Right,
+                dir_door_idx: 0,
+                door_output_idx: -1,
+                door_variant_idx: 0,
+                room_part_idx: 0,
+                component: 0,
+                kind: 0,
+                candidates: vec![candidate],
+            },
+        );
+        let door_variant_idx = common.door_variant_idx(
+            common.room[1].connection_variant_idx,
+            Direction::Left,
+            0,
+            0,
+            0,
+        );
+        let sampled_frontier_idx = [0, 0, 0, 1];
+        let sampled_proposal_action_idx = [
+            proposal_action_idx(door_variant_idx, 0),
+            proposal_action_idx(door_variant_idx, 1),
+            proposal_action_idx(door_variant_idx, 2),
+            proposal_action_idx(door_variant_idx, 0),
+        ];
+        let mut scratch = FeatureScratch::default();
+
+        let (
+            _pre_outcomes,
+            candidates,
+            candidate_frontier_idx,
+            _candidate_proposal_action_idx,
+            _post_outcomes,
+            _door_matches,
+            _features,
+            evaluated_count,
+            rejected_count,
+        ) = env
+            .get_proposal_candidates_with_outcomes(
+                &common,
+                &sampled_frontier_idx,
+                &sampled_proposal_action_idx,
+                3,
+                2,
+                &FeatureConfig::all_disabled(),
+                FrontierNeighborAlgorithm::Nearest,
+                1,
+                4,
+                &mut scratch,
+            )
+            .unwrap();
+
+        assert_eq!(candidate_frontier_idx, [0, 0, 1]);
+        assert_eq!(
+            candidates.iter().map(|candidate| candidate.area).collect::<Vec<_>>(),
+            vec![0, 1, 0],
+        );
+        assert_eq!(evaluated_count, 3);
         assert_eq!(rejected_count, 0);
     }
 
@@ -7248,6 +7379,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 2,
+                1,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,

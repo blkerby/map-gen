@@ -46,6 +46,7 @@
     "gpu_prefetch_batches": 1,
     "recommended_candidates": 4,
     "shortlist_candidates": 16,
+    "max_candidate_areas_per_placement": 2,
     "temperature": 1.0,
     "proposal_temperature": 1.0,
     "reward_door": 1.0,

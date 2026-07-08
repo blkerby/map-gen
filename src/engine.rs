@@ -300,6 +300,7 @@ enum WorkerCommand {
         frontier_window_size: usize,
         recommended_candidates: usize,
         shortlist_candidates: usize,
+        max_candidate_areas_per_placement: usize,
         sampled_frontier_idx: InputShard<FrontierIdx>,
         sampled_proposal_action_idx: InputShard<ProposalActionIdx>,
         room_idx: OutputShard<RoomIdx>,
@@ -637,6 +638,7 @@ fn worker_loop(
                 frontier_window_size,
                 recommended_candidates,
                 shortlist_candidates,
+                max_candidate_areas_per_placement,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
                 room_idx,
@@ -752,6 +754,7 @@ fn worker_loop(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
                         &sampled_proposal_action_idx[shortlist_start..shortlist_end],
                         recommended_candidates,
+                        max_candidate_areas_per_placement,
                         &features,
                         frontier_neighbor_algorithm,
                         frontier_neighbor_count,
@@ -1611,6 +1614,8 @@ pub struct ProposalCandidateBuffers {
     sampled_proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
     #[pyo3(get)]
     recommended_candidates: usize,
+    #[pyo3(get)]
+    max_candidate_areas_per_placement: usize,
     room_idx: Py<PyArray2<RoomIdx>>,
     room_x: Py<PyArray2<Coord>>,
     room_y: Py<PyArray2<Coord>>,
@@ -1714,6 +1719,10 @@ impl ProposalCandidateBuffers {
             sampled_frontier_idx: required_py_field!(fields, "sampled_frontier_idx"),
             sampled_proposal_action_idx: required_py_field!(fields, "sampled_proposal_action_idx"),
             recommended_candidates: required_py_field!(fields, "recommended_candidates"),
+            max_candidate_areas_per_placement: required_py_field!(
+                fields,
+                "max_candidate_areas_per_placement"
+            ),
             room_idx: required_py_field!(fields, "room_idx"),
             room_x: required_py_field!(fields, "room_x"),
             room_y: required_py_field!(fields, "room_y"),
@@ -3987,6 +3996,17 @@ impl EnvironmentGroup {
         let sampled_frontier_idx = buffers.sampled_frontier_idx.bind(py).readonly();
         let sampled_proposal_action_idx = buffers.sampled_proposal_action_idx.bind(py).readonly();
         let recommended_candidates = buffers.recommended_candidates;
+        let max_candidate_areas_per_placement = buffers.max_candidate_areas_per_placement;
+        if max_candidate_areas_per_placement == 0 {
+            return Err(PyValueError::new_err(
+                "max_candidate_areas_per_placement must be greater than zero",
+            ));
+        }
+        if max_candidate_areas_per_placement > AREA_COUNT as usize {
+            return Err(PyValueError::new_err(
+                "max_candidate_areas_per_placement must be at most AREA_COUNT",
+            ));
+        }
         let mut room_idx = buffers.room_idx.bind(py).readwrite();
         let mut room_x = buffers.room_x.bind(py).readwrite();
         let mut room_y = buffers.room_y.bind(py).readwrite();
@@ -4229,6 +4249,7 @@ impl EnvironmentGroup {
                 if let Err(err) = worker.send(WorkerCommand::GetCandidatesFromProposals {
                     recommended_candidates,
                     shortlist_candidates,
+                    max_candidate_areas_per_placement,
                     sampled_frontier_idx: InputShard::from_slice(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
                     ),

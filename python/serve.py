@@ -101,6 +101,7 @@ class GenerateRequest(StrictBaseModel):
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
+    max_candidate_areas_per_placement: int
     temperature: float
     proposal_temperature: float
     reward_door: float
@@ -422,6 +423,10 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         raise ValueError("recommended_candidates must be greater than zero")
     if generate_request.shortlist_candidates < generate_request.recommended_candidates:
         raise ValueError("shortlist_candidates must be at least recommended_candidates")
+    if generate_request.max_candidate_areas_per_placement <= 0:
+        raise ValueError("max_candidate_areas_per_placement must be greater than zero")
+    if generate_request.max_candidate_areas_per_placement > 6:
+        raise ValueError("max_candidate_areas_per_placement must be at most AREA_COUNT")
     if generate_request.temperature <= 0:
         raise ValueError("temperature must be greater than zero")
     if generate_request.proposal_temperature <= 0:
@@ -537,6 +542,9 @@ def create_generate_configs(
                 episode_length=generate_request.episode_length,
                 recommended_candidates=generate_request.recommended_candidates,
                 shortlist_candidates=generate_request.shortlist_candidates,
+                max_candidate_areas_per_placement=(
+                    generate_request.max_candidate_areas_per_placement
+                ),
                 gpu_prefetch_batches=state.serving_config.gpu_prefetch_batches,
                 temperature=temperature,
                 proposal_temperature=proposal_temperature,
@@ -761,6 +769,7 @@ def warmup_generate_request() -> GenerateRequest:
         episode_length=253,
         recommended_candidates=4,
         shortlist_candidates=16,
+        max_candidate_areas_per_placement=2,
         temperature=0.03,
         proposal_temperature=0.3,
         reward_door=1.0,

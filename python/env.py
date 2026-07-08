@@ -46,6 +46,7 @@ class GenerateConfig:
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
+    max_candidate_areas_per_placement: int
     gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
@@ -992,6 +993,7 @@ class EnvironmentGroup:
         sampled_frontier_idx: torch.Tensor,
         sampled_proposal_action_idx: torch.Tensor,
         recommended_candidates: int,
+        max_candidate_areas_per_placement: int,
     ) -> tuple[
         Actions,
         torch.Tensor,
@@ -1011,6 +1013,7 @@ class EnvironmentGroup:
                     .cpu()
                     .numpy(),
                     "recommended_candidates": recommended_candidates,
+                    "max_candidate_areas_per_placement": max_candidate_areas_per_placement,
                     "room_idx": candidate_slot.room_idx[: self.num_envs, :candidate_count].numpy(),
                     "room_x": candidate_slot.room_x[: self.num_envs, :candidate_count].numpy(),
                     "room_y": candidate_slot.room_y[: self.num_envs, :candidate_count].numpy(),

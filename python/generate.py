@@ -436,6 +436,7 @@ def get_shortlist_candidate_batch(
         sampled_frontier_idx,
         sampled_proposal_action_idx,
         group.config.recommended_candidates,
+        group.config.max_candidate_areas_per_placement,
     )
     return CandidateBatch(
         candidates=candidates,

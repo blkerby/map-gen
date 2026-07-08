@@ -571,6 +571,9 @@ def create_generate_config(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
         shortlist_candidates=config.generation.shortlist_candidates,
+        max_candidate_areas_per_placement=(
+            config.generation.max_candidate_areas_per_placement
+        ),
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,

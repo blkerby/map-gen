@@ -175,22 +175,23 @@ Tests:
 
 ## Phase 5: Candidate Shortlist Diversity
 
-Postpone duplicate placements with different area choices while processing the
-shortlist.
+Postpone area variants beyond the configured per-placement limit while
+processing the shortlist.
 
 Behavior:
 
 - While scanning the sampled shortlist, identify each candidate by placement:
   `(frontier_idx, door_variant_idx)`. This postponement key is intentionally
   before concrete room representative selection.
-- If a clean candidate with the same `(frontier_idx, door_variant_idx)` has
-  already been evaluated in the current shortlist pass, push later area variants
-  onto a postponed queue.
+- Track the number of clean candidates accepted for each
+  `(frontier_idx, door_variant_idx)` in the current shortlist pass.
+- If the count for a placement reaches
+  `generation.max_candidate_areas_per_placement`, push later area variants onto
+  a postponed queue without evaluating them in the initial pass.
 - If a rejected candidate has the same `(frontier_idx, door_variant_idx)` as an
-  earlier evaluated candidate, skip it instead of adding it to the postponed
-  queue.
-- Continue scanning non-duplicate placements until the shortlist ends or
-  `recommended_candidates` clean candidates are collected.
+  earlier evaluated candidate, do not count it against the per-placement limit.
+- Continue scanning placements that are still under the per-placement limit until
+  the shortlist ends or `recommended_candidates` clean candidates are collected.
 - If the end of the shortlist is reached and the clean pool is still short,
   process postponed candidates.
 - Only after the normal and postponed queues fail to produce clean candidates
@@ -200,6 +201,8 @@ Implementation notes:
 
 - Count postponed evaluations separately in profiling if useful; at minimum keep
   existing evaluated/rejected/clean counts meaningful.
+- Add required config field `generation.max_candidate_areas_per_placement` and
+  validate it is in `[1, AREA_COUNT]`. Use `2` in checked-in configs initially.
 - The postponed queue should preserve shortlist order.
 - A postponed candidate that resolves to no action should be ignored, like the
   current invalid proposal entries.
@@ -211,9 +214,10 @@ Implementation notes:
 
 Tests:
 
-- Rust unit test that a shortlist with one placement's six area variants and a
-  second placement considers the second placement before later area variants of
-  the first.
+- Rust unit test that `max_candidate_areas_per_placement = 1` preserves the
+  original duplicate-postponement behavior.
+- Rust unit test that `max_candidate_areas_per_placement = 2` accepts two clean
+  area variants from the same placement before postponing the third.
 - Rust unit test that postponed candidates are considered before rejected
   fallback candidates.
 
