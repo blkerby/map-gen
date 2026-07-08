@@ -199,6 +199,10 @@ class EndOutcomes:
     refill_from_room_distance_mask: torch.Tensor
     missing_connect_distance: torch.Tensor
     missing_connect_distance_mask: torch.Tensor
+    area_connected_components: torch.Tensor
+    area_crossings: torch.Tensor
+    area_size: torch.Tensor
+    area_map_station_count: torch.Tensor
 
     def to(self, device: torch.device) -> "EndOutcomes":
         return EndOutcomes(
@@ -220,6 +224,10 @@ class EndOutcomes:
             refill_from_room_distance_mask=self.refill_from_room_distance_mask.to(device),
             missing_connect_distance=self.missing_connect_distance.to(device),
             missing_connect_distance_mask=self.missing_connect_distance_mask.to(device),
+            area_connected_components=self.area_connected_components.to(device),
+            area_crossings=self.area_crossings.to(device),
+            area_size=self.area_size.to(device),
+            area_map_station_count=self.area_map_station_count.to(device),
         )
 
     def slice(self, start: int, end: int) -> "EndOutcomes":
@@ -242,7 +250,19 @@ class EndOutcomes:
             refill_from_room_distance_mask=self.refill_from_room_distance_mask[start:end],
             missing_connect_distance=self.missing_connect_distance[start:end],
             missing_connect_distance_mask=self.missing_connect_distance_mask[start:end],
+            area_connected_components=self.area_connected_components[start:end],
+            area_crossings=self.area_crossings[start:end],
+            area_size=self.area_size[start:end],
+            area_map_station_count=self.area_map_station_count[start:end],
         )
+
+
+@dataclass
+class AreaOutcomeState:
+    area_connected_components: torch.Tensor
+    area_crossings: torch.Tensor
+    area_size: torch.Tensor
+    area_map_station_count: torch.Tensor
 
 
 @dataclass
@@ -1087,6 +1107,37 @@ class EnvironmentGroup:
                 missing_connect_distance_mask=torch.from_numpy(
                     result.end_outcomes.missing_connect_distance_mask
                 ).to(device),
+                area_connected_components=torch.from_numpy(
+                    result.end_outcomes.area_connected_components
+                ).to(device=device, dtype=torch.int64),
+                area_crossings=torch.from_numpy(result.end_outcomes.area_crossings).to(
+                    device=device,
+                    dtype=torch.int64,
+                ),
+                area_size=torch.from_numpy(result.end_outcomes.area_size).to(
+                    device=device,
+                    dtype=torch.int64,
+                ),
+                area_map_station_count=torch.from_numpy(
+                    result.end_outcomes.area_map_station_count
+                ).to(device=device, dtype=torch.int64),
+            ),
+        )
+
+    def get_area_outcome_state(self, device: torch.device) -> AreaOutcomeState:
+        result = self.env.get_area_outcome_state()
+        return AreaOutcomeState(
+            area_connected_components=torch.from_numpy(
+                result.area_connected_components
+            ).to(device=device, dtype=torch.int64),
+            area_crossings=torch.from_numpy(result.area_crossings).to(
+                device=device,
+                dtype=torch.int64,
+            ),
+            area_size=torch.from_numpy(result.area_size).to(device=device, dtype=torch.int64),
+            area_map_station_count=torch.from_numpy(result.area_map_station_count).to(
+                device=device,
+                dtype=torch.int64,
             ),
         )
 

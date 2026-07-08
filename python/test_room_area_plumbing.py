@@ -101,6 +101,60 @@ def test_environment_group_round_trips_room_area() -> None:
     assert actions.room_area.tolist() == [[2, 4, DUMMY_AREA]]
 
 
+def test_environment_group_reports_area_outcome_state() -> None:
+    engine = Engine(
+        [
+            one_tile_room("Right", "right"),
+            one_tile_room("Left", "left"),
+        ],
+        disabled_features(),
+    )
+    env = engine.create_environment_group(
+        map_size=(4, 4),
+        num_envs=1,
+        candidate_spatial_cell_size=4,
+        area_bounding_box_width=4,
+        area_bounding_box_height=4,
+        seed=0,
+        num_threads=1,
+    )
+    device = torch.device("cpu")
+
+    env.step_known(
+        Actions(
+            room_idx=torch.tensor([0], dtype=torch.uint8),
+            room_x=torch.tensor([0], dtype=torch.int8),
+            room_y=torch.tensor([0], dtype=torch.int8),
+            room_area=torch.tensor([2], dtype=torch.uint8),
+        )
+    )
+    env.step_known(
+        Actions(
+            room_idx=torch.tensor([1], dtype=torch.uint8),
+            room_x=torch.tensor([1], dtype=torch.int8),
+            room_y=torch.tensor([0], dtype=torch.int8),
+            room_area=torch.tensor([4], dtype=torch.uint8),
+        )
+    )
+
+    state = env.get_area_outcome_state(device)
+    assert state.area_connected_components.tolist() == [[0, 0, 1, 0, 1, 0]]
+    assert state.area_crossings.tolist() == [1]
+    assert state.area_size.tolist() == [[0, 0, 1, 0, 1, 0]]
+    assert state.area_map_station_count.tolist() == [[0, 0, 0, 0, 0, 0]]
+
+    env.finish()
+    outcomes = env.get_outcomes(device, verify_consistency=True)
+    assert outcomes.end_outcomes.area_connected_components.tolist() == (
+        state.area_connected_components.tolist()
+    )
+    assert outcomes.end_outcomes.area_crossings.tolist() == state.area_crossings.tolist()
+    assert outcomes.end_outcomes.area_size.tolist() == state.area_size.tolist()
+    assert outcomes.end_outcomes.area_map_station_count.tolist() == (
+        state.area_map_station_count.tolist()
+    )
+
+
 def test_experience_storage_round_trips_room_area() -> None:
     episode_data = EpisodeData(
         actions=Actions(
@@ -145,6 +199,7 @@ def test_experience_storage_round_trips_room_area() -> None:
 
 def main() -> None:
     test_environment_group_round_trips_room_area()
+    test_environment_group_reports_area_outcome_state()
     test_experience_storage_round_trips_room_area()
 
 

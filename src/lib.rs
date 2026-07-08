@@ -7,7 +7,7 @@ mod scc_dag;
 pub mod union_find;
 
 use engine::{
-    EndOutcomes, Engine, EnvironmentGroup, EpisodeOutcomes, FeatureBuffers,
+    AreaOutcomeBuffers, EndOutcomes, Engine, EnvironmentGroup, EpisodeOutcomes, FeatureBuffers,
     ProposalCandidateBuffers, StepOutcomes,
 };
 
@@ -32,6 +32,7 @@ fn map_gen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<EnvironmentGroup>()?;
     m.add_class::<StepOutcomes>()?;
     m.add_class::<EndOutcomes>()?;
+    m.add_class::<AreaOutcomeBuffers>()?;
     m.add_class::<EpisodeOutcomes>()?;
     m.add_class::<ProposalCandidateBuffers>()?;
     m.add_class::<FeatureBuffers>()?;

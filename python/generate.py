@@ -1514,6 +1514,30 @@ def merge_generation_results(
                         for _, episode_outcomes, _, _ in results
                     ]
                 ),
+                area_connected_components=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.area_connected_components
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                area_crossings=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.area_crossings
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                area_size=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.area_size
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
+                area_map_station_count=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.area_map_station_count
+                        for _, episode_outcomes, _, _ in results
+                    ]
+                ),
             ),
         ),
         DoorMatchCounts(

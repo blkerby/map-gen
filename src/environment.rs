@@ -17,6 +17,7 @@ use crate::common::{
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
 use crate::scc_dag::SccDag;
+use crate::union_find::{UnionFind, UnionFindSnapshot};
 
 const NO_COMPONENT: usize = usize::MAX;
 const UNREACHABLE_DISTANCE: GraphDistance = GraphDistance::MAX;
@@ -268,6 +269,14 @@ pub struct StepOutcomes {
 pub struct FeatureOutcomes {
     pub step_outcomes: StepOutcomes,
     pub door_match: Vec<i16>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AreaOutcomeState {
+    pub connected_components: [usize; AREA_COUNT],
+    pub crossings: usize,
+    pub size: [usize; AREA_COUNT],
+    pub map_station_count: [usize; AREA_COUNT],
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1106,6 +1115,10 @@ pub struct Environment {
     area_min_y: [Coord; AREA_COUNT],
     area_max_y: [Coord; AREA_COUNT],
     area_map_station_count: [usize; AREA_COUNT],
+    area_connected_components: [usize; AREA_COUNT],
+    area_crossings: usize,
+    area_size: [usize; AREA_COUNT],
+    area_room_components: UnionFind,
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
     room_part_component: Vec<usize>,             // maps placed room door groups to SCC components
@@ -1131,6 +1144,19 @@ pub struct Environment {
 struct FeatureSnapshot {
     finished: bool,
     frontier: HashMap<DoorLocation, Frontier>,
+    room_idx: Option<RoomIdx>,
+    room_used: bool,
+    area_idx: Option<usize>,
+    area_used: bool,
+    area_min_x: Coord,
+    area_max_x: Coord,
+    area_min_y: Coord,
+    area_max_y: Coord,
+    area_map_station_count: usize,
+    area_connected_components: usize,
+    area_size: usize,
+    area_crossings: usize,
+    area_room_components: UnionFindSnapshot,
     connection_variant_idx: Option<ConnectionVariantIdx>,
     connection_variant_unused_count: usize,
     room_part_component: Vec<usize>,
@@ -1158,6 +1184,10 @@ struct LookaheadSnapshot {
     area_min_y: Coord,
     area_max_y: Coord,
     area_map_station_count: usize,
+    area_connected_components: usize,
+    area_size: usize,
+    area_crossings: usize,
+    area_room_components: UnionFindSnapshot,
     geometry_idx: Option<GeometryIdx>,
     geometry_unused_count: usize,
     connection_variant_idx: Option<ConnectionVariantIdx>,
@@ -1737,6 +1767,10 @@ impl Environment {
             area_min_y: [0; AREA_COUNT],
             area_max_y: [0; AREA_COUNT],
             area_map_station_count: [0; AREA_COUNT],
+            area_connected_components: [0; AREA_COUNT],
+            area_crossings: 0,
+            area_size: [0; AREA_COUNT],
+            area_room_components: UnionFind::new(common.room.len()),
             geometry_unused_count: common
                 .geometry_rooms
                 .iter()
@@ -1790,6 +1824,10 @@ impl Environment {
         self.area_min_y = [0; AREA_COUNT];
         self.area_max_y = [0; AREA_COUNT];
         self.area_map_station_count = [0; AREA_COUNT];
+        self.area_connected_components = [0; AREA_COUNT];
+        self.area_crossings = 0;
+        self.area_size = [0; AREA_COUNT];
+        self.area_room_components.clear();
         self.geometry_unused_count.clear();
         self.geometry_unused_count
             .extend(common.geometry_rooms.iter().map(|rooms| rooms.len()));
@@ -1865,6 +1903,7 @@ impl Environment {
 
     fn apply_area_state(&mut self, common: &CommonData, action: Action) {
         let area = action.area as usize;
+        let room_idx = action.room_idx as usize;
         let (min_x, max_x, min_y, max_y) = self.action_bounds(common, action);
         if self.area_used[area] {
             self.area_min_x[area] = self.area_min_x[area].min(min_x);
@@ -1880,6 +1919,43 @@ impl Environment {
         }
         if common.room[action.room_idx as usize].map_station {
             self.area_map_station_count[area] += 1;
+        }
+        self.area_room_components.reset_node(room_idx);
+        self.area_connected_components[area] += 1;
+        let geometry_idx = common.room[room_idx].geometry_idx as usize;
+        self.area_size[area] += common.geometry[geometry_idx].occupied_tiles.len();
+    }
+
+    fn apply_area_door_match(
+        &mut self,
+        common: &CommonData,
+        action: Action,
+        door_direction: Direction,
+        matched_dir_door_idx: DirDoorIdx,
+    ) {
+        let opposite_dir = door_direction.opposite() as usize;
+        let matched_room_idx =
+            common.room_dir_door[opposite_dir][matched_dir_door_idx as usize].room_idx;
+        let room_area = action.area;
+        let matched_room_area = self.room_area[matched_room_idx as usize];
+        if room_area == matched_room_area {
+            if self
+                .area_room_components
+                .union(action.room_idx as usize, matched_room_idx as usize)
+            {
+                self.area_connected_components[room_area as usize] -= 1;
+            }
+        } else {
+            self.area_crossings += 1;
+        }
+    }
+
+    pub fn area_outcome_state(&self) -> AreaOutcomeState {
+        AreaOutcomeState {
+            connected_components: self.area_connected_components,
+            crossings: self.area_crossings,
+            size: self.area_size,
+            map_station_count: self.area_map_station_count,
         }
     }
 
@@ -2689,6 +2765,7 @@ impl Environment {
                     self.door_matches[door.direction as usize][i1 as usize] = i2;
                     self.door_matches[door.direction.opposite() as usize][i2 as usize] = i1;
                 }
+                self.apply_area_door_match(common, action, door.direction, i2);
                 let p1 = common.room_dir_door[door.direction as usize][i1 as usize].room_part_idx;
                 let p2 = common.room_dir_door[door.direction.opposite() as usize][i2 as usize]
                     .room_part_idx;
@@ -3856,6 +3933,11 @@ impl Environment {
             area_min_y: area_idx.map_or(0, |area| self.area_min_y[area]),
             area_max_y: area_idx.map_or(0, |area| self.area_max_y[area]),
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
+            area_connected_components: area_idx
+                .map_or(0, |area| self.area_connected_components[area]),
+            area_size: area_idx.map_or(0, |area| self.area_size[area]),
+            area_crossings: self.area_crossings,
+            area_room_components: self.area_room_components.snapshot(),
             geometry_idx,
             geometry_unused_count: geometry_idx
                 .map_or(0, |idx| self.geometry_unused_count[idx as usize]),
@@ -3896,7 +3978,12 @@ impl Environment {
             self.area_min_y[area] = snapshot.area_min_y;
             self.area_max_y[area] = snapshot.area_max_y;
             self.area_map_station_count[area] = snapshot.area_map_station_count;
+            self.area_connected_components[area] = snapshot.area_connected_components;
+            self.area_size[area] = snapshot.area_size;
         }
+        self.area_crossings = snapshot.area_crossings;
+        self.area_room_components
+            .restore(snapshot.area_room_components);
         if let Some(geometry_idx) = snapshot.geometry_idx {
             self.geometry_unused_count[geometry_idx as usize] = snapshot.geometry_unused_count;
         }
@@ -3948,11 +4035,26 @@ impl Environment {
             .collect();
         let room_idx =
             (candidate.room_idx < common.room.len() as RoomIdx).then_some(candidate.room_idx);
+        let area_idx = room_idx.map(|_| candidate.area as usize);
         let connection_variant_idx =
             room_idx.map(|room_idx| common.room[room_idx as usize].connection_variant_idx);
         let snapshot = FeatureSnapshot {
             finished: self.finished,
             frontier,
+            room_idx,
+            room_used: room_idx.is_some_and(|room_idx| self.room_used[room_idx as usize]),
+            area_idx,
+            area_used: area_idx.is_some_and(|area| self.area_used[area]),
+            area_min_x: area_idx.map_or(0, |area| self.area_min_x[area]),
+            area_max_x: area_idx.map_or(0, |area| self.area_max_x[area]),
+            area_min_y: area_idx.map_or(0, |area| self.area_min_y[area]),
+            area_max_y: area_idx.map_or(0, |area| self.area_max_y[area]),
+            area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
+            area_connected_components: area_idx
+                .map_or(0, |area| self.area_connected_components[area]),
+            area_size: area_idx.map_or(0, |area| self.area_size[area]),
+            area_crossings: self.area_crossings,
+            area_room_components: self.area_room_components.snapshot(),
             connection_variant_idx,
             connection_variant_unused_count: connection_variant_idx
                 .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
@@ -3971,15 +4073,27 @@ impl Environment {
     fn restore_feature_candidate(
         &mut self,
         common: &CommonData,
-        candidate: Action,
+        _candidate: Action,
         snapshot: FeatureSnapshot,
     ) {
         self.finished = snapshot.finished;
         self.frontier = snapshot.frontier;
-        if candidate.room_idx < self.room_used.len() as RoomIdx {
-            // Coordinates for unused rooms are intentionally left unspecified.
-            self.room_used.set(candidate.room_idx as usize, false);
+        if let Some(room_idx) = snapshot.room_idx {
+            self.room_used.set(room_idx as usize, snapshot.room_used);
         }
+        if let Some(area) = snapshot.area_idx {
+            self.area_used[area] = snapshot.area_used;
+            self.area_min_x[area] = snapshot.area_min_x;
+            self.area_max_x[area] = snapshot.area_max_x;
+            self.area_min_y[area] = snapshot.area_min_y;
+            self.area_max_y[area] = snapshot.area_max_y;
+            self.area_map_station_count[area] = snapshot.area_map_station_count;
+            self.area_connected_components[area] = snapshot.area_connected_components;
+            self.area_size[area] = snapshot.area_size;
+        }
+        self.area_crossings = snapshot.area_crossings;
+        self.area_room_components
+            .restore(snapshot.area_room_components);
         if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
             self.connection_variant_unused_count[connection_variant_idx as usize] =
                 snapshot.connection_variant_unused_count;
@@ -5953,6 +6067,113 @@ mod tests {
         env.clear(&common);
         assert_eq!(env.area_used, [false; AREA_COUNT]);
         assert_eq!(env.area_map_station_count, [0; AREA_COUNT]);
+    }
+
+    #[test]
+    fn area_outcome_state_tracks_components_sizes_crossings_and_restore() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}],
+                    [{"id": 1, "direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1], [1, 0]],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (8, 8), 8, 100, 100, 0);
+
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 0,
+            },
+            &common,
+        );
+        assert_eq!(env.area_connected_components[0], 1);
+        assert_eq!(env.area_size[0], 1);
+        assert_eq!(env.area_crossings, 0);
+
+        env.step(
+            Action {
+                room_idx: 1,
+                x: 1,
+                y: 0,
+                area: 0,
+            },
+            &common,
+        );
+        assert_eq!(env.area_connected_components[0], 1);
+        assert_eq!(env.area_size[0], 2);
+        assert_eq!(env.area_crossings, 0);
+
+        let snapshot = env.apply_lookahead_candidate(
+            Action {
+                room_idx: 2,
+                x: 2,
+                y: 0,
+                area: 1,
+            },
+            &common,
+        );
+        assert_eq!(env.area_connected_components[0], 1);
+        assert_eq!(env.area_connected_components[1], 1);
+        assert_eq!(env.area_size[1], 1);
+        assert_eq!(env.area_crossings, 1);
+        env.restore_lookahead_candidate(&common, snapshot);
+
+        assert_eq!(env.area_connected_components[0], 1);
+        assert_eq!(env.area_connected_components[1], 0);
+        assert_eq!(env.area_size[0], 2);
+        assert_eq!(env.area_size[1], 0);
+        assert_eq!(env.area_crossings, 0);
+
+        env.step(
+            Action {
+                room_idx: 2,
+                x: 2,
+                y: 0,
+                area: 1,
+            },
+            &common,
+        );
+        let area_state = env.area_outcome_state();
+        assert_eq!(area_state.connected_components[0], 1);
+        assert_eq!(area_state.connected_components[1], 1);
+        assert_eq!(area_state.size[0], 2);
+        assert_eq!(area_state.size[1], 1);
+        assert_eq!(area_state.crossings, 1);
+
+        env.clear(&common);
+        assert_eq!(env.area_connected_components, [0; AREA_COUNT]);
+        assert_eq!(env.area_size, [0; AREA_COUNT]);
+        assert_eq!(env.area_crossings, 0);
     }
 
     #[test]

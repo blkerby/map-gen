@@ -1083,6 +1083,24 @@ class TrainingSession:
                             for outcomes in outcome_iterations
                         ]
                     ),
+                    area_connected_components=torch.cat(
+                        [
+                            outcomes.end_outcomes.area_connected_components
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
+                    area_crossings=torch.cat(
+                        [outcomes.end_outcomes.area_crossings for outcomes in outcome_iterations]
+                    ),
+                    area_size=torch.cat(
+                        [outcomes.end_outcomes.area_size for outcomes in outcome_iterations]
+                    ),
+                    area_map_station_count=torch.cat(
+                        [
+                            outcomes.end_outcomes.area_map_station_count
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
                 ),
             ),
             DoorMatchCounts(
