@@ -30,6 +30,7 @@ from env import (
     GenerateConfig,
     StepOutcomes,
     ProposalData,
+    area_connected_component_bucket_excess,
 )
 from experience import ExperienceStorage
 from generate import GenerationStats, run_generation_groups
@@ -515,9 +516,9 @@ def create_generate_config(
             config.generation.reward_area_connected,
             "generation.reward_area_connected",
         ),
-        "reward_area_used": variable_float_tensor(
-            config.generation.reward_area_used,
-            "generation.reward_area_used",
+        "reward_area_connected_excess": variable_float_tensor(
+            config.generation.reward_area_connected_excess,
+            "generation.reward_area_connected_excess",
         ),
         "reward_area_crossing": variable_float_tensor(
             config.generation.reward_area_crossing,
@@ -587,10 +588,16 @@ def create_generate_config(
             generation_variable_floats_by_name["reward_missing_connect_utility"]
         ),
         reward_area_connected=generation_variable_floats_by_name["reward_area_connected"],
-        reward_area_used=generation_variable_floats_by_name["reward_area_used"],
+        reward_area_connected_excess=(
+            generation_variable_floats_by_name["reward_area_connected_excess"]
+        ),
         reward_area_crossing=generation_variable_floats_by_name["reward_area_crossing"],
         reward_area_size_valid=generation_variable_floats_by_name["reward_area_size_valid"],
         reward_area_map_station=generation_variable_floats_by_name["reward_area_map_station"],
+        area_connected_component_bucket_excess=area_connected_component_bucket_excess(
+            config.train.area_connected_component_bucket_upper_bounds,
+            device,
+        ),
         generation_variable_floats=generation_variable_floats,
         log_temperature_model=log_temperature_model,
         log_recommended_candidates_model=log_recommended_candidates_model,
@@ -1399,9 +1406,8 @@ class TrainingSession:
         missing_connect_utility_loss_pct = (
             100.0 * loss.missing_connect_utility_contribution / loss_denominator
         )
-        area_used_loss_pct = 100.0 * loss.area_used_contribution / loss_denominator
-        area_excess_components_loss_pct = (
-            100.0 * loss.area_excess_components_contribution / loss_denominator
+        area_connected_component_loss_pct = (
+            100.0 * loss.area_connected_component_contribution / loss_denominator
         )
         area_crossings_loss_pct = 100.0 * loss.area_crossings_contribution / loss_denominator
         area_size_loss_pct = 100.0 * loss.area_size_contribution / loss_denominator
@@ -1434,10 +1440,8 @@ class TrainingSession:
             "refill_distance_loss_pct": refill_distance_loss_pct,
             "missing_connect_utility_loss": loss.missing_connect_utility,
             "missing_connect_utility_loss_pct": missing_connect_utility_loss_pct,
-            "area_used_loss": loss.area_used,
-            "area_used_loss_pct": area_used_loss_pct,
-            "area_excess_components_loss": loss.area_excess_components,
-            "area_excess_components_loss_pct": area_excess_components_loss_pct,
+            "area_connected_component_loss": loss.area_connected_component,
+            "area_connected_component_loss_pct": area_connected_component_loss_pct,
             "area_crossings_loss": loss.area_crossings,
             "area_crossings_loss_pct": area_crossings_loss_pct,
             "area_size_loss": loss.area_size,
@@ -1545,9 +1549,9 @@ class TrainingSession:
                     "generation.reward_area_connected",
                 )
             ),
-            "reward_area_used": variable_float_metric_value(
-                step_config.generation.reward_area_used,
-                "generation.reward_area_used",
+            "reward_area_connected_excess": variable_float_metric_value(
+                step_config.generation.reward_area_connected_excess,
+                "generation.reward_area_connected_excess",
             ),
             "reward_area_crossing": variable_float_metric_value(
                 step_config.generation.reward_area_crossing,
@@ -1575,8 +1579,9 @@ class TrainingSession:
             "save_distance_weight": step_config.train.save_distance_weight,
             "refill_distance_weight": step_config.train.refill_distance_weight,
             "missing_connect_utility_weight": step_config.train.missing_connect_utility_weight,
-            "area_used_weight": step_config.train.area_used_weight,
-            "area_excess_components_weight": step_config.train.area_excess_components_weight,
+            "area_connected_component_weight": (
+                step_config.train.area_connected_component_weight
+            ),
             "area_crossing_weight": step_config.train.area_crossing_weight,
             "area_size_weight": step_config.train.area_size_weight,
             "area_map_station_weight": step_config.train.area_map_station_weight,
@@ -2072,8 +2077,7 @@ def build_session(args: Args) -> TrainingSession:
             save_distance_weight=config.train.save_distance_weight,
             refill_distance_weight=config.train.refill_distance_weight,
             missing_connect_utility_weight=config.train.missing_connect_utility_weight,
-            area_used_weight=config.train.area_used_weight,
-            area_excess_components_weight=config.train.area_excess_components_weight,
+            area_connected_component_weight=config.train.area_connected_component_weight,
             area_crossing_weight=config.train.area_crossing_weight,
             area_size_weight=config.train.area_size_weight,
             area_map_station_weight=config.train.area_map_station_weight,

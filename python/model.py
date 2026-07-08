@@ -52,8 +52,7 @@ class Predictions:
     refill_from_room_utility: torch.Tensor
     # Predicted utility for each required missing connection:
     missing_connect_utility: torch.Tensor
-    area_used: torch.Tensor
-    area_excess_components: torch.Tensor
+    area_connected_component_bucket_logits: torch.Tensor
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station_count: torch.Tensor
@@ -95,9 +94,8 @@ def get_predictions(raw_preds, output_sizes):
         refill_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         refill_from_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         missing_connect_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
-        area_used=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT]),
-        area_excess_components=raw_preds.new_empty(
-            [raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT]
+        area_connected_component_bucket_logits=raw_preds.new_empty(
+            [raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT, 0]
         ),
         area_crossings=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         area_size=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT, 3]),
@@ -533,6 +531,10 @@ class FrontierModel(torch.nn.Module):
         num_layers,
         door_counts,
         frontier_window_size,
+        area_bounding_box_width,
+        area_bounding_box_height,
+        max_area_size,
+        area_connected_component_bucket_count,
         features: FeatureConfig,
     ):
         super().__init__()
@@ -542,6 +544,7 @@ class FrontierModel(torch.nn.Module):
         self.map_y = map_y
         self.embedding_width = embedding_width
         self.global_embedding_width = global_embedding_width
+        self.area_connected_component_bucket_count = area_connected_component_bucket_count
         if distance_proximity_scale <= 0:
             raise ValueError("distance_proximity_scale must be greater than zero")
         self.distance_proximity_scale = distance_proximity_scale
@@ -582,6 +585,9 @@ class FrontierModel(torch.nn.Module):
             num_connection_outputs=self.num_connection_outputs,
             door_counts=(self.left_count, self.right_count, self.up_count, self.down_count),
             frontier_window_area=frontier_window_size**2,
+            area_bounding_box_width=area_bounding_box_width,
+            area_bounding_box_height=area_bounding_box_height,
+            max_area_size=max_area_size,
         )
         frontier_node_feature_classes = [
             feature_class
@@ -741,8 +747,10 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             self.num_connection_outputs,
         )
-        self.area_used_output = torch.nn.Linear(embedding_width, AREA_COUNT)
-        self.area_excess_components_output = torch.nn.Linear(embedding_width, AREA_COUNT)
+        self.area_connected_component_output = torch.nn.Linear(
+            embedding_width,
+            AREA_COUNT * area_connected_component_bucket_count,
+        )
         self.area_crossings_output = torch.nn.Linear(embedding_width, 1)
         self.area_size_output = torch.nn.Linear(embedding_width, AREA_COUNT * 3)
         self.area_map_station_count_output = torch.nn.Linear(embedding_width, AREA_COUNT * 3)
@@ -895,8 +903,12 @@ class FrontierModel(torch.nn.Module):
         refill_to_room_utility = self.refill_to_room_utility_output(X).to(torch.float32)
         refill_from_room_utility = self.refill_from_room_utility_output(X).to(torch.float32)
         missing_connect_utility = self.missing_connect_utility_output(X).to(torch.float32)
-        area_used = self.area_used_output(X).to(torch.float32)
-        area_excess_components = self.area_excess_components_output(X).to(torch.float32)
+        area_connected_component_bucket_logits = self.area_connected_component_output(X).reshape(
+            X.shape[0],
+            X.shape[1],
+            AREA_COUNT,
+            self.area_connected_component_bucket_count,
+        ).to(torch.float32)
         area_crossings = self.area_crossings_output(X).squeeze(-1).to(torch.float32)
         area_size = self.area_size_output(X).reshape(
             X.shape[0],
@@ -1035,8 +1047,7 @@ class FrontierModel(torch.nn.Module):
             refill_to_room_utility=refill_to_room_utility,
             refill_from_room_utility=refill_from_room_utility,
             missing_connect_utility=missing_connect_utility,
-            area_used=area_used,
-            area_excess_components=area_excess_components,
+            area_connected_component_bucket_logits=area_connected_component_bucket_logits,
             area_crossings=area_crossings,
             area_size=area_size,
             area_map_station_count=area_map_station_count,

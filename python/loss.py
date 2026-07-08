@@ -21,8 +21,7 @@ class LossConfig:
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
-    area_used_weight: float
-    area_excess_components_weight: float
+    area_connected_component_weight: float
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
@@ -43,8 +42,7 @@ class LossBreakdown:
     save_distance: torch.Tensor
     refill_distance: torch.Tensor
     missing_connect_utility: torch.Tensor
-    area_used: torch.Tensor
-    area_excess_components: torch.Tensor
+    area_connected_component: torch.Tensor
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station: torch.Tensor
@@ -59,8 +57,7 @@ class LossBreakdown:
     save_distance_contribution: torch.Tensor
     refill_distance_contribution: torch.Tensor
     missing_connect_utility_contribution: torch.Tensor
-    area_used_contribution: torch.Tensor
-    area_excess_components_contribution: torch.Tensor
+    area_connected_component_contribution: torch.Tensor
     area_crossings_contribution: torch.Tensor
     area_size_contribution: torch.Tensor
     area_map_station_contribution: torch.Tensor
@@ -149,8 +146,7 @@ def compute_loss_breakdown(
     refill_utility_mask: torch.Tensor,
     missing_connect_utility_target: torch.Tensor,
     missing_connect_utility_mask: torch.Tensor,
-    area_used_target: torch.Tensor,
-    area_excess_components_target: torch.Tensor,
+    area_connected_component_target: torch.Tensor,
     area_crossings_target: torch.Tensor,
     area_size_target: torch.Tensor,
     area_map_station_target: torch.Tensor,
@@ -233,17 +229,11 @@ def compute_loss_breakdown(
         missing_connect_utility_mask,
         config.missing_connect_utility_weight,
     )
-    area_used_loss, area_used_wt = masked_binary_cross_entropy_loss(
-        preds.area_used,
-        area_used_target,
+    area_connected_component_loss, area_connected_component_wt = masked_cross_entropy_loss(
+        preds.area_connected_component_bucket_logits,
+        area_connected_component_target,
         area_mask,
-        config.area_used_weight,
-    )
-    area_excess_components_loss, area_excess_components_wt = masked_mse_loss(
-        preds.area_excess_components,
-        area_excess_components_target,
-        area_mask,
-        config.area_excess_components_weight,
+        config.area_connected_component_weight,
     )
     area_crossings_loss, area_crossings_wt = masked_mse_loss(
         preds.area_crossings,
@@ -275,8 +265,7 @@ def compute_loss_breakdown(
         + save_distance_wt
         + refill_distance_wt
         + missing_connect_utility_wt
-        + area_used_wt
-        + area_excess_components_wt
+        + area_connected_component_wt
         + area_crossings_wt
         + area_size_wt
         + area_map_station_wt
@@ -293,8 +282,7 @@ def compute_loss_breakdown(
     save_distance_contribution = save_distance_loss / total_weight
     refill_distance_contribution = refill_distance_loss / total_weight
     missing_connect_utility_contribution = missing_connect_utility_loss / total_weight
-    area_used_contribution = area_used_loss / total_weight
-    area_excess_components_contribution = area_excess_components_loss / total_weight
+    area_connected_component_contribution = area_connected_component_loss / total_weight
     area_crossings_contribution = area_crossings_loss / total_weight
     area_size_contribution = area_size_loss / total_weight
     area_map_station_contribution = area_map_station_loss / total_weight
@@ -310,8 +298,7 @@ def compute_loss_breakdown(
         + save_distance_contribution
         + refill_distance_contribution
         + missing_connect_utility_contribution
-        + area_used_contribution
-        + area_excess_components_contribution
+        + area_connected_component_contribution
         + area_crossings_contribution
         + area_size_contribution
         + area_map_station_contribution
@@ -331,9 +318,8 @@ def compute_loss_breakdown(
         missing_connect_utility=(
             missing_connect_utility_loss / (missing_connect_utility_wt + 1e-15)
         ),
-        area_used=area_used_loss / (area_used_wt + 1e-15),
-        area_excess_components=(
-            area_excess_components_loss / (area_excess_components_wt + 1e-15)
+        area_connected_component=(
+            area_connected_component_loss / (area_connected_component_wt + 1e-15)
         ),
         area_crossings=area_crossings_loss / (area_crossings_wt + 1e-15),
         area_size=area_size_loss / (area_size_wt + 1e-15),
@@ -349,8 +335,7 @@ def compute_loss_breakdown(
         save_distance_contribution=save_distance_contribution,
         refill_distance_contribution=refill_distance_contribution,
         missing_connect_utility_contribution=missing_connect_utility_contribution,
-        area_used_contribution=area_used_contribution,
-        area_excess_components_contribution=area_excess_components_contribution,
+        area_connected_component_contribution=area_connected_component_contribution,
         area_crossings_contribution=area_crossings_contribution,
         area_size_contribution=area_size_contribution,
         area_map_station_contribution=area_map_station_contribution,

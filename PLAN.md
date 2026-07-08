@@ -300,11 +300,12 @@ Implementation notes:
 
 Model predictions:
 
-- `area_used`: log-odds that each area has at least one assigned room, width
-  `AREA_COUNT`.
-- `area_excess_components`: expected excess connected components for each area,
-  width `AREA_COUNT`, where the training target is
-  `max(area_connected_components - 1, 0)`.
+- `area_connected_component_bucket_logits`: bucketed classifier for each area's
+  connected component count. Configure the inclusive bucket upper bounds with
+  `train.area_connected_component_bucket_upper_bounds`; the initial value is
+  `[0, 1, 2, 3]`, producing buckets `0`, `1`, `2`, `3`, and `4+`. The first
+  two buckets must remain exactly `0` and `1` so the valid outcome is always
+  bucket index `1`.
 - `area_crossings`: scalar regression/count prediction.
 - `area_size`: bucketed classifier with three buckets per area: below
   `min_area_size`, in range, and above `max_area_size`, for total width
@@ -317,23 +318,23 @@ Model predictions:
 
 Training config:
 
-- Add required train weights: `area_used_weight`,
-  `area_excess_components_weight`, `area_crossing_weight`,
-  `area_size_weight`, and `area_map_station_weight`.
+- Add required train weights: `area_connected_component_weight`,
+  `area_crossing_weight`, `area_size_weight`, and `area_map_station_weight`.
+- Add required connected-component bucket config:
+  `area_connected_component_bucket_upper_bounds`.
 - Add required area size config: `min_area_size` `max_area_size`.
 - Defer generation reward fields (`reward_area_connected`,
-  `reward_area_used`, `reward_area_crossing`, `reward_area_size_valid`) to
-  Phase 8, where prediction outputs are incorporated into candidate reward.
+  `reward_area_connected_excess`, `reward_area_crossing`,
+  `reward_area_size_valid`) to Phase 8, where prediction outputs are
+  incorporated into candidate reward.
 - Defer `target_area_size` and `reward_area_size` to a later follow-up. When
   added, `target_area_size` should be ordered as
   `[Crateria, Brinstar, Norfair, Wrecked Ship, Maridia, Tourian]`.
 
 Loss/reward handling:
 
-- Train `area_used` with binary cross-entropy using
-  `area_connected_components > 0` as the target.
-- Train `area_excess_components` with MSE against
-  `max(area_connected_components - 1, 0)`.
+- Train `area_connected_component_bucket_logits` with cross-entropy over the
+  configured component-count buckets.
 - Train area crossings as non-negative counts.
 - Train `area_map_station_count` with cross-entropy over three buckets per area:
   `0`, `1`, and `2+`.
@@ -360,20 +361,19 @@ Incorporate area predictions into `compute_expected_reward`.
 
 Reward terms:
 
-- Area connected:
-  `-reward_area_connected * sum(predicted_area_excess_components)`
-- Area used: `+reward_area_used * sum(sigmoid(area_used_logits))`
+- Area connected validity:
+  `reward_area_connected * sum(log P(area_connected_components == 1))`
+- Area connected excess shaping:
+  `-reward_area_connected_excess * sum(E[max(area_connected_components - 1, 0)])`,
+  with the expectation derived from the connected-component bucket
+  probabilities and each bucket's representative lower-bound component count.
 - Area crossings: `-reward_area_crossing * predicted_area_crossings`
-- Area map stations: positive reward terms based on the predicted probability of
-  the `1` bucket for each area's `area_map_station_count` classifier. The `0`
-  and `2+` buckets are distinct training targets because they represent
-  different failure modes, even though reward only uses the `1` bucket
-  probability. Candidate generation also hard-rejects known second map stations
-  in the same area.
-- Area size validity: positive reward terms based on the predicted probability
-  of the in-range bucket for each area's `area_size` classifier.
-- For both 3-bucket classifiers, compute reward probabilities by applying
-  softmax to the bucket logits and selecting the middle bucket.
+- Area map stations:
+  `reward_area_map_station * sum(log P(area_map_station_count == 1))`.
+- Area size validity:
+  `reward_area_size_valid * sum(log P(min_area_size <= area_size <= max_area_size))`.
+- Use `log_softmax` for connected validity, map-station validity, and area-size
+  validity so these rewards behave like other validity log-probability terms.
 - Deferred area target size: later add
   `-reward_area_size * sum((predicted_area_size - target_area_size)^2)`.
 
@@ -468,9 +468,3 @@ Performance risks:
   derives the room-level graph from `door_matches` and recomputes connected
   components. Maintain area connected components incrementally during generation
   instead, with lookahead rollback support.
-
-## Open Questions
-
-- Should `area_connected_components > 0` replace `area_used` conceptually as
-  the source of truth for whether an area is used, or should `area_used` remain
-  as separate explicit state for bbox logic and readability?

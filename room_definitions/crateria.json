@@ -42,6 +42,7 @@
     {
         "room_id": 9,
         "name": "Crateria Tube",
+        "map_station": true,
         "map": [
             [1]
         ],
@@ -173,6 +174,7 @@
         "room_id": 16,
         "name": "Crateria Save Room",
         "save": true,
+        "map_station": true,
         "map": [
             [1]
         ],
@@ -186,6 +188,7 @@
     {
         "room_id": 17,
         "name": "The Final Missile",
+        "map_station": true,        
         "map": [
             [1]
         ],
@@ -215,6 +218,7 @@
     {
         "room_id": 19,
         "name": "Bomb Torizo Room",
+        "map_station": true,
         "map": [
             [1]
         ],
@@ -557,6 +561,7 @@
     {
         "room_id": 305,
         "name": "Forgotten Highway Elbow",
+        "map_station": true,
         "map": [
             [1]
         ],

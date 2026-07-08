@@ -26,6 +26,9 @@ class FeatureContext:
     num_connection_outputs: int
     door_counts: tuple[int, int, int, int]
     frontier_window_area: int
+    area_bounding_box_width: int
+    area_bounding_box_height: int
+    max_area_size: int
 
 
 class GlobalFeature(torch.nn.Module, ABC):
@@ -552,6 +555,17 @@ class KnownDistanceFeature(DistanceSlotFeature):
 
 
 class AreaStateFeature(GlobalFeature):
+    def __init__(
+        self,
+        area_bounding_box_width: int,
+        area_bounding_box_height: int,
+        max_area_size: int,
+    ):
+        super().__init__()
+        self.area_bounding_box_width = area_bounding_box_width
+        self.area_bounding_box_height = area_bounding_box_height
+        self.max_area_size = max_area_size
+
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
         return config.area_state
@@ -562,20 +576,27 @@ class AreaStateFeature(GlobalFeature):
 
     @classmethod
     def build(cls, context: FeatureContext) -> AreaStateFeature:
-        return cls()
+        return cls(
+            context.area_bounding_box_width,
+            context.area_bounding_box_height,
+            context.max_area_size,
+        )
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         area = features.global_features
+        bbox_width = area.area_used.new_tensor(self.area_bounding_box_width, dtype=dtype)
+        bbox_height = area.area_used.new_tensor(self.area_bounding_box_height, dtype=dtype)
+        max_area_size = area.area_used.new_tensor(self.max_area_size, dtype=dtype)
         values = [
             area.area_used.to(dtype),
-            area.area_min_x.to(dtype),
-            area.area_max_x.to(dtype),
-            area.area_min_y.to(dtype),
-            area.area_max_y.to(dtype),
+            area.area_min_x.to(dtype) / bbox_width,
+            area.area_max_x.to(dtype) / bbox_width,
+            area.area_min_y.to(dtype) / bbox_height,
+            area.area_max_y.to(dtype) / bbox_height,
             area.area_connected_components.to(dtype),
-            area.area_size.to(dtype),
+            area.area_size.to(dtype) / max_area_size,
             area.area_map_station_count.to(dtype),
-            area.area_crossings.to(dtype),
+            area.area_crossings.to(dtype) / AREA_COUNT,
         ]
         return torch.cat(values, dim=-1)
 

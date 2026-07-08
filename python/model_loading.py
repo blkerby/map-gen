@@ -53,6 +53,12 @@ def frontier_model_kwargs(
             count_room_doors_by_direction(rooms, "down"),
         ),
         "frontier_window_size": config.generation.frontier_window_size,
+        "area_bounding_box_width": config.generation.area_bounding_box_width,
+        "area_bounding_box_height": config.generation.area_bounding_box_height,
+        "max_area_size": config.generation.max_area_size,
+        "area_connected_component_bucket_count": (
+            len(config.train.area_connected_component_bucket_upper_bounds) + 1
+        ),
         "features": config.features,
     }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from env import (
     Actions,
+    AREA_COUNT,
     CandidateStats,
     CandidateSlot,
     DoorMatchCounts,
@@ -172,10 +173,29 @@ def compute_expected_reward(
         preds.toilet_invalid,
         outcomes.toilet_invalid,
     )
-    area_size_valid_probability = torch.softmax(preds.area_size.to(torch.float32), dim=-1)[
+    area_connected_log_probability = torch.log_softmax(
+        preds.area_connected_component_bucket_logits.to(torch.float32),
+        dim=-1,
+    )[..., 1]
+    area_connected_probability = torch.softmax(
+        preds.area_connected_component_bucket_logits.to(torch.float32),
+        dim=-1,
+    )
+    area_connected_excess = torch.sum(
+        area_connected_probability
+        * config.area_connected_component_bucket_excess.to(
+            device=preds.door_invalid.device,
+            dtype=area_connected_probability.dtype,
+        ),
+        dim=-1,
+    )
+    area_size_valid_log_probability = torch.log_softmax(
+        preds.area_size.to(torch.float32),
+        dim=-1,
+    )[
         ..., 1
     ]
-    area_map_station_probability = torch.softmax(
+    area_map_station_log_probability = torch.log_softmax(
         preds.area_map_station_count.to(torch.float32),
         dim=-1,
     )[..., 1]
@@ -202,15 +222,15 @@ def compute_expected_reward(
             batch_weight(config.reward_missing_connect_utility)
             * total_proximity_utility(preds.missing_connect_utility)
         )
-        - batch_weight(config.reward_area_connected)
-        * torch.sum(preds.area_excess_components.to(torch.float32), dim=2)
-        + batch_weight(config.reward_area_used)
-        * torch.sum(torch.sigmoid(preds.area_used.to(torch.float32)), dim=2)
+        + batch_weight(config.reward_area_connected)
+        * torch.sum(area_connected_log_probability, dim=2)
+        - batch_weight(config.reward_area_connected_excess)
+        * torch.sum(area_connected_excess, dim=2)
         - batch_weight(config.reward_area_crossing) * preds.area_crossings.to(torch.float32)
         + batch_weight(config.reward_area_size_valid)
-        * torch.sum(area_size_valid_probability, dim=2)
+        * torch.sum(area_size_valid_log_probability, dim=2)
         + batch_weight(config.reward_area_map_station)
-        * torch.sum(area_map_station_probability, dim=2)
+        * torch.sum(area_map_station_log_probability, dim=2)
     )
 
 
@@ -735,11 +755,13 @@ def select_candidate_actions(
                 candidate_count,
                 -1,
             ),
-            area_used=preds.area_used.view(environment_count, candidate_count, -1),
-            area_excess_components=preds.area_excess_components.view(
-                environment_count,
-                candidate_count,
-                -1,
+            area_connected_component_bucket_logits=(
+                preds.area_connected_component_bucket_logits.view(
+                    environment_count,
+                    candidate_count,
+                    AREA_COUNT,
+                    -1,
+                )
             ),
             area_crossings=preds.area_crossings.view(environment_count, candidate_count),
             area_size=preds.area_size.view(environment_count, candidate_count, -1, 3),
