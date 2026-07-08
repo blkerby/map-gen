@@ -1149,6 +1149,7 @@ class TrainingSession:
             episode_data.actions.room_idx.cpu(),
             episode_data.actions.room_x.cpu(),
             episode_data.actions.room_y.cpu(),
+            episode_data.actions.room_area.cpu(),
         )
         episode_count = min(self.config.visualize, episode_data.actions.room_idx.shape[0])
         total_frames = 0

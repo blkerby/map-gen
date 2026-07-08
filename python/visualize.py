@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
 Action = Tuple[int, int, int]
+Placement = Tuple[int, int, int, Optional[int]]
 _ROOM_GEOMETRY_CACHE: Dict[int, List[dict]] = {}
 _COLORS = [
     "#8ecae6",
@@ -76,12 +77,29 @@ def _select_environment(values: Any, environment_index: int) -> List[Any]:
 
 def _normalize_actions(actions: Any, environment_index: int) -> List[Action]:
     """Convert engine.get_actions() or a sequence of placements into triples."""
+    return [
+        (room_idx, room_x, room_y)
+        for room_idx, room_x, room_y, _room_area in _normalize_placements(
+            actions,
+            environment_index,
+        )
+    ]
+
+
+def _normalize_placements(actions: Any, environment_index: int) -> List[Placement]:
+    """Convert engine.get_actions() or placement sequences into area-aware tuples."""
     if isinstance(actions, tuple) and len(actions) in (3, 4):
         room_idx, room_x, room_y = actions[:3]
         room_idx = _select_environment(room_idx, environment_index)
         room_x = _select_environment(room_x, environment_index)
         room_y = _select_environment(room_y, environment_index)
-        return [(int(r), int(x), int(y)) for r, x, y in zip(room_idx, room_x, room_y)]
+        if len(actions) == 4:
+            room_area = _select_environment(actions[3], environment_index)
+            return [
+                (int(r), int(x), int(y), int(area))
+                for r, x, y, area in zip(room_idx, room_x, room_y, room_area)
+            ]
+        return [(int(r), int(x), int(y), None) for r, x, y in zip(room_idx, room_x, room_y)]
 
     normalized = []
     for action in actions:
@@ -91,12 +109,26 @@ def _normalize_actions(actions: Any, environment_index: int) -> List[Action]:
                     int(action["room_idx"]),
                     int(action.get("x", action.get("room_x"))),
                     int(action.get("y", action.get("room_y"))),
+                    (
+                        int(action["room_area"])
+                        if "room_area" in action
+                        else int(action["area"])
+                        if "area" in action
+                        else None
+                    ),
                 )
             )
         else:
             room_idx, x, y = action[:3]
-            normalized.append((int(room_idx), int(x), int(y)))
+            room_area = int(action[3]) if len(action) > 3 else None
+            normalized.append((int(room_idx), int(x), int(y), room_area))
     return normalized
+
+
+def _placement_fill(step_idx: int, room_area: Optional[int]) -> str:
+    if room_area is not None and room_area in _AREA_COLORS:
+        return _AREA_COLORS[room_area]
+    return _COLORS[step_idx % len(_COLORS)]
 
 
 def _occupied_cells(room: dict) -> Set[Tuple[int, int]]:
@@ -604,10 +636,10 @@ def save_episode_frames(
     room_colors: List[str] = []
     wall_segments: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
     saved_paths = []
-    placements = _normalize_actions(actions, environment_index)
+    placements = _normalize_placements(actions, environment_index)
     label_positions: List[Tuple[float, float, str]] = []
     for step_idx, action in enumerate(placements):
-        room_idx, room_x, room_y = action
+        room_idx, room_x, room_y, room_area = action
         if not 0 <= room_idx < len(rooms):
             continue
 
@@ -616,7 +648,7 @@ def save_episode_frames(
             geometry,
             room_x,
             room_y,
-            _COLORS[step_idx % len(_COLORS)],
+            _placement_fill(step_idx, room_area),
         )
         room_polygons.extend(polygons)
         room_colors.extend(colors)
