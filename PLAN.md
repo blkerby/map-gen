@@ -464,5 +464,11 @@ Performance risks:
   same placement diversity if many area variants are valid.
 - Per-candidate area outcome computation can be expensive if it repeatedly
   derives the room-level graph from `door_matches` and recomputes connected
-  components. Prefer the on-demand derivation first for simplicity, then add
-  incremental state only if profiling shows it is needed.
+  components. Maintain area connected components incrementally during generation
+  instead, with lookahead rollback support.
+
+## Open Questions
+
+- Should `area_connected_components > 0` replace `area_used` conceptually as
+  the source of truth for whether an area is used, or should `area_used` remain
+  as separate explicit state for bbox logic and readability?
