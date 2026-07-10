@@ -2119,6 +2119,15 @@ impl Environment {
             && self.candidate_toilet_area_valid(common, action)
     }
 
+    fn candidate_frontier_area_valid(
+        &self,
+        common: &CommonData,
+        frontier: &Frontier,
+        area: AreaIdx,
+    ) -> bool {
+        !self.area_used[area as usize] || area == self.frontier_area(common, frontier.room_part_idx)
+    }
+
     fn action_for_proposal_candidate(
         &mut self,
         common: &CommonData,
@@ -2137,6 +2146,9 @@ impl Environment {
             .frontier
             .get(sorted_frontier_locations.get(frontier_idx)?)?;
         if door_variant_direction != frontier.direction.opposite() {
+            return None;
+        }
+        if !self.candidate_frontier_area_valid(common, frontier, area) {
             return None;
         }
         let mut matching_count = 0usize;
@@ -6426,7 +6438,7 @@ mod tests {
                 "map": [[1]],
                 "toilet_crossing_x": [],
                 "map_station": true,
-                "doors": [],
+                "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
                 "connections": [],
                 "missing_connections": []
             },
@@ -6507,6 +6519,12 @@ mod tests {
                 &common,
             );
         }
+        env.frontier.clear();
+        let placed_room_part_idx = common
+            .room_part
+            .iter()
+            .position(|&(room_idx, _)| room_idx == 0)
+            .unwrap() as RoomPartIdx;
         let blocked_candidate = GeometryAction {
             geometry_idx: common.room[6].geometry_idx,
             x: 3,
@@ -6532,7 +6550,7 @@ mod tests {
                 dir_door_idx: 0,
                 door_output_idx: -1,
                 door_variant_idx: 0,
-                room_part_idx: 0,
+                room_part_idx: placed_room_part_idx,
                 component: 0,
                 kind: 0,
                 candidates: vec![blocked_candidate],
@@ -6545,7 +6563,7 @@ mod tests {
                 dir_door_idx: 0,
                 door_output_idx: -1,
                 door_variant_idx: 0,
-                room_part_idx: 0,
+                room_part_idx: placed_room_part_idx,
                 component: 0,
                 kind: 0,
                 candidates: vec![valid_candidate],
@@ -6824,6 +6842,175 @@ mod tests {
 
         assert!(Environment::max_frontiers(&common) > 0);
         assert!(first_resolvable_proposal_action(&mut env, &common, 0, 0).is_some());
+    }
+
+    #[test]
+    fn proposal_resolution_requires_used_area_to_match_selected_frontier() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (6, 2), 8, 100, 100, 0);
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 0,
+            },
+            &common,
+        );
+        env.step(
+            Action {
+                room_idx: 2,
+                x: 4,
+                y: 0,
+                area: 1,
+            },
+            &common,
+        );
+
+        let matching_action = first_resolvable_proposal_action(&mut env, &common, 0, 0)
+            .expect("the selected frontier's area should be valid");
+        let (door_variant_idx, _) = proposal_action_parts(matching_action).unwrap();
+        assert!(first_resolvable_proposal_action(&mut env, &common, 0, 2).is_some());
+
+        let mismatched_action = proposal_action_idx(door_variant_idx, 1);
+        let mut scratch = FeatureScratch::default();
+        let result = env
+            .get_proposal_candidates_with_outcomes(
+                &common,
+                &[0],
+                &[mismatched_action],
+                1,
+                1,
+                1,
+                &FeatureConfig::all_disabled(),
+                FrontierNeighborAlgorithm::Nearest,
+                1,
+                4,
+                &mut scratch,
+            )
+            .unwrap();
+
+        assert_eq!(result.invalid_count, 1);
+        assert_eq!(result.evaluated_count, 0);
+        assert_eq!(result.scored_invalid_frontier_idx, [0]);
+        assert_eq!(
+            result.scored_invalid_proposal_action_idx,
+            [mismatched_action]
+        );
+    }
+
+    #[test]
+    fn proposal_resolution_ignores_incidental_door_match_areas() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}],
+                    [{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [[0, 1], [1, 0]],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (5, 2), 8, 100, 100, 0);
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 0,
+            },
+            &common,
+        );
+        env.step(
+            Action {
+                room_idx: 1,
+                x: 2,
+                y: 0,
+                area: 1,
+            },
+            &common,
+        );
+
+        let sorted_frontier_locations = env.sorted_frontier_locations();
+        let selected_frontier_idx = sorted_frontier_locations
+            .iter()
+            .position(|location| {
+                let frontier = &env.frontier[location];
+                env.frontier_area(&common, frontier.room_part_idx) == 0
+            })
+            .unwrap() as FrontierIdx;
+        let proposal_action =
+            first_resolvable_proposal_action(&mut env, &common, selected_frontier_idx, 0)
+                .expect("the selected frontier should allow its own area");
+        let action = env
+            .action_for_proposal_candidate(
+                &common,
+                &sorted_frontier_locations,
+                selected_frontier_idx,
+                proposal_action,
+            )
+            .unwrap();
+
+        assert_eq!(action.room_idx, 2);
+        assert_eq!(action.x, 1);
+        assert_eq!(action.area, 0);
+        assert_eq!(
+            common.room[action.room_idx as usize]
+                .doors
+                .iter()
+                .filter(|door| {
+                    env.frontier
+                        .contains_key(&DoorLocation::new(door, action.x, action.y))
+                })
+                .count(),
+            2
+        );
     }
 
     #[test]
