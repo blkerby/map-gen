@@ -55,6 +55,7 @@
     "gpu_prefetch_batches": 1,
     "recommended_candidates": 4,
     "shortlist_candidates": 16,
+    "num_scored_no_action_candidates": 4,
     "max_candidate_areas_per_placement": 2,
     "temperature": {"log": [10.0, 2.0, 0.03, 0.03]},
     "proposal_temperature": 0.1,

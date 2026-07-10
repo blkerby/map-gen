@@ -19,6 +19,7 @@ def base_payload() -> dict:
         "episode_length": 3,
         "recommended_candidates": 1,
         "shortlist_candidates": 1,
+        "num_scored_no_action_candidates": 1,
         "max_candidate_areas_per_placement": 2,
         "temperature": 1.0,
         "proposal_temperature": 1.0,
@@ -492,6 +493,7 @@ def main() -> None:
     assert warmup_request.episode_length == 253
     assert warmup_request.recommended_candidates == 4
     assert warmup_request.shortlist_candidates == 16
+    assert warmup_request.num_scored_no_action_candidates == 4
     assert warmup_request.max_candidate_areas_per_placement == 2
     assert warmup_request.temperature == 0.03
     assert warmup_request.proposal_temperature == 0.3

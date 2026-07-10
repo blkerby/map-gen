@@ -6,7 +6,7 @@ from env import (
     proposal_action_idx,
     proposal_action_room_area,
 )
-from generate import sample_proposal_shortlist
+from generate import INVALID_PROPOSAL_TARGET_LOGIT, sample_proposal_shortlist
 from learn import proposal_batch_loss, proposal_scores_for_candidates
 from model import ProposalOutput
 
@@ -32,17 +32,45 @@ def test_proposal_loss_compares_candidate_scores() -> None:
     aligned_loss = proposal_batch_loss(
         aligned_score,
         target_logits,
+        torch.zeros_like(target_logits, dtype=torch.bool),
         device,
     )
     reversed_loss = proposal_batch_loss(
         reversed_score,
         target_logits,
+        torch.zeros_like(target_logits, dtype=torch.bool),
         device,
     )
 
     assert torch.isfinite(aligned_loss)
     assert torch.isfinite(reversed_loss)
     assert aligned_loss < reversed_loss
+
+
+def test_no_action_candidate_receives_downward_gradient() -> None:
+    candidate_score = torch.tensor([[0.0, 5.0]], requires_grad=True)
+    loss = proposal_batch_loss(
+        candidate_score,
+        torch.tensor([[0.0, INVALID_PROPOSAL_TARGET_LOGIT]]),
+        torch.tensor([[False, True]]),
+        torch.device("cpu"),
+    )
+
+    loss.backward()
+    assert candidate_score.grad is not None
+    assert candidate_score.grad[0, 1] > 0
+
+
+def test_all_no_action_row_has_zero_proposal_loss() -> None:
+    candidate_score = torch.tensor([[1.0, 2.0]], requires_grad=True)
+    loss = proposal_batch_loss(
+        candidate_score,
+        torch.full((1, 2), INVALID_PROPOSAL_TARGET_LOGIT),
+        torch.ones((1, 2), dtype=torch.bool),
+        torch.device("cpu"),
+    )
+
+    assert loss.item() == 0.0
 
 
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
@@ -104,6 +132,8 @@ def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
 def main() -> None:
     test_proposal_action_helpers_flatten_area_variants()
     test_proposal_loss_compares_candidate_scores()
+    test_no_action_candidate_receives_downward_gradient()
+    test_all_no_action_row_has_zero_proposal_loss()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()
     test_proposal_shortlist_pads_environment_without_frontiers()

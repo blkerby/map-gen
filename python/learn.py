@@ -49,6 +49,7 @@ class FeatureTrainBatch:
     features: Features
     proposal_frontier_idx: torch.Tensor | None
     proposal_action_idx: torch.Tensor | None
+    proposal_no_action: torch.Tensor | None
     proposal_target_logits: torch.Tensor | None
 
 
@@ -241,14 +242,17 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
 
 def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagnostics:
     target_logits = proposal_data.target_logits.to(torch.float32)
-    frontier_valid = proposal_data.frontier_idx >= 0
-    while frontier_valid.ndim < target_logits.ndim:
-        frontier_valid = frontier_valid.unsqueeze(-1)
-    valid = frontier_valid & (proposal_data.action_idx >= 0) & torch.isfinite(target_logits)
+    present = (
+        (proposal_data.frontier_idx >= 0)
+        & (proposal_data.action_idx >= 0)
+        & torch.isfinite(target_logits)
+    )
+    resolved = present & ~proposal_data.no_action
     candidate_count = target_logits.shape[-1]
     flat_logits = target_logits.reshape(-1, candidate_count)
-    flat_valid = valid.reshape(-1, candidate_count)
-    row_valid = torch.any(flat_valid, dim=1)
+    flat_present = present.reshape(-1, candidate_count)
+    flat_resolved = resolved.reshape(-1, candidate_count)
+    row_valid = torch.any(flat_resolved, dim=1)
     if not torch.any(row_valid):
         zero = torch.sum(target_logits) * 0.0
         return CandidateDiagnostics(
@@ -258,11 +262,11 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
         )
 
     row_logits = torch.where(
-        flat_valid[row_valid],
+        flat_present[row_valid],
         flat_logits[row_valid],
         torch.full_like(flat_logits[row_valid], float("-inf")),
     )
-    row_mask = flat_valid[row_valid]
+    row_mask = flat_present[row_valid]
     target_log_probs = torch.nn.functional.log_softmax(row_logits, dim=1)
     safe_target_log_probs = torch.where(
         row_mask,
@@ -380,10 +384,12 @@ def prepare_feature_batches(
                 next_lookahead_outcomes = None
             proposal_frontier_idx = None
             proposal_action_idx = None
+            proposal_no_action = None
             proposal_target_logits = None
             if proposal_data is not None and step + 1 < episode_length:
                 proposal_frontier_idx = proposal_data.frontier_idx[:, step]
                 proposal_action_idx = proposal_data.action_idx[:, step]
+                proposal_no_action = proposal_data.no_action[:, step]
                 proposal_target_logits = proposal_data.target_logits[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
             feature_batches.append(
@@ -403,6 +409,7 @@ def prepare_feature_batches(
                     ),
                     proposal_frontier_idx=proposal_frontier_idx,
                     proposal_action_idx=proposal_action_idx,
+                    proposal_no_action=proposal_no_action,
                     proposal_target_logits=proposal_target_logits,
                 )
             )
@@ -507,27 +514,29 @@ def train_balance_batch_backward(
 def proposal_batch_loss(
     candidate_score: torch.Tensor,
     target_logits: torch.Tensor,
+    no_action: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
     target_logits = target_logits.to(device, dtype=torch.float32)
-    valid = torch.isfinite(candidate_score) & torch.isfinite(target_logits)
-    row_valid = torch.any(valid, dim=1)
+    no_action = no_action.to(device=device, dtype=torch.bool)
+    present = torch.isfinite(candidate_score) & torch.isfinite(target_logits)
+    row_valid = torch.any(present & ~no_action, dim=1)
     if not torch.any(row_valid):
         return torch.sum(candidate_score) * 0.0
     invalid_logit = torch.finfo(candidate_score.dtype).min
     candidate_score = torch.where(
-        valid,
+        present,
         candidate_score,
         torch.full_like(candidate_score, invalid_logit),
     ).to(torch.float32)
     target_logits = torch.where(
-        valid,
+        present,
         target_logits,
         torch.full_like(target_logits, invalid_logit),
     )
     row_candidate_logits = candidate_score[row_valid]
     row_target_logits = target_logits[row_valid]
-    row_mask = valid[row_valid]
+    row_mask = present[row_valid]
     proposal_log_probs = torch.nn.functional.log_softmax(
         row_candidate_logits,
         dim=1,
@@ -733,6 +742,7 @@ def train_feature_batch_backward(
             prepared_batch.kind == "fresh"
             and feature_batch.proposal_frontier_idx is not None
             and feature_batch.proposal_action_idx is not None
+            and feature_batch.proposal_no_action is not None
             and feature_batch.proposal_target_logits is not None
         )
         with torch.amp.autocast(
@@ -850,6 +860,7 @@ def train_feature_batch_backward(
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,
                 feature_batch.proposal_target_logits,
+                feature_batch.proposal_no_action,
                 context.device,
             )
             weighted_proposal_loss = (

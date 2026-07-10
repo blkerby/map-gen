@@ -20,6 +20,7 @@ def zero_generate_config(**area_rewards) -> GenerateConfig:
         episode_length=1,
         recommended_candidates=2,
         shortlist_candidates=2,
+        num_scored_no_action_candidates=1,
         max_candidate_areas_per_placement=2,
         gpu_prefetch_batches=0,
         temperature=torch.ones([1]),

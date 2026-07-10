@@ -33,6 +33,7 @@ from train_config import Config
 
 type ProfileReport = list[tuple[str, int, int]]
 type GenerationStats = dict[str, float]
+INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
 
 
 # We make use of a somewhat complicated way of pipelining the generation process,
@@ -263,6 +264,8 @@ class CandidateBatch:
     candidates: Actions
     proposal_frontier_idx: torch.Tensor
     proposal_action_idx: torch.Tensor
+    scored_no_action_frontier_idx: torch.Tensor
+    scored_no_action_proposal_action_idx: torch.Tensor
     reward_outcomes: StepOutcomes
     post_candidate_outcomes: StepOutcomes
     feature_requirements: FeatureRequirements
@@ -273,6 +276,12 @@ class CandidateBatch:
             candidates=self.candidates.to(device, non_blocking=non_blocking),
             proposal_frontier_idx=self.proposal_frontier_idx.to(device, non_blocking=non_blocking),
             proposal_action_idx=self.proposal_action_idx.to(device, non_blocking=non_blocking),
+            scored_no_action_frontier_idx=self.scored_no_action_frontier_idx.to(
+                device, non_blocking=non_blocking
+            ),
+            scored_no_action_proposal_action_idx=(
+                self.scored_no_action_proposal_action_idx.to(device, non_blocking=non_blocking)
+            ),
             reward_outcomes=self.reward_outcomes.to(device, non_blocking=non_blocking),
             post_candidate_outcomes=self.post_candidate_outcomes.to(
                 device, non_blocking=non_blocking
@@ -290,6 +299,7 @@ class CandidateScoreSuccess:
     selected_proposal_scores: ProposalCache | None
     proposal_frontier_idx: torch.Tensor
     proposal_action_idx: torch.Tensor
+    proposal_no_action: torch.Tensor
     selected_candidate: torch.Tensor
     target_logits: torch.Tensor
 
@@ -350,6 +360,7 @@ type GpuReadyMessage = StagedCandidateScoreRequest | StopPipeline
 class GroupPipelineOutput:
     proposal_frontier_idx: list[torch.Tensor]
     proposal_action_idx: list[torch.Tensor]
+    proposal_no_action: list[torch.Tensor]
     selected_candidate: list[torch.Tensor]
     target_logits: list[torch.Tensor]
 
@@ -421,6 +432,8 @@ def get_shortlist_candidate_batch(
         candidates,
         proposal_frontier_idx,
         proposal_action_idx,
+        scored_no_action_frontier_idx,
+        scored_no_action_proposal_action_idx,
         reward_outcomes,
         post_candidate_outcomes,
         feature_requirements,
@@ -430,12 +443,15 @@ def get_shortlist_candidate_batch(
         sampled_frontier_idx,
         sampled_proposal_action_idx,
         group.config.recommended_candidates,
+        group.config.num_scored_no_action_candidates,
         group.config.max_candidate_areas_per_placement,
     )
     return CandidateBatch(
         candidates=candidates,
         proposal_frontier_idx=proposal_frontier_idx,
         proposal_action_idx=proposal_action_idx,
+        scored_no_action_frontier_idx=scored_no_action_frontier_idx,
+        scored_no_action_proposal_action_idx=scored_no_action_proposal_action_idx,
         reward_outcomes=reward_outcomes,
         post_candidate_outcomes=post_candidate_outcomes,
         feature_requirements=feature_requirements,
@@ -1044,6 +1060,35 @@ def score_staged_candidate_request(
             device=device,
         )
         target_logits[:, : candidate_logits.shape[1]] = candidate_logits.to(torch.float32)
+    scored_no_action = (candidate_batch.scored_no_action_frontier_idx >= 0) & (
+        candidate_batch.scored_no_action_proposal_action_idx >= 0
+    )
+    no_action_target_logits = torch.where(
+        scored_no_action,
+        torch.full_like(
+            candidate_batch.scored_no_action_frontier_idx,
+            INVALID_PROPOSAL_TARGET_LOGIT,
+            dtype=torch.float32,
+        ),
+        torch.full_like(
+            candidate_batch.scored_no_action_frontier_idx,
+            float("-inf"),
+            dtype=torch.float32,
+        ),
+    )
+    frontier_idx = torch.cat(
+        [frontier_idx, candidate_batch.scored_no_action_frontier_idx],
+        dim=1,
+    )
+    proposal_action_idx = torch.cat(
+        [proposal_action_idx, candidate_batch.scored_no_action_proposal_action_idx],
+        dim=1,
+    )
+    proposal_no_action = torch.cat(
+        [torch.zeros_like(frontier_idx[:, :max_candidates], dtype=torch.bool), scored_no_action],
+        dim=1,
+    )
+    target_logits = torch.cat([target_logits, no_action_target_logits], dim=1)
     selected_outcomes = select_outcomes(
         candidate_batch.post_candidate_outcomes,
         action_index,
@@ -1056,6 +1101,7 @@ def score_staged_candidate_request(
         selected_proposal_scores=selected_proposal_scores,
         proposal_frontier_idx=frontier_idx.to(device="cpu", copy=True),
         proposal_action_idx=proposal_action_idx.to(device="cpu", copy=True),
+        proposal_no_action=proposal_no_action.to(device="cpu", copy=True),
         selected_candidate=action_index.to(device="cpu", copy=True),
         target_logits=target_logits.to(device="cpu", copy=True),
     )
@@ -1259,6 +1305,7 @@ def compute_group_proposal_shortlist(
                 "proposal_evaluated_candidates": 0.0,
                 "proposal_rejected_candidates": 0.0,
                 "proposal_no_action_candidates": 0.0,
+                "proposal_scored_no_action_candidates": 0.0,
                 "proposal_exhausted_rows": 0.0,
             },
         )
@@ -1281,6 +1328,9 @@ def record_candidate_stats(
     evaluated_candidates = float(stats.evaluated_counts.sum().item())
     rejected_candidates = float(stats.rejected_counts.sum().item())
     no_action_candidates = float(stats.no_action_counts.sum().item())
+    scored_no_action_candidates = float(
+        (request.prepared_step.candidate_batch.scored_no_action_frontier_idx >= 0).sum().item()
+    )
     exhausted_rows = float(
         ((stats.clean_counts < request.group.config.recommended_candidates) & shortlist_limited)
         .sum()
@@ -1296,6 +1346,7 @@ def record_candidate_stats(
             "proposal_evaluated_candidates": evaluated_candidates,
             "proposal_rejected_candidates": rejected_candidates,
             "proposal_no_action_candidates": no_action_candidates,
+            "proposal_scored_no_action_candidates": scored_no_action_candidates,
             "proposal_exhausted_rows": exhausted_rows,
         },
     )
@@ -1359,6 +1410,7 @@ def run_group_producer(
             record_candidate_stats(request, shared)
             output.proposal_frontier_idx.append(result.proposal_frontier_idx)
             output.proposal_action_idx.append(result.proposal_action_idx)
+            output.proposal_no_action.append(result.proposal_no_action)
             output.selected_candidate.append(result.selected_candidate)
             output.target_logits.append(result.target_logits)
             profile_time = profile_start(shared.profiler.enabled)
@@ -1588,6 +1640,7 @@ def merge_generation_results(
         ProposalData(
             frontier_idx=torch.cat([proposal.frontier_idx for _, _, _, proposal in results]),
             action_idx=torch.cat([proposal.action_idx for _, _, _, proposal in results]),
+            no_action=torch.cat([proposal.no_action for _, _, _, proposal in results]),
             selected_candidate=torch.cat(
                 [proposal.selected_candidate for _, _, _, proposal in results]
             ),
@@ -1607,6 +1660,9 @@ def empty_proposal_data(
         ),
         action_idx=torch.empty(
             (environment_count, 0, max_candidates), dtype=torch.int16, device=device
+        ),
+        no_action=torch.empty(
+            (environment_count, 0, max_candidates), dtype=torch.bool, device=device
         ),
         selected_candidate=torch.empty((environment_count, 0), dtype=torch.int64, device=device),
         target_logits=torch.empty(
@@ -1662,6 +1718,7 @@ def run_generation_groups(
         GroupPipelineOutput(
             proposal_frontier_idx=[],
             proposal_action_idx=[],
+            proposal_no_action=[],
             selected_candidate=[],
             target_logits=[],
         )
@@ -1675,6 +1732,7 @@ def run_generation_groups(
         "proposal_evaluated_candidates": 0.0,
         "proposal_rejected_candidates": 0.0,
         "proposal_no_action_candidates": 0.0,
+        "proposal_scored_no_action_candidates": 0.0,
         "proposal_exhausted_rows": 0.0,
     }
     cancellation_event = threading.Event()
@@ -1779,6 +1837,9 @@ def run_generation_groups(
                             action_idx=torch.stack(
                                 group_outputs[group_index].proposal_action_idx, dim=1
                             ),
+                            no_action=torch.stack(
+                                group_outputs[group_index].proposal_no_action, dim=1
+                            ),
                             selected_candidate=torch.stack(
                                 group_outputs[group_index].selected_candidate, dim=1
                             ),
@@ -1789,7 +1850,8 @@ def run_generation_groups(
                         if group_outputs[group_index].proposal_frontier_idx
                         else empty_proposal_data(
                             group.config.temperature.shape[0],
-                            group.config.recommended_candidates,
+                            group.config.recommended_candidates
+                            + group.config.num_scored_no_action_candidates,
                             device,
                         )
                     ),
@@ -1815,6 +1877,9 @@ def run_generation_groups(
         "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
         "proposal_rejection_rate": stat_totals["proposal_rejected_candidates"] / evaluated,
         "proposal_no_action_rate": stat_totals["proposal_no_action_candidates"] / resolved,
+        "proposal_scored_no_action_candidates": (
+            stat_totals["proposal_scored_no_action_candidates"] / proposal_rows
+        ),
         "proposal_exhaustion_rate": stat_totals["proposal_exhausted_rows"] / proposal_rows,
     }
     return (

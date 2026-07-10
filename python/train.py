@@ -568,6 +568,7 @@ def create_generate_config(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
         shortlist_candidates=config.generation.shortlist_candidates,
+        num_scored_no_action_candidates=config.generation.num_scored_no_action_candidates,
         max_candidate_areas_per_placement=(config.generation.max_candidate_areas_per_placement),
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
@@ -1152,6 +1153,9 @@ class TrainingSession:
                 ),
                 action_idx=torch.cat(
                     [proposal_data.action_idx for proposal_data in proposal_data_iterations]
+                ),
+                no_action=torch.cat(
+                    [proposal_data.no_action for proposal_data in proposal_data_iterations]
                 ),
                 selected_candidate=torch.cat(
                     [

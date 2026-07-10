@@ -114,6 +114,7 @@ class GenerationConfig(StrictBaseModel):
     gpu_prefetch_batches: int
     recommended_candidates: ScheduleableInt
     shortlist_candidates: ScheduleableInt
+    num_scored_no_action_candidates: int
     max_candidate_areas_per_placement: int
     temperature: VariableFloat
     proposal_temperature: VariableFloat
@@ -468,6 +469,18 @@ def validate_config(config: Config) -> None:
         and config.generation.shortlist_candidates < config.generation.recommended_candidates
     ):
         raise ValueError("generation.shortlist_candidates must be at least recommended_candidates")
+    if config.generation.num_scored_no_action_candidates < 0:
+        raise ValueError(
+            "generation.num_scored_no_action_candidates must be greater than or equal to zero"
+        )
+    if (
+        isinstance(config.generation.shortlist_candidates, int)
+        and config.generation.num_scored_no_action_candidates
+        > config.generation.shortlist_candidates
+    ):
+        raise ValueError(
+            "generation.num_scored_no_action_candidates must not exceed shortlist_candidates"
+        )
     if config.generation.max_candidate_areas_per_placement <= 0:
         raise ValueError("generation.max_candidate_areas_per_placement must be greater than zero")
     if config.generation.max_candidate_areas_per_placement > 6:

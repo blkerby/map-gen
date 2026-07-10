@@ -293,6 +293,7 @@ enum WorkerCommand {
         frontier_window_size: usize,
         recommended_candidates: usize,
         shortlist_candidates: usize,
+        num_scored_no_action_candidates: usize,
         max_candidate_areas_per_placement: usize,
         sampled_frontier_idx: InputShard<FrontierIdx>,
         sampled_proposal_action_idx: InputShard<ProposalActionIdx>,
@@ -302,6 +303,8 @@ enum WorkerCommand {
         room_area: OutputShard<AreaIdx>,
         proposal_frontier_idx: OutputShard<FrontierIdx>,
         proposal_action_idx: OutputShard<ProposalActionIdx>,
+        scored_no_action_frontier_idx: OutputShard<FrontierIdx>,
+        scored_no_action_proposal_action_idx: OutputShard<ProposalActionIdx>,
         door_outcome_count: usize,
         connection_outcome_count: usize,
         pre_door_valid: OutputShard<i8>,
@@ -602,6 +605,7 @@ fn worker_loop(
                 frontier_window_size,
                 recommended_candidates,
                 shortlist_candidates,
+                num_scored_no_action_candidates,
                 max_candidate_areas_per_placement,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
@@ -611,6 +615,8 @@ fn worker_loop(
                 room_area,
                 proposal_frontier_idx,
                 proposal_action_idx,
+                scored_no_action_frontier_idx,
+                scored_no_action_proposal_action_idx,
                 door_outcome_count,
                 connection_outcome_count,
                 pre_door_valid,
@@ -636,6 +642,10 @@ fn worker_loop(
                 let room_area = unsafe { room_area.into_mut_slice() };
                 let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
                 let proposal_action_idx = unsafe { proposal_action_idx.into_mut_slice() };
+                let scored_no_action_frontier_idx =
+                    unsafe { scored_no_action_frontier_idx.into_mut_slice() };
+                let scored_no_action_proposal_action_idx =
+                    unsafe { scored_no_action_proposal_action_idx.into_mut_slice() };
                 let pre_door_valid = unsafe { pre_door_valid.into_mut_slice() };
                 let pre_connections_valid = unsafe { pre_connections_valid.into_mut_slice() };
                 let pre_toilet_valid = unsafe { pre_toilet_valid.into_mut_slice() };
@@ -669,6 +679,14 @@ fn worker_loop(
                 debug_assert_eq!(
                     proposal_action_idx.len(),
                     environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    scored_no_action_frontier_idx.len(),
+                    environments.len() * num_scored_no_action_candidates
+                );
+                debug_assert_eq!(
+                    scored_no_action_proposal_action_idx.len(),
+                    environments.len() * num_scored_no_action_candidates
                 );
                 debug_assert_eq!(
                     pre_door_valid.len(),
@@ -710,6 +728,7 @@ fn worker_loop(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
                         &sampled_proposal_action_idx[shortlist_start..shortlist_end],
                         recommended_candidates,
+                        num_scored_no_action_candidates,
                         max_candidate_areas_per_placement,
                         &features,
                         frontier_neighbor_algorithm,
@@ -727,6 +746,16 @@ fn worker_loop(
                     evaluated_counts[env_idx] = proposal_candidates.evaluated_count;
                     rejected_counts[env_idx] = proposal_candidates.rejected_count;
                     no_action_counts[env_idx] = proposal_candidates.no_action_count;
+                    let no_action_start = env_idx * num_scored_no_action_candidates;
+                    let no_action_end = no_action_start + num_scored_no_action_candidates;
+                    scored_no_action_frontier_idx[no_action_start..no_action_end]
+                        [..proposal_candidates.scored_no_action_frontier_idx.len()]
+                        .copy_from_slice(&proposal_candidates.scored_no_action_frontier_idx);
+                    scored_no_action_proposal_action_idx[no_action_start..no_action_end]
+                        [..proposal_candidates.scored_no_action_proposal_action_idx.len()]
+                        .copy_from_slice(
+                            &proposal_candidates.scored_no_action_proposal_action_idx,
+                        );
                     let pre_candidate_outcomes = proposal_candidates.pre_candidate_outcomes;
                     let candidates = proposal_candidates.candidates;
                     let candidate_frontier_idx = proposal_candidates.frontier_idx;
@@ -1570,6 +1599,8 @@ pub struct ProposalCandidateBuffers {
     #[pyo3(get)]
     recommended_candidates: usize,
     #[pyo3(get)]
+    num_scored_no_action_candidates: usize,
+    #[pyo3(get)]
     max_candidate_areas_per_placement: usize,
     room_idx: Py<PyArray2<RoomIdx>>,
     room_x: Py<PyArray2<Coord>>,
@@ -1577,6 +1608,8 @@ pub struct ProposalCandidateBuffers {
     room_area: Py<PyArray2<AreaIdx>>,
     proposal_frontier_idx: Py<PyArray2<FrontierIdx>>,
     proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
+    scored_no_action_frontier_idx: Py<PyArray2<FrontierIdx>>,
+    scored_no_action_proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
     pre_door_valid: Py<PyArray2<i8>>,
     pre_connections_valid: Py<PyArray2<i8>>,
     pre_toilet_valid: Py<PyArray1<i8>>,
@@ -1675,6 +1708,10 @@ impl ProposalCandidateBuffers {
             sampled_frontier_idx: required_py_field!(fields, "sampled_frontier_idx"),
             sampled_proposal_action_idx: required_py_field!(fields, "sampled_proposal_action_idx"),
             recommended_candidates: required_py_field!(fields, "recommended_candidates"),
+            num_scored_no_action_candidates: required_py_field!(
+                fields,
+                "num_scored_no_action_candidates"
+            ),
             max_candidate_areas_per_placement: required_py_field!(
                 fields,
                 "max_candidate_areas_per_placement"
@@ -1685,6 +1722,14 @@ impl ProposalCandidateBuffers {
             room_area: required_py_field!(fields, "room_area"),
             proposal_frontier_idx: required_py_field!(fields, "proposal_frontier_idx"),
             proposal_action_idx: required_py_field!(fields, "proposal_action_idx"),
+            scored_no_action_frontier_idx: required_py_field!(
+                fields,
+                "scored_no_action_frontier_idx"
+            ),
+            scored_no_action_proposal_action_idx: required_py_field!(
+                fields,
+                "scored_no_action_proposal_action_idx"
+            ),
             pre_door_valid: required_py_field!(fields, "pre_door_valid"),
             pre_connections_valid: required_py_field!(fields, "pre_connections_valid"),
             pre_toilet_valid: required_py_field!(fields, "pre_toilet_valid"),
@@ -3890,6 +3935,7 @@ impl EnvironmentGroup {
         let sampled_frontier_idx = buffers.sampled_frontier_idx.bind(py).readonly();
         let sampled_proposal_action_idx = buffers.sampled_proposal_action_idx.bind(py).readonly();
         let recommended_candidates = buffers.recommended_candidates;
+        let num_scored_no_action_candidates = buffers.num_scored_no_action_candidates;
         let max_candidate_areas_per_placement = buffers.max_candidate_areas_per_placement;
         if max_candidate_areas_per_placement == 0 {
             return Err(PyValueError::new_err(
@@ -3907,6 +3953,12 @@ impl EnvironmentGroup {
         let mut room_area = buffers.room_area.bind(py).readwrite();
         let mut proposal_frontier_idx = buffers.proposal_frontier_idx.bind(py).readwrite();
         let mut proposal_action_idx = buffers.proposal_action_idx.bind(py).readwrite();
+        let mut scored_no_action_frontier_idx =
+            buffers.scored_no_action_frontier_idx.bind(py).readwrite();
+        let mut scored_no_action_proposal_action_idx = buffers
+            .scored_no_action_proposal_action_idx
+            .bind(py)
+            .readwrite();
         let mut pre_door_valid = buffers.pre_door_valid.bind(py).readwrite();
         let mut pre_connections_valid = buffers.pre_connections_valid.bind(py).readwrite();
         let mut pre_toilet_valid = buffers.pre_toilet_valid.bind(py).readwrite();
@@ -3930,6 +3982,11 @@ impl EnvironmentGroup {
             ));
         }
         let shortlist_candidates = sampled_shape[1];
+        if num_scored_no_action_candidates > shortlist_candidates {
+            return Err(PyValueError::new_err(
+                "num_scored_no_action_candidates must not exceed shortlist_candidates",
+            ));
+        }
         let sampled_frontier_idx = sampled_frontier_idx
             .as_slice()
             .map_err(|_| PyValueError::new_err("sampled_frontier_idx must be contiguous"))?;
@@ -3973,6 +4030,16 @@ impl EnvironmentGroup {
             "proposal_action_idx",
             proposal_action_idx.as_array().shape(),
             &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "scored_no_action_frontier_idx",
+            scored_no_action_frontier_idx.as_array().shape(),
+            &[self.num_environments, num_scored_no_action_candidates],
+        )?;
+        check_shape(
+            "scored_no_action_proposal_action_idx",
+            scored_no_action_proposal_action_idx.as_array().shape(),
+            &[self.num_environments, num_scored_no_action_candidates],
         )?;
         check_shape(
             "pre_door_valid",
@@ -4070,6 +4137,18 @@ impl EnvironmentGroup {
         let proposal_action_idx = proposal_action_idx
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("proposal_action_idx must be contiguous"))?;
+        let scored_no_action_frontier_idx = scored_no_action_frontier_idx
+            .as_slice_mut()
+            .map_err(|_| {
+                PyValueError::new_err("scored_no_action_frontier_idx must be contiguous")
+            })?;
+        let scored_no_action_proposal_action_idx = scored_no_action_proposal_action_idx
+            .as_slice_mut()
+            .map_err(|_| {
+                PyValueError::new_err(
+                    "scored_no_action_proposal_action_idx must be contiguous",
+                )
+            })?;
         let pre_door_valid = pre_door_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_door_valid must be contiguous"))?;
@@ -4116,6 +4195,8 @@ impl EnvironmentGroup {
         room_area.fill(dummy_candidate.area);
         proposal_frontier_idx.fill(-1);
         proposal_action_idx.fill(-1);
+        scored_no_action_frontier_idx.fill(-1);
+        scored_no_action_proposal_action_idx.fill(-1);
         pre_door_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_connections_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_toilet_valid.fill(DoorValidOutcome::Unknown as i8);
@@ -4136,6 +4217,8 @@ impl EnvironmentGroup {
             for (worker_idx, worker) in self.workers.iter().enumerate() {
                 let output_start = worker.start * recommended_candidates;
                 let output_end = worker.end() * recommended_candidates;
+                let no_action_output_start = worker.start * num_scored_no_action_candidates;
+                let no_action_output_end = worker.end() * num_scored_no_action_candidates;
                 let shortlist_start = worker.start * shortlist_candidates;
                 let shortlist_end = worker.end() * shortlist_candidates;
                 let pre_door_output_start = worker.start * door_outcome_count;
@@ -4153,6 +4236,7 @@ impl EnvironmentGroup {
                 if let Err(err) = worker.send(WorkerCommand::GetCandidatesFromProposals {
                     recommended_candidates,
                     shortlist_candidates,
+                    num_scored_no_action_candidates,
                     max_candidate_areas_per_placement,
                     sampled_frontier_idx: InputShard::from_slice(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
@@ -4169,6 +4253,14 @@ impl EnvironmentGroup {
                     ),
                     proposal_action_idx: OutputShard::from_slice(
                         &mut proposal_action_idx[output_start..output_end],
+                    ),
+                    scored_no_action_frontier_idx: OutputShard::from_slice(
+                        &mut scored_no_action_frontier_idx
+                            [no_action_output_start..no_action_output_end],
+                    ),
+                    scored_no_action_proposal_action_idx: OutputShard::from_slice(
+                        &mut scored_no_action_proposal_action_idx
+                            [no_action_output_start..no_action_output_end],
                     ),
                     frontier_neighbor_algorithm: self.frontier_neighbor_algorithm,
                     frontier_neighbor_count: self.frontier_neighbor_count,

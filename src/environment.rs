@@ -212,6 +212,8 @@ pub struct ProposalCandidates {
     pub post_candidate_outcomes: Vec<StepOutcomes>,
     pub door_matches: Vec<Vec<i16>>,
     pub feature_plans: Vec<FeaturePlan>,
+    pub scored_no_action_frontier_idx: Vec<FrontierIdx>,
+    pub scored_no_action_proposal_action_idx: Vec<ProposalActionIdx>,
     pub clean_count: usize,
     pub evaluated_count: usize,
     pub rejected_count: usize,
@@ -3485,6 +3487,7 @@ impl Environment {
         sampled_frontier_idx: &[FrontierIdx],
         sampled_proposal_action_idx: &[ProposalActionIdx],
         recommended_candidates: usize,
+        num_scored_no_action_candidates: usize,
         max_candidate_areas_per_placement: usize,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
@@ -3516,11 +3519,18 @@ impl Environment {
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
         let mut no_action_count = 0;
+        let mut scored_no_action_frontier_idx =
+            Vec::with_capacity(num_scored_no_action_candidates);
+        let mut scored_no_action_proposal_action_idx =
+            Vec::with_capacity(num_scored_no_action_candidates);
         for (&frontier_idx, &proposal_action_idx) in
             sampled_frontier_idx.iter().zip(sampled_proposal_action_idx)
         {
             if clean.len() == recommended_candidates {
                 break;
+            }
+            if frontier_idx < 0 || proposal_action_idx < 0 {
+                continue;
             }
             let Some(candidate) = self.resolve_proposal_action(
                 common,
@@ -3529,6 +3539,10 @@ impl Environment {
                 proposal_action_idx,
             ) else {
                 no_action_count += 1;
+                if scored_no_action_frontier_idx.len() < num_scored_no_action_candidates {
+                    scored_no_action_frontier_idx.push(frontier_idx);
+                    scored_no_action_proposal_action_idx.push(proposal_action_idx);
+                }
                 continue;
             };
             let placement_key = Self::proposal_placement_key(frontier_idx, proposal_action_idx);
@@ -3672,6 +3686,8 @@ impl Environment {
             post_candidate_outcomes,
             door_matches,
             feature_plans: features,
+            scored_no_action_frontier_idx,
+            scored_no_action_proposal_action_idx,
             clean_count,
             evaluated_count,
             rejected_count,
@@ -6927,9 +6943,22 @@ mod tests {
         let found_proposal_action_idx = first_resolvable_proposal_action(&mut env, &common, 0, 0)
             .expect("test setup should have a valid proposal candidate");
         let (door_variant_idx, _) = proposal_action_parts(found_proposal_action_idx).unwrap();
+        let wrong_orientation_variant = common
+            .door_variant_direction
+            .iter()
+            .position(|&direction| {
+                direction != common.door_variant_direction[door_variant_idx as usize]
+            })
+            .unwrap() as DoorVariantIdx;
         let sampled_area = 4;
-        let sampled_proposal_action_idx = [proposal_action_idx(door_variant_idx, sampled_area), -1];
-        let sampled_frontier_idx = [0, -1];
+        let wrong_orientation_action_idx =
+            proposal_action_idx(wrong_orientation_variant, sampled_area);
+        let sampled_proposal_action_idx = [
+            wrong_orientation_action_idx,
+            proposal_action_idx(door_variant_idx, sampled_area),
+            -1,
+        ];
+        let sampled_frontier_idx = [0, 0, -1];
         let mut scratch = FeatureScratch::default();
 
         let result = env
@@ -6938,6 +6967,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 2,
+                1,
                 1,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -6951,6 +6981,11 @@ mod tests {
         assert_eq!(result.evaluated_count, 1);
         assert_eq!(result.rejected_count, 1);
         assert_eq!(result.no_action_count, 1);
+        assert_eq!(result.scored_no_action_frontier_idx, [0]);
+        assert_eq!(
+            result.scored_no_action_proposal_action_idx,
+            [wrong_orientation_action_idx]
+        );
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(result.candidates[0].area, sampled_area);
         assert_eq!(result.frontier_idx.len(), result.candidates.len());
@@ -7051,6 +7086,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 2,
+                1,
                 1,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -7154,6 +7190,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 3,
+                1,
                 2,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -7231,6 +7268,7 @@ mod tests {
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
                 2,
+                1,
                 1,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
