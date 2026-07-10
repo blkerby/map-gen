@@ -29,18 +29,6 @@ def proposal_action_room_area(action_idx: torch.Tensor) -> torch.Tensor:
     return action_idx % AREA_COUNT
 
 
-def area_connected_component_bucket_excess(
-    upper_bounds: list[int],
-    device: torch.device,
-) -> torch.Tensor:
-    representatives = [*upper_bounds, upper_bounds[-1] + 1]
-    return torch.tensor(
-        [max(components - 1, 0) for components in representatives],
-        dtype=torch.float32,
-        device=device,
-    )
-
-
 @dataclass
 class GenerateConfig:
     episode_length: int
@@ -62,12 +50,9 @@ class GenerateConfig:
     reward_save_distance: float | torch.Tensor
     reward_refill_distance: float | torch.Tensor
     reward_missing_connect_utility: float | torch.Tensor
-    reward_area_connected: float | torch.Tensor
-    reward_area_connected_excess: float | torch.Tensor
     reward_area_crossing: float | torch.Tensor
     reward_area_size_valid: float | torch.Tensor
     reward_area_map_station: float | torch.Tensor
-    area_connected_component_bucket_excess: torch.Tensor
     generation_variable_floats: torch.Tensor
     log_temperature_model: torch.Tensor
     log_recommended_candidates_model: torch.Tensor

@@ -572,7 +572,7 @@ class AreaStateFeature(GlobalFeature):
 
     @classmethod
     def tensor_width(cls, context: FeatureContext) -> int:
-        return AREA_COUNT * 8 + 1
+        return AREA_COUNT * 7 + 1
 
     @classmethod
     def build(cls, context: FeatureContext) -> AreaStateFeature:
@@ -593,7 +593,6 @@ class AreaStateFeature(GlobalFeature):
             area.area_max_x.to(dtype) / bbox_width,
             area.area_min_y.to(dtype) / bbox_height,
             area.area_max_y.to(dtype) / bbox_height,
-            area.area_connected_components.to(dtype),
             area.area_size.to(dtype) / max_area_size,
             area.area_map_station_count.to(dtype),
             area.area_crossings.to(dtype) / AREA_COUNT,

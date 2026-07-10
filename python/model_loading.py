@@ -56,9 +56,6 @@ def frontier_model_kwargs(
         "area_bounding_box_width": config.generation.area_bounding_box_width,
         "area_bounding_box_height": config.generation.area_bounding_box_height,
         "max_area_size": config.generation.max_area_size,
-        "area_connected_component_bucket_count": (
-            len(config.train.area_connected_component_bucket_upper_bounds) + 1
-        ),
         "features": config.features,
     }
 

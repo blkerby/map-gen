@@ -46,8 +46,6 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_save_distance",
     "reward_refill_distance",
     "reward_missing_connect_utility",
-    "reward_area_connected",
-    "reward_area_connected_excess",
     "reward_area_crossing",
     "reward_area_size_valid",
     "reward_area_map_station",
@@ -129,8 +127,6 @@ class GenerationConfig(StrictBaseModel):
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
-    reward_area_connected: VariableFloat
-    reward_area_connected_excess: VariableFloat
     reward_area_crossing: VariableFloat
     reward_area_size_valid: VariableFloat
     reward_area_map_station: VariableFloat
@@ -258,8 +254,6 @@ class TrainConfig(StrictBaseModel):
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
-    area_connected_component_weight: float
-    area_connected_component_bucket_upper_bounds: list[int]
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
@@ -541,14 +535,6 @@ def validate_config(config: Config) -> None:
         "generation.reward_missing_connect_utility",
     )
     validate_nonnegative_variable_float(
-        config.generation.reward_area_connected,
-        "generation.reward_area_connected",
-    )
-    validate_nonnegative_variable_float(
-        config.generation.reward_area_connected_excess,
-        "generation.reward_area_connected_excess",
-    )
-    validate_nonnegative_variable_float(
         config.generation.reward_area_crossing,
         "generation.reward_area_crossing",
     )
@@ -595,28 +581,6 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "train.missing_connect_utility_weight must be greater than or equal to zero"
         )
-    if config.train.area_connected_component_weight < 0:
-        raise ValueError(
-            "train.area_connected_component_weight must be greater than or equal to zero"
-        )
-    area_connected_component_bounds = config.train.area_connected_component_bucket_upper_bounds
-    if len(area_connected_component_bounds) < 2:
-        raise ValueError(
-            "train.area_connected_component_bucket_upper_bounds must contain at least two values"
-        )
-    if area_connected_component_bounds[:2] != [0, 1]:
-        raise ValueError(
-            "train.area_connected_component_bucket_upper_bounds must start with [0, 1]"
-        )
-    for index, upper_bound in enumerate(area_connected_component_bounds):
-        if upper_bound < 0:
-            raise ValueError(
-                "train.area_connected_component_bucket_upper_bounds values must be nonnegative"
-            )
-        if index > 0 and upper_bound <= area_connected_component_bounds[index - 1]:
-            raise ValueError(
-                "train.area_connected_component_bucket_upper_bounds values must be strictly increasing"
-            )
     if config.train.area_crossing_weight < 0:
         raise ValueError("train.area_crossing_weight must be greater than or equal to zero")
     if config.train.area_size_weight < 0:

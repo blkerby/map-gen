@@ -8,8 +8,6 @@ from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 def zero_generate_config(**area_rewards) -> GenerateConfig:
     values = {
-        "reward_area_connected": 0.0,
-        "reward_area_connected_excess": 0.0,
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 0.0,
         "reward_area_map_station": 0.0,
@@ -36,12 +34,9 @@ def zero_generate_config(**area_rewards) -> GenerateConfig:
         reward_save_distance=0.0,
         reward_refill_distance=0.0,
         reward_missing_connect_utility=0.0,
-        reward_area_connected=values["reward_area_connected"],
-        reward_area_connected_excess=values["reward_area_connected_excess"],
         reward_area_crossing=values["reward_area_crossing"],
         reward_area_size_valid=values["reward_area_size_valid"],
         reward_area_map_station=values["reward_area_map_station"],
-        area_connected_component_bucket_excess=torch.tensor([0.0, 0.0, 1.0, 2.0, 3.0]),
         generation_variable_floats=generation_variable_floats,
         log_temperature_model=torch.zeros([1]),
         log_recommended_candidates_model=torch.zeros([1]),
@@ -77,14 +72,6 @@ def area_predictions() -> Predictions:
         refill_to_room_utility=torch.zeros([batch, candidate, room_part]),
         refill_from_room_utility=torch.zeros([batch, candidate, room_part]),
         missing_connect_utility=torch.zeros([batch, candidate, connection]),
-        area_connected_component_bucket_logits=torch.tensor(
-            [
-                [
-                    [[0.0, 2.0, 0.0, 0.0, 0.0]] * area,
-                    [[0.0, 0.0, 0.0, 0.0, 2.0]] * area,
-                ]
-            ]
-        ),
         area_crossings=torch.tensor([[2.0, 0.0]]),
         area_size=torch.zeros([batch, candidate, area, 3]),
         area_map_station_count=torch.zeros([batch, candidate, area, 3]),
@@ -113,35 +100,19 @@ def test_zero_area_rewards_leave_reward_unchanged() -> None:
     assert torch.equal(reward, torch.zeros([1, 2]))
 
 
-def test_area_rewards_use_valid_bucket_logprobs_and_excess_penalty() -> None:
+def test_area_rewards_use_valid_bucket_logprobs() -> None:
     reward = compute_expected_reward(
         area_predictions(),
         unknown_outcomes(),
         zero_generate_config(
-            reward_area_connected=2.0,
-            reward_area_connected_excess=3.0,
             reward_area_crossing=5.0,
             reward_area_size_valid=7.0,
             reward_area_map_station=11.0,
         ),
     )
-    connected_log_probability = torch.log_softmax(
-        area_predictions().area_connected_component_bucket_logits,
-        dim=-1,
-    )[..., 1]
-    connected_probability = torch.softmax(
-        area_predictions().area_connected_component_bucket_logits,
-        dim=-1,
-    )
-    connected_excess = torch.sum(
-        connected_probability * torch.tensor([0.0, 0.0, 1.0, 2.0, 3.0]),
-        dim=-1,
-    )
     middle_bucket_log_probability = torch.log_softmax(torch.zeros([3]), dim=0)[1]
     expected = (
-        2.0 * torch.sum(connected_log_probability, dim=2)
-        - 3.0 * torch.sum(connected_excess, dim=2)
-        - 5.0 * torch.tensor([[2.0, 0.0]])
+        -5.0 * torch.tensor([[2.0, 0.0]])
         + 7.0 * 6 * middle_bucket_log_probability
         + 11.0 * 6 * middle_bucket_log_probability
     )
@@ -150,7 +121,7 @@ def test_area_rewards_use_valid_bucket_logprobs_and_excess_penalty() -> None:
 
 def main() -> None:
     test_zero_area_rewards_leave_reward_unchanged()
-    test_area_rewards_use_valid_bucket_logprobs_and_excess_penalty()
+    test_area_rewards_use_valid_bucket_logprobs()
 
 
 if __name__ == "__main__":

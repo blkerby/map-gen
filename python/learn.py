@@ -76,7 +76,6 @@ class MainLossBreakdown:
     save_distance: float
     refill_distance: float
     missing_connect_utility: float
-    area_connected_component: float
     area_crossings: float
     area_size: float
     area_map_station: float
@@ -92,7 +91,6 @@ class MainLossBreakdown:
     save_distance_contribution: float
     refill_distance_contribution: float
     missing_connect_utility_contribution: float
-    area_connected_component_contribution: float
     area_crossings_contribution: float
     area_size_contribution: float
     area_map_station_contribution: float
@@ -138,7 +136,6 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         save_distance=0.0,
         refill_distance=0.0,
         missing_connect_utility=0.0,
-        area_connected_component=0.0,
         area_crossings=0.0,
         area_size=0.0,
         area_map_station=0.0,
@@ -154,7 +151,6 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         save_distance_contribution=0.0,
         refill_distance_contribution=0.0,
         missing_connect_utility_contribution=0.0,
-        area_connected_component_contribution=0.0,
         area_crossings_contribution=0.0,
         area_size_contribution=0.0,
         area_map_station_contribution=0.0,
@@ -175,7 +171,6 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.save_distance += source.save_distance
     target.refill_distance += source.refill_distance
     target.missing_connect_utility += source.missing_connect_utility
-    target.area_connected_component += source.area_connected_component
     target.area_crossings += source.area_crossings
     target.area_size += source.area_size
     target.area_map_station += source.area_map_station
@@ -191,7 +186,6 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.save_distance_contribution += source.save_distance_contribution
     target.refill_distance_contribution += source.refill_distance_contribution
     target.missing_connect_utility_contribution += source.missing_connect_utility_contribution
-    target.area_connected_component_contribution += source.area_connected_component_contribution
     target.area_crossings_contribution += source.area_crossings_contribution
     target.area_size_contribution += source.area_size_contribution
     target.area_map_station_contribution += source.area_map_station_contribution
@@ -212,7 +206,6 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         save_distance=total_loss.save_distance / count,
         refill_distance=total_loss.refill_distance / count,
         missing_connect_utility=total_loss.missing_connect_utility / count,
-        area_connected_component=total_loss.area_connected_component / count,
         area_crossings=total_loss.area_crossings / count,
         area_size=total_loss.area_size / count,
         area_map_station=total_loss.area_map_station / count,
@@ -229,9 +222,6 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         refill_distance_contribution=total_loss.refill_distance_contribution / count,
         missing_connect_utility_contribution=(
             total_loss.missing_connect_utility_contribution / count
-        ),
-        area_connected_component_contribution=(
-            total_loss.area_connected_component_contribution / count
         ),
         area_crossings_contribution=total_loss.area_crossings_contribution / count,
         area_size_contribution=total_loss.area_size_contribution / count,
@@ -699,16 +689,6 @@ def train_feature_batch_backward(
         missing_connect_utility_target,
         dtype=torch.bool,
     )
-    area_connected_components = end_outcomes.area_connected_components.to(context.device)
-    area_connected_component_bounds = torch.tensor(
-        context.config.train.area_connected_component_bucket_upper_bounds,
-        dtype=area_connected_components.dtype,
-        device=context.device,
-    )
-    area_connected_component_target = torch.bucketize(
-        area_connected_components,
-        area_connected_component_bounds,
-    ).unsqueeze(1)
     area_crossings_target = end_outcomes.area_crossings.to(
         device=context.device,
         dtype=torch.float32,
@@ -725,7 +705,7 @@ def train_feature_batch_backward(
     ).unsqueeze(1)
     area_map_station_values = end_outcomes.area_map_station_count.to(context.device)
     area_map_station_target = torch.clamp(area_map_station_values, max=2).unsqueeze(1)
-    area_mask = torch.ones_like(area_connected_component_target, dtype=torch.bool)
+    area_mask = torch.ones_like(area_size_target, dtype=torch.bool)
     area_crossings_mask = torch.ones_like(area_crossings_target, dtype=torch.bool)
     mask = torch.ones(
         [batch_size, 1, 1],
@@ -779,7 +759,6 @@ def train_feature_batch_backward(
             active_room_part_mask,
             missing_connect_utility_target,
             missing_connect_utility_mask,
-            area_connected_component_target,
             area_crossings_target,
             area_size_target,
             area_map_station_target,
@@ -801,9 +780,6 @@ def train_feature_batch_backward(
         total_loss.refill_distance += prefix_loss.refill_distance.item() * prefix_weight
         total_loss.missing_connect_utility += (
             prefix_loss.missing_connect_utility.item() * prefix_weight
-        )
-        total_loss.area_connected_component += (
-            prefix_loss.area_connected_component.item() * prefix_weight
         )
         total_loss.area_crossings += prefix_loss.area_crossings.item() * prefix_weight
         total_loss.area_size += prefix_loss.area_size.item() * prefix_weight
@@ -834,9 +810,6 @@ def train_feature_batch_backward(
         )
         total_loss.missing_connect_utility_contribution += (
             prefix_loss.missing_connect_utility_contribution.item() * prefix_weight
-        )
-        total_loss.area_connected_component_contribution += (
-            prefix_loss.area_connected_component_contribution.item() * prefix_weight
         )
         total_loss.area_crossings_contribution += (
             prefix_loss.area_crossings_contribution.item() * prefix_weight

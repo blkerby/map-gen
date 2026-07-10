@@ -35,19 +35,6 @@ def test_generation_area_bounding_box_fields_must_be_positive() -> None:
         raise AssertionError("generation.area_bounding_box_height should reject zero")
 
 
-def test_area_connected_component_bucket_bounds_must_start_with_zero_one() -> None:
-    config_data = load_debug_config()
-    config_data["train"]["area_connected_component_bucket_upper_bounds"] = [0, 2, 3]
-    config = Config.model_validate(config_data)
-
-    try:
-        validate_config(config)
-    except ValueError as err:
-        assert "area_connected_component_bucket_upper_bounds" in str(err)
-    else:
-        raise AssertionError("area connected component bucket bounds should reject [0, 2, 3]")
-
-
 def test_max_candidate_areas_per_placement_must_be_in_range() -> None:
     config_data = load_debug_config()
     config_data["generation"]["max_candidate_areas_per_placement"] = 0
@@ -99,7 +86,6 @@ def test_num_scored_invalid_candidates_must_fit_shortlist() -> None:
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
     test_generation_area_bounding_box_fields_must_be_positive()
-    test_area_connected_component_bucket_bounds_must_start_with_zero_one()
     test_max_candidate_areas_per_placement_must_be_in_range()
     test_num_scored_invalid_candidates_must_fit_shortlist()
 

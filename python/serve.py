@@ -34,7 +34,6 @@ from env import (
     EpisodeData,
     EpisodeOutcomes,
     GenerateConfig,
-    area_connected_component_bucket_excess,
 )
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from model import FrontierModel
@@ -117,8 +116,6 @@ class GenerateRequest(StrictBaseModel):
     reward_save_distance: float
     reward_refill_distance: float
     reward_missing_connect_utility: float
-    reward_area_connected: float
-    reward_area_connected_excess: float
     reward_area_crossing: float
     reward_area_size_valid: float
     reward_area_map_station: float
@@ -433,8 +430,6 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
     if generate_request.proposal_temperature <= 0:
         raise ValueError("proposal_temperature must be greater than zero")
     for name in (
-        "reward_area_connected",
-        "reward_area_connected_excess",
         "reward_area_crossing",
         "reward_area_size_valid",
         "reward_area_map_station",
@@ -480,8 +475,6 @@ def create_generate_configs(
         "reward_save_distance": generate_request.reward_save_distance,
         "reward_refill_distance": generate_request.reward_refill_distance,
         "reward_missing_connect_utility": generate_request.reward_missing_connect_utility,
-        "reward_area_connected": generate_request.reward_area_connected,
-        "reward_area_connected_excess": generate_request.reward_area_connected_excess,
         "reward_area_crossing": generate_request.reward_area_crossing,
         "reward_area_size_valid": generate_request.reward_area_size_valid,
         "reward_area_map_station": generate_request.reward_area_map_station,
@@ -563,17 +556,9 @@ def create_generate_configs(
                 reward_save_distance=generate_request.reward_save_distance,
                 reward_refill_distance=generate_request.reward_refill_distance,
                 reward_missing_connect_utility=generate_request.reward_missing_connect_utility,
-                reward_area_connected=generate_request.reward_area_connected,
-                reward_area_connected_excess=generate_request.reward_area_connected_excess,
                 reward_area_crossing=generate_request.reward_area_crossing,
                 reward_area_size_valid=generate_request.reward_area_size_valid,
                 reward_area_map_station=generate_request.reward_area_map_station,
-                area_connected_component_bucket_excess=(
-                    area_connected_component_bucket_excess(
-                        state.training_config.train.area_connected_component_bucket_upper_bounds,
-                        device,
-                    )
-                ),
                 generation_variable_floats=generation_variable_floats_model,
                 log_temperature_model=log_temperature_model,
                 log_recommended_candidates_model=log_recommended_candidates_model,
@@ -789,8 +774,6 @@ def warmup_generate_request() -> GenerateRequest:
         reward_save_distance=0.1,
         reward_refill_distance=0.1,
         reward_missing_connect_utility=0.5,
-        reward_area_connected=0.0,
-        reward_area_connected_excess=0.0,
         reward_area_crossing=0.0,
         reward_area_size_valid=0.0,
         reward_area_map_station=0.0,
