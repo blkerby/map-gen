@@ -2,6 +2,7 @@ import threading
 from types import SimpleNamespace
 
 from pydantic import ValidationError
+import torch
 
 import serve
 from serve import (
@@ -39,6 +40,30 @@ def base_payload() -> dict:
         "reward_area_map_station": 1.0,
         "area_assignment_base_order": "random",
     }
+
+
+def test_valid_map_mask_includes_area_outcomes() -> None:
+    batch_size = 4
+    step_outcomes = SimpleNamespace(
+        door_invalid=torch.zeros([batch_size, 1]),
+        connection_invalid=torch.zeros([batch_size, 1]),
+        toilet_invalid=torch.zeros([batch_size]),
+        phantoon_invalid=torch.zeros([batch_size]),
+    )
+    area_size = torch.full([batch_size, 6], 2)
+    area_size[1, 0] = 0
+    area_size[2, 0] = 4
+    area_map_station_count = torch.ones([batch_size, 6], dtype=torch.int64)
+    area_map_station_count[3, 0] = 2
+    outcomes = SimpleNamespace(
+        step_outcomes=step_outcomes,
+        end_outcomes=SimpleNamespace(
+            area_size=area_size,
+            area_map_station_count=area_map_station_count,
+        ),
+    )
+
+    assert serve.valid_map_mask(outcomes, 1, 3).tolist() == [True, False, False, False]
 
 
 def base_serving_config_payload() -> dict:
@@ -351,6 +376,7 @@ def assert_prefetch_refill_yields_to_foreground() -> None:
 
 
 def main() -> None:
+    test_valid_map_mask_includes_area_outcomes()
     full_map_payload = base_payload() | {"small_map": False}
     full_map_request = GenerateRequest.model_validate(full_map_payload)
     validate_generate_request(full_map_request, rooms=[{}, {}, {}])

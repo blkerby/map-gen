@@ -1229,10 +1229,31 @@ class TrainingSession:
         phantoon_invalid = (outcomes.phantoon_invalid != 0).to(torch.int64)
         avg_phantoon = torch.mean(phantoon_invalid.to(torch.float32))
 
-        total_invalid = door_invalid + conn_invalid + toilet_invalid + phantoon_invalid
+        end_outcomes = episode_outcomes.end_outcomes
+        area_size = end_outcomes.area_size
+        area_size_invalid = torch.sum(
+            (area_size < step_config.generation.min_area_size)
+            | (area_size > step_config.generation.max_area_size),
+            dim=1,
+        )
+        area_map_station_invalid = torch.sum(
+            end_outcomes.area_map_station_count != 1,
+            dim=1,
+        )
+        total_invalid = (
+            door_invalid
+            + conn_invalid
+            + toilet_invalid
+            + phantoon_invalid
+            + area_size_invalid
+            + area_map_station_invalid
+        )
         avg_invalid = torch.mean(total_invalid.to(torch.float32))
         min_invalid = torch.min(total_invalid)
-        end_outcomes = episode_outcomes.end_outcomes
+        avg_area_size_invalid = torch.mean(area_size_invalid.to(torch.float32))
+        avg_area_map_station_invalid = torch.mean(
+            area_map_station_invalid.to(torch.float32)
+        )
         avg_frontiers = torch.mean(end_outcomes.avg_frontiers.to(torch.float32))
         graph_diameter = torch.mean(end_outcomes.graph_diameter.to(torch.float32))
         save_distance_mask = end_outcomes.save_distance_mask.to(torch.float32)
@@ -1314,7 +1335,6 @@ class TrainingSession:
             missing_connect_utility = torch.mean(missing_connect_utility_values)
         avg_area_used = torch.mean((end_outcomes.area_size > 0).to(torch.float32))
         avg_area_crossing = torch.mean(end_outcomes.area_crossings.to(torch.float32))
-        area_size = end_outcomes.area_size
         avg_area_size_valid = torch.mean(
             (
                 (area_size >= step_config.generation.min_area_size)
@@ -1331,6 +1351,10 @@ class TrainingSession:
         success_conn = torch.mean((conn_invalid == 0).to(torch.float32))
         success_toilet = torch.mean((toilet_invalid == 0).to(torch.float32))
         success_phantoon = torch.mean((phantoon_invalid == 0).to(torch.float32))
+        success_area_size = torch.mean((area_size_invalid == 0).to(torch.float32))
+        success_area_map_station = torch.mean(
+            (area_map_station_invalid == 0).to(torch.float32)
+        )
 
         horizontal_door_match_counts = door_match_counts.horizontal[:-1, :-1].to(torch.float64)
         vertical_door_match_counts = door_match_counts.vertical[:-1, :-1].to(torch.float64)
@@ -1438,6 +1462,8 @@ class TrainingSession:
             "success_conn": success_conn,
             "success_toilet": success_toilet,
             "success_phantoon": success_phantoon,
+            "success_area_size": success_area_size,
+            "success_area_map_station": success_area_map_station,
             "avg_invalid": avg_invalid,
             "avg_frontiers": avg_frontiers,
             "graph_diameter": graph_diameter,
@@ -1454,6 +1480,8 @@ class TrainingSession:
             "missing_connect_utility": missing_connect_utility,
             "avg_area_used": avg_area_used,
             "avg_area_crossing": avg_area_crossing,
+            "avg_area_size_invalid": avg_area_size_invalid,
+            "avg_area_map_station_invalid": avg_area_map_station_invalid,
             "avg_area_size_valid": avg_area_size_valid,
             "avg_area_map_station": avg_area_map_station,
             "avg_door": avg_door,

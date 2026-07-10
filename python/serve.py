@@ -608,13 +608,20 @@ def tensor_has_invalid_outcome(tensor: torch.Tensor) -> torch.Tensor:
     return torch.any(invalid, dim=tuple(range(1, invalid.ndim)))
 
 
-def valid_map_mask(outcomes) -> torch.Tensor:
+def valid_map_mask(outcomes, min_area_size: int, max_area_size: int) -> torch.Tensor:
     step_outcomes = outcomes.step_outcomes
+    end_outcomes = outcomes.end_outcomes
+    area_size_invalid = (end_outcomes.area_size < min_area_size) | (
+        end_outcomes.area_size > max_area_size
+    )
+    area_map_station_invalid = end_outcomes.area_map_station_count != 1
     invalid = (
         tensor_has_invalid_outcome(step_outcomes.door_invalid)
         | tensor_has_invalid_outcome(step_outcomes.connection_invalid)
         | tensor_has_invalid_outcome(step_outcomes.toilet_invalid)
         | tensor_has_invalid_outcome(step_outcomes.phantoon_invalid)
+        | tensor_has_invalid_outcome(area_size_invalid)
+        | tensor_has_invalid_outcome(area_map_station_invalid)
     )
     return ~invalid
 
@@ -960,7 +967,11 @@ def build_generate_response_data(
     profile_report = generation_result.profile_report
 
     profile_time = profile_start(state.profile)
-    valid_mask = valid_map_mask(outcomes)
+    valid_mask = valid_map_mask(
+        outcomes,
+        state.training_config.generation.min_area_size,
+        state.training_config.generation.max_area_size,
+    )
     valid_room_idx = episode_data.actions.room_idx[valid_mask]
     valid_room_x = episode_data.actions.room_x[valid_mask]
     valid_room_y = episode_data.actions.room_y[valid_mask]
