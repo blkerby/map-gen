@@ -102,7 +102,7 @@ class GenerateRequest(StrictBaseModel):
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
-    num_scored_no_action_candidates: int
+    num_scored_invalid_candidates: int
     max_candidate_areas_per_placement: int
     temperature: float
     proposal_temperature: float
@@ -420,10 +420,10 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         raise ValueError("recommended_candidates must be greater than zero")
     if generate_request.shortlist_candidates < generate_request.recommended_candidates:
         raise ValueError("shortlist_candidates must be at least recommended_candidates")
-    if generate_request.num_scored_no_action_candidates < 0:
-        raise ValueError("num_scored_no_action_candidates must be greater than or equal to zero")
-    if generate_request.num_scored_no_action_candidates > generate_request.shortlist_candidates:
-        raise ValueError("num_scored_no_action_candidates must not exceed shortlist_candidates")
+    if generate_request.num_scored_invalid_candidates < 0:
+        raise ValueError("num_scored_invalid_candidates must be greater than or equal to zero")
+    if generate_request.num_scored_invalid_candidates > generate_request.shortlist_candidates:
+        raise ValueError("num_scored_invalid_candidates must not exceed shortlist_candidates")
     if generate_request.max_candidate_areas_per_placement <= 0:
         raise ValueError("max_candidate_areas_per_placement must be greater than zero")
     if generate_request.max_candidate_areas_per_placement > 6:
@@ -545,7 +545,7 @@ def create_generate_configs(
                 episode_length=generate_request.episode_length,
                 recommended_candidates=generate_request.recommended_candidates,
                 shortlist_candidates=generate_request.shortlist_candidates,
-                num_scored_no_action_candidates=(generate_request.num_scored_no_action_candidates),
+                num_scored_invalid_candidates=(generate_request.num_scored_invalid_candidates),
                 max_candidate_areas_per_placement=(
                     generate_request.max_candidate_areas_per_placement
                 ),
@@ -774,7 +774,7 @@ def warmup_generate_request() -> GenerateRequest:
         episode_length=253,
         recommended_candidates=4,
         shortlist_candidates=16,
-        num_scored_no_action_candidates=4,
+        num_scored_invalid_candidates=4,
         max_candidate_areas_per_placement=2,
         temperature=0.03,
         proposal_temperature=0.3,

@@ -1,20 +1,20 @@
 use bitvec::vec::BitVec;
-use delaunator::{EMPTY, Point, next_halfedge, triangulate};
+use delaunator::{next_halfedge, triangulate, Point, EMPTY};
 use hashbrown::HashMap;
-use rand::SeedableRng;
 use rand::prelude::*;
+use rand::SeedableRng;
 use serde::Deserialize;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    AREA_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx, Coord, DUMMY_AREA,
-    DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
-    GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
-    RoomPartIdx, SpatialCellIdx, get_behind_door_position, proposal_action_parts,
+    get_behind_door_position, proposal_action_parts, Action, ActionIdx, AreaIdx, CommonData,
+    ConnectionVariantIdx, Coord, DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome,
+    DoorVariantIdx, FrontierIdx, GeometryData, GeometryIdx, GraphDistance, PartIdx,
+    ProposalActionIdx, RoomIdx, RoomPartIdx, SpatialCellIdx, AREA_COUNT, DUMMY_AREA, NUM_DIRS,
 };
-use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
+use crate::engine::{profile_enabled, record_profile_count, record_profile_metric, ProfileMetric};
 use crate::scc_dag::SccDag;
 use crate::union_find::{UnionFind, UnionFindSnapshot};
 
@@ -212,12 +212,12 @@ pub struct ProposalCandidates {
     pub post_candidate_outcomes: Vec<StepOutcomes>,
     pub door_matches: Vec<Vec<i16>>,
     pub feature_plans: Vec<FeaturePlan>,
-    pub scored_no_action_frontier_idx: Vec<FrontierIdx>,
-    pub scored_no_action_proposal_action_idx: Vec<ProposalActionIdx>,
+    pub scored_invalid_frontier_idx: Vec<FrontierIdx>,
+    pub scored_invalid_proposal_action_idx: Vec<ProposalActionIdx>,
     pub clean_count: usize,
     pub evaluated_count: usize,
     pub rejected_count: usize,
-    pub no_action_count: usize,
+    pub invalid_count: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3487,7 +3487,7 @@ impl Environment {
         sampled_frontier_idx: &[FrontierIdx],
         sampled_proposal_action_idx: &[ProposalActionIdx],
         recommended_candidates: usize,
-        num_scored_no_action_candidates: usize,
+        num_scored_invalid_candidates: usize,
         max_candidate_areas_per_placement: usize,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
@@ -3518,11 +3518,10 @@ impl Environment {
         let mut clean_count_by_key = Vec::new();
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
-        let mut no_action_count = 0;
-        let mut scored_no_action_frontier_idx =
-            Vec::with_capacity(num_scored_no_action_candidates);
-        let mut scored_no_action_proposal_action_idx =
-            Vec::with_capacity(num_scored_no_action_candidates);
+        let mut invalid_count = 0;
+        let mut scored_invalid_frontier_idx = Vec::with_capacity(num_scored_invalid_candidates);
+        let mut scored_invalid_proposal_action_idx =
+            Vec::with_capacity(num_scored_invalid_candidates);
         for (&frontier_idx, &proposal_action_idx) in
             sampled_frontier_idx.iter().zip(sampled_proposal_action_idx)
         {
@@ -3538,10 +3537,10 @@ impl Environment {
                 frontier_idx,
                 proposal_action_idx,
             ) else {
-                no_action_count += 1;
-                if scored_no_action_frontier_idx.len() < num_scored_no_action_candidates {
-                    scored_no_action_frontier_idx.push(frontier_idx);
-                    scored_no_action_proposal_action_idx.push(proposal_action_idx);
+                invalid_count += 1;
+                if scored_invalid_frontier_idx.len() < num_scored_invalid_candidates {
+                    scored_invalid_frontier_idx.push(frontier_idx);
+                    scored_invalid_proposal_action_idx.push(proposal_action_idx);
                 }
                 continue;
             };
@@ -3652,8 +3651,8 @@ impl Environment {
             rejected_count as u64,
         );
         record_profile_count(
-            ProfileMetric::EnvCounterProposalNoActionCandidates,
-            no_action_count as u64,
+            ProfileMetric::EnvCounterProposalInvalidCandidates,
+            invalid_count as u64,
         );
         record_profile_count(
             ProfileMetric::EnvCounterProposalCleanCandidates,
@@ -3686,12 +3685,12 @@ impl Environment {
             post_candidate_outcomes,
             door_matches,
             feature_plans: features,
-            scored_no_action_frontier_idx,
-            scored_no_action_proposal_action_idx,
+            scored_invalid_frontier_idx,
+            scored_invalid_proposal_action_idx,
             clean_count,
             evaluated_count,
             rejected_count,
-            no_action_count,
+            invalid_count,
         })
     }
 
@@ -4745,8 +4744,7 @@ impl Environment {
         let mut area_max_x = std::mem::take(&mut output.area_max_x);
         let mut area_min_y = std::mem::take(&mut output.area_min_y);
         let mut area_max_y = std::mem::take(&mut output.area_max_y);
-        let mut area_connected_components =
-            std::mem::take(&mut output.area_connected_components);
+        let mut area_connected_components = std::mem::take(&mut output.area_connected_components);
         let mut area_crossings = std::mem::take(&mut output.area_crossings);
         let mut area_size = std::mem::take(&mut output.area_size);
         let mut area_map_station_count = std::mem::take(&mut output.area_map_station_count);
@@ -5934,7 +5932,7 @@ fn write_direction_door_matches(matches: &[DirDoorIdx], output: &mut [i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{Direction, Room, proposal_action_idx};
+    use crate::common::{proposal_action_idx, Direction, Room};
 
     fn door_location(x: Coord, y: Coord, vertical: bool) -> DoorLocation {
         DoorLocation::from_parts(
@@ -6338,15 +6336,14 @@ mod tests {
         let (door_variant_idx, _) = proposal_action_parts(valid_action).unwrap();
         let sorted_frontier_locations = env.sorted_frontier_locations();
 
-        assert!(
-            env.action_for_proposal_candidate(
+        assert!(env
+            .action_for_proposal_candidate(
                 &common,
                 &sorted_frontier_locations,
                 0,
                 proposal_action_idx(door_variant_idx, 0),
             )
-            .is_none()
-        );
+            .is_none());
         let wrong_orientation_variant = common
             .door_variant_direction
             .iter()
@@ -6355,15 +6352,14 @@ mod tests {
             })
             .expect("test setup should include both door orientations")
             as DoorVariantIdx;
-        assert!(
-            env.action_for_proposal_candidate(
+        assert!(env
+            .action_for_proposal_candidate(
                 &common,
                 &sorted_frontier_locations,
                 0,
                 proposal_action_idx(wrong_orientation_variant, 1),
             )
-            .is_none()
-        );
+            .is_none());
     }
 
     #[test]
@@ -6412,15 +6408,14 @@ mod tests {
         let (door_variant_idx, _) = proposal_action_parts(valid_action).unwrap();
         let sorted_frontier_locations = env.sorted_frontier_locations();
 
-        assert!(
-            env.action_for_proposal_candidate(
+        assert!(env
+            .action_for_proposal_candidate(
                 &common,
                 &sorted_frontier_locations,
                 0,
                 proposal_action_idx(door_variant_idx, 3),
             )
-            .is_none()
-        );
+            .is_none());
     }
 
     #[test]
@@ -6557,14 +6552,10 @@ mod tests {
             },
         );
 
-        assert!(
-            (0..AREA_COUNT as AreaIdx)
-                .all(|area| first_resolvable_proposal_action(&mut env, &common, 0, area).is_none())
-        );
-        assert!(
-            (0..AREA_COUNT as AreaIdx)
-                .any(|area| first_resolvable_proposal_action(&mut env, &common, 1, area).is_some())
-        );
+        assert!((0..AREA_COUNT as AreaIdx)
+            .all(|area| first_resolvable_proposal_action(&mut env, &common, 0, area).is_none()));
+        assert!((0..AREA_COUNT as AreaIdx)
+            .any(|area| first_resolvable_proposal_action(&mut env, &common, 1, area).is_some()));
     }
 
     #[test]
@@ -6737,11 +6728,10 @@ mod tests {
                 .iter()
                 .all(|candidate| candidate.x >= 0 && candidate.y >= 0)
         }));
-        assert!(
-            env.frontier
-                .values()
-                .all(|frontier| frontier.candidates.is_empty())
-        );
+        assert!(env
+            .frontier
+            .values()
+            .all(|frontier| frontier.candidates.is_empty()));
     }
 
     #[test]
@@ -6980,10 +6970,10 @@ mod tests {
         assert_eq!(result.clean_count, 0);
         assert_eq!(result.evaluated_count, 1);
         assert_eq!(result.rejected_count, 1);
-        assert_eq!(result.no_action_count, 1);
-        assert_eq!(result.scored_no_action_frontier_idx, [0]);
+        assert_eq!(result.invalid_count, 1);
+        assert_eq!(result.scored_invalid_frontier_idx, [0]);
         assert_eq!(
-            result.scored_no_action_proposal_action_idx,
+            result.scored_invalid_proposal_action_idx,
             [wrong_orientation_action_idx]
         );
         assert_eq!(result.candidates.len(), 1);
@@ -7534,16 +7524,14 @@ mod tests {
         env.clear(&common);
         assert_eq!(env.scc_dag.component_count, 0);
         assert!(env.active_room_parts.is_empty());
-        assert!(
-            env.room_part_component
-                .iter()
-                .all(|&component| component == NO_COMPONENT)
-        );
-        assert!(
-            env.graph_distance
-                .iter()
-                .all(|&distance| distance == GraphDistance::MAX)
-        );
+        assert!(env
+            .room_part_component
+            .iter()
+            .all(|&component| component == NO_COMPONENT));
+        assert!(env
+            .graph_distance
+            .iter()
+            .all(|&distance| distance == GraphDistance::MAX));
     }
 
     #[test]
@@ -8867,18 +8855,16 @@ mod tests {
         );
 
         env.room_part_frontier_distance_cache.clear();
-        assert!(
-            env.room_part_frontier_distance_cache
-                .nearest_frontier_destination_part
-                .iter()
-                .all(|&part| part == RoomPartIdx::MAX)
-        );
-        assert!(
-            env.room_part_frontier_distance_cache
-                .nearest_frontier_source_part
-                .iter()
-                .all(|&part| part == RoomPartIdx::MAX)
-        );
+        assert!(env
+            .room_part_frontier_distance_cache
+            .nearest_frontier_destination_part
+            .iter()
+            .all(|&part| part == RoomPartIdx::MAX));
+        assert!(env
+            .room_part_frontier_distance_cache
+            .nearest_frontier_source_part
+            .iter()
+            .all(|&part| part == RoomPartIdx::MAX));
     }
 
     #[test]
@@ -9675,38 +9661,30 @@ mod tests {
 
     #[test]
     fn feature_config_validates_dependencies() {
-        assert!(
-            FeatureConfig {
-                frontier_position: true,
-                ..FeatureConfig::all_disabled()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            FeatureConfig {
-                frontier_neighbor_flags: true,
-                ..FeatureConfig::all_disabled()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            FeatureConfig {
-                frontier_neighbor_position_embedding: true,
-                ..FeatureConfig::all_disabled()
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            FeatureConfig {
-                global_room_position: true,
-                ..FeatureConfig::all_disabled()
-            }
-            .validate()
-            .is_err()
-        );
+        assert!(FeatureConfig {
+            frontier_position: true,
+            ..FeatureConfig::all_disabled()
+        }
+        .validate()
+        .is_err());
+        assert!(FeatureConfig {
+            frontier_neighbor_flags: true,
+            ..FeatureConfig::all_disabled()
+        }
+        .validate()
+        .is_err());
+        assert!(FeatureConfig {
+            frontier_neighbor_position_embedding: true,
+            ..FeatureConfig::all_disabled()
+        }
+        .validate()
+        .is_err());
+        assert!(FeatureConfig {
+            global_room_position: true,
+            ..FeatureConfig::all_disabled()
+        }
+        .validate()
+        .is_err());
         assert!(FeatureConfig::all_disabled().validate().is_ok());
         assert!(FeatureConfig::all().validate().is_ok());
         let err = serde_json::from_str::<FeatureConfig>(

@@ -72,28 +72,28 @@ def test_max_candidate_areas_per_placement_must_be_in_range() -> None:
         raise AssertionError("max_candidate_areas_per_placement should reject seven")
 
 
-def test_num_scored_no_action_candidates_must_fit_shortlist() -> None:
+def test_num_scored_invalid_candidates_must_fit_shortlist() -> None:
     config_data = load_debug_config()
-    config_data["generation"]["num_scored_no_action_candidates"] = -1
+    config_data["generation"]["num_scored_invalid_candidates"] = -1
     config = Config.model_validate(config_data)
 
     try:
         validate_config(config)
     except ValueError as err:
-        assert "generation.num_scored_no_action_candidates" in str(err)
+        assert "generation.num_scored_invalid_candidates" in str(err)
     else:
-        raise AssertionError("num_scored_no_action_candidates should reject negatives")
+        raise AssertionError("num_scored_invalid_candidates should reject negatives")
 
     config_data = load_debug_config()
-    config_data["generation"]["num_scored_no_action_candidates"] = 17
+    config_data["generation"]["num_scored_invalid_candidates"] = 17
     config = Config.model_validate(config_data)
 
     try:
         validate_config(config)
     except ValueError as err:
-        assert "generation.num_scored_no_action_candidates" in str(err)
+        assert "generation.num_scored_invalid_candidates" in str(err)
     else:
-        raise AssertionError("num_scored_no_action_candidates should fit the shortlist")
+        raise AssertionError("num_scored_invalid_candidates should fit the shortlist")
 
 
 def main() -> None:
@@ -101,7 +101,7 @@ def main() -> None:
     test_generation_area_bounding_box_fields_must_be_positive()
     test_area_connected_component_bucket_bounds_must_start_with_zero_one()
     test_max_candidate_areas_per_placement_must_be_in_range()
-    test_num_scored_no_action_candidates_must_fit_shortlist()
+    test_num_scored_invalid_candidates_must_fit_shortlist()
 
 
 if __name__ == "__main__":

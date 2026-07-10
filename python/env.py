@@ -46,7 +46,7 @@ class GenerateConfig:
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
-    num_scored_no_action_candidates: int
+    num_scored_invalid_candidates: int
     max_candidate_areas_per_placement: int
     gpu_prefetch_batches: int
     temperature: torch.Tensor
@@ -142,7 +142,7 @@ class EpisodeData:
 class ProposalData:
     frontier_idx: torch.Tensor
     action_idx: torch.Tensor
-    no_action: torch.Tensor
+    invalid: torch.Tensor
     selected_candidate: torch.Tensor
     target_logits: torch.Tensor
 
@@ -150,7 +150,7 @@ class ProposalData:
         return ProposalData(
             frontier_idx=self.frontier_idx.to(device),
             action_idx=self.action_idx.to(device),
-            no_action=self.no_action.to(device),
+            invalid=self.invalid.to(device),
             selected_candidate=self.selected_candidate.to(device),
             target_logits=self.target_logits.to(device),
         )
@@ -159,7 +159,7 @@ class ProposalData:
         return ProposalData(
             frontier_idx=self.frontier_idx[start:end],
             action_idx=self.action_idx[start:end],
-            no_action=self.no_action[start:end],
+            invalid=self.invalid[start:end],
             selected_candidate=self.selected_candidate[start:end],
             target_logits=self.target_logits[start:end],
         )
@@ -321,14 +321,14 @@ class CandidateStats:
     clean_counts: torch.Tensor
     evaluated_counts: torch.Tensor
     rejected_counts: torch.Tensor
-    no_action_counts: torch.Tensor
+    invalid_counts: torch.Tensor
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "CandidateStats":
         return CandidateStats(
             clean_counts=self.clean_counts.to(device, non_blocking=non_blocking),
             evaluated_counts=self.evaluated_counts.to(device, non_blocking=non_blocking),
             rejected_counts=self.rejected_counts.to(device, non_blocking=non_blocking),
-            no_action_counts=self.no_action_counts.to(device, non_blocking=non_blocking),
+            invalid_counts=self.invalid_counts.to(device, non_blocking=non_blocking),
         )
 
 
@@ -337,7 +337,7 @@ class CandidateSlot:
         door_count, connection_count = env.engine.get_output_sizes()
         self.environment_capacity = 0
         self.candidate_capacity = 0
-        self.no_action_capacity = 0
+        self.invalid_capacity = 0
         self.door_count = door_count
         self.connection_count = connection_count
         self.pin_memory = pin_memory
@@ -347,8 +347,8 @@ class CandidateSlot:
         self.room_area = None
         self.proposal_frontier_idx = None
         self.proposal_action_idx = None
-        self.scored_no_action_frontier_idx = None
-        self.scored_no_action_proposal_action_idx = None
+        self.scored_invalid_frontier_idx = None
+        self.scored_invalid_proposal_action_idx = None
         self.pre_door_invalid = None
         self.pre_connection_invalid = None
         self.pre_toilet_invalid = None
@@ -361,7 +361,7 @@ class CandidateSlot:
         self.clean_counts = None
         self.evaluated_counts = None
         self.rejected_counts = None
-        self.no_action_counts = None
+        self.invalid_counts = None
 
     def _empty(self, shape, dtype):
         return torch.empty(shape, dtype=dtype, pin_memory=self.pin_memory)
@@ -370,20 +370,20 @@ class CandidateSlot:
         self,
         environment_count: int,
         candidate_count: int,
-        num_scored_no_action_candidates: int,
+        num_scored_invalid_candidates: int,
     ):
         if (
             self.room_idx is not None
             and self.environment_capacity >= environment_count
             and self.candidate_capacity >= candidate_count
-            and self.no_action_capacity >= num_scored_no_action_candidates
+            and self.invalid_capacity >= num_scored_invalid_candidates
         ):
             return
         self.environment_capacity = max(self.environment_capacity, environment_count)
         self.candidate_capacity = max(self.candidate_capacity, candidate_count)
-        self.no_action_capacity = max(
-            self.no_action_capacity,
-            num_scored_no_action_candidates,
+        self.invalid_capacity = max(
+            self.invalid_capacity,
+            num_scored_invalid_candidates,
         )
         candidate_shape = (self.environment_capacity, self.candidate_capacity)
         self.room_idx = self._empty(candidate_shape, torch.uint8)
@@ -392,9 +392,9 @@ class CandidateSlot:
         self.room_area = self._empty(candidate_shape, torch.uint8)
         self.proposal_frontier_idx = self._empty(candidate_shape, torch.int16)
         self.proposal_action_idx = self._empty(candidate_shape, torch.int16)
-        no_action_shape = (self.environment_capacity, self.no_action_capacity)
-        self.scored_no_action_frontier_idx = self._empty(no_action_shape, torch.int16)
-        self.scored_no_action_proposal_action_idx = self._empty(no_action_shape, torch.int16)
+        invalid_shape = (self.environment_capacity, self.invalid_capacity)
+        self.scored_invalid_frontier_idx = self._empty(invalid_shape, torch.int16)
+        self.scored_invalid_proposal_action_idx = self._empty(invalid_shape, torch.int16)
         self.pre_door_invalid = self._empty(
             (self.environment_capacity, self.door_count),
             torch.int8,
@@ -419,7 +419,7 @@ class CandidateSlot:
         self.clean_counts = self._empty((self.environment_capacity,), torch.int64)
         self.evaluated_counts = self._empty((self.environment_capacity,), torch.int64)
         self.rejected_counts = self._empty((self.environment_capacity,), torch.int64)
-        self.no_action_counts = self._empty((self.environment_capacity,), torch.int64)
+        self.invalid_counts = self._empty((self.environment_capacity,), torch.int64)
 
     def actions(self, environment_count: int, candidate_count: int) -> Actions:
         return Actions(
@@ -470,7 +470,7 @@ class CandidateSlot:
             clean_counts=self.clean_counts[:environment_count],
             evaluated_counts=self.evaluated_counts[:environment_count],
             rejected_counts=self.rejected_counts[:environment_count],
-            no_action_counts=self.no_action_counts[:environment_count],
+            invalid_counts=self.invalid_counts[:environment_count],
         )
 
 
@@ -988,7 +988,7 @@ class EnvironmentGroup:
         sampled_frontier_idx: torch.Tensor,
         sampled_proposal_action_idx: torch.Tensor,
         recommended_candidates: int,
-        num_scored_no_action_candidates: int,
+        num_scored_invalid_candidates: int,
         max_candidate_areas_per_placement: int,
     ) -> tuple[
         Actions,
@@ -1005,7 +1005,7 @@ class EnvironmentGroup:
         candidate_slot.ensure(
             self.num_envs,
             candidate_count,
-            num_scored_no_action_candidates,
+            num_scored_invalid_candidates,
         )
         result = self.env.pack_candidates_from_proposals_into(
             map_gen.ProposalCandidateBuffers(
@@ -1015,7 +1015,7 @@ class EnvironmentGroup:
                     .cpu()
                     .numpy(),
                     "recommended_candidates": recommended_candidates,
-                    "num_scored_no_action_candidates": num_scored_no_action_candidates,
+                    "num_scored_invalid_candidates": num_scored_invalid_candidates,
                     "max_candidate_areas_per_placement": max_candidate_areas_per_placement,
                     "room_idx": candidate_slot.room_idx[: self.num_envs, :candidate_count].numpy(),
                     "room_x": candidate_slot.room_x[: self.num_envs, :candidate_count].numpy(),
@@ -1029,14 +1029,14 @@ class EnvironmentGroup:
                     "proposal_action_idx": candidate_slot.proposal_action_idx[
                         : self.num_envs, :candidate_count
                     ].numpy(),
-                    "scored_no_action_frontier_idx": (
-                        candidate_slot.scored_no_action_frontier_idx[
-                            : self.num_envs, :num_scored_no_action_candidates
+                    "scored_invalid_frontier_idx": (
+                        candidate_slot.scored_invalid_frontier_idx[
+                            : self.num_envs, :num_scored_invalid_candidates
                         ].numpy()
                     ),
-                    "scored_no_action_proposal_action_idx": (
-                        candidate_slot.scored_no_action_proposal_action_idx[
-                            : self.num_envs, :num_scored_no_action_candidates
+                    "scored_invalid_proposal_action_idx": (
+                        candidate_slot.scored_invalid_proposal_action_idx[
+                            : self.num_envs, :num_scored_invalid_candidates
                         ].numpy()
                     ),
                     "pre_door_valid": candidate_slot.pre_door_invalid[: self.num_envs].numpy(),
@@ -1065,14 +1065,14 @@ class EnvironmentGroup:
                     "clean_counts": candidate_slot.clean_counts[: self.num_envs].numpy(),
                     "evaluated_counts": candidate_slot.evaluated_counts[: self.num_envs].numpy(),
                     "rejected_counts": candidate_slot.rejected_counts[: self.num_envs].numpy(),
-                    "no_action_counts": candidate_slot.no_action_counts[: self.num_envs].numpy(),
+                    "invalid_counts": candidate_slot.invalid_counts[: self.num_envs].numpy(),
                 }
             )
         )
         return self._candidate_slot_result(
             candidate_slot,
             candidate_count,
-            num_scored_no_action_candidates,
+            num_scored_invalid_candidates,
             result,
         )
 
@@ -1080,7 +1080,7 @@ class EnvironmentGroup:
         self,
         candidate_slot: CandidateSlot,
         candidate_count: int,
-        num_scored_no_action_candidates: int,
+        num_scored_invalid_candidates: int,
         feature_requirements,
     ) -> tuple[
         Actions,
@@ -1097,11 +1097,11 @@ class EnvironmentGroup:
             candidate_slot.actions(self.num_envs, candidate_count),
             candidate_slot.proposal_frontiers(self.num_envs, candidate_count),
             candidate_slot.proposal_actions(self.num_envs, candidate_count),
-            candidate_slot.scored_no_action_frontier_idx[
-                : self.num_envs, :num_scored_no_action_candidates
+            candidate_slot.scored_invalid_frontier_idx[
+                : self.num_envs, :num_scored_invalid_candidates
             ],
-            candidate_slot.scored_no_action_proposal_action_idx[
-                : self.num_envs, :num_scored_no_action_candidates
+            candidate_slot.scored_invalid_proposal_action_idx[
+                : self.num_envs, :num_scored_invalid_candidates
             ],
             candidate_slot.reward_outcomes(self.num_envs),
             candidate_slot.post_candidate_outcomes(self.num_envs, candidate_count),

@@ -204,7 +204,7 @@ Implementation notes:
 - Add required config field `generation.max_candidate_areas_per_placement` and
   validate it is in `[1, AREA_COUNT]`. Use `2` in checked-in configs initially.
 - The postponed queue should preserve shortlist order.
-- A postponed candidate that resolves to no action should be ignored, like the
+- A postponed candidate that is invalid should be ignored, like the
   current invalid proposal entries.
 - Concrete room selection from `(frontier_idx, door_variant_idx)` should still
   happen at the end, when the candidate is actually evaluated. If multiple

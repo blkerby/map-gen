@@ -47,7 +47,7 @@ def test_proposal_loss_compares_candidate_scores() -> None:
     assert aligned_loss < reversed_loss
 
 
-def test_no_action_candidate_receives_downward_gradient() -> None:
+def test_invalid_candidate_receives_downward_gradient() -> None:
     candidate_score = torch.tensor([[0.0, 5.0]], requires_grad=True)
     loss = proposal_batch_loss(
         candidate_score,
@@ -61,7 +61,7 @@ def test_no_action_candidate_receives_downward_gradient() -> None:
     assert candidate_score.grad[0, 1] > 0
 
 
-def test_all_no_action_row_has_zero_proposal_loss() -> None:
+def test_all_invalid_row_has_zero_proposal_loss() -> None:
     candidate_score = torch.tensor([[1.0, 2.0]], requires_grad=True)
     loss = proposal_batch_loss(
         candidate_score,
@@ -132,8 +132,8 @@ def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
 def main() -> None:
     test_proposal_action_helpers_flatten_area_variants()
     test_proposal_loss_compares_candidate_scores()
-    test_no_action_candidate_receives_downward_gradient()
-    test_all_no_action_row_has_zero_proposal_loss()
+    test_invalid_candidate_receives_downward_gradient()
+    test_all_invalid_row_has_zero_proposal_loss()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()
     test_proposal_shortlist_pads_environment_without_frontiers()

@@ -20,7 +20,7 @@ def main() -> int:
         "episode_length": 253,
         "recommended_candidates": 4,
         "shortlist_candidates": 16,
-        "num_scored_no_action_candidates": 4,
+        "num_scored_invalid_candidates": 4,
         "max_candidate_areas_per_placement": 2,
         "temperature": 0.03,
         "proposal_temperature": 0.3,

@@ -49,7 +49,7 @@ class FeatureTrainBatch:
     features: Features
     proposal_frontier_idx: torch.Tensor | None
     proposal_action_idx: torch.Tensor | None
-    proposal_no_action: torch.Tensor | None
+    proposal_invalid: torch.Tensor | None
     proposal_target_logits: torch.Tensor | None
 
 
@@ -247,7 +247,7 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
         & (proposal_data.action_idx >= 0)
         & torch.isfinite(target_logits)
     )
-    resolved = present & ~proposal_data.no_action
+    resolved = present & ~proposal_data.invalid
     candidate_count = target_logits.shape[-1]
     flat_logits = target_logits.reshape(-1, candidate_count)
     flat_present = present.reshape(-1, candidate_count)
@@ -384,12 +384,12 @@ def prepare_feature_batches(
                 next_lookahead_outcomes = None
             proposal_frontier_idx = None
             proposal_action_idx = None
-            proposal_no_action = None
+            proposal_invalid = None
             proposal_target_logits = None
             if proposal_data is not None and step + 1 < episode_length:
                 proposal_frontier_idx = proposal_data.frontier_idx[:, step]
                 proposal_action_idx = proposal_data.action_idx[:, step]
-                proposal_no_action = proposal_data.no_action[:, step]
+                proposal_invalid = proposal_data.invalid[:, step]
                 proposal_target_logits = proposal_data.target_logits[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
             feature_batches.append(
@@ -409,7 +409,7 @@ def prepare_feature_batches(
                     ),
                     proposal_frontier_idx=proposal_frontier_idx,
                     proposal_action_idx=proposal_action_idx,
-                    proposal_no_action=proposal_no_action,
+                    proposal_invalid=proposal_invalid,
                     proposal_target_logits=proposal_target_logits,
                 )
             )
@@ -514,13 +514,13 @@ def train_balance_batch_backward(
 def proposal_batch_loss(
     candidate_score: torch.Tensor,
     target_logits: torch.Tensor,
-    no_action: torch.Tensor,
+    invalid: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
     target_logits = target_logits.to(device, dtype=torch.float32)
-    no_action = no_action.to(device=device, dtype=torch.bool)
+    invalid = invalid.to(device=device, dtype=torch.bool)
     present = torch.isfinite(candidate_score) & torch.isfinite(target_logits)
-    row_valid = torch.any(present & ~no_action, dim=1)
+    row_valid = torch.any(present & ~invalid, dim=1)
     if not torch.any(row_valid):
         return torch.sum(candidate_score) * 0.0
     invalid_logit = torch.finfo(candidate_score.dtype).min
@@ -742,7 +742,7 @@ def train_feature_batch_backward(
             prepared_batch.kind == "fresh"
             and feature_batch.proposal_frontier_idx is not None
             and feature_batch.proposal_action_idx is not None
-            and feature_batch.proposal_no_action is not None
+            and feature_batch.proposal_invalid is not None
             and feature_batch.proposal_target_logits is not None
         )
         with torch.amp.autocast(
@@ -860,7 +860,7 @@ def train_feature_batch_backward(
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,
                 feature_batch.proposal_target_logits,
-                feature_batch.proposal_no_action,
+                feature_batch.proposal_invalid,
                 context.device,
             )
             weighted_proposal_loss = (
