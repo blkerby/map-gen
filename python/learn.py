@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass
 import math
 from typing import Literal
 
@@ -14,6 +14,8 @@ from env import (
     FeatureSlot,
     StepOutcomes,
     ProposalData,
+    GeneratedFeatureData,
+    slice_features,
 )
 from experience import ExperienceStorage
 from loss import (
@@ -331,6 +333,41 @@ def iter_train_batch_tasks(config: Config, experience: ExperienceStorage) -> lis
     return tasks
 
 
+def verify_feature_tensor(
+    generated: torch.Tensor,
+    replayed: torch.Tensor,
+    path: str,
+    step: int,
+) -> None:
+    if generated.shape != replayed.shape or generated.dtype != replayed.dtype:
+        raise RuntimeError(
+            f"feature mismatch at step {step} for {path}: generated "
+            f"shape={tuple(generated.shape)} dtype={generated.dtype}, replayed "
+            f"shape={tuple(replayed.shape)} dtype={replayed.dtype}"
+        )
+    different = generated != replayed
+    if torch.any(different):
+        first = torch.nonzero(different, as_tuple=False)[0]
+        index = tuple(first.tolist())
+        raise RuntimeError(
+            f"feature mismatch at step {step} for {path}{index}: "
+            f"generated={generated[index].item()!r}, replayed={replayed[index].item()!r}"
+        )
+
+
+def verify_feature_values(generated, replayed, step: int, path: str = "features") -> None:
+    if type(generated) is not type(replayed) or not is_dataclass(generated):
+        raise TypeError(f"cannot compare feature values at {path}")
+    for field in fields(generated):
+        generated_value = getattr(generated, field.name)
+        replayed_value = getattr(replayed, field.name)
+        field_path = f"{path}.{field.name}"
+        if isinstance(generated_value, torch.Tensor):
+            verify_feature_tensor(generated_value, replayed_value, field_path, step)
+        else:
+            verify_feature_values(generated_value, replayed_value, step, field_path)
+
+
 def prepare_feature_batches(
     config: Config,
     train_episode_data: EpisodeData,
@@ -338,7 +375,8 @@ def prepare_feature_batches(
     env,
     episode_length: int,
     pin_memory: bool,
-) -> tuple[int, list[FeatureTrainBatch]]:
+    generated_feature_batches: list[Features | None] | None,
+) -> list[FeatureTrainBatch]:
     offset = torch.randint(0, config.train.sample_period, [1]).item()
     train_actions = train_episode_data.actions
     train_actions_cpu = train_actions.to(torch.device("cpu"))
@@ -382,9 +420,7 @@ def prepare_feature_batches(
                 proposal_invalid = proposal_data.invalid[:, step]
                 proposal_target_logits = proposal_data.target_logits[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
-            feature_batches.append(
-                FeatureTrainBatch(
-                    features=env.extract_features(
+            replay_features = env.extract_features(
                         feature_slot,
                         log_temperature,
                         config.features.temperature,
@@ -396,7 +432,14 @@ def prepare_feature_batches(
                         config.features.lookahead_outcomes,
                         0,
                         train_actions.room_idx.shape[0],
-                    ),
+                    )
+            if generated_feature_batches is not None:
+                generated_features = generated_feature_batches[step]
+                if generated_features is not None:
+                    verify_feature_values(generated_features, replay_features, step)
+            feature_batches.append(
+                FeatureTrainBatch(
+                    features=replay_features,
                     proposal_frontier_idx=proposal_frontier_idx,
                     proposal_action_idx=proposal_action_idx,
                     proposal_invalid=proposal_invalid,
@@ -415,6 +458,7 @@ def prepare_feature_batch(
     proposal_data: ProposalData | None,
     env,
     episode_length: int,
+    generated_feature_batches: list[Features | None] | None,
 ) -> PreparedTrainBatch:
     feature_batches = prepare_feature_batches(
         config,
@@ -423,6 +467,7 @@ def prepare_feature_batch(
         env,
         episode_length,
         device.type == "cuda",
+        generated_feature_batches,
     )
     door_matches = env.get_door_matches(device)
     return PreparedTrainBatch(
@@ -440,6 +485,7 @@ def prepare_train_batch_task(
     fresh_episode_data: EpisodeData,
     fresh_outcomes: EpisodeOutcomes,
     fresh_proposal_data: ProposalData,
+    generated_feature_data: GeneratedFeatureData,
 ) -> PreparedTrainBatch:
     env = context.train_batch_envs[task.env_index]
     if task.kind == "fresh":
@@ -458,6 +504,14 @@ def prepare_train_batch_task(
             train_proposal_data,
             env,
             context.episode_length,
+            (
+                [
+                    None if features is None else slice_features(features, task.start, end)
+                    for features in generated_feature_data.feature_batches
+                ]
+                if generated_feature_data.feature_batches
+                else None
+            ),
         )
 
     replay_episode_data = context.experience.sample(
@@ -472,6 +526,7 @@ def prepare_train_batch_task(
         env,
         context.episode_length,
         context.device.type == "cuda",
+        None,
     )
     replay_door_matches = env.get_door_matches(context.device)
     env.finish()
@@ -952,6 +1007,7 @@ def train_round(
     episode_data: EpisodeData,
     episode_outcomes: EpisodeOutcomes,
     proposal_data: ProposalData,
+    generated_feature_data: GeneratedFeatureData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
     set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
@@ -970,6 +1026,7 @@ def train_round(
                 episode_data,
                 episode_outcomes,
                 proposal_data,
+                generated_feature_data,
             ),
         )
     )

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Python wrappers around the Rust map generation engine, includes (zero-copy) conversions
 # between numpy and torch tensors.
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Literal, Optional
 
 import torch
@@ -823,6 +823,141 @@ class Features:
             missing_connect_query_features=self.missing_connect_query_features,
             save_refill_utility_query_features=self.save_refill_utility_query_features,
         )
+
+
+@dataclass
+class GeneratedFeatureData:
+    feature_batches: list[Features | None]
+
+
+def _select_tensor_rows(value: torch.Tensor, row_idx: torch.Tensor) -> torch.Tensor:
+    return value[row_idx].clone()
+
+
+def _select_ragged_features(value, snapshot_field: str, selected_snapshot: torch.Tensor):
+    snapshot_idx = getattr(value, snapshot_field).to(torch.int64)
+    snapshot_capacity = max(
+        int(snapshot_idx.max().item()) + 1 if snapshot_idx.numel() else 0,
+        int(selected_snapshot.max().item()) + 1 if selected_snapshot.numel() else 0,
+    )
+    remap = torch.full(
+        [snapshot_capacity],
+        -1,
+        dtype=torch.int64,
+        device=snapshot_idx.device,
+    )
+    if remap.numel():
+        remap[selected_snapshot] = torch.arange(
+            selected_snapshot.shape[0], device=snapshot_idx.device
+        )
+        selected_rows = remap[snapshot_idx] >= 0
+        remapped_snapshot = remap[snapshot_idx[selected_rows]].to(
+            getattr(value, snapshot_field).dtype
+        )
+    else:
+        selected_rows = torch.zeros_like(snapshot_idx, dtype=torch.bool)
+        remapped_snapshot = getattr(value, snapshot_field).new_empty([0])
+    values = {}
+    for field in fields(value):
+        tensor = getattr(value, field.name)
+        values[field.name] = (
+            remapped_snapshot if field.name == snapshot_field else tensor[selected_rows].clone()
+        )
+    return type(value)(**values)
+
+
+def select_generated_features(
+    features: Features, candidate_idx: torch.Tensor, candidate_count: int
+) -> Features:
+    candidate_idx = candidate_idx.to(device="cpu", dtype=torch.int64)
+    environment_idx = torch.arange(candidate_idx.shape[0], dtype=torch.int64)
+    selected_snapshot = environment_idx * candidate_count + candidate_idx
+    global_values = {}
+    for field in fields(features.global_features):
+        tensor = getattr(features.global_features, field.name)
+        if tensor.shape[0] == 0:
+            global_values[field.name] = tensor.clone()
+        else:
+            global_values[field.name] = _select_tensor_rows(tensor, selected_snapshot)
+    return Features(
+        global_features=GlobalFeatures(**global_values),
+        frontier_features=_select_ragged_features(
+            features.frontier_features, "row_snapshot_idx", selected_snapshot
+        ),
+        missing_connect_query_features=_select_ragged_features(
+            features.missing_connect_query_features, "query_snapshot_idx", selected_snapshot
+        ),
+        save_refill_utility_query_features=_select_ragged_features(
+            features.save_refill_utility_query_features,
+            "query_snapshot_idx",
+            selected_snapshot,
+        ),
+    )
+
+
+def _concatenate_dataclass_rows(
+    values, snapshot_field: str | None = None, snapshot_counts: list[int] | None = None
+):
+    result = {}
+    for field in fields(values[0]):
+        tensors = []
+        snapshot_offset = 0
+        for index, value in enumerate(values):
+            tensor = getattr(value, field.name)
+            if field.name == snapshot_field:
+                tensor = tensor + snapshot_offset
+                if snapshot_counts is None:
+                    raise ValueError("ragged feature concatenation requires snapshot counts")
+                snapshot_offset += snapshot_counts[index]
+            tensors.append(tensor)
+        result[field.name] = torch.cat(tensors, dim=0)
+    return type(values[0])(**result)
+
+
+def concatenate_features(values: list[Features]) -> Features:
+    snapshot_counts = [value.global_features.inventory.shape[0] for value in values]
+    return Features(
+        global_features=_concatenate_dataclass_rows([v.global_features for v in values]),
+        frontier_features=_concatenate_dataclass_rows(
+            [v.frontier_features for v in values],
+            "row_snapshot_idx",
+            snapshot_counts,
+        ),
+        missing_connect_query_features=_concatenate_dataclass_rows(
+            [v.missing_connect_query_features for v in values],
+            "query_snapshot_idx",
+            snapshot_counts,
+        ),
+        save_refill_utility_query_features=_concatenate_dataclass_rows(
+            [v.save_refill_utility_query_features for v in values],
+            "query_snapshot_idx",
+            snapshot_counts,
+        ),
+    )
+
+
+def slice_features(value: Features, start: int, end: int) -> Features:
+    indices = torch.arange(start, end, dtype=torch.int64)
+    return select_feature_snapshots(value, indices)
+
+
+def select_feature_snapshots(value: Features, indices: torch.Tensor) -> Features:
+    global_values = {
+        field.name: getattr(value.global_features, field.name)[indices].clone()
+        for field in fields(value.global_features)
+    }
+    return Features(
+        global_features=GlobalFeatures(**global_values),
+        frontier_features=_select_ragged_features(
+            value.frontier_features, "row_snapshot_idx", indices
+        ),
+        missing_connect_query_features=_select_ragged_features(
+            value.missing_connect_query_features, "query_snapshot_idx", indices
+        ),
+        save_refill_utility_query_features=_select_ragged_features(
+            value.save_refill_utility_query_features, "query_snapshot_idx", indices
+        ),
+    )
 
 
 @dataclass

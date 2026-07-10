@@ -30,6 +30,8 @@ from env import (
     GenerateConfig,
     StepOutcomes,
     ProposalData,
+    GeneratedFeatureData,
+    concatenate_features,
 )
 from experience import ExperienceStorage
 from generate import GenerationStats, run_generation_groups
@@ -70,6 +72,7 @@ from visualize import save_episode_frames
 class Args:
     config: Path
     verify_outcome_consistency: bool
+    verify_feature_consistency: bool
     device: str
     load_checkpoint: Path | None
     profile: bool
@@ -656,8 +659,10 @@ def run_generation_process_task(
     balance_model_state: dict[str, torch.Tensor],
     generation_config_json: str,
     verify_outcome_consistency: bool,
+    capture_generated_features: bool,
 ) -> tuple[
-    EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GenerationStats, RustProfileReport
+    EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GeneratedFeatureData,
+    GenerationStats, RustProfileReport
 ]:
     if GENERATION_PROCESS_STATE is None:
         raise RuntimeError("generation process was not initialized")
@@ -682,6 +687,7 @@ def run_generation_process_task(
         outcomes,
         door_match_counts,
         proposal_data,
+        generated_feature_data,
         generation_stats,
         python_profile_report,
     ) = run_generation_groups(
@@ -691,6 +697,7 @@ def run_generation_process_task(
         gen_configs,
         state.device,
         verify_outcome_consistency=verify_outcome_consistency,
+        capture_generated_features=capture_generated_features,
         profile=state.profile,
     )
     profile_report = map_gen.profile_report() + python_profile_report if state.profile else []
@@ -707,6 +714,7 @@ def run_generation_process_task(
         outcomes_cpu,
         door_match_counts_cpu,
         proposal_data_cpu,
+        generated_feature_data,
         generation_stats,
         profile_report,
     )
@@ -889,6 +897,7 @@ class TrainingSession:
         EpisodeOutcomes,
         DoorMatchCounts,
         ProposalData,
+        GeneratedFeatureData,
         GenerationStats,
         RustProfileReport,
     ]:
@@ -896,6 +905,7 @@ class TrainingSession:
         outcome_iterations = []
         door_match_count_iterations = []
         proposal_data_iterations = []
+        generated_feature_data_iterations = []
         generation_stats_iterations = []
         profile_reports = []
         model_state = {
@@ -918,6 +928,7 @@ class TrainingSession:
                     balance_model_state,
                     generation_config.model_dump_json(),
                     self.args.verify_outcome_consistency,
+                    self.args.verify_feature_consistency,
                 )
                 for executor in self.generation_executors
             ]
@@ -928,6 +939,7 @@ class TrainingSession:
                 iteration_outcomes,
                 iteration_door_match_counts,
                 iteration_proposal_data,
+                iteration_generated_feature_data,
                 iteration_generation_stats,
                 iteration_profile_report,
             ) in shard_results:
@@ -935,6 +947,7 @@ class TrainingSession:
                 outcome_iterations.append(iteration_outcomes.to(self.device))
                 door_match_count_iterations.append(iteration_door_match_counts)
                 proposal_data_iterations.append(iteration_proposal_data.to(self.device))
+                generated_feature_data_iterations.append(iteration_generated_feature_data)
                 generation_stats_iterations.append(iteration_generation_stats)
                 profile_reports.append(iteration_profile_report)
 
@@ -1150,6 +1163,21 @@ class TrainingSession:
                     [proposal_data.target_logits for proposal_data in proposal_data_iterations]
                 ),
             ),
+            GeneratedFeatureData(
+                [
+                    None
+                    if any(
+                        data.feature_batches[step] is None
+                        for data in generated_feature_data_iterations
+                    )
+                    else concatenate_features(
+                        [data.feature_batches[step] for data in generated_feature_data_iterations]
+                    )
+                    for step in range(
+                        len(generated_feature_data_iterations[0].feature_batches)
+                    )
+                ]
+            ),
             generation_stats,
             merge_profile_reports(profile_reports),
         )
@@ -1159,6 +1187,7 @@ class TrainingSession:
         episode_data: EpisodeData,
         episode_outcomes: EpisodeOutcomes,
         proposal_data: ProposalData,
+        generated_feature_data: GeneratedFeatureData,
         step_config: Config,
     ) -> tuple[MainLossBreakdown, float]:
         return run_train_round(
@@ -1181,6 +1210,7 @@ class TrainingSession:
             episode_data,
             episode_outcomes,
             proposal_data,
+            generated_feature_data,
         )
 
     def visualize_round(self, episode_data: EpisodeData, round_idx: int) -> None:
@@ -1706,6 +1736,7 @@ class TrainingSession:
                     episode_outcomes,
                     door_match_counts,
                     proposal_data,
+                    generated_feature_data,
                     generation_stats,
                     generation_profile,
                 ) = self.generate_round()
@@ -1718,6 +1749,7 @@ class TrainingSession:
                     episode_data,
                     episode_outcomes,
                     proposal_data,
+                    generated_feature_data,
                     step_config,
                 )
                 episode_outcomes = episode_outcomes.to(torch.device("cpu"))
@@ -1763,6 +1795,11 @@ def parse_args() -> Args:
         help="fail if a known per-step outcome later changes",
     )
     parser.add_argument(
+        "--verify-feature-consistency",
+        action="store_true",
+        help="capture generation features and require exact fresh-replay matches",
+    )
+    parser.add_argument(
         "--device",
         default="auto",
         help=(
@@ -1789,6 +1826,7 @@ def parse_args() -> Args:
     return Args(
         config=namespace.config,
         verify_outcome_consistency=namespace.verify_outcome_consistency,
+        verify_feature_consistency=namespace.verify_feature_consistency,
         device=namespace.device,
         load_checkpoint=namespace.load_checkpoint,
         profile=namespace.profile,
@@ -1884,6 +1922,8 @@ def setup_logging(config: Config, args: Args) -> str:
     logging.info("Config:\n%s", config.model_dump_json(indent=2))
     if args.verify_outcome_consistency:
         logging.info("Outcome consistency verification enabled.")
+    if args.verify_feature_consistency:
+        logging.info("Generation feature consistency verification enabled.")
     if args.load_checkpoint is not None:
         logging.info("Loading checkpoint from %s", args.load_checkpoint)
     if args.profile:
