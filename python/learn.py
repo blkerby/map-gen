@@ -50,7 +50,6 @@ class FeatureTrainBatch:
     proposal_frontier_idx: torch.Tensor | None
     proposal_action_idx: torch.Tensor | None
     proposal_target_logits: torch.Tensor | None
-    frontier_value_target: torch.Tensor | None
 
 
 @dataclass
@@ -81,7 +80,6 @@ class MainLossBreakdown:
     area_size: float
     area_map_station: float
     proposal: float
-    frontier_value: float
     door_contribution: float
     connection_contribution: float
     toilet_contribution: float
@@ -98,7 +96,6 @@ class MainLossBreakdown:
     area_size_contribution: float
     area_map_station_contribution: float
     proposal_contribution: float
-    frontier_value_contribution: float
 
 
 @dataclass
@@ -145,7 +142,6 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         area_size=0.0,
         area_map_station=0.0,
         proposal=0.0,
-        frontier_value=0.0,
         door_contribution=0.0,
         connection_contribution=0.0,
         toilet_contribution=0.0,
@@ -162,7 +158,6 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         area_size_contribution=0.0,
         area_map_station_contribution=0.0,
         proposal_contribution=0.0,
-        frontier_value_contribution=0.0,
     )
 
 
@@ -184,7 +179,6 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.area_size += source.area_size
     target.area_map_station += source.area_map_station
     target.proposal += source.proposal
-    target.frontier_value += source.frontier_value
     target.door_contribution += source.door_contribution
     target.connection_contribution += source.connection_contribution
     target.toilet_contribution += source.toilet_contribution
@@ -201,7 +195,6 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.area_size_contribution += source.area_size_contribution
     target.area_map_station_contribution += source.area_map_station_contribution
     target.proposal_contribution += source.proposal_contribution
-    target.frontier_value_contribution += source.frontier_value_contribution
 
 
 def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBreakdown:
@@ -223,7 +216,6 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         area_size=total_loss.area_size / count,
         area_map_station=total_loss.area_map_station / count,
         proposal=total_loss.proposal / count,
-        frontier_value=total_loss.frontier_value / count,
         door_contribution=total_loss.door_contribution / count,
         connection_contribution=total_loss.connection_contribution / count,
         toilet_contribution=total_loss.toilet_contribution / count,
@@ -244,7 +236,6 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         area_size_contribution=total_loss.area_size_contribution / count,
         area_map_station_contribution=total_loss.area_map_station_contribution / count,
         proposal_contribution=total_loss.proposal_contribution / count,
-        frontier_value_contribution=total_loss.frontier_value_contribution / count,
     )
 
 
@@ -390,12 +381,10 @@ def prepare_feature_batches(
             proposal_frontier_idx = None
             proposal_action_idx = None
             proposal_target_logits = None
-            frontier_value_target = None
             if proposal_data is not None and step + 1 < episode_length:
                 proposal_frontier_idx = proposal_data.frontier_idx[:, step]
                 proposal_action_idx = proposal_data.action_idx[:, step]
                 proposal_target_logits = proposal_data.target_logits[:, step]
-                frontier_value_target = proposal_data.frontier_value_target[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
             feature_batches.append(
                 FeatureTrainBatch(
@@ -415,7 +404,6 @@ def prepare_feature_batches(
                     proposal_frontier_idx=proposal_frontier_idx,
                     proposal_action_idx=proposal_action_idx,
                     proposal_target_logits=proposal_target_logits,
-                    frontier_value_target=frontier_value_target,
                 )
             )
     return feature_batches
@@ -517,49 +505,27 @@ def train_balance_batch_backward(
 
 
 def proposal_batch_loss(
-    proposal_score: torch.Tensor,
-    frontier_idx: torch.Tensor,
-    action_idx: torch.Tensor,
+    candidate_score: torch.Tensor,
     target_logits: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
-    frontier_idx = frontier_idx.to(device, dtype=torch.int64)
-    action_idx = action_idx.to(device, dtype=torch.int64)
     target_logits = target_logits.to(device, dtype=torch.float32)
-    frontier_valid = frontier_idx >= 0
-    if frontier_valid.ndim == 1:
-        frontier_valid = frontier_valid.unsqueeze(1)
-    valid = (
-        frontier_valid
-        & (action_idx >= 0)
-        & (action_idx < proposal_score.shape[1])
-        & torch.isfinite(target_logits)
-    )
+    valid = torch.isfinite(candidate_score) & torch.isfinite(target_logits)
     row_valid = torch.any(valid, dim=1)
     if not torch.any(row_valid):
-        return torch.sum(proposal_score) * 0.0
-    safe_action_idx = action_idx.clamp_min(0)
-    batch_idx = torch.arange(
-        action_idx.shape[0],
-        dtype=torch.int64,
-        device=device,
-    ).unsqueeze(1)
-    candidate_logits = proposal_score[
-        batch_idx,
-        safe_action_idx,
-    ]
-    invalid_logit = torch.finfo(candidate_logits.dtype).min
-    candidate_logits = torch.where(
+        return torch.sum(candidate_score) * 0.0
+    invalid_logit = torch.finfo(candidate_score.dtype).min
+    candidate_score = torch.where(
         valid,
-        candidate_logits,
-        torch.full_like(candidate_logits, invalid_logit),
+        candidate_score,
+        torch.full_like(candidate_score, invalid_logit),
     ).to(torch.float32)
     target_logits = torch.where(
         valid,
         target_logits,
         torch.full_like(target_logits, invalid_logit),
     )
-    row_candidate_logits = candidate_logits[row_valid]
+    row_candidate_logits = candidate_score[row_valid]
     row_target_logits = target_logits[row_valid]
     row_mask = valid[row_valid]
     proposal_log_probs = torch.nn.functional.log_softmax(
@@ -592,50 +558,56 @@ def proposal_batch_loss(
     return proposal_loss
 
 
-def proposal_scores_for_frontier(
+def proposal_scores_for_candidates(
     proposal_output: torch.nn.Module,
     proposal_state: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
     row_frontier_idx: torch.Tensor,
     frontier_idx: torch.Tensor,
+    action_idx: torch.Tensor,
     device: torch.device,
 ) -> torch.Tensor:
-    frontier_idx = frontier_idx.to(device)
+    frontier_idx = frontier_idx.to(device=device, dtype=torch.int64)
+    action_idx = action_idx.to(device=device, dtype=torch.int64)
     result = torch.full(
-        (frontier_idx.shape[0], proposal_output.out_features),
+        frontier_idx.shape,
         float("-inf"),
         dtype=proposal_output.output_dtype,
         device=device,
     )
     if proposal_state.shape[0] == 0:
         return result
-    row_snapshot_idx = row_snapshot_idx.to(device)
-    row_frontier_idx = row_frontier_idx.to(device)
-    row_valid = (
-        (row_snapshot_idx >= 0)
-        & (row_snapshot_idx < frontier_idx.shape[0])
-        & (row_frontier_idx == frontier_idx[row_snapshot_idx])
+    row_snapshot_idx = row_snapshot_idx.to(device=device, dtype=torch.int64)
+    row_frontier_idx = row_frontier_idx.to(device=device, dtype=torch.int64)
+    snapshot_count = frontier_idx.shape[0]
+    row_counts = torch.bincount(row_snapshot_idx, minlength=snapshot_count)
+    row_starts = row_counts.cumsum(0) - row_counts
+    batch_idx = torch.arange(snapshot_count, device=device, dtype=torch.int64).unsqueeze(1)
+    candidate_valid = (
+        (frontier_idx >= 0)
+        & (frontier_idx < row_counts.unsqueeze(1))
+        & (action_idx >= 0)
+        & (action_idx < proposal_output.out_features)
     )
-    if torch.any(row_valid):
-        result[row_snapshot_idx[row_valid]] = proposal_output(
-            proposal_state[row_valid].to(proposal_output.output_dtype)
+    safe_frontier_idx = torch.minimum(
+        frontier_idx.clamp_min(0),
+        (row_counts.unsqueeze(1) - 1).clamp_min(0),
+    )
+    candidate_row_idx = row_starts.unsqueeze(1) + safe_frontier_idx
+    safe_candidate_row_idx = candidate_row_idx.clamp_max(proposal_state.shape[0] - 1)
+    candidate_valid = (
+        candidate_valid
+        & (row_snapshot_idx[safe_candidate_row_idx] == batch_idx)
+        & (row_frontier_idx[safe_candidate_row_idx] == frontier_idx)
+    )
+    if torch.any(candidate_valid):
+        selected_row_idx = safe_candidate_row_idx[candidate_valid]
+        unique_row_idx, inverse_idx = torch.unique(selected_row_idx, return_inverse=True)
+        row_scores = proposal_output(
+            proposal_state[unique_row_idx].to(proposal_output.output_dtype)
         )
+        result[candidate_valid] = row_scores[inverse_idx, action_idx[candidate_valid]]
     return result
-
-
-def frontier_value_batch_loss(
-    frontier_value_score: torch.Tensor,
-    frontier_idx: torch.Tensor,
-    frontier_value_target: torch.Tensor,
-    device: torch.device,
-) -> torch.Tensor:
-    frontier_idx = frontier_idx.to(device=device, dtype=torch.int64)
-    frontier_value_target = frontier_value_target.to(device=device, dtype=torch.float32)
-    value = frontier_value_score.squeeze(-1).to(torch.float32)
-    valid = (frontier_idx >= 0) & torch.isfinite(frontier_value_target) & torch.isfinite(value)
-    if not torch.any(valid):
-        return torch.sum(value) * 0.0
-    return torch.mean((value[valid] - frontier_value_target[valid]).square())
 
 
 def train_feature_batch_backward(
@@ -762,7 +734,6 @@ def train_feature_batch_backward(
             and feature_batch.proposal_frontier_idx is not None
             and feature_batch.proposal_action_idx is not None
             and feature_batch.proposal_target_logits is not None
-            and feature_batch.frontier_value_target is not None
         )
         with torch.amp.autocast(
             "cuda",
@@ -775,8 +746,8 @@ def train_feature_batch_backward(
             )
         prefix_balance_score_mask = balance_score_mask
         if features.global_features.lookahead_door_match.shape[-1] > 0:
-            prefix_balance_score_mask = (
-                balance_score_mask & (features.global_features.lookahead_door_match < 0)
+            prefix_balance_score_mask = balance_score_mask & (
+                features.global_features.lookahead_door_match < 0
             )
         prefix_loss = compute_loss_breakdown(
             preds,
@@ -867,50 +838,27 @@ def train_feature_batch_backward(
             prefix_loss.area_map_station_contribution.item() * prefix_weight
         )
         if return_proposal_state:
-            proposal_score = proposal_scores_for_frontier(
+            proposal_score = proposal_scores_for_candidates(
                 context.main_model.proposal_output,
                 preds.proposal_state,
                 preds.proposal_row_snapshot_idx,
                 preds.proposal_row_frontier_idx,
                 feature_batch.proposal_frontier_idx,
+                feature_batch.proposal_action_idx,
                 context.device,
             )
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,
-                feature_batch.proposal_frontier_idx,
-                feature_batch.proposal_action_idx,
                 feature_batch.proposal_target_logits,
                 context.device,
             )
             weighted_proposal_loss = (
                 context.config.train.proposal_weight * batch_proposal_loss * prefix_weight
             )
-            frontier_value_score = proposal_scores_for_frontier(
-                context.main_model.frontier_value_output,
-                preds.proposal_state,
-                preds.proposal_row_snapshot_idx,
-                preds.proposal_row_frontier_idx,
-                feature_batch.proposal_frontier_idx,
-                context.device,
-            )
-            batch_frontier_value_loss = frontier_value_batch_loss(
-                frontier_value_score,
-                feature_batch.proposal_frontier_idx,
-                feature_batch.frontier_value_target,
-                context.device,
-            )
-            weighted_frontier_value_loss = (
-                context.config.train.frontier_value_weight
-                * batch_frontier_value_loss
-                * prefix_weight
-            )
-            backward_loss = backward_loss + weighted_proposal_loss + weighted_frontier_value_loss
+            backward_loss = backward_loss + weighted_proposal_loss
             total_loss.total += weighted_proposal_loss.item()
-            total_loss.total += weighted_frontier_value_loss.item()
             total_loss.proposal += batch_proposal_loss.item() * prefix_weight
-            total_loss.frontier_value += batch_frontier_value_loss.item() * prefix_weight
             total_loss.proposal_contribution += weighted_proposal_loss.item()
-            total_loss.frontier_value_contribution += weighted_frontier_value_loss.item()
         (backward_loss * loss_scale).backward()
     return total_loss
 
@@ -973,9 +921,7 @@ def train_prepared_batch_group(
         accumulate_main_loss(group_loss, batch_loss)
         group_balance_loss += batch_balance_loss
     if processed_count != batch_count:
-        raise RuntimeError(
-            f"expected {batch_count} prepared batch(es), got {processed_count}"
-        )
+        raise RuntimeError(f"expected {batch_count} prepared batch(es), got {processed_count}")
     train_optimizer_step(context)
     return group_loss, group_balance_loss, processed_count
 

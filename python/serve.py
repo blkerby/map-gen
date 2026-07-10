@@ -68,6 +68,7 @@ OPPOSITE_DIRECTIONS = {
 app = Flask(__name__)
 app.json.sort_keys = False  # Disables alphabetical key sorting
 
+
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,7 +104,6 @@ class GenerateRequest(StrictBaseModel):
     shortlist_candidates: int
     max_candidate_areas_per_placement: int
     temperature: float
-    frontier_temperature: float
     proposal_temperature: float
     reward_door: float
     reward_connection: float
@@ -288,9 +288,7 @@ def validate_serving_config(serving_config: ServingConfig) -> None:
     if serving_config.pipeline_groups <= 0:
         raise ValueError("pipeline_groups must be greater than zero")
     if serving_config.num_environments % serving_config.pipeline_groups != 0:
-        raise ValueError(
-            "num_environments must be divisible by pipeline_groups"
-        )
+        raise ValueError("num_environments must be divisible by pipeline_groups")
     if serving_config.num_threads <= 0:
         raise ValueError("num_threads must be greater than zero")
     if serving_config.num_threads // serving_config.pipeline_groups <= 0:
@@ -338,10 +336,7 @@ def create_prefetch_state() -> PrefetchState:
 
 
 def prefetch_enabled(serving_config: ServingConfig) -> bool:
-    return (
-        serving_config.prefetch_queue_max_size > 0
-        and serving_config.prefetch_max_queues > 0
-    )
+    return serving_config.prefetch_queue_max_size > 0 and serving_config.prefetch_max_queues > 0
 
 
 def create_serving_state(
@@ -430,8 +425,6 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         raise ValueError("max_candidate_areas_per_placement must be at most AREA_COUNT")
     if generate_request.temperature <= 0:
         raise ValueError("temperature must be greater than zero")
-    if generate_request.frontier_temperature <= 0:
-        raise ValueError("frontier_temperature must be greater than zero")
     if generate_request.proposal_temperature <= 0:
         raise ValueError("proposal_temperature must be greater than zero")
     for name in (
@@ -450,9 +443,7 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
             if getattr(generate_request, field) is None
         ]
         if missing_fields:
-            raise ValueError(
-                f"small_map requires {', '.join(missing_fields)}"
-            )
+            raise ValueError(f"small_map requires {', '.join(missing_fields)}")
         assert generate_request.min_rooms is not None
         assert generate_request.max_rooms is not None
         assert generate_request.target_rooms is not None
@@ -472,7 +463,6 @@ def create_generate_configs(
 ) -> list[GenerateConfig]:
     generation_variable_float_values = {
         "temperature": generate_request.temperature,
-        "frontier_temperature": generate_request.frontier_temperature,
         "proposal_temperature": generate_request.proposal_temperature,
         "reward_door": generate_request.reward_door,
         "reward_connection": generate_request.reward_connection,
@@ -505,22 +495,20 @@ def create_generate_configs(
             dtype=torch.float32,
             device=device,
         )
-        frontier_temperature = torch.full(
-            [env.num_envs],
-            generate_request.frontier_temperature,
-            dtype=torch.float32,
-            device=device,
-        )
-        generation_variable_floats_model = torch.tensor(
-            [
+        generation_variable_floats_model = (
+            torch.tensor(
                 [
-                    generation_variable_float_values[name]
-                    for name in GENERATION_VARIABLE_FLOAT_FIELDS
-                ]
-            ],
-            dtype=torch.float32,
-            device=device,
-        ).expand(env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS)).contiguous()
+                    [
+                        generation_variable_float_values[name]
+                        for name in GENERATION_VARIABLE_FLOAT_FIELDS
+                    ]
+                ],
+                dtype=torch.float32,
+                device=device,
+            )
+            .expand(env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))
+            .contiguous()
+        )
         log_temperature_model = temperature.detach().log()
         log_recommended_candidates_model = torch.full(
             [env.num_envs],
@@ -557,7 +545,6 @@ def create_generate_configs(
                 ),
                 gpu_prefetch_batches=state.serving_config.gpu_prefetch_batches,
                 temperature=temperature,
-                frontier_temperature=frontier_temperature,
                 proposal_temperature=proposal_temperature,
                 reward_door=generate_request.reward_door,
                 reward_connection=generate_request.reward_connection,
@@ -766,6 +753,7 @@ def response_toilet_crossing_room_placement_idx(
         for map_room_idx, crossed_room_idx in zip(room_idx, toilet_crossed_room_idx)
     ]
 
+
 def response_room_ids(room_idx: list[list[int]], rooms: list[dict]) -> list[list[int]]:
     return [[int(rooms[room]["room_id"]) for room in map_room_idx] for map_room_idx in room_idx]
 
@@ -782,7 +770,6 @@ def warmup_generate_request() -> GenerateRequest:
         shortlist_candidates=16,
         max_candidate_areas_per_placement=2,
         temperature=0.03,
-        frontier_temperature=0.3,
         proposal_temperature=0.3,
         reward_door=1.0,
         reward_connection=1.0,
@@ -1177,9 +1164,7 @@ def reschedule_prefetch_refill_locked(state: ServingState) -> None:
     if state.prefetch is None:
         return
     state.prefetch.refill_scheduled = True
-    state.prefetch.due_time = (
-        time.monotonic() + state.serving_config.prefetch_delay_seconds
-    )
+    state.prefetch.due_time = time.monotonic() + state.serving_config.prefetch_delay_seconds
     state.prefetch.schedule_version += 1
     state.prefetch.condition.notify()
 
@@ -1332,9 +1317,7 @@ def bad_request_response(error: BadRequest):
 
 
 def main() -> None:
-    logging.basicConfig(
-        format="%(asctime)s %(message)s",
-        level=logging.INFO)
+    logging.basicConfig(format="%(asctime)s %(message)s", level=logging.INFO)
     args = parse_args()
     serving_config = load_serving_config(args.serving_config)
     model_export = load_model_input(args.model_export)

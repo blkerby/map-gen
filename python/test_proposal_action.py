@@ -6,8 +6,9 @@ from env import (
     proposal_action_idx,
     proposal_action_room_area,
 )
-from learn import proposal_batch_loss
-from generate import frontier_value_target_from_rewards
+from generate import sample_proposal_shortlist
+from learn import proposal_batch_loss, proposal_scores_for_candidates
+from model import ProposalOutput
 
 
 def test_proposal_action_helpers_flatten_area_variants() -> None:
@@ -21,30 +22,20 @@ def test_proposal_action_helpers_flatten_area_variants() -> None:
     assert proposal_action_room_area(action_idx).tolist() == [0, 5, 3, 4]
 
 
-def test_proposal_loss_indexes_flattened_area_actions() -> None:
+def test_proposal_loss_compares_candidate_scores() -> None:
     device = torch.device("cpu")
-    frontier_idx = torch.tensor([0], dtype=torch.int16)
-    action_idx = torch.tensor([[6, 7]], dtype=torch.int16)
     target_logits = torch.tensor([[0.0, 10.0]], dtype=torch.float32)
 
-    aligned_score = torch.zeros((1, AREA_COUNT * 2), dtype=torch.float32)
-    aligned_score[0, 6] = 0.0
-    aligned_score[0, 7] = 10.0
-    reversed_score = torch.zeros((1, AREA_COUNT * 2), dtype=torch.float32)
-    reversed_score[0, 6] = 10.0
-    reversed_score[0, 7] = 0.0
+    aligned_score = torch.tensor([[0.0, 10.0]], dtype=torch.float32)
+    reversed_score = torch.tensor([[10.0, 0.0]], dtype=torch.float32)
 
     aligned_loss = proposal_batch_loss(
         aligned_score,
-        frontier_idx,
-        action_idx,
         target_logits,
         device,
     )
     reversed_loss = proposal_batch_loss(
         reversed_score,
-        frontier_idx,
-        action_idx,
         target_logits,
         device,
     )
@@ -54,29 +45,68 @@ def test_proposal_loss_indexes_flattened_area_actions() -> None:
     assert aligned_loss < reversed_loss
 
 
-def test_frontier_value_target_uses_raw_rewards_weighted_by_logits() -> None:
-    rewards = torch.tensor([[1.0, 3.0]], dtype=torch.float32)
-    logits = torch.tensor([[0.0, 10.0]], dtype=torch.float32)
-    proposal_action_idx_tensor = torch.tensor([[0, 1]], dtype=torch.int16)
-    frontier_idx = torch.tensor([0], dtype=torch.int16)
-
-    target = frontier_value_target_from_rewards(
-        rewards,
-        logits,
-        proposal_action_idx_tensor,
-        frontier_idx,
+def test_proposal_scores_gather_candidates_across_frontiers() -> None:
+    output = ProposalOutput(input_width=1, hidden_widths=[], output_width=3)
+    with torch.no_grad():
+        output.layers[-1].weight[:, 0] = torch.tensor([1.0, 2.0, 3.0])
+    scores = proposal_scores_for_candidates(
+        output,
+        proposal_state=torch.tensor([[1.0], [2.0]]),
+        row_snapshot_idx=torch.tensor([0, 0]),
+        row_frontier_idx=torch.tensor([0, 1]),
+        frontier_idx=torch.tensor([[0, 1]], dtype=torch.int16),
+        action_idx=torch.tensor([[2, 0]], dtype=torch.int16),
+        device=torch.device("cpu"),
     )
 
-    probabilities = torch.softmax(logits, dim=1)
-    expected = torch.sum(probabilities * rewards, dim=1)
-    assert torch.allclose(target, expected)
-    assert target.item() < logits.max().item()
+    assert torch.equal(scores, torch.tensor([[3.0, 2.0]]))
+
+
+def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:
+    torch.manual_seed(0)
+    frontier_idx, action_idx, pair_counts = sample_proposal_shortlist(
+        proposal_scores=torch.tensor(
+            [
+                [1000.0, 0.0],
+                [500.0, 400.0],
+                [300.0, 200.0],
+            ]
+        ),
+        row_snapshot_idx=torch.tensor([0, 0, 1]),
+        row_frontier_idx=torch.tensor([0, 1, 0]),
+        environment_count=2,
+        shortlist_candidates=2,
+        proposal_temperature=torch.ones(2),
+        device=torch.device("cpu"),
+    )
+
+    assert frontier_idx.tolist() == [[0, 1], [0, 0]]
+    assert action_idx.tolist() == [[0, 0], [0, 1]]
+    assert pair_counts.tolist() == [4, 2]
+
+
+def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
+    frontier_idx, action_idx, pair_counts = sample_proposal_shortlist(
+        proposal_scores=torch.tensor([[10.0, 0.0]]),
+        row_snapshot_idx=torch.tensor([0]),
+        row_frontier_idx=torch.tensor([0]),
+        environment_count=2,
+        shortlist_candidates=2,
+        proposal_temperature=torch.ones(2),
+        device=torch.device("cpu"),
+    )
+
+    assert frontier_idx[1].tolist() == [-1, -1]
+    assert action_idx[1].tolist() == [-1, -1]
+    assert pair_counts.tolist() == [2, 0]
 
 
 def main() -> None:
     test_proposal_action_helpers_flatten_area_variants()
-    test_proposal_loss_indexes_flattened_area_actions()
-    test_frontier_value_target_uses_raw_rewards_weighted_by_logits()
+    test_proposal_loss_compares_candidate_scores()
+    test_proposal_scores_gather_candidates_across_frontiers()
+    test_proposal_shortlist_ranks_all_frontiers_per_environment()
+    test_proposal_shortlist_pads_environment_without_frontiers()
 
 
 if __name__ == "__main__":

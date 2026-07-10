@@ -31,6 +31,7 @@ pub const AREA_COUNT: usize = 6;
 pub const DUMMY_AREA: AreaIdx = AREA_COUNT as AreaIdx;
 pub const NUM_DIRS: usize = 4; // left, right, up, down
 
+#[cfg(test)]
 pub fn proposal_action_idx(door_variant_idx: DoorVariantIdx, area: AreaIdx) -> ProposalActionIdx {
     door_variant_idx * AREA_COUNT as ProposalActionIdx + ProposalActionIdx::from(area)
 }
@@ -282,6 +283,7 @@ pub struct CommonData {
     pub connection_output: Vec<OutputData>,
     pub num_door_output_variants: usize,
     pub num_connection_output_variants: usize,
+    pub door_variant_direction: Vec<Direction>,
     door_variant_idx_by_key:
         HashMap<(ConnectionVariantIdx, Direction, Coord, Coord, DoorKind), DoorVariantIdx>,
 }
@@ -794,6 +796,15 @@ impl CommonData {
             .iter()
             .map(|(&key, &idx)| (key, idx as DoorVariantIdx))
             .collect();
+        let mut door_variant_direction = door_output_variant_by_key
+            .iter()
+            .map(|(&(_, direction, _, _, _), &idx)| (idx, direction))
+            .collect::<Vec<_>>();
+        door_variant_direction.sort_unstable_by_key(|&(idx, _)| idx);
+        let door_variant_direction = door_variant_direction
+            .into_iter()
+            .map(|(_, direction)| direction)
+            .collect();
 
         let mut connection_output = vec![];
         let mut connection_output_variant_by_key = HashMap::new();
@@ -837,6 +848,7 @@ impl CommonData {
             connection_output,
             num_door_output_variants: door_output_variant_by_key.len(),
             num_connection_output_variants: connection_output_variant_by_key.len(),
+            door_variant_direction,
             door_variant_idx_by_key,
         };
         common.build_intersection_set();

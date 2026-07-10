@@ -465,17 +465,8 @@ def create_generate_config(
             "generation.proposal_temperature",
         )
     )
-    frontier_temperature = (
-        torch.full([num_envs], IGNORE_SCORES_TEMPERATURE, dtype=torch.float32, device=device)
-        if ignore_scores
-        else variable_float_tensor(
-            config.generation.frontier_temperature,
-            "generation.frontier_temperature",
-        )
-    )
     generation_variable_floats_by_name = {
         "temperature": temperature,
-        "frontier_temperature": frontier_temperature,
         "proposal_temperature": proposal_temperature,
         "reward_door": variable_float_tensor(
             config.generation.reward_door,
@@ -543,10 +534,7 @@ def create_generate_config(
         ),
     }
     generation_variable_floats = torch.stack(
-        [
-            generation_variable_floats_by_name[name]
-            for name in GENERATION_VARIABLE_FLOAT_FIELDS
-        ],
+        [generation_variable_floats_by_name[name] for name in GENERATION_VARIABLE_FLOAT_FIELDS],
         dim=1,
     )
     log_temperature_model = temperature.detach().log()
@@ -580,12 +568,9 @@ def create_generate_config(
         episode_length=episode_length,
         recommended_candidates=config.generation.recommended_candidates,
         shortlist_candidates=config.generation.shortlist_candidates,
-        max_candidate_areas_per_placement=(
-            config.generation.max_candidate_areas_per_placement
-        ),
+        max_candidate_areas_per_placement=(config.generation.max_candidate_areas_per_placement),
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
-        frontier_temperature=frontier_temperature,
         proposal_temperature=proposal_temperature,
         reward_door=generation_variable_floats_by_name["reward_door"],
         reward_connection=generation_variable_floats_by_name["reward_connection"],
@@ -988,7 +973,10 @@ class TrainingSession:
                         [episode_data.actions.room_y for episode_data in episode_data_iterations]
                     ),
                     room_area=torch.cat(
-                        [episode_data.actions.room_area for episode_data in episode_data_iterations]
+                        [
+                            episode_data.actions.room_area
+                            for episode_data in episode_data_iterations
+                        ]
                     ),
                 ),
                 temperature=torch.cat(
@@ -1173,12 +1161,6 @@ class TrainingSession:
                 ),
                 target_logits=torch.cat(
                     [proposal_data.target_logits for proposal_data in proposal_data_iterations]
-                ),
-                frontier_value_target=torch.cat(
-                    [
-                        proposal_data.frontier_value_target
-                        for proposal_data in proposal_data_iterations
-                    ]
                 ),
             ),
             generation_stats,
@@ -1430,11 +1412,8 @@ class TrainingSession:
         )
         area_crossings_loss_pct = 100.0 * loss.area_crossings_contribution / loss_denominator
         area_size_loss_pct = 100.0 * loss.area_size_contribution / loss_denominator
-        area_map_station_loss_pct = (
-            100.0 * loss.area_map_station_contribution / loss_denominator
-        )
+        area_map_station_loss_pct = 100.0 * loss.area_map_station_contribution / loss_denominator
         proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
-        frontier_value_loss_pct = 100.0 * loss.frontier_value_contribution / loss_denominator
 
         metrics = {
             "loss": loss.total,
@@ -1470,8 +1449,6 @@ class TrainingSession:
             "area_map_station_loss_pct": area_map_station_loss_pct,
             "proposal_loss": loss.proposal,
             "proposal_loss_pct": proposal_loss_pct,
-            "frontier_value_loss": loss.frontier_value,
-            "frontier_value_loss_pct": frontier_value_loss_pct,
             "candidate_target_entropy": candidate_diagnostics.target_entropy,
             "candidate_uniform_kl": candidate_diagnostics.uniform_kl,
             "candidate_selected_probability": candidate_diagnostics.selected_probability,
@@ -1601,9 +1578,7 @@ class TrainingSession:
             "save_distance_weight": step_config.train.save_distance_weight,
             "refill_distance_weight": step_config.train.refill_distance_weight,
             "missing_connect_utility_weight": step_config.train.missing_connect_utility_weight,
-            "area_connected_component_weight": (
-                step_config.train.area_connected_component_weight
-            ),
+            "area_connected_component_weight": (step_config.train.area_connected_component_weight),
             "area_crossing_weight": step_config.train.area_crossing_weight,
             "area_size_weight": step_config.train.area_size_weight,
             "area_map_station_weight": step_config.train.area_map_station_weight,

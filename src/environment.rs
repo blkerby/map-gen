@@ -12,8 +12,7 @@ use crate::common::{
     AREA_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx, Coord, DUMMY_AREA,
     DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
     GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
-    RoomPartIdx, SpatialCellIdx, get_behind_door_position, proposal_action_idx,
-    proposal_action_parts,
+    RoomPartIdx, SpatialCellIdx, get_behind_door_position, proposal_action_parts,
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
 use crate::scc_dag::SccDag;
@@ -201,9 +200,22 @@ enum CandidateOutcome {
 type CandidateWithOutcomes = (CandidateAction, StepOutcomes, Vec<i16>, FeaturePlan);
 
 enum ProposalEvaluation {
-    NoAction,
     Rejected(CandidateAction),
     Clean(CandidateWithOutcomes),
+}
+
+pub struct ProposalCandidates {
+    pub pre_candidate_outcomes: StepOutcomes,
+    pub candidates: Vec<Action>,
+    pub frontier_idx: Vec<FrontierIdx>,
+    pub proposal_action_idx: Vec<ProposalActionIdx>,
+    pub post_candidate_outcomes: Vec<StepOutcomes>,
+    pub door_matches: Vec<Vec<i16>>,
+    pub feature_plans: Vec<FeaturePlan>,
+    pub clean_count: usize,
+    pub evaluated_count: usize,
+    pub rejected_count: usize,
+    pub no_action_count: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2105,72 +2117,6 @@ impl Environment {
             && self.candidate_toilet_area_valid(common, action)
     }
 
-    pub fn proposal_candidate_mask(
-        &self,
-        common: &CommonData,
-        proposal_action_count: usize,
-        frontier_idx: FrontierIdx,
-        output: &mut [u8],
-        valid_counts: &mut usize,
-    ) {
-        let mask_byte_count = proposal_action_count.div_ceil(8);
-        debug_assert_eq!(output.len(), mask_byte_count);
-        *valid_counts = 0;
-        output.fill(0);
-        if self.actions.is_empty() || frontier_idx < 0 {
-            return;
-        }
-        let sorted_frontiers = self.sorted_frontiers();
-        let Some((_, frontier)) = sorted_frontiers.get(frontier_idx as usize) else {
-            return;
-        };
-        for candidate in &frontier.candidates {
-            for &connection_variant_idx in
-                common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
-            {
-                if self.connection_variant_unused_count[connection_variant_idx as usize] == 0 {
-                    continue;
-                }
-                let door_variant_idx = common.door_variant_idx(
-                    connection_variant_idx,
-                    candidate.door_direction,
-                    candidate.door_x,
-                    candidate.door_y,
-                    candidate.door_kind,
-                );
-                for area in 0..crate::common::AREA_COUNT as AreaIdx {
-                    let area_has_valid_room =
-                        common.connection_variant_rooms[connection_variant_idx as usize]
-                            .iter()
-                            .any(|&room_idx| {
-                                !self.room_used[room_idx as usize]
-                                    && self.candidate_area_valid(
-                                        common,
-                                        Action {
-                                            room_idx,
-                                            x: candidate.x,
-                                            y: candidate.y,
-                                            area,
-                                        },
-                                    )
-                            });
-                    if !area_has_valid_room {
-                        continue;
-                    }
-                    let proposal_action_idx = proposal_action_idx(door_variant_idx, area);
-                    let proposal_action_idx = proposal_action_idx as usize;
-                    assert!(proposal_action_idx < proposal_action_count);
-                    let byte = &mut output[proposal_action_idx / 8];
-                    let mask = 1 << (proposal_action_idx % 8);
-                    if *byte & mask == 0 {
-                        *byte |= mask;
-                        *valid_counts += 1;
-                    }
-                }
-            }
-        }
-    }
-
     fn action_for_proposal_candidate(
         &mut self,
         common: &CommonData,
@@ -2184,9 +2130,13 @@ impl Environment {
         }
         let frontier_idx = frontier_idx as usize;
         let door_variant_idx = door_variant_idx as usize;
+        let &door_variant_direction = common.door_variant_direction.get(door_variant_idx)?;
         let frontier = self
             .frontier
             .get(sorted_frontier_locations.get(frontier_idx)?)?;
+        if door_variant_direction != frontier.direction.opposite() {
+            return None;
+        }
         let mut matching_count = 0usize;
         let mut selected = None;
         for &candidate in &frontier.candidates {
@@ -2240,41 +2190,44 @@ impl Environment {
         (frontier_idx >= 0).then_some((frontier_idx, door_variant_idx))
     }
 
-    fn evaluate_proposal_action(
+    fn resolve_proposal_action(
         &mut self,
         common: &CommonData,
         sorted_frontier_locations: &[DoorLocation],
-        pre_candidate_outcomes: &StepOutcomes,
         frontier_idx: FrontierIdx,
         proposal_action_idx: ProposalActionIdx,
+    ) -> Option<CandidateAction> {
+        let profile = profile_start();
+        let action = self.action_for_proposal_candidate(
+            common,
+            sorted_frontier_locations,
+            frontier_idx,
+            proposal_action_idx,
+        );
+        profile_end(ProfileMetric::EnvProposalResolveAction, profile);
+        action.map(|action| CandidateAction {
+            action,
+            frontier_idx,
+            proposal_action_idx,
+        })
+    }
+
+    fn evaluate_resolved_proposal_action(
+        &mut self,
+        common: &CommonData,
+        pre_candidate_outcomes: &StepOutcomes,
+        candidate: CandidateAction,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         scratch: &mut FeatureScratch,
     ) -> Result<ProposalEvaluation, String> {
-        let profile = profile_start();
-        let Some(action) = self.action_for_proposal_candidate(
-            common,
-            sorted_frontier_locations,
-            frontier_idx,
-            proposal_action_idx,
-        ) else {
-            profile_end(ProfileMetric::EnvProposalResolveAction, profile);
-            return Ok(ProposalEvaluation::NoAction);
-        };
-        profile_end(ProfileMetric::EnvProposalResolveAction, profile);
-
-        let candidate = CandidateAction {
-            action,
-            frontier_idx,
-            proposal_action_idx,
-        };
         Ok(
             match self.evaluate_candidate_outcome(
                 common,
                 pre_candidate_outcomes,
-                action,
+                candidate.action,
                 config,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
@@ -3538,20 +3491,7 @@ impl Environment {
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         scratch: &mut FeatureScratch,
-    ) -> Result<
-        (
-            StepOutcomes,
-            Vec<Action>,
-            Vec<FrontierIdx>,
-            Vec<ProposalActionIdx>,
-            Vec<StepOutcomes>,
-            Vec<Vec<i16>>,
-            Vec<FeaturePlan>,
-            usize,
-            usize,
-        ),
-        String,
-    > {
+    ) -> Result<ProposalCandidates, String> {
         debug_assert_eq!(
             sampled_frontier_idx.len(),
             sampled_proposal_action_idx.len()
@@ -3575,34 +3515,41 @@ impl Environment {
         let mut clean_count_by_key = Vec::new();
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
+        let mut no_action_count = 0;
         for (&frontier_idx, &proposal_action_idx) in
             sampled_frontier_idx.iter().zip(sampled_proposal_action_idx)
         {
             if clean.len() == recommended_candidates {
                 break;
             }
+            let Some(candidate) = self.resolve_proposal_action(
+                common,
+                &sorted_frontier_locations,
+                frontier_idx,
+                proposal_action_idx,
+            ) else {
+                no_action_count += 1;
+                continue;
+            };
             let placement_key = Self::proposal_placement_key(frontier_idx, proposal_action_idx);
             if placement_key.is_some_and(|key| {
                 clean_count_by_key.iter().any(|(seen_key, count)| {
                     *seen_key == key && *count >= max_candidate_areas_per_placement
                 })
             }) {
-                postponed.push((frontier_idx, proposal_action_idx));
+                postponed.push(candidate);
                 continue;
             }
-            match self.evaluate_proposal_action(
+            match self.evaluate_resolved_proposal_action(
                 common,
-                &sorted_frontier_locations,
                 &pre_candidate_outcomes,
-                frontier_idx,
-                proposal_action_idx,
+                candidate,
                 config,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
                 scratch,
             )? {
-                ProposalEvaluation::NoAction => {}
                 ProposalEvaluation::Rejected(candidate) => {
                     evaluated_count += 1;
                     rejected_count += 1;
@@ -3626,23 +3573,20 @@ impl Environment {
         }
 
         if clean.len() < recommended_candidates {
-            for (frontier_idx, proposal_action_idx) in postponed {
+            for candidate in postponed {
                 if clean.len() == recommended_candidates {
                     break;
                 }
-                match self.evaluate_proposal_action(
+                match self.evaluate_resolved_proposal_action(
                     common,
-                    &sorted_frontier_locations,
                     &pre_candidate_outcomes,
-                    frontier_idx,
-                    proposal_action_idx,
+                    candidate,
                     config,
                     frontier_neighbor_algorithm,
                     frontier_neighbor_count,
                     frontier_window_size,
                     scratch,
                 )? {
-                    ProposalEvaluation::NoAction => {}
                     ProposalEvaluation::Rejected(_) => {
                         evaluated_count += 1;
                         rejected_count += 1;
@@ -3694,6 +3638,10 @@ impl Environment {
             rejected_count as u64,
         );
         record_profile_count(
+            ProfileMetric::EnvCounterProposalNoActionCandidates,
+            no_action_count as u64,
+        );
+        record_profile_count(
             ProfileMetric::EnvCounterProposalCleanCandidates,
             clean_count as u64,
         );
@@ -3716,17 +3664,19 @@ impl Environment {
             door_matches.push(door_match);
             features.push(candidate_features);
         }
-        Ok((
+        Ok(ProposalCandidates {
             pre_candidate_outcomes,
             candidates,
-            proposal_frontier_idx,
+            frontier_idx: proposal_frontier_idx,
             proposal_action_idx,
             post_candidate_outcomes,
             door_matches,
-            features,
+            feature_plans: features,
+            clean_count,
             evaluated_count,
             rejected_count,
-        ))
+            no_action_count,
+        })
     }
 
     fn evaluate_candidate_outcome(
@@ -5968,7 +5918,7 @@ fn write_direction_door_matches(matches: &[DirDoorIdx], output: &mut [i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{Direction, Room};
+    use crate::common::{Direction, Room, proposal_action_idx};
 
     fn door_location(x: Coord, y: Coord, vertical: bool) -> DoorLocation {
         DoorLocation::from_parts(
@@ -5984,9 +5934,24 @@ mod tests {
         )
     }
 
-    fn mask_has(mask: &[u8], proposal_action_idx: ProposalActionIdx) -> bool {
-        let proposal_action_idx = proposal_action_idx as usize;
-        mask[proposal_action_idx / 8] & (1 << (proposal_action_idx % 8)) != 0
+    fn first_resolvable_proposal_action(
+        env: &mut Environment,
+        common: &CommonData,
+        frontier_idx: FrontierIdx,
+        area: AreaIdx,
+    ) -> Option<ProposalActionIdx> {
+        let sorted_frontier_locations = env.sorted_frontier_locations();
+        (0..common.num_door_output_variants as DoorVariantIdx)
+            .map(|door_variant_idx| proposal_action_idx(door_variant_idx, area))
+            .find(|&proposal_action_idx| {
+                env.action_for_proposal_candidate(
+                    common,
+                    &sorted_frontier_locations,
+                    frontier_idx,
+                    proposal_action_idx,
+                )
+                .is_some()
+            })
     }
 
     fn assert_symmetric_neighbors(neighbors: &[Vec<usize>], max_degree: usize) {
@@ -6314,7 +6279,7 @@ mod tests {
     }
 
     #[test]
-    fn proposal_candidate_mask_filters_area_by_bounding_box() {
+    fn proposal_resolution_filters_area_by_bounding_box() {
         let rooms_json = r#"
         [
             {
@@ -6352,26 +6317,41 @@ mod tests {
             &common,
         );
 
-        let proposal_action_count = common.num_door_output_variants * AREA_COUNT;
-        let mut mask = vec![0; proposal_action_count.div_ceil(8)];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
-        );
-        let door_variant_idx = (0..common.num_door_output_variants as DoorVariantIdx)
-            .find(|&idx| mask_has(&mask, proposal_action_idx(idx, 1)))
+        let valid_action = first_resolvable_proposal_action(&mut env, &common, 0, 1)
             .expect("new area should be valid");
+        let (door_variant_idx, _) = proposal_action_parts(valid_action).unwrap();
+        let sorted_frontier_locations = env.sorted_frontier_locations();
 
-        assert!(!mask_has(&mask, proposal_action_idx(door_variant_idx, 0)));
-        assert!(mask_has(&mask, proposal_action_idx(door_variant_idx, 1)));
+        assert!(
+            env.action_for_proposal_candidate(
+                &common,
+                &sorted_frontier_locations,
+                0,
+                proposal_action_idx(door_variant_idx, 0),
+            )
+            .is_none()
+        );
+        let wrong_orientation_variant = common
+            .door_variant_direction
+            .iter()
+            .position(|&direction| {
+                direction != common.door_variant_direction[door_variant_idx as usize]
+            })
+            .expect("test setup should include both door orientations")
+            as DoorVariantIdx;
+        assert!(
+            env.action_for_proposal_candidate(
+                &common,
+                &sorted_frontier_locations,
+                0,
+                proposal_action_idx(wrong_orientation_variant, 1),
+            )
+            .is_none()
+        );
     }
 
     #[test]
-    fn proposal_candidate_mask_filters_second_map_station_in_same_area() {
+    fn proposal_resolution_filters_second_map_station_in_same_area() {
         let rooms_json = r#"
         [
             {
@@ -6411,26 +6391,24 @@ mod tests {
             &common,
         );
 
-        let proposal_action_count = common.num_door_output_variants * AREA_COUNT;
-        let mut mask = vec![0; proposal_action_count.div_ceil(8)];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
-        );
-        let door_variant_idx = (0..common.num_door_output_variants as DoorVariantIdx)
-            .find(|&idx| mask_has(&mask, proposal_action_idx(idx, 4)))
+        let valid_action = first_resolvable_proposal_action(&mut env, &common, 0, 4)
             .expect("different area should be valid");
+        let (door_variant_idx, _) = proposal_action_parts(valid_action).unwrap();
+        let sorted_frontier_locations = env.sorted_frontier_locations();
 
-        assert!(!mask_has(&mask, proposal_action_idx(door_variant_idx, 3)));
-        assert!(mask_has(&mask, proposal_action_idx(door_variant_idx, 4)));
+        assert!(
+            env.action_for_proposal_candidate(
+                &common,
+                &sorted_frontier_locations,
+                0,
+                proposal_action_idx(door_variant_idx, 3),
+            )
+            .is_none()
+        );
     }
 
     #[test]
-    fn proposal_candidate_mask_skips_frontier_with_no_valid_area_actions() {
+    fn proposal_resolution_skips_frontier_with_no_valid_area_actions() {
         let rooms_json = r#"
         [
             {
@@ -6539,7 +6517,7 @@ mod tests {
         env.frontier.insert(
             door_location(0, 0, false),
             Frontier {
-                direction: Direction::Right,
+                direction: Direction::Left,
                 dir_door_idx: 0,
                 door_output_idx: -1,
                 door_variant_idx: 0,
@@ -6552,7 +6530,7 @@ mod tests {
         env.frontier.insert(
             door_location(1, 0, false),
             Frontier {
-                direction: Direction::Right,
+                direction: Direction::Left,
                 dir_door_idx: 0,
                 door_output_idx: -1,
                 door_variant_idx: 0,
@@ -6563,27 +6541,14 @@ mod tests {
             },
         );
 
-        let proposal_action_count = common.num_door_output_variants * AREA_COUNT;
-        let mut mask = vec![0; proposal_action_count.div_ceil(8)];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
+        assert!(
+            (0..AREA_COUNT as AreaIdx)
+                .all(|area| first_resolvable_proposal_action(&mut env, &common, 0, area).is_none())
         );
-
-        assert_eq!(valid_counts, 0);
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            1,
-            &mut mask,
-            &mut valid_counts,
+        assert!(
+            (0..AREA_COUNT as AreaIdx)
+                .any(|area| first_resolvable_proposal_action(&mut env, &common, 1, area).is_some())
         );
-        assert!(valid_counts > 0);
-        assert!(mask.iter().any(|&byte| byte != 0));
     }
 
     #[test]
@@ -6813,7 +6778,7 @@ mod tests {
     }
 
     #[test]
-    fn proposal_candidate_mask_marks_placeable_frontier_cells() {
+    fn proposal_resolution_finds_placeable_frontier_action() {
         let rooms_json = r#"
         [
             {
@@ -6851,31 +6816,12 @@ mod tests {
             &common,
         );
 
-        let frontier_count = Environment::max_frontiers(&common);
-        let proposal_action_count =
-            common.num_door_output_variants * crate::common::AREA_COUNT as usize;
-        let mut mask = vec![0; proposal_action_count.div_ceil(8)];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
-        );
-
-        assert!(frontier_count > 0);
-        assert!(valid_counts > 0);
-        assert_eq!(
-            valid_counts % crate::common::AREA_COUNT as usize,
-            0,
-            "each valid door variant should expose one proposal action per area"
-        );
-        assert!(mask.iter().any(|&byte| byte != 0));
+        assert!(Environment::max_frontiers(&common) > 0);
+        assert!(first_resolvable_proposal_action(&mut env, &common, 0, 0).is_some());
     }
 
     #[test]
-    fn proposal_candidate_mask_uses_requested_frontier() {
+    fn proposal_resolution_uses_requested_frontier() {
         let rooms_json = r#"
         [
             {
@@ -6911,7 +6857,7 @@ mod tests {
         env.frontier.insert(
             door_location(0, 0, false),
             Frontier {
-                direction: Direction::Right,
+                direction: Direction::Left,
                 dir_door_idx: 0,
                 door_output_idx: -1,
                 door_variant_idx: 0,
@@ -6924,7 +6870,7 @@ mod tests {
         env.frontier.insert(
             door_location(1, 0, false),
             Frontier {
-                direction: Direction::Right,
+                direction: Direction::Left,
                 dir_door_idx: 0,
                 door_output_idx: -1,
                 door_variant_idx: 0,
@@ -6935,26 +6881,7 @@ mod tests {
             },
         );
 
-        let proposal_action_count =
-            common.num_door_output_variants * crate::common::AREA_COUNT as usize;
-        let mask_byte_count = proposal_action_count.div_ceil(8);
-        let mut mask = vec![0; mask_byte_count];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
-        );
-
-        assert!(valid_counts > 0);
-        assert_eq!(
-            valid_counts % crate::common::AREA_COUNT as usize,
-            0,
-            "each valid door variant should expose one proposal action per area"
-        );
-        assert!(mask.iter().any(|&byte| byte != 0));
+        assert!(first_resolvable_proposal_action(&mut env, &common, 0, 0).is_some());
     }
 
     #[test]
@@ -6996,40 +6923,16 @@ mod tests {
             &common,
         );
 
-        let frontier_count = Environment::max_frontiers(&common);
-        let proposal_action_count =
-            common.num_door_output_variants * crate::common::AREA_COUNT as usize;
-        let mut mask = vec![0; proposal_action_count.div_ceil(8)];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
-        );
-        assert!(frontier_count > 0);
-        let found_proposal_action_idx = (0..proposal_action_count)
-            .find(|&idx| mask[idx / 8] & (1 << (idx % 8)) != 0)
+        assert!(Environment::max_frontiers(&common) > 0);
+        let found_proposal_action_idx = first_resolvable_proposal_action(&mut env, &common, 0, 0)
             .expect("test setup should have a valid proposal candidate");
-        let (door_variant_idx, _) =
-            proposal_action_parts(found_proposal_action_idx as ProposalActionIdx).unwrap();
+        let (door_variant_idx, _) = proposal_action_parts(found_proposal_action_idx).unwrap();
         let sampled_area = 4;
         let sampled_proposal_action_idx = [proposal_action_idx(door_variant_idx, sampled_area), -1];
         let sampled_frontier_idx = [0, -1];
         let mut scratch = FeatureScratch::default();
 
-        let (
-            _pre_outcomes,
-            candidates,
-            candidate_frontier_idx,
-            candidate_door_variant_idx,
-            post_outcomes,
-            door_matches,
-            features,
-            evaluated_count,
-            rejected_count,
-        ) = env
+        let result = env
             .get_proposal_candidates_with_outcomes(
                 &common,
                 &sampled_frontier_idx,
@@ -7044,15 +6947,20 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(evaluated_count, 1);
-        assert_eq!(rejected_count, 1);
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].area, sampled_area);
-        assert_eq!(candidate_frontier_idx.len(), candidates.len());
-        assert_eq!(candidate_door_variant_idx.len(), candidates.len());
-        assert_eq!(post_outcomes.len(), candidates.len());
-        assert_eq!(door_matches.len(), candidates.len());
-        assert_eq!(features.len(), candidates.len());
+        assert_eq!(result.clean_count, 0);
+        assert_eq!(result.evaluated_count, 1);
+        assert_eq!(result.rejected_count, 1);
+        assert_eq!(result.no_action_count, 1);
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].area, sampled_area);
+        assert_eq!(result.frontier_idx.len(), result.candidates.len());
+        assert_eq!(result.proposal_action_idx.len(), result.candidates.len());
+        assert_eq!(
+            result.post_candidate_outcomes.len(),
+            result.candidates.len()
+        );
+        assert_eq!(result.door_matches.len(), result.candidates.len());
+        assert_eq!(result.feature_plans.len(), result.candidates.len());
     }
 
     #[test]
@@ -7137,17 +7045,7 @@ mod tests {
         ];
         let mut scratch = FeatureScratch::default();
 
-        let (
-            _pre_outcomes,
-            _candidates,
-            candidate_frontier_idx,
-            _candidate_proposal_action_idx,
-            _post_outcomes,
-            _door_matches,
-            _features,
-            evaluated_count,
-            rejected_count,
-        ) = env
+        let result = env
             .get_proposal_candidates_with_outcomes(
                 &common,
                 &sampled_frontier_idx,
@@ -7162,9 +7060,9 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(candidate_frontier_idx, [0, 1]);
-        assert_eq!(evaluated_count, 2);
-        assert_eq!(rejected_count, 0);
+        assert_eq!(result.frontier_idx, [0, 1]);
+        assert_eq!(result.evaluated_count, 2);
+        assert_eq!(result.rejected_count, 0);
     }
 
     #[test]
@@ -7250,17 +7148,7 @@ mod tests {
         ];
         let mut scratch = FeatureScratch::default();
 
-        let (
-            _pre_outcomes,
-            candidates,
-            candidate_frontier_idx,
-            _candidate_proposal_action_idx,
-            _post_outcomes,
-            _door_matches,
-            _features,
-            evaluated_count,
-            rejected_count,
-        ) = env
+        let result = env
             .get_proposal_candidates_with_outcomes(
                 &common,
                 &sampled_frontier_idx,
@@ -7275,13 +7163,17 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(candidate_frontier_idx, [0, 0, 1]);
+        assert_eq!(result.frontier_idx, [0, 0, 1]);
         assert_eq!(
-            candidates.iter().map(|candidate| candidate.area).collect::<Vec<_>>(),
+            result
+                .candidates
+                .iter()
+                .map(|candidate| candidate.area)
+                .collect::<Vec<_>>(),
             vec![0, 1, 0],
         );
-        assert_eq!(evaluated_count, 3);
-        assert_eq!(rejected_count, 0);
+        assert_eq!(result.evaluated_count, 3);
+        assert_eq!(result.rejected_count, 0);
     }
 
     #[test]
@@ -7323,21 +7215,9 @@ mod tests {
             &common,
         );
 
-        let proposal_action_count = common.num_door_output_variants * AREA_COUNT;
-        let mut mask = vec![0; proposal_action_count.div_ceil(8)];
-        let mut valid_counts = 0;
-        env.proposal_candidate_mask(
-            &common,
-            proposal_action_count,
-            0,
-            &mut mask,
-            &mut valid_counts,
-        );
-        let found_proposal_action_idx = (0..proposal_action_count)
-            .find(|&idx| mask[idx / 8] & (1 << (idx % 8)) != 0)
+        let found_proposal_action_idx = first_resolvable_proposal_action(&mut env, &common, 0, 0)
             .expect("test setup should have a valid proposal candidate");
-        let (door_variant_idx, _) =
-            proposal_action_parts(found_proposal_action_idx as ProposalActionIdx).unwrap();
+        let (door_variant_idx, _) = proposal_action_parts(found_proposal_action_idx).unwrap();
         let sampled_frontier_idx = [0, 0];
         let sampled_proposal_action_idx = [
             proposal_action_idx(door_variant_idx, 0),
@@ -7345,17 +7225,7 @@ mod tests {
         ];
         let mut scratch = FeatureScratch::default();
 
-        let (
-            _pre_outcomes,
-            _candidates,
-            _candidate_frontier_idx,
-            _candidate_proposal_action_idx,
-            _post_outcomes,
-            _door_matches,
-            _features,
-            evaluated_count,
-            rejected_count,
-        ) = env
+        let result = env
             .get_proposal_candidates_with_outcomes(
                 &common,
                 &sampled_frontier_idx,
@@ -7370,8 +7240,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(evaluated_count, 2);
-        assert_eq!(rejected_count, 2);
+        assert_eq!(result.evaluated_count, 2);
+        assert_eq!(result.rejected_count, 2);
     }
 
     #[test]

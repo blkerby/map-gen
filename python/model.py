@@ -56,9 +56,6 @@ class Predictions:
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station_count: torch.Tensor
-    # Frontier-local proposal logits for door variants:
-    proposal_score: torch.Tensor
-    frontier_value_score: torch.Tensor
     # Optional frontier-local state before global pooling:
     proposal_state: torch.Tensor
     proposal_row_snapshot_idx: torch.Tensor
@@ -103,8 +100,6 @@ def get_predictions(raw_preds, output_sizes):
         area_map_station_count=raw_preds.new_empty(
             [raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT, 3]
         ),
-        proposal_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
-        frontier_value_score=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_state=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_row_snapshot_idx=raw_preds.new_empty([0], dtype=torch.int64),
         proposal_row_frontier_idx=raw_preds.new_empty([0], dtype=torch.int16),
@@ -386,9 +381,7 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
         self.margin_embedding = torch.nn.Embedding(self.max_distance_index + 1, 1)
         self.output_layers = torch.nn.Sequential(
             torch.nn.Linear(
-                frontier_width
-                + 1
-                + self.target_count * (1 + self.target_feature_width),
+                frontier_width + 1 + self.target_count * (1 + self.target_feature_width),
                 hidden_width,
                 bias=False,
             ),
@@ -494,7 +487,9 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
             0,
             max(room_part_count - 1, 0),
         )
-        target_idx = torch.arange(self.target_count, dtype=torch.int64, device=frontier_state.device)
+        target_idx = torch.arange(
+            self.target_count, dtype=torch.int64, device=frontier_state.device
+        )
         flat_idx = (
             target_idx.unsqueeze(1) * (snapshot_count * room_part_count)
             + query_snapshot_idx.unsqueeze(0) * room_part_count
@@ -504,7 +499,9 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
         output.scatter_(0, flat_idx.flatten(), query_utility.flatten())
         output_mask = torch.zeros_like(output, dtype=torch.bool)
         output_mask[flat_idx.flatten()] = target_mask.transpose(0, 1).flatten()
-        return output.view(self.target_count, snapshot_count, 1, room_part_count), output_mask.view(
+        return output.view(
+            self.target_count, snapshot_count, 1, room_part_count
+        ), output_mask.view(
             self.target_count,
             snapshot_count,
             1,
@@ -523,7 +520,6 @@ class FrontierModel(torch.nn.Module):
         global_embedding_width,
         hidden_width,
         proposal_hidden_widths,
-        frontier_value_hidden_widths,
         missing_connect_query_hidden_width,
         missing_connect_query_frontier_width,
         missing_connect_query_distance_width,
@@ -762,11 +758,6 @@ class FrontierModel(torch.nn.Module):
             proposal_hidden_widths,
             output_metadata.num_door_variants * AREA_COUNT,
         )
-        self.frontier_value_output = ProposalOutput(
-            embedding_width,
-            frontier_value_hidden_widths,
-            1,
-        )
 
     def _pair_features(self, features, neighbor, dtype):
         values = []
@@ -887,11 +878,6 @@ class FrontierModel(torch.nn.Module):
         frontier_door_invalid = self.frontier_door_invalid_output(X)
         frontier_balance_score = self.frontier_balance_score_output(X)
         proposal_state = X if return_proposal_state else X.new_empty([row_count, 0])
-        frontier_value_score = (
-            self.frontier_value_output(X).to(torch.float32)
-            if return_proposal_state
-            else X.new_empty([row_count, 0])
-        )
         frontier_state = X
         # mean_pool, max_pool, pooled_state: [s, e]
         pooled_inputs = [global_state]
@@ -916,25 +902,37 @@ class FrontierModel(torch.nn.Module):
         refill_to_room_utility = self.refill_to_room_utility_output(X).to(torch.float32)
         refill_from_room_utility = self.refill_from_room_utility_output(X).to(torch.float32)
         missing_connect_utility = self.missing_connect_utility_output(X).to(torch.float32)
-        area_connected_component_bucket_logits = self.area_connected_component_output(X).reshape(
-            X.shape[0],
-            X.shape[1],
-            AREA_COUNT,
-            self.area_connected_component_bucket_count,
-        ).to(torch.float32)
+        area_connected_component_bucket_logits = (
+            self.area_connected_component_output(X)
+            .reshape(
+                X.shape[0],
+                X.shape[1],
+                AREA_COUNT,
+                self.area_connected_component_bucket_count,
+            )
+            .to(torch.float32)
+        )
         area_crossings = self.area_crossings_output(X).squeeze(-1).to(torch.float32)
-        area_size = self.area_size_output(X).reshape(
-            X.shape[0],
-            X.shape[1],
-            AREA_COUNT,
-            3,
-        ).to(torch.float32)
-        area_map_station_count = self.area_map_station_count_output(X).reshape(
-            X.shape[0],
-            X.shape[1],
-            AREA_COUNT,
-            3,
-        ).to(torch.float32)
+        area_size = (
+            self.area_size_output(X)
+            .reshape(
+                X.shape[0],
+                X.shape[1],
+                AREA_COUNT,
+                3,
+            )
+            .to(torch.float32)
+        )
+        area_map_station_count = (
+            self.area_map_station_count_output(X)
+            .reshape(
+                X.shape[0],
+                X.shape[1],
+                AREA_COUNT,
+                3,
+            )
+            .to(torch.float32)
+        )
         preds = get_predictions(
             torch.cat(
                 [door, connection, toilet, phantoon, balance_score, toilet_balance_score],
@@ -1064,8 +1062,6 @@ class FrontierModel(torch.nn.Module):
             area_crossings=area_crossings,
             area_size=area_size,
             area_map_station_count=area_map_station_count,
-            proposal_score=X.new_empty([row_count, 0]),
-            frontier_value_score=frontier_value_score,
             proposal_state=proposal_state,
             proposal_row_snapshot_idx=(
                 row_snapshot_idx if return_proposal_state else row_snapshot_idx.new_empty([0])

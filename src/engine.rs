@@ -85,7 +85,6 @@ profile_metrics! {
     EnvStepBuildNewFrontierCandidates => "env.step.build_new_frontier_candidates",
     EnvStepFilterExistingFrontiers => "env.step.filter_existing_frontiers",
     WorkerStepKnown => "worker.step_known",
-    WorkerGetProposalCandidateMask => "worker.get_proposal_candidate_mask",
     WorkerGetCandidatesFromProposals => "worker.get_candidates_from_proposals",
     EnvProposalPreOutcomes => "env.proposal.pre_outcomes",
     EnvProposalSortFrontiers => "env.proposal.sort_frontiers",
@@ -124,6 +123,7 @@ profile_metrics! {
     EnvCounterProposalEvaluatedCandidates => "env.counter.proposal.evaluated_candidates",
     EnvCounterProposalCleanCandidates => "env.counter.proposal.clean_candidates",
     EnvCounterProposalRejectedCandidates => "env.counter.proposal.rejected_candidates",
+    EnvCounterProposalNoActionCandidates => "env.counter.proposal.no_action_candidates",
     EnvCounterProposalFallbackCandidates => "env.counter.proposal.fallback_candidates",
     EnvCounterProposalOutputCandidates => "env.counter.proposal.output_candidates",
     EnvCounterFeatureCalls => "env.counter.features.calls",
@@ -287,14 +287,6 @@ enum WorkerCommand {
         room_y: InputShard<Coord>,
         room_area: InputShard<AreaIdx>,
     },
-    GetProposalCandidateMask {
-        proposal_action_count: usize,
-        proposal_mask_byte_count: usize,
-        sampled_frontier_idx: InputShard<FrontierIdx>,
-        proposal_frontier_idx: OutputShard<FrontierIdx>,
-        mask: OutputShard<u8>,
-        valid_counts: OutputShard<usize>,
-    },
     GetCandidatesFromProposals {
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -324,6 +316,7 @@ enum WorkerCommand {
         clean_counts: OutputShard<usize>,
         evaluated_counts: OutputShard<usize>,
         rejected_counts: OutputShard<usize>,
+        no_action_counts: OutputShard<usize>,
     },
     GetActions {
         action_count: usize,
@@ -429,9 +422,6 @@ impl WorkerCommand {
             WorkerCommand::GetFeatures { .. } => Some(ProfileMetric::WorkerGetFeatures),
             WorkerCommand::PackFeatures { .. } => Some(ProfileMetric::WorkerPackFeatures),
             WorkerCommand::StepKnown { .. } => Some(ProfileMetric::WorkerStepKnown),
-            WorkerCommand::GetProposalCandidateMask { .. } => {
-                Some(ProfileMetric::WorkerGetProposalCandidateMask)
-            }
             WorkerCommand::GetCandidatesFromProposals { .. } => {
                 Some(ProfileMetric::WorkerGetCandidatesFromProposals)
             }
@@ -606,37 +596,6 @@ fn worker_loop(
                 }
                 WorkerResponse::Done
             }
-            WorkerCommand::GetProposalCandidateMask {
-                proposal_action_count,
-                proposal_mask_byte_count,
-                sampled_frontier_idx,
-                proposal_frontier_idx,
-                mask,
-                valid_counts,
-            } => {
-                let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
-                let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
-                let mask = unsafe { mask.into_mut_slice() };
-                let valid_counts = unsafe { valid_counts.into_mut_slice() };
-                debug_assert_eq!(sampled_frontier_idx.len(), environments.len());
-                debug_assert_eq!(proposal_frontier_idx.len(), environments.len());
-                debug_assert_eq!(mask.len(), environments.len() * proposal_mask_byte_count);
-                debug_assert_eq!(valid_counts.len(), environments.len());
-
-                for (env_idx, env) in environments.iter().enumerate() {
-                    let mask_start = env_idx * proposal_mask_byte_count;
-                    let mask_end = mask_start + proposal_mask_byte_count;
-                    proposal_frontier_idx[env_idx] = sampled_frontier_idx[env_idx];
-                    env.proposal_candidate_mask(
-                        &common_data,
-                        proposal_action_count,
-                        sampled_frontier_idx[env_idx],
-                        &mut mask[mask_start..mask_end],
-                        &mut valid_counts[env_idx],
-                    );
-                }
-                WorkerResponse::Done
-            }
             WorkerCommand::GetCandidatesFromProposals {
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
@@ -666,6 +625,7 @@ fn worker_loop(
                 clean_counts,
                 evaluated_counts,
                 rejected_counts,
+                no_action_counts,
             } => {
                 let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
                 let sampled_proposal_action_idx =
@@ -688,6 +648,7 @@ fn worker_loop(
                 let clean_counts = unsafe { clean_counts.into_mut_slice() };
                 let evaluated_counts = unsafe { evaluated_counts.into_mut_slice() };
                 let rejected_counts = unsafe { rejected_counts.into_mut_slice() };
+                let no_action_counts = unsafe { no_action_counts.into_mut_slice() };
 
                 debug_assert_eq!(
                     sampled_frontier_idx.len(),
@@ -744,17 +705,7 @@ fn worker_loop(
                 for (env_idx, env) in environments.iter_mut().enumerate() {
                     let shortlist_start = env_idx * shortlist_candidates;
                     let shortlist_end = shortlist_start + shortlist_candidates;
-                    let (
-                        pre_candidate_outcomes,
-                        candidates,
-                        candidate_frontier_idx,
-                        candidate_proposal_action_idx,
-                        outcomes,
-                        door_matches,
-                        mut candidate_plans,
-                        evaluated_count,
-                        rejected_count,
-                    ) = match env.get_proposal_candidates_with_outcomes(
+                    let proposal_candidates = match env.get_proposal_candidates_with_outcomes(
                         &common_data,
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
                         &sampled_proposal_action_idx[shortlist_start..shortlist_end],
@@ -772,9 +723,17 @@ fn worker_loop(
                             break;
                         }
                     };
-                    clean_counts[env_idx] = candidates.len();
-                    evaluated_counts[env_idx] = evaluated_count;
-                    rejected_counts[env_idx] = rejected_count;
+                    clean_counts[env_idx] = proposal_candidates.clean_count;
+                    evaluated_counts[env_idx] = proposal_candidates.evaluated_count;
+                    rejected_counts[env_idx] = proposal_candidates.rejected_count;
+                    no_action_counts[env_idx] = proposal_candidates.no_action_count;
+                    let pre_candidate_outcomes = proposal_candidates.pre_candidate_outcomes;
+                    let candidates = proposal_candidates.candidates;
+                    let candidate_frontier_idx = proposal_candidates.frontier_idx;
+                    let candidate_proposal_action_idx = proposal_candidates.proposal_action_idx;
+                    let outcomes = proposal_candidates.post_candidate_outcomes;
+                    let door_matches = proposal_candidates.door_matches;
+                    let mut candidate_plans = proposal_candidates.feature_plans;
                     let pre_door_start = env_idx * door_outcome_count;
                     for (outcome_idx, outcome) in
                         pre_candidate_outcomes.door_valid.iter().enumerate()
@@ -1541,15 +1500,6 @@ pub struct EnvironmentGroup {
 }
 
 #[pyclass(module = "map_gen")]
-pub struct ProposalCandidateMask {
-    proposal_frontier_idx: Py<PyArray1<FrontierIdx>>,
-    mask: Py<PyArray2<u8>>,
-    valid_counts: Py<PyArray1<usize>>,
-    #[pyo3(get)]
-    proposal_action_count: usize,
-}
-
-#[pyclass(module = "map_gen")]
 pub struct StepOutcomes {
     door_valid: Py<PyArray2<i8>>,
     connections_valid: Py<PyArray2<i8>>,
@@ -1639,6 +1589,7 @@ pub struct ProposalCandidateBuffers {
     clean_counts: Py<PyArray1<i64>>,
     evaluated_counts: Py<PyArray1<i64>>,
     rejected_counts: Py<PyArray1<i64>>,
+    no_action_counts: Py<PyArray1<i64>>,
 }
 
 #[pyclass(module = "map_gen")]
@@ -1746,6 +1697,7 @@ impl ProposalCandidateBuffers {
             clean_counts: required_py_field!(fields, "clean_counts"),
             evaluated_counts: required_py_field!(fields, "evaluated_counts"),
             rejected_counts: required_py_field!(fields, "rejected_counts"),
+            no_action_counts: required_py_field!(fields, "no_action_counts"),
         })
     }
 }
@@ -2126,24 +2078,6 @@ impl EpisodeOutcomes {
             area_size: self.end_outcomes.area_size.clone_ref(py),
             area_map_station_count: self.end_outcomes.area_map_station_count.clone_ref(py),
         }
-    }
-}
-
-#[pymethods]
-impl ProposalCandidateMask {
-    #[getter]
-    fn proposal_frontier_idx(&self, py: Python<'_>) -> Py<PyArray1<FrontierIdx>> {
-        self.proposal_frontier_idx.clone_ref(py)
-    }
-
-    #[getter]
-    fn mask(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
-        self.mask.clone_ref(py)
-    }
-
-    #[getter]
-    fn valid_counts(&self, py: Python<'_>) -> Py<PyArray1<usize>> {
-        self.valid_counts.clone_ref(py)
     }
 }
 
@@ -3943,66 +3877,6 @@ impl EnvironmentGroup {
         )
     }
 
-    fn get_proposal_candidate_mask<'py>(
-        &mut self,
-        py: Python<'py>,
-        sampled_frontier_idx: PyReadonlyArray1<'py, FrontierIdx>,
-    ) -> PyResult<ProposalCandidateMask> {
-        let proposal_action_count = self.common_data.num_door_output_variants * AREA_COUNT;
-        let mask_byte_count = proposal_action_count.div_ceil(8);
-        let sampled_len = sampled_frontier_idx.len()?;
-        if sampled_len != self.num_environments {
-            return Err(PyValueError::new_err(format!(
-                "sampled_frontier_idx must have length {}, got {}",
-                self.num_environments,
-                sampled_len
-            )));
-        }
-        let sampled_frontier_idx = sampled_frontier_idx
-            .as_slice()
-            .map_err(|_| PyValueError::new_err("sampled_frontier_idx must be contiguous"))?;
-        let mut proposal_frontier_idx = vec![-1; self.num_environments];
-        let mut mask = vec![0; self.num_environments * mask_byte_count];
-        let mut valid_counts = vec![0; self.num_environments];
-
-        py.detach(|| {
-            let mut sent_workers = Vec::with_capacity(self.workers.len());
-            let mut first_error = None;
-            for (worker_idx, worker) in self.workers.iter().enumerate() {
-                let mask_start = worker.start * mask_byte_count;
-                let mask_end = worker.end() * mask_byte_count;
-                if let Err(err) = worker.send(WorkerCommand::GetProposalCandidateMask {
-                    proposal_action_count,
-                    proposal_mask_byte_count: mask_byte_count,
-                    sampled_frontier_idx: InputShard::from_slice(
-                        &sampled_frontier_idx[worker.start..worker.end()],
-                    ),
-                    proposal_frontier_idx: OutputShard::from_slice(
-                        &mut proposal_frontier_idx[worker.start..worker.end()],
-                    ),
-                    mask: OutputShard::from_slice(&mut mask[mask_start..mask_end]),
-                    valid_counts: OutputShard::from_slice(
-                        &mut valid_counts[worker.start..worker.end()],
-                    ),
-                }) {
-                    set_first_error(&mut first_error, err);
-                    break;
-                }
-                sent_workers.push(worker_idx);
-            }
-
-            wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })?;
-
-        Ok(ProposalCandidateMask {
-            proposal_frontier_idx: proposal_frontier_idx.into_pyarray(py).unbind(),
-            mask: pyarray2_from_flat_vec(py, mask, self.num_environments, mask_byte_count)?
-                .unbind(),
-            valid_counts: valid_counts.into_pyarray(py).unbind(),
-            proposal_action_count,
-        })
-    }
-
     fn pack_candidates_from_proposals_into<'py>(
         &mut self,
         py: Python<'py>,
@@ -4045,6 +3919,7 @@ impl EnvironmentGroup {
         let mut clean_counts = buffers.clean_counts.bind(py).readwrite();
         let mut evaluated_counts = buffers.evaluated_counts.bind(py).readwrite();
         let mut rejected_counts = buffers.rejected_counts.bind(py).readwrite();
+        let mut no_action_counts = buffers.no_action_counts.bind(py).readwrite();
         let sampled_shape = sampled_frontier_idx.as_array().shape().to_vec();
         if sampled_shape.len() != 2
             || sampled_proposal_action_idx.as_array().shape() != sampled_shape
@@ -4171,6 +4046,11 @@ impl EnvironmentGroup {
             rejected_counts.as_array().shape(),
             &[self.num_environments],
         )?;
+        check_shape(
+            "no_action_counts",
+            no_action_counts.as_array().shape(),
+            &[self.num_environments],
+        )?;
 
         let room_idx = room_idx
             .as_slice_mut()
@@ -4226,6 +4106,9 @@ impl EnvironmentGroup {
         let stats_rejected_counts = rejected_counts
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("rejected_counts must be contiguous"))?;
+        let stats_no_action_counts = no_action_counts
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("no_action_counts must be contiguous"))?;
 
         room_idx.fill(dummy_candidate.room_idx);
         room_x.fill(dummy_candidate.x);
@@ -4245,6 +4128,7 @@ impl EnvironmentGroup {
         let mut worker_clean_counts = vec![0; self.num_environments];
         let mut worker_evaluated_counts = vec![0; self.num_environments];
         let mut worker_rejected_counts = vec![0; self.num_environments];
+        let mut worker_no_action_counts = vec![0; self.num_environments];
 
         let (feature_info, worker_feature_info) = py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -4328,6 +4212,9 @@ impl EnvironmentGroup {
                     rejected_counts: OutputShard::from_slice(
                         &mut worker_rejected_counts[worker.start..worker.end()],
                     ),
+                    no_action_counts: OutputShard::from_slice(
+                        &mut worker_no_action_counts[worker.start..worker.end()],
+                    ),
                 }) {
                     set_first_error(&mut first_error, err);
                     break;
@@ -4381,6 +4268,12 @@ impl EnvironmentGroup {
         for (out, count) in stats_rejected_counts
             .iter_mut()
             .zip(worker_rejected_counts.into_iter())
+        {
+            *out = count as i64;
+        }
+        for (out, count) in stats_no_action_counts
+            .iter_mut()
+            .zip(worker_no_action_counts.into_iter())
         {
             *out = count as i64;
         }

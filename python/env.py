@@ -49,7 +49,6 @@ class GenerateConfig:
     max_candidate_areas_per_placement: int
     gpu_prefetch_batches: int
     temperature: torch.Tensor
-    frontier_temperature: torch.Tensor
     proposal_temperature: torch.Tensor
     reward_door: float | torch.Tensor
     reward_connection: float | torch.Tensor
@@ -144,7 +143,6 @@ class ProposalData:
     action_idx: torch.Tensor
     selected_candidate: torch.Tensor
     target_logits: torch.Tensor
-    frontier_value_target: torch.Tensor
 
     def to(self, device: torch.device) -> "ProposalData":
         return ProposalData(
@@ -152,7 +150,6 @@ class ProposalData:
             action_idx=self.action_idx.to(device),
             selected_candidate=self.selected_candidate.to(device),
             target_logits=self.target_logits.to(device),
-            frontier_value_target=self.frontier_value_target.to(device),
         )
 
     def slice(self, start: int, end: int) -> "ProposalData":
@@ -161,7 +158,6 @@ class ProposalData:
             action_idx=self.action_idx[start:end],
             selected_candidate=self.selected_candidate[start:end],
             target_logits=self.target_logits[start:end],
-            frontier_value_target=self.frontier_value_target[start:end],
         )
 
 
@@ -317,32 +313,18 @@ class FeatureRequirements:
 
 
 @dataclass
-class ProposalCandidateMask:
-    proposal_frontier_idx: torch.Tensor
-    mask: torch.Tensor
-    valid_counts: torch.Tensor
-    proposal_action_count: int
-
-    def to(self, device: torch.device) -> "ProposalCandidateMask":
-        return ProposalCandidateMask(
-            proposal_frontier_idx=self.proposal_frontier_idx.to(device),
-            mask=self.mask.to(device),
-            valid_counts=self.valid_counts.to(device),
-            proposal_action_count=self.proposal_action_count,
-        )
-
-
-@dataclass
 class CandidateStats:
     clean_counts: torch.Tensor
     evaluated_counts: torch.Tensor
     rejected_counts: torch.Tensor
+    no_action_counts: torch.Tensor
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "CandidateStats":
         return CandidateStats(
             clean_counts=self.clean_counts.to(device, non_blocking=non_blocking),
             evaluated_counts=self.evaluated_counts.to(device, non_blocking=non_blocking),
             rejected_counts=self.rejected_counts.to(device, non_blocking=non_blocking),
+            no_action_counts=self.no_action_counts.to(device, non_blocking=non_blocking),
         )
 
 
@@ -372,6 +354,7 @@ class CandidateSlot:
         self.clean_counts = None
         self.evaluated_counts = None
         self.rejected_counts = None
+        self.no_action_counts = None
 
     def _empty(self, shape, dtype):
         return torch.empty(shape, dtype=dtype, pin_memory=self.pin_memory)
@@ -416,6 +399,7 @@ class CandidateSlot:
         self.clean_counts = self._empty((self.environment_capacity,), torch.int64)
         self.evaluated_counts = self._empty((self.environment_capacity,), torch.int64)
         self.rejected_counts = self._empty((self.environment_capacity,), torch.int64)
+        self.no_action_counts = self._empty((self.environment_capacity,), torch.int64)
 
     def actions(self, environment_count: int, candidate_count: int) -> Actions:
         return Actions(
@@ -466,6 +450,7 @@ class CandidateSlot:
             clean_counts=self.clean_counts[:environment_count],
             evaluated_counts=self.evaluated_counts[:environment_count],
             rejected_counts=self.rejected_counts[:environment_count],
+            no_action_counts=self.no_action_counts[:environment_count],
         )
 
 
@@ -977,23 +962,6 @@ class EnvironmentGroup:
             room_area=torch.from_numpy(room_area).to(device),
         )
 
-    def get_proposal_candidate_mask(
-        self,
-        sampled_frontier_idx: torch.Tensor,
-        device: torch.device,
-    ) -> ProposalCandidateMask:
-        result = self.env.get_proposal_candidate_mask(
-            sampled_frontier_idx.contiguous().cpu().numpy(),
-        )
-        return ProposalCandidateMask(
-            proposal_frontier_idx=torch.from_numpy(result.proposal_frontier_idx).to(device),
-            mask=torch.from_numpy(result.mask).to(device),
-            valid_counts=torch.from_numpy(result.valid_counts).to(
-                device=device, dtype=torch.int64
-            ),
-            proposal_action_count=result.proposal_action_count,
-        )
-
     def extract_candidates_from_proposals(
         self,
         candidate_slot: CandidateSlot,
@@ -1059,6 +1027,7 @@ class EnvironmentGroup:
                     "clean_counts": candidate_slot.clean_counts[: self.num_envs].numpy(),
                     "evaluated_counts": candidate_slot.evaluated_counts[: self.num_envs].numpy(),
                     "rejected_counts": candidate_slot.rejected_counts[: self.num_envs].numpy(),
+                    "no_action_counts": candidate_slot.no_action_counts[: self.num_envs].numpy(),
                 }
             )
         )
@@ -1189,9 +1158,9 @@ class EnvironmentGroup:
     def get_area_outcome_state(self, device: torch.device) -> AreaOutcomeState:
         result = self.env.get_area_outcome_state()
         return AreaOutcomeState(
-            area_connected_components=torch.from_numpy(
-                result.area_connected_components
-            ).to(device=device, dtype=torch.int64),
+            area_connected_components=torch.from_numpy(result.area_connected_components).to(
+                device=device, dtype=torch.int64
+            ),
             area_crossings=torch.from_numpy(result.area_crossings).to(
                 device=device,
                 dtype=torch.int64,
@@ -1348,9 +1317,7 @@ class EnvironmentGroup:
                     "area_max_x": feature_slot.area_max_x.numpy(),
                     "area_min_y": feature_slot.area_min_y.numpy(),
                     "area_max_y": feature_slot.area_max_y.numpy(),
-                    "area_connected_components": (
-                        feature_slot.area_connected_components.numpy()
-                    ),
+                    "area_connected_components": (feature_slot.area_connected_components.numpy()),
                     "area_crossings": feature_slot.area_crossings.numpy(),
                     "area_size": feature_slot.area_size.numpy(),
                     "area_map_station_count": feature_slot.area_map_station_count.numpy(),
@@ -2208,9 +2175,7 @@ def extract_candidate_features(
                 "area_max_x": feature_slot.area_max_x.numpy(),
                 "area_min_y": feature_slot.area_min_y.numpy(),
                 "area_max_y": feature_slot.area_max_y.numpy(),
-                "area_connected_components": (
-                    feature_slot.area_connected_components.numpy()
-                ),
+                "area_connected_components": (feature_slot.area_connected_components.numpy()),
                 "area_crossings": feature_slot.area_crossings.numpy(),
                 "area_size": feature_slot.area_size.numpy(),
                 "area_map_station_count": feature_slot.area_map_station_count.numpy(),
