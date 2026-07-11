@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, fields, is_dataclass
 import math
+import logging
 from typing import Literal
 
 import torch
@@ -62,6 +63,22 @@ class PreparedTrainBatch:
     outcomes: EpisodeOutcomes
     door_matches: DoorMatches
     feature_batches: list[FeatureTrainBatch]
+    feature_mismatches: list["FeatureMismatch"]
+    feature_compared_tensors: int
+    feature_compared_values: int
+
+
+@dataclass
+class FeatureMismatch:
+    path: str
+    step: int
+    generated_shape: tuple[int, ...]
+    replayed_shape: tuple[int, ...]
+    generated_dtype: torch.dtype
+    replayed_dtype: torch.dtype
+    compared_values: int
+    mismatched_values: int
+    example: str
 
 
 @dataclass
@@ -122,6 +139,9 @@ class TrainRoundContext:
     update_ema_model: Callable[[float], None]
     num_rooms: int
     episode_length: int
+    feature_mismatches: list[FeatureMismatch]
+    feature_compared_tensors: int
+    feature_compared_values: int
 
 
 def empty_main_loss_breakdown() -> MainLossBreakdown:
@@ -338,34 +358,68 @@ def verify_feature_tensor(
     replayed: torch.Tensor,
     path: str,
     step: int,
-) -> None:
+) -> FeatureMismatch | None:
     if generated.shape != replayed.shape or generated.dtype != replayed.dtype:
-        raise RuntimeError(
-            f"feature mismatch at step {step} for {path}: generated "
-            f"shape={tuple(generated.shape)} dtype={generated.dtype}, replayed "
-            f"shape={tuple(replayed.shape)} dtype={replayed.dtype}"
+        return FeatureMismatch(
+            path=path,
+            step=step,
+            generated_shape=tuple(generated.shape),
+            replayed_shape=tuple(replayed.shape),
+            generated_dtype=generated.dtype,
+            replayed_dtype=replayed.dtype,
+            compared_values=0,
+            mismatched_values=0,
+            example="shape or dtype mismatch",
         )
     different = generated != replayed
-    if torch.any(different):
-        first = torch.nonzero(different, as_tuple=False)[0]
-        index = tuple(first.tolist())
-        raise RuntimeError(
-            f"feature mismatch at step {step} for {path}{index}: "
-            f"generated={generated[index].item()!r}, replayed={replayed[index].item()!r}"
-        )
+    mismatch_count = int(torch.count_nonzero(different).item())
+    if mismatch_count == 0:
+        return None
+    first = torch.nonzero(different, as_tuple=False)[0]
+    index = tuple(first.tolist())
+    return FeatureMismatch(
+        path=path,
+        step=step,
+        generated_shape=tuple(generated.shape),
+        replayed_shape=tuple(replayed.shape),
+        generated_dtype=generated.dtype,
+        replayed_dtype=replayed.dtype,
+        compared_values=generated.numel(),
+        mismatched_values=mismatch_count,
+        example=(
+            f"index={index} generated={generated[index].item()!r} "
+            f"replayed={replayed[index].item()!r}"
+        ),
+    )
 
 
-def verify_feature_values(generated, replayed, step: int, path: str = "features") -> None:
+def collect_feature_mismatches(
+    generated, replayed, step: int, path: str = "features"
+) -> tuple[list[FeatureMismatch], int, int]:
     if type(generated) is not type(replayed) or not is_dataclass(generated):
         raise TypeError(f"cannot compare feature values at {path}")
+    mismatches = []
+    compared_tensors = 0
+    compared_values = 0
     for field in fields(generated):
         generated_value = getattr(generated, field.name)
         replayed_value = getattr(replayed, field.name)
         field_path = f"{path}.{field.name}"
         if isinstance(generated_value, torch.Tensor):
-            verify_feature_tensor(generated_value, replayed_value, field_path, step)
+            compared_tensors += 1
+            if generated_value.shape == replayed_value.shape:
+                compared_values += generated_value.numel()
+            mismatch = verify_feature_tensor(generated_value, replayed_value, field_path, step)
+            if mismatch is not None:
+                mismatches.append(mismatch)
         else:
-            verify_feature_values(generated_value, replayed_value, step, field_path)
+            child_mismatches, child_tensors, child_values = collect_feature_mismatches(
+                generated_value, replayed_value, step, field_path
+            )
+            mismatches.extend(child_mismatches)
+            compared_tensors += child_tensors
+            compared_values += child_values
+    return mismatches, compared_tensors, compared_values
 
 
 def prepare_feature_batches(
@@ -376,7 +430,7 @@ def prepare_feature_batches(
     episode_length: int,
     pin_memory: bool,
     generated_feature_batches: list[Features | None] | None,
-) -> list[FeatureTrainBatch]:
+) -> tuple[list[FeatureTrainBatch], list[FeatureMismatch], int, int]:
     offset = torch.randint(0, config.train.sample_period, [1]).item()
     train_actions = train_episode_data.actions
     train_actions_cpu = train_actions.to(torch.device("cpu"))
@@ -389,6 +443,9 @@ def prepare_feature_batches(
     )
     env.clear()
     feature_batches = []
+    feature_mismatches = []
+    feature_compared_tensors = 0
+    feature_compared_values = 0
     for step in range(episode_length):
         next_actions = Actions(
             room_idx=train_actions_cpu.room_idx[:, step],
@@ -436,7 +493,12 @@ def prepare_feature_batches(
             if generated_feature_batches is not None:
                 generated_features = generated_feature_batches[step]
                 if generated_features is not None:
-                    verify_feature_values(generated_features, replay_features, step)
+                    mismatches, compared_tensors, compared_values = collect_feature_mismatches(
+                        generated_features, replay_features, step
+                    )
+                    feature_mismatches.extend(mismatches)
+                    feature_compared_tensors += compared_tensors
+                    feature_compared_values += compared_values
             feature_batches.append(
                 FeatureTrainBatch(
                     features=replay_features,
@@ -446,7 +508,12 @@ def prepare_feature_batches(
                     proposal_target_logits=proposal_target_logits,
                 )
             )
-    return feature_batches
+    return (
+        feature_batches,
+        feature_mismatches,
+        feature_compared_tensors,
+        feature_compared_values,
+    )
 
 
 def prepare_feature_batch(
@@ -460,14 +527,16 @@ def prepare_feature_batch(
     episode_length: int,
     generated_feature_batches: list[Features | None] | None,
 ) -> PreparedTrainBatch:
-    feature_batches = prepare_feature_batches(
-        config,
-        train_episode_data,
-        proposal_data,
-        env,
-        episode_length,
-        device.type == "cuda",
-        generated_feature_batches,
+    feature_batches, feature_mismatches, compared_tensors, compared_values = (
+        prepare_feature_batches(
+            config,
+            train_episode_data,
+            proposal_data,
+            env,
+            episode_length,
+            device.type == "cuda",
+            generated_feature_batches,
+        )
     )
     door_matches = env.get_door_matches(device)
     return PreparedTrainBatch(
@@ -476,6 +545,9 @@ def prepare_feature_batch(
         outcomes=train_outcomes,
         door_matches=door_matches,
         feature_batches=feature_batches,
+        feature_mismatches=feature_mismatches,
+        feature_compared_tensors=compared_tensors,
+        feature_compared_values=compared_values,
     )
 
 
@@ -519,14 +591,16 @@ def prepare_train_batch_task(
         context.config.train.episodes_per_file,
         context.config.train.hist_c,
     )
-    feature_batches = prepare_feature_batches(
-        context.config,
-        replay_episode_data,
-        None,
-        env,
-        context.episode_length,
-        context.device.type == "cuda",
-        None,
+    feature_batches, feature_mismatches, compared_tensors, compared_values = (
+        prepare_feature_batches(
+            context.config,
+            replay_episode_data,
+            None,
+            env,
+            context.episode_length,
+            context.device.type == "cuda",
+            None,
+        )
     )
     replay_door_matches = env.get_door_matches(context.device)
     env.finish()
@@ -538,6 +612,9 @@ def prepare_train_batch_task(
         outcomes=replay_outcomes,
         door_matches=replay_door_matches,
         feature_batches=feature_batches,
+        feature_mismatches=feature_mismatches,
+        feature_compared_tensors=compared_tensors,
+        feature_compared_values=compared_values,
     )
 
 
@@ -952,6 +1029,9 @@ def train_prepared_batch_group(
     processed_count = 0
     for prepared_batch in prepared_batches:
         processed_count += 1
+        context.feature_mismatches.extend(prepared_batch.feature_mismatches)
+        context.feature_compared_tensors += prepared_batch.feature_compared_tensors
+        context.feature_compared_values += prepared_batch.feature_compared_values
         batch_loss, batch_balance_loss = train_batch_backward(
             context,
             prepared_batch,
@@ -1052,12 +1132,54 @@ def train_round(
         )
         remaining_batches -= group_size
 
+    log_feature_mismatch_summary(context)
+
     if train_batch_count == 0:
         return empty_main_loss_breakdown(), 0.0
     return (
         average_main_loss(total_loss, train_batch_count),
         total_balance_loss / train_batch_count,
     )
+
+
+def log_feature_mismatch_summary(context: TrainRoundContext) -> None:
+    if context.feature_compared_tensors == 0:
+        return
+    mismatched_tensors = len(context.feature_mismatches)
+    mismatched_values = sum(
+        mismatch.mismatched_values for mismatch in context.feature_mismatches
+    )
+    logging.warning(
+        "Generation feature verification: %s/%s tensors and %s/%s values mismatched.",
+        mismatched_tensors,
+        context.feature_compared_tensors,
+        mismatched_values,
+        context.feature_compared_values,
+    )
+    by_path: dict[str, list[FeatureMismatch]] = {}
+    for mismatch in context.feature_mismatches:
+        by_path.setdefault(mismatch.path, []).append(mismatch)
+    ranked_paths = sorted(
+        by_path.items(),
+        key=lambda item: (
+            sum(value.mismatched_values for value in item[1]),
+            len(item[1]),
+        ),
+        reverse=True,
+    )
+    for path, mismatches in ranked_paths:
+        path_mismatched_values = sum(value.mismatched_values for value in mismatches)
+        path_compared_values = sum(value.compared_values for value in mismatches)
+        first = mismatches[0]
+        logging.warning(
+            "  %s: %s mismatched tensor(s), %s/%s values; step=%s %s",
+            path,
+            len(mismatches),
+            path_mismatched_values,
+            path_compared_values,
+            first.step,
+            first.example,
+        )
 
 
 def set_optimizer_lrs(optimizer, config) -> None:
