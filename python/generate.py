@@ -810,7 +810,7 @@ def select_candidate_actions(
         action_index,
         selected_actions,
         expected_reward,
-        candidate_logits,
+        safe_candidate_logits,
         selected_proposal_scores,
     )
 
@@ -1344,11 +1344,10 @@ def run_group_producer(
         group.env.clear()
         group.env.step_initial()
         group.step = 1
-        group.previous_lookahead_outcomes = bootstrap_lookahead_outcomes(
-            group.env.get_outcomes(
-                torch.device("cpu"),
-                verify_consistency=False,
-            ).step_outcomes
+        group.previous_lookahead_outcomes = group.env.get_current_feature_outcomes(
+            torch.device("cpu"),
+            0,
+            group.config.temperature.shape[0],
         )
         group.previous_proposal_scores = None
         while group.step < group.config.episode_length and not shared.cancellation_event.is_set():
@@ -1678,16 +1677,6 @@ def empty_proposal_data(
         target_logits=torch.empty(
             (environment_count, 0, max_candidates), dtype=torch.float32, device=device
         ),
-    )
-
-
-def bootstrap_lookahead_outcomes(outcomes: StepOutcomes) -> StepOutcomes:
-    return StepOutcomes(
-        door_invalid=outcomes.door_invalid,
-        connection_invalid=outcomes.connection_invalid,
-        toilet_invalid=outcomes.toilet_invalid,
-        phantoon_invalid=outcomes.phantoon_invalid,
-        door_match=torch.full_like(outcomes.door_invalid, -1, dtype=torch.int16),
     )
 
 

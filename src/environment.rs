@@ -1,20 +1,20 @@
 use bitvec::vec::BitVec;
-use delaunator::{next_halfedge, triangulate, Point, EMPTY};
+use delaunator::{EMPTY, Point, next_halfedge, triangulate};
 use hashbrown::HashMap;
-use rand::prelude::*;
 use rand::SeedableRng;
+use rand::prelude::*;
 use serde::Deserialize;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    get_behind_door_position, proposal_action_parts, Action, ActionIdx, AreaIdx, CommonData,
-    ConnectionVariantIdx, Coord, DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome,
-    DoorVariantIdx, FrontierIdx, GeometryData, GeometryIdx, GraphDistance, PartIdx,
-    ProposalActionIdx, RoomIdx, RoomPartIdx, SpatialCellIdx, AREA_COUNT, DUMMY_AREA, NUM_DIRS,
+    AREA_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx, Coord, DUMMY_AREA,
+    DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
+    GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
+    RoomPartIdx, SpatialCellIdx, get_behind_door_position, proposal_action_parts,
 };
-use crate::engine::{profile_enabled, record_profile_count, record_profile_metric, ProfileMetric};
+use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
 use crate::scc_dag::SccDag;
 use crate::union_find::{UnionFind, UnionFindSnapshot};
 
@@ -43,6 +43,7 @@ enum StepMode {
     CommitFull,
     CommitKnown,
     Lookahead,
+    #[cfg(test)]
     FeatureOnly,
 }
 
@@ -52,6 +53,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => true,
             StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -61,6 +63,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => true,
             StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -70,6 +73,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => true,
             StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => true,
         }
     }
@@ -79,6 +83,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => true,
             StepMode::Lookahead => false,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -88,6 +93,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => true,
             StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -97,6 +103,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => false,
             StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -105,7 +112,8 @@ impl StepMode {
         match self {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => false,
-            StepMode::Lookahead => false,
+            StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -115,6 +123,7 @@ impl StepMode {
             StepMode::CommitFull => true,
             StepMode::CommitKnown => false,
             StepMode::Lookahead => true,
+            #[cfg(test)]
             StepMode::FeatureOnly => false,
         }
     }
@@ -1203,11 +1212,15 @@ pub struct Environment {
     frontier_count_steps: u32,
 }
 
+#[cfg(test)]
 struct FeatureSnapshot {
     finished: bool,
     frontier: HashMap<DoorLocation, Frontier>,
     room_idx: Option<RoomIdx>,
     room_used: bool,
+    room_x: Coord,
+    room_y: Coord,
+    room_area: AreaIdx,
     area_idx: Option<usize>,
     area_used: bool,
     area_min_x: Coord,
@@ -2720,6 +2733,7 @@ impl Environment {
         self.step_impl(action, common, StepMode::Lookahead);
     }
 
+    #[cfg(test)]
     fn step_for_features(&mut self, action: Action, common: &CommonData) {
         self.step_impl(action, common, StepMode::FeatureOnly);
     }
@@ -3520,6 +3534,24 @@ impl Environment {
         let pre_candidate_outcomes = self.outcomes(common);
         profile_end(ProfileMetric::EnvProposalPreOutcomes, profile);
 
+        if self.finished {
+            return Ok(ProposalCandidates {
+                pre_candidate_outcomes,
+                candidates: Vec::new(),
+                frontier_idx: Vec::new(),
+                proposal_action_idx: Vec::new(),
+                post_candidate_outcomes: Vec::new(),
+                door_matches: Vec::new(),
+                feature_plans: Vec::new(),
+                scored_invalid_frontier_idx: Vec::new(),
+                scored_invalid_proposal_action_idx: Vec::new(),
+                clean_count: 0,
+                evaluated_count: 0,
+                rejected_count: 0,
+                invalid_count: 0,
+            });
+        }
+
         let profile = profile_start();
         let sorted_frontier_locations = self.sorted_frontier_locations();
         profile_end(ProfileMetric::EnvProposalSortFrontiers, profile);
@@ -3825,7 +3857,7 @@ impl Environment {
         Ok(CandidateOutcome::Clean(step_outcomes, door_match, features))
     }
 
-    fn outcomes_and_features_after_candidate(
+    pub(crate) fn outcomes_and_features_after_candidate(
         &mut self,
         common: &CommonData,
         candidate: Action,
@@ -4068,6 +4100,7 @@ impl Environment {
             .truncate_insertions(snapshot.placed_room_index_len);
     }
 
+    #[cfg(test)]
     fn apply_feature_candidate(
         &mut self,
         candidate: Action,
@@ -4103,6 +4136,9 @@ impl Environment {
             frontier,
             room_idx,
             room_used: room_idx.is_some_and(|room_idx| self.room_used[room_idx as usize]),
+            room_x: room_idx.map_or(0, |room_idx| self.room_x[room_idx as usize]),
+            room_y: room_idx.map_or(0, |room_idx| self.room_y[room_idx as usize]),
+            room_area: room_idx.map_or(DUMMY_AREA, |room_idx| self.room_area[room_idx as usize]),
             area_idx,
             area_used: area_idx.is_some_and(|area| self.area_used[area]),
             area_min_x: area_idx.map_or(0, |area| self.area_min_x[area]),
@@ -4130,6 +4166,7 @@ impl Environment {
         snapshot
     }
 
+    #[cfg(test)]
     fn restore_feature_candidate(
         &mut self,
         common: &CommonData,
@@ -4140,6 +4177,9 @@ impl Environment {
         self.frontier = snapshot.frontier;
         if let Some(room_idx) = snapshot.room_idx {
             self.room_used.set(room_idx as usize, snapshot.room_used);
+            self.room_x[room_idx as usize] = snapshot.room_x;
+            self.room_y[room_idx as usize] = snapshot.room_y;
+            self.room_area[room_idx as usize] = snapshot.room_area;
         }
         if let Some(area) = snapshot.area_idx {
             self.area_used[area] = snapshot.area_used;
@@ -5439,48 +5479,6 @@ impl Environment {
         features
     }
 
-    pub fn feature_plan_after_candidate_with_scratch(
-        &mut self,
-        common: &CommonData,
-        candidate: Action,
-        config: &FeatureConfig,
-        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
-        frontier_neighbor_count: usize,
-        frontier_window_size: usize,
-        scratch: &mut FeatureScratch,
-    ) -> FeaturePlan {
-        if config.is_empty() {
-            return scratch.take_plan();
-        }
-        let extra_occupied = if candidate.room_idx < common.room.len() as RoomIdx {
-            let geometry_idx = common.room[candidate.room_idx as usize].geometry_idx;
-            Some(FeatureExtraOccupied {
-                geometry_idx,
-                x: candidate.x,
-                y: candidate.y,
-            })
-        } else {
-            None
-        };
-        let profile = profile_start();
-        let snapshot = self.apply_feature_candidate(candidate, common);
-        profile_end(ProfileMetric::EnvFeaturesApplyCandidate, profile);
-        let plan = self.feature_plan_with_occupancy(
-            common,
-            config,
-            extra_occupied,
-            FeaturePlanKind::Candidate(candidate),
-            frontier_neighbor_algorithm,
-            frontier_neighbor_count,
-            frontier_window_size,
-            scratch,
-        );
-        let profile = profile_start();
-        self.restore_feature_candidate(common, candidate, snapshot);
-        profile_end(ProfileMetric::EnvFeaturesApplyCandidate, profile);
-        plan
-    }
-
     pub fn actions(&self) -> &[Action] {
         &self.actions
     }
@@ -5944,7 +5942,7 @@ fn write_direction_door_matches(matches: &[DirDoorIdx], output: &mut [i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::{proposal_action_idx, Direction, Room};
+    use crate::common::{Direction, Room, proposal_action_idx};
 
     fn door_location(x: Coord, y: Coord, vertical: bool) -> DoorLocation {
         DoorLocation::from_parts(
@@ -6348,14 +6346,15 @@ mod tests {
         let (door_variant_idx, _) = proposal_action_parts(valid_action).unwrap();
         let sorted_frontier_locations = env.sorted_frontier_locations();
 
-        assert!(env
-            .action_for_proposal_candidate(
+        assert!(
+            env.action_for_proposal_candidate(
                 &common,
                 &sorted_frontier_locations,
                 0,
                 proposal_action_idx(door_variant_idx, 0),
             )
-            .is_none());
+            .is_none()
+        );
         let wrong_orientation_variant = common
             .door_variant_direction
             .iter()
@@ -6364,14 +6363,15 @@ mod tests {
             })
             .expect("test setup should include both door orientations")
             as DoorVariantIdx;
-        assert!(env
-            .action_for_proposal_candidate(
+        assert!(
+            env.action_for_proposal_candidate(
                 &common,
                 &sorted_frontier_locations,
                 0,
                 proposal_action_idx(wrong_orientation_variant, 1),
             )
-            .is_none());
+            .is_none()
+        );
     }
 
     #[test]
@@ -6420,14 +6420,15 @@ mod tests {
         let (door_variant_idx, _) = proposal_action_parts(valid_action).unwrap();
         let sorted_frontier_locations = env.sorted_frontier_locations();
 
-        assert!(env
-            .action_for_proposal_candidate(
+        assert!(
+            env.action_for_proposal_candidate(
                 &common,
                 &sorted_frontier_locations,
                 0,
                 proposal_action_idx(door_variant_idx, 3),
             )
-            .is_none());
+            .is_none()
+        );
     }
 
     #[test]
@@ -6570,10 +6571,14 @@ mod tests {
             },
         );
 
-        assert!((0..AREA_COUNT as AreaIdx)
-            .all(|area| first_resolvable_proposal_action(&mut env, &common, 0, area).is_none()));
-        assert!((0..AREA_COUNT as AreaIdx)
-            .any(|area| first_resolvable_proposal_action(&mut env, &common, 1, area).is_some()));
+        assert!(
+            (0..AREA_COUNT as AreaIdx)
+                .all(|area| first_resolvable_proposal_action(&mut env, &common, 0, area).is_none())
+        );
+        assert!(
+            (0..AREA_COUNT as AreaIdx)
+                .any(|area| first_resolvable_proposal_action(&mut env, &common, 1, area).is_some())
+        );
     }
 
     #[test]
@@ -6746,10 +6751,11 @@ mod tests {
                 .iter()
                 .all(|candidate| candidate.x >= 0 && candidate.y >= 0)
         }));
-        assert!(env
-            .frontier
-            .values()
-            .all(|frontier| frontier.candidates.is_empty()));
+        assert!(
+            env.frontier
+                .values()
+                .all(|frontier| frontier.candidates.is_empty())
+        );
     }
 
     #[test]
@@ -7711,14 +7717,16 @@ mod tests {
         env.clear(&common);
         assert_eq!(env.scc_dag.component_count, 0);
         assert!(env.active_room_parts.is_empty());
-        assert!(env
-            .room_part_component
-            .iter()
-            .all(|&component| component == NO_COMPONENT));
-        assert!(env
-            .graph_distance
-            .iter()
-            .all(|&distance| distance == GraphDistance::MAX));
+        assert!(
+            env.room_part_component
+                .iter()
+                .all(|&component| component == NO_COMPONENT)
+        );
+        assert!(
+            env.graph_distance
+                .iter()
+                .all(|&distance| distance == GraphDistance::MAX)
+        );
     }
 
     #[test]
@@ -9042,16 +9050,18 @@ mod tests {
         );
 
         env.room_part_frontier_distance_cache.clear();
-        assert!(env
-            .room_part_frontier_distance_cache
-            .nearest_frontier_destination_part
-            .iter()
-            .all(|&part| part == RoomPartIdx::MAX));
-        assert!(env
-            .room_part_frontier_distance_cache
-            .nearest_frontier_source_part
-            .iter()
-            .all(|&part| part == RoomPartIdx::MAX));
+        assert!(
+            env.room_part_frontier_distance_cache
+                .nearest_frontier_destination_part
+                .iter()
+                .all(|&part| part == RoomPartIdx::MAX)
+        );
+        assert!(
+            env.room_part_frontier_distance_cache
+                .nearest_frontier_source_part
+                .iter()
+                .all(|&part| part == RoomPartIdx::MAX)
+        );
     }
 
     #[test]
@@ -9848,30 +9858,38 @@ mod tests {
 
     #[test]
     fn feature_config_validates_dependencies() {
-        assert!(FeatureConfig {
-            frontier_position: true,
-            ..FeatureConfig::all_disabled()
-        }
-        .validate()
-        .is_err());
-        assert!(FeatureConfig {
-            frontier_neighbor_flags: true,
-            ..FeatureConfig::all_disabled()
-        }
-        .validate()
-        .is_err());
-        assert!(FeatureConfig {
-            frontier_neighbor_position_embedding: true,
-            ..FeatureConfig::all_disabled()
-        }
-        .validate()
-        .is_err());
-        assert!(FeatureConfig {
-            global_room_position: true,
-            ..FeatureConfig::all_disabled()
-        }
-        .validate()
-        .is_err());
+        assert!(
+            FeatureConfig {
+                frontier_position: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FeatureConfig {
+                frontier_neighbor_flags: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FeatureConfig {
+                frontier_neighbor_position_embedding: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            FeatureConfig {
+                global_room_position: true,
+                ..FeatureConfig::all_disabled()
+            }
+            .validate()
+            .is_err()
+        );
         assert!(FeatureConfig::all_disabled().validate().is_ok());
         assert!(FeatureConfig::all().validate().is_ok());
         let err = serde_json::from_str::<FeatureConfig>(

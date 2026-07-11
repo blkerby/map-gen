@@ -422,6 +422,140 @@ def collect_feature_mismatches(
     return mismatches, compared_tensors, compared_values
 
 
+def collect_selected_action_feature_mismatches(
+    features: Features,
+    actions: Actions,
+    step: int,
+) -> tuple[list[FeatureMismatch], int, int]:
+    room_idx = actions.room_idx[:, step].to(device="cpu", dtype=torch.int64)
+    num_rooms = features.global_features.room_placed.shape[1]
+    valid = (room_idx >= 0) & (room_idx < num_rooms)
+    if not torch.any(valid):
+        return [], 0, 0
+    environment_idx = torch.arange(room_idx.shape[0], dtype=torch.int64)[valid]
+    selected_room_idx = room_idx[valid]
+    generated_values = (
+        features.global_features.room_placed[environment_idx, selected_room_idx],
+        features.global_features.room_x[environment_idx, selected_room_idx],
+        features.global_features.room_y[environment_idx, selected_room_idx],
+    )
+    expected_values = (
+        torch.ones_like(generated_values[0]),
+        actions.room_x[:, step].to(torch.device("cpu"))[valid],
+        actions.room_y[:, step].to(torch.device("cpu"))[valid],
+    )
+    names = ("room_placed", "room_x", "room_y")
+    mismatches = []
+    compared_values = 0
+    for name, generated, expected in zip(names, generated_values, expected_values):
+        compared_values += generated.numel()
+        mismatch = verify_feature_tensor(
+            generated,
+            expected,
+            f"capture.selected_action.{name}",
+            step,
+        )
+        if mismatch is not None:
+            mismatches.append(mismatch)
+    return mismatches, len(names), compared_values
+
+
+def collect_action_prefix_feature_mismatches(
+    features: Features,
+    actions: Actions,
+    step: int,
+) -> tuple[list[FeatureMismatch], int, int]:
+    generated_values = (
+        features.global_features.room_placed,
+        features.global_features.room_x,
+        features.global_features.room_y,
+    )
+    expected_placed = torch.zeros_like(generated_values[0])
+    expected_x = torch.zeros_like(generated_values[1])
+    expected_y = torch.zeros_like(generated_values[2])
+    num_environments, num_rooms = expected_placed.shape
+    environment_idx = torch.arange(num_environments, dtype=torch.int64)
+    for prefix_step in range(step + 1):
+        room_idx = actions.room_idx[:, prefix_step].to(device="cpu", dtype=torch.int64)
+        valid = (room_idx >= 0) & (room_idx < num_rooms)
+        valid_environment_idx = environment_idx[valid]
+        valid_room_idx = room_idx[valid]
+        expected_placed[valid_environment_idx, valid_room_idx] = 1
+        expected_x[valid_environment_idx, valid_room_idx] = actions.room_x[
+            valid, prefix_step
+        ].to(torch.device("cpu"))
+        expected_y[valid_environment_idx, valid_room_idx] = actions.room_y[
+            valid, prefix_step
+        ].to(torch.device("cpu"))
+    expected_x = torch.where(expected_placed != 0, expected_x, generated_values[1])
+    expected_y = torch.where(expected_placed != 0, expected_y, generated_values[2])
+    expected_values = (expected_placed, expected_x, expected_y)
+    names = ("room_placed", "room_x", "room_y")
+    mismatches = []
+    compared_values = 0
+    for name, generated, expected in zip(names, generated_values, expected_values):
+        compared_values += generated.numel()
+        mismatch = verify_feature_tensor(
+            generated,
+            expected,
+            f"capture.action_prefix.{name}",
+            step,
+        )
+        if mismatch is not None:
+            mismatches.append(mismatch)
+    return mismatches, len(names), compared_values
+
+
+def collect_generated_feature_continuity_mismatches(
+    previous_features: Features,
+    current_features: Features,
+    actions: Actions,
+    step: int,
+) -> tuple[list[FeatureMismatch], int, int]:
+    previous_values = (
+        previous_features.global_features.room_placed,
+        previous_features.global_features.room_x,
+        previous_features.global_features.room_y,
+    )
+    current_values = (
+        current_features.global_features.room_placed,
+        current_features.global_features.room_x,
+        current_features.global_features.room_y,
+    )
+    expected_values = tuple(value.clone() for value in previous_values)
+    room_idx = actions.room_idx[:, step].to(device="cpu", dtype=torch.int64)
+    num_environments, num_rooms = expected_values[0].shape
+    valid = (room_idx >= 0) & (room_idx < num_rooms)
+    environment_idx = torch.arange(num_environments, dtype=torch.int64)[valid]
+    valid_room_idx = room_idx[valid]
+    expected_values[0][environment_idx, valid_room_idx] = 1
+    expected_values[1][environment_idx, valid_room_idx] = actions.room_x[valid, step].to(
+        torch.device("cpu")
+    )
+    expected_values[2][environment_idx, valid_room_idx] = actions.room_y[valid, step].to(
+        torch.device("cpu")
+    )
+    expected_values = (
+        expected_values[0],
+        torch.where(expected_values[0] != 0, expected_values[1], current_values[1]),
+        torch.where(expected_values[0] != 0, expected_values[2], current_values[2]),
+    )
+    names = ("room_placed", "room_x", "room_y")
+    mismatches = []
+    compared_values = 0
+    for name, current, expected in zip(names, current_values, expected_values):
+        compared_values += current.numel()
+        mismatch = verify_feature_tensor(
+            current,
+            expected,
+            f"capture.continuity.{name}",
+            step,
+        )
+        if mismatch is not None:
+            mismatches.append(mismatch)
+    return mismatches, len(names), compared_values
+
+
 def prepare_feature_batches(
     config: Config,
     train_episode_data: EpisodeData,
@@ -493,12 +627,55 @@ def prepare_feature_batches(
             if generated_feature_batches is not None:
                 generated_features = generated_feature_batches[step]
                 if generated_features is not None:
+                    capture_mismatches, capture_tensors, capture_values = (
+                        collect_selected_action_feature_mismatches(
+                            generated_features,
+                            train_actions_cpu,
+                            step,
+                        )
+                    )
+                    prefix_mismatches, prefix_tensors, prefix_values = (
+                        collect_action_prefix_feature_mismatches(
+                            generated_features,
+                            train_actions_cpu,
+                            step,
+                        )
+                    )
+                    continuity_mismatches = []
+                    continuity_tensors = 0
+                    continuity_values = 0
+                    if step > 0:
+                        previous_generated_features = generated_feature_batches[step - 1]
+                        if previous_generated_features is not None:
+                            (
+                                continuity_mismatches,
+                                continuity_tensors,
+                                continuity_values,
+                            ) = collect_generated_feature_continuity_mismatches(
+                                previous_generated_features,
+                                generated_features,
+                                train_actions_cpu,
+                                step,
+                            )
                     mismatches, compared_tensors, compared_values = collect_feature_mismatches(
                         generated_features, replay_features, step
                     )
+                    feature_mismatches.extend(capture_mismatches)
+                    feature_mismatches.extend(prefix_mismatches)
+                    feature_mismatches.extend(continuity_mismatches)
                     feature_mismatches.extend(mismatches)
-                    feature_compared_tensors += compared_tensors
-                    feature_compared_values += compared_values
+                    feature_compared_tensors += (
+                        capture_tensors
+                        + prefix_tensors
+                        + continuity_tensors
+                        + compared_tensors
+                    )
+                    feature_compared_values += (
+                        capture_values
+                        + prefix_values
+                        + continuity_values
+                        + compared_values
+                    )
             feature_batches.append(
                 FeatureTrainBatch(
                     features=replay_features,
@@ -642,9 +819,10 @@ def proposal_batch_loss(
     target_logits = target_logits.to(device, dtype=torch.float32)
     invalid = invalid.to(device=device, dtype=torch.bool)
     present = torch.isfinite(candidate_score) & torch.isfinite(target_logits)
-    row_valid = torch.any(present & ~invalid, dim=1)
+    valid = present & ~invalid
+    row_valid = torch.any(valid, dim=1)
     if not torch.any(row_valid):
-        return torch.sum(candidate_score) * 0.0
+        return candidate_score.new_zeros(())
     invalid_logit = torch.finfo(candidate_score.dtype).min
     candidate_score = torch.where(
         present,
@@ -658,7 +836,7 @@ def proposal_batch_loss(
     )
     row_candidate_logits = candidate_score[row_valid]
     row_target_logits = target_logits[row_valid]
-    row_mask = present[row_valid]
+    row_mask = valid[row_valid]
     proposal_log_probs = torch.nn.functional.log_softmax(
         row_candidate_logits,
         dim=1,

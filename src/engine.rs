@@ -2,15 +2,14 @@
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
 use crate::common::{
-    Action, AreaIdx, CommonData, Coord, Direction, DoorLocation, DoorValidOutcome, DoorVariantIdx,
-    FrontierIdx, ProposalActionIdx, Room, RoomIdx, AREA_COUNT, DUMMY_AREA,
+    AREA_COUNT, Action, AreaIdx, CommonData, Coord, DUMMY_AREA, Direction, DoorLocation,
+    DoorValidOutcome, DoorVariantIdx, FrontierIdx, ProposalActionIdx, Room, RoomIdx,
 };
 #[cfg(test)]
 use crate::environment::Features;
 use crate::environment::{
-    write_frontier_neighbors, Environment, FeatureConfig, FeaturePlan, FeaturePlanKind,
-    FeatureScratch, FrontierNeighborAlgorithm, StepOutcomes as EnvironmentStepOutcomes,
-    FEATURE_FRONTIER_WIDTH,
+    Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig, FeaturePlan, FeaturePlanKind,
+    FeatureScratch, FrontierNeighborAlgorithm, write_frontier_neighbors,
 };
 use crossbeam_channel as channel;
 use numpy::{Element, IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray1};
@@ -21,8 +20,8 @@ use std::cmp::{max, min};
 use std::marker::PhantomData;
 #[cfg(test)]
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -777,30 +776,24 @@ fn worker_loop(
                     pre_phantoon_valid[env_idx] =
                         outcome_to_i8(pre_candidate_outcomes.phantoon_valid);
                     let row_start = env_idx * recommended_candidates;
-                    let dummy_outcome = if candidates.len() < recommended_candidates {
-                        Some(EnvironmentStepOutcomes {
-                            door_valid: vec![DoorValidOutcome::Unknown; door_outcome_count],
-                            connections_valid: vec![
-                                DoorValidOutcome::Unknown;
-                                connection_outcome_count
-                            ],
-                            toilet_valid: DoorValidOutcome::Unknown,
-                            phantoon_valid: DoorValidOutcome::Unknown,
-                            toilet_crossed_room_idx: -1,
-                        })
-                    } else {
-                        None
-                    };
-                    let dummy_door_match = if candidates.len() < recommended_candidates {
-                        Some(vec![-1; door_outcome_count])
-                    } else {
-                        None
-                    };
                     let dummy_candidate = Action {
                         room_idx: common_data.room.len() as RoomIdx,
                         x: 0,
                         y: 0,
                         area: DUMMY_AREA,
+                    };
+                    let dummy_candidate_data = if candidates.len() < recommended_candidates {
+                        Some(env.outcomes_and_features_after_candidate(
+                            &common_data,
+                            dummy_candidate,
+                            &features,
+                            frontier_neighbor_algorithm,
+                            frontier_neighbor_count,
+                            frontier_window_size,
+                            &mut feature_scratch,
+                        ))
+                    } else {
+                        None
                     };
                     for candidate_idx in 0..recommended_candidates {
                         let idx = row_start + candidate_idx;
@@ -821,22 +814,24 @@ fn worker_loop(
 
                         let outcome = outcomes
                             .get(candidate_idx)
-                            .or(dummy_outcome.as_ref())
+                            .or_else(|| {
+                                dummy_candidate_data.as_ref().map(|(outcome, _, _)| outcome)
+                            })
                             .expect("dummy outcome must exist for padded candidates");
                         let match_values = door_matches
                             .get(candidate_idx)
-                            .or(dummy_door_match.as_ref())
+                            .or_else(|| {
+                                dummy_candidate_data
+                                    .as_ref()
+                                    .map(|(_, door_match, _)| door_match)
+                            })
                             .expect("dummy door match must exist for padded candidates");
                         if candidate_idx >= candidate_plans.len() {
-                            let mut plan = env.feature_plan_after_candidate_with_scratch(
-                                &common_data,
-                                dummy_candidate,
-                                &features,
-                                frontier_neighbor_algorithm,
-                                frontier_neighbor_count,
-                                frontier_window_size,
-                                &mut feature_scratch,
-                            );
+                            let mut plan = dummy_candidate_data
+                                .as_ref()
+                                .expect("dummy feature plan must exist for padded candidates")
+                                .2
+                                .clone();
                             plan.environment_idx = env_idx;
                             candidate_plans.push(plan);
                         }
