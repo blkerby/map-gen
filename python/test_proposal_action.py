@@ -92,7 +92,7 @@ def test_proposal_scores_gather_candidates_across_frontiers() -> None:
 
 def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:
     torch.manual_seed(0)
-    frontier_idx, action_idx, pair_counts = sample_proposal_shortlist(
+    frontier_idx, action_idx, pair_counts, possible_counts = sample_proposal_shortlist(
         proposal_scores=torch.tensor(
             [
                 [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -115,10 +115,11 @@ def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:
     assert frontier_idx.tolist() == [[0, 1], [0, 0]]
     assert action_idx.tolist() == [[0, 0], [0, 1]]
     assert pair_counts.tolist() == [12, 6]
+    assert possible_counts.tolist() == [12, 6]
 
 
 def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
-    frontier_idx, action_idx, pair_counts = sample_proposal_shortlist(
+    frontier_idx, action_idx, pair_counts, possible_counts = sample_proposal_shortlist(
         proposal_scores=torch.tensor([[10.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
         frontier_door_variant=torch.tensor([0]),
         inventory=torch.ones((2, 1), dtype=torch.int16),
@@ -135,10 +136,11 @@ def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
     assert frontier_idx[1].tolist() == [-1, -1]
     assert action_idx[1].tolist() == [-1, -1]
     assert pair_counts.tolist() == [6, 0]
+    assert possible_counts.tolist() == [6, 0]
 
 
 def test_proposal_shortlist_masks_incompatible_door_variants() -> None:
-    frontier_idx, action_idx, _ = sample_proposal_shortlist(
+    frontier_idx, action_idx, _, possible_counts = sample_proposal_shortlist(
         proposal_scores=torch.tensor([[0.0] * AREA_COUNT + [1000.0] * AREA_COUNT]),
         frontier_door_variant=torch.tensor([0]),
         inventory=torch.ones((1, 2), dtype=torch.int16),
@@ -154,10 +156,11 @@ def test_proposal_shortlist_masks_incompatible_door_variants() -> None:
 
     assert frontier_idx.tolist() == [[0] * AREA_COUNT]
     assert sorted(action_idx[0].tolist()) == list(range(AREA_COUNT))
+    assert possible_counts.tolist() == [AREA_COUNT]
 
 
 def test_proposal_shortlist_pads_fully_incompatible_frontier() -> None:
-    frontier_idx, action_idx, _ = sample_proposal_shortlist(
+    frontier_idx, action_idx, _, possible_counts = sample_proposal_shortlist(
         proposal_scores=torch.zeros((1, AREA_COUNT)),
         frontier_door_variant=torch.tensor([0]),
         inventory=torch.ones((1, 1), dtype=torch.int16),
@@ -173,10 +176,11 @@ def test_proposal_shortlist_pads_fully_incompatible_frontier() -> None:
 
     assert frontier_idx.tolist() == [[-1, -1]]
     assert action_idx.tolist() == [[-1, -1]]
+    assert possible_counts.tolist() == [0]
 
 
 def test_proposal_shortlist_masks_door_variants_without_inventory() -> None:
-    frontier_idx, action_idx, _ = sample_proposal_shortlist(
+    frontier_idx, action_idx, _, possible_counts = sample_proposal_shortlist(
         proposal_scores=torch.tensor([[0.0] * AREA_COUNT + [1000.0] * AREA_COUNT]),
         frontier_door_variant=torch.tensor([0]),
         inventory=torch.tensor([[1, 0]], dtype=torch.int16),
@@ -192,6 +196,28 @@ def test_proposal_shortlist_masks_door_variants_without_inventory() -> None:
 
     assert frontier_idx.tolist() == [[0] * AREA_COUNT]
     assert sorted(action_idx[0].tolist()) == list(range(AREA_COUNT))
+    assert possible_counts.tolist() == [AREA_COUNT]
+
+
+def test_proposal_possible_count_is_computed_without_a_shortlist() -> None:
+    frontier_idx, action_idx, pair_counts, possible_counts = sample_proposal_shortlist(
+        proposal_scores=torch.zeros((1, AREA_COUNT * 2)),
+        frontier_door_variant=torch.tensor([0]),
+        inventory=torch.tensor([[1, 0]], dtype=torch.int16),
+        door_variant_compatibility=torch.ones((2, 2), dtype=torch.bool),
+        door_variant_connection_variant_idx=torch.tensor([0, 1]),
+        row_snapshot_idx=torch.tensor([0]),
+        row_frontier_idx=torch.tensor([0]),
+        environment_count=1,
+        shortlist_candidates=0,
+        proposal_temperature=torch.ones(1),
+        device=torch.device("cpu"),
+    )
+
+    assert frontier_idx.shape == (1, 0)
+    assert action_idx.shape == (1, 0)
+    assert pair_counts.tolist() == [AREA_COUNT * 2]
+    assert possible_counts.tolist() == [AREA_COUNT]
 
 
 def main() -> None:
@@ -205,6 +231,7 @@ def main() -> None:
     test_proposal_shortlist_masks_incompatible_door_variants()
     test_proposal_shortlist_pads_fully_incompatible_frontier()
     test_proposal_shortlist_masks_door_variants_without_inventory()
+    test_proposal_possible_count_is_computed_without_a_shortlist()
 
 
 if __name__ == "__main__":

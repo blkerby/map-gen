@@ -416,6 +416,7 @@ def get_shortlist_candidate_batch(
     group: GenerationGroup,
     sampled_frontier_idx: torch.Tensor,
     sampled_proposal_action_idx: torch.Tensor,
+    proposal_possible_counts: torch.Tensor,
 ) -> CandidateBatch:
     (
         candidates,
@@ -431,6 +432,7 @@ def get_shortlist_candidate_batch(
         group.candidate_slot,
         sampled_frontier_idx,
         sampled_proposal_action_idx,
+        proposal_possible_counts,
         group.config.recommended_candidates,
         group.config.num_scored_invalid_candidates,
         group.config.max_candidate_areas_per_placement,
@@ -460,15 +462,26 @@ def sample_proposal_shortlist(
     shortlist_candidates: int,
     proposal_temperature: torch.Tensor,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     proposal_action_count = proposal_scores.shape[1]
     row_snapshot_idx = row_snapshot_idx.to(device=device, dtype=torch.int64)
     row_frontier_idx = row_frontier_idx.to(device=device, dtype=torch.int64)
     row_counts = torch.bincount(row_snapshot_idx, minlength=environment_count)
     proposal_pair_counts = row_counts * proposal_action_count
+    frontier_door_variant = frontier_door_variant.to(device=device, dtype=torch.int64)
+    compatible_variants = door_variant_compatibility[frontier_door_variant]
+    candidate_variant_available = (
+        inventory[row_snapshot_idx][:, door_variant_connection_variant_idx] > 0
+    )
+    valid_variants = compatible_variants & candidate_variant_available
+    row_possible_counts = valid_variants.sum(dim=1, dtype=torch.int64) * AREA_COUNT
+    proposal_possible_counts = torch.zeros(
+        environment_count, dtype=torch.int64, device=device
+    )
+    proposal_possible_counts.scatter_add_(0, row_snapshot_idx, row_possible_counts)
     if shortlist_candidates == 0:
         empty = torch.empty((environment_count, 0), dtype=torch.int16, device=device)
-        return empty, empty, proposal_pair_counts
+        return empty, empty, proposal_pair_counts, proposal_possible_counts
     if proposal_scores.shape[0] == 0 or proposal_action_count == 0:
         empty_sampled = torch.full(
             (environment_count, shortlist_candidates),
@@ -476,14 +489,8 @@ def sample_proposal_shortlist(
             dtype=torch.int16,
             device=device,
         )
-        return empty_sampled, empty_sampled, proposal_pair_counts
+        return empty_sampled, empty_sampled, proposal_pair_counts, proposal_possible_counts
 
-    frontier_door_variant = frontier_door_variant.to(device=device, dtype=torch.int64)
-    compatible_variants = door_variant_compatibility[frontier_door_variant]
-    candidate_variant_available = (
-        inventory[row_snapshot_idx][:, door_variant_connection_variant_idx] > 0
-    )
-    valid_variants = compatible_variants & candidate_variant_available
     valid_actions = valid_variants.repeat_interleave(AREA_COUNT, dim=1)
     sample_keys = proposal_scores.to(dtype=torch.float32, copy=True)
     sample_keys.masked_fill_(~valid_actions, float("-inf"))
@@ -555,6 +562,7 @@ def sample_proposal_shortlist(
         sampled_frontier_idx.to(torch.int16),
         sampled_proposal_action_idx.to(torch.int16),
         proposal_pair_counts,
+        proposal_possible_counts,
     )
 
 
@@ -667,11 +675,13 @@ def prepare_shortlist_generation_step(
     group: GenerationGroup,
     sampled_frontier_idx: torch.Tensor,
     sampled_proposal_action_idx: torch.Tensor,
+    proposal_possible_counts: torch.Tensor,
 ) -> PreparedGenerationStep:
     candidate_batch = get_shortlist_candidate_batch(
         group,
         sampled_frontier_idx,
         sampled_proposal_action_idx,
+        proposal_possible_counts,
     )
     return prepare_candidate_features(
         group.env,
@@ -1235,7 +1245,7 @@ def compute_group_proposal_shortlist(
     model,
     device: torch.device,
     shared: PipelineSharedState,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, Features | None]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Features | None]:
     profile = shared.profiler.enabled
     profile_time = profile_start(profile)
     proposal_inputs = prepare_proposal_inputs(group)
@@ -1294,6 +1304,7 @@ def compute_group_proposal_shortlist(
             sampled_frontier_idx,
             sampled_proposal_action_idx,
             proposal_pair_counts,
+            proposal_possible_counts,
         ) = sample_proposal_shortlist(
             proposal_scores,
             frontier_door_variant,
@@ -1313,6 +1324,7 @@ def compute_group_proposal_shortlist(
             {
                 "proposal_rows": float(proposal_pair_counts.numel()),
                 "proposal_scored_candidates": float(proposal_pair_counts.sum().item()),
+                "proposal_possible_count": float(proposal_possible_counts.sum().item()),
                 "proposal_full_set_rows": float(
                     (proposal_pair_counts <= group.config.shortlist_candidates).sum().item()
                 ),
@@ -1329,6 +1341,7 @@ def compute_group_proposal_shortlist(
     return (
         sampled_frontier_idx.to(torch.device("cpu")),
         sampled_proposal_action_idx.to(torch.device("cpu")),
+        proposal_possible_counts.to(torch.device("cpu")),
         shortlist_limited.to(torch.device("cpu")),
         proposal_inputs.features,
     )
@@ -1393,6 +1406,7 @@ def run_group_producer(
             (
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
+                proposal_possible_counts,
                 shortlist_limited,
                 proposal_features,
             ) = compute_group_proposal_shortlist(
@@ -1415,6 +1429,7 @@ def run_group_producer(
                 group,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
+                proposal_possible_counts,
             )
             shared.profiler.add("python.wait_candidate_features", profile_time)
             request = CandidateScoreRequest(
@@ -1773,6 +1788,7 @@ def run_generation_groups(
     stat_totals = {
         "proposal_rows": 0.0,
         "proposal_scored_candidates": 0.0,
+        "proposal_possible_count": 0.0,
         "proposal_full_set_rows": 0.0,
         "proposal_clean_candidates": 0.0,
         "proposal_evaluated_candidates": 0.0,
@@ -1927,6 +1943,7 @@ def run_generation_groups(
     )
     generation_stats = {
         "proposal_scored_candidates": (stat_totals["proposal_scored_candidates"] / proposal_rows),
+        "proposal_possible_count": stat_totals["proposal_possible_count"] / proposal_rows,
         "proposal_full_set_rate": stat_totals["proposal_full_set_rows"] / proposal_rows,
         "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
         "proposal_rejection_rate": stat_totals["proposal_rejected_candidates"] / evaluated,

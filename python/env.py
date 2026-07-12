@@ -1136,6 +1136,7 @@ class EnvironmentGroup:
         candidate_slot: CandidateSlot,
         sampled_frontier_idx: torch.Tensor,
         sampled_proposal_action_idx: torch.Tensor,
+        proposal_possible_counts: torch.Tensor,
         recommended_candidates: int,
         num_scored_invalid_candidates: int,
         max_candidate_areas_per_placement: int,
@@ -1161,6 +1162,9 @@ class EnvironmentGroup:
                 {
                     "sampled_frontier_idx": sampled_frontier_idx.contiguous().cpu().numpy(),
                     "sampled_proposal_action_idx": sampled_proposal_action_idx.contiguous()
+                    .cpu()
+                    .numpy(),
+                    "proposal_possible_counts": proposal_possible_counts.contiguous()
                     .cpu()
                     .numpy(),
                     "recommended_candidates": recommended_candidates,

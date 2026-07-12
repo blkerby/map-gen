@@ -296,6 +296,7 @@ enum WorkerCommand {
         max_candidate_areas_per_placement: usize,
         sampled_frontier_idx: InputShard<FrontierIdx>,
         sampled_proposal_action_idx: InputShard<ProposalActionIdx>,
+        proposal_possible_counts: InputShard<i64>,
         room_idx: OutputShard<RoomIdx>,
         room_x: OutputShard<Coord>,
         room_y: OutputShard<Coord>,
@@ -617,6 +618,7 @@ fn worker_loop(
                 max_candidate_areas_per_placement,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
+                proposal_possible_counts,
                 room_idx,
                 room_x,
                 room_y,
@@ -644,6 +646,7 @@ fn worker_loop(
                 let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
                 let sampled_proposal_action_idx =
                     unsafe { sampled_proposal_action_idx.into_slice() };
+                let proposal_possible_counts = unsafe { proposal_possible_counts.into_slice() };
                 let room_idx = unsafe { room_idx.into_mut_slice() };
                 let room_x = unsafe { room_x.into_mut_slice() };
                 let room_y = unsafe { room_y.into_mut_slice() };
@@ -676,6 +679,7 @@ fn worker_loop(
                     sampled_proposal_action_idx.len(),
                     environments.len() * shortlist_candidates
                 );
+                debug_assert_eq!(proposal_possible_counts.len(), environments.len());
                 debug_assert_eq!(room_idx.len(), environments.len() * recommended_candidates);
                 debug_assert_eq!(room_x.len(), environments.len() * recommended_candidates);
                 debug_assert_eq!(room_y.len(), environments.len() * recommended_candidates);
@@ -730,7 +734,10 @@ fn worker_loop(
                 feature_scratch.recycle_plan_vec(&mut pending_feature_plans);
                 for (env_idx, env) in environments.iter_mut().enumerate() {
                     let shortlist_start = env_idx * shortlist_candidates;
-                    let shortlist_end = shortlist_start + shortlist_candidates;
+                    let shortlist_end = shortlist_start
+                        + usize::try_from(proposal_possible_counts[env_idx])
+                            .expect("proposal possible count must be nonnegative")
+                            .min(shortlist_candidates);
                     let proposal_candidates = match env.get_proposal_candidates_with_outcomes(
                         &common_data,
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
@@ -1639,6 +1646,7 @@ pub struct FeatureRequirements {
 pub struct ProposalCandidateBuffers {
     sampled_frontier_idx: Py<PyArray2<FrontierIdx>>,
     sampled_proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
+    proposal_possible_counts: Py<PyArray1<i64>>,
     #[pyo3(get)]
     recommended_candidates: usize,
     #[pyo3(get)]
@@ -1750,6 +1758,7 @@ impl ProposalCandidateBuffers {
         Ok(Self {
             sampled_frontier_idx: required_py_field!(fields, "sampled_frontier_idx"),
             sampled_proposal_action_idx: required_py_field!(fields, "sampled_proposal_action_idx"),
+            proposal_possible_counts: required_py_field!(fields, "proposal_possible_counts"),
             recommended_candidates: required_py_field!(fields, "recommended_candidates"),
             num_scored_invalid_candidates: required_py_field!(
                 fields,
@@ -4116,6 +4125,7 @@ impl EnvironmentGroup {
         }
         let sampled_frontier_idx = buffers.sampled_frontier_idx.bind(py).readonly();
         let sampled_proposal_action_idx = buffers.sampled_proposal_action_idx.bind(py).readonly();
+        let proposal_possible_counts = buffers.proposal_possible_counts.bind(py).readonly();
         let recommended_candidates = buffers.recommended_candidates;
         let num_scored_invalid_candidates = buffers.num_scored_invalid_candidates;
         let max_candidate_areas_per_placement = buffers.max_candidate_areas_per_placement;
@@ -4163,6 +4173,11 @@ impl EnvironmentGroup {
                 "sampled proposal arrays must have shape [environment, shortlist_candidate]",
             ));
         }
+        check_shape(
+            "proposal_possible_counts",
+            proposal_possible_counts.as_array().shape(),
+            &[self.num_environments],
+        )?;
         let shortlist_candidates = sampled_shape[1];
         if num_scored_invalid_candidates > shortlist_candidates {
             return Err(PyValueError::new_err(
@@ -4175,6 +4190,14 @@ impl EnvironmentGroup {
         let sampled_proposal_action_idx = sampled_proposal_action_idx
             .as_slice()
             .map_err(|_| PyValueError::new_err("sampled_proposal_action_idx must be contiguous"))?;
+        let proposal_possible_counts = proposal_possible_counts
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("proposal_possible_counts must be contiguous"))?;
+        if proposal_possible_counts.iter().any(|&count| count < 0) {
+            return Err(PyValueError::new_err(
+                "proposal_possible_counts must be nonnegative",
+            ));
+        }
         let (door_outcome_count, connection_outcome_count) = output_sizes(&self.common_data);
         let dummy_candidate = Action {
             room_idx: self.common_data.room.len() as RoomIdx,
@@ -4421,6 +4444,9 @@ impl EnvironmentGroup {
                     ),
                     sampled_proposal_action_idx: InputShard::from_slice(
                         &sampled_proposal_action_idx[shortlist_start..shortlist_end],
+                    ),
+                    proposal_possible_counts: InputShard::from_slice(
+                        &proposal_possible_counts[worker.start..worker.end()],
                     ),
                     room_idx: OutputShard::from_slice(&mut room_idx[output_start..output_end]),
                     room_x: OutputShard::from_slice(&mut room_x[output_start..output_end]),
