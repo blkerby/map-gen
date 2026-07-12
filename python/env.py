@@ -970,6 +970,7 @@ class OutputMetadata:
     num_room_connection_variants: int
     num_room_parts: int
     door_variant_compatibility: torch.Tensor
+    door_variant_connection_variant_idx: torch.Tensor
 
     def get_output_sizes(self) -> tuple[int, int]:
         return len(self.door), len(self.connection)
@@ -1041,6 +1042,24 @@ class Engine:
             num_room_connection_variants,
             num_room_parts,
         ) = self.engine.get_output_metadata()
+        door_variant_connection_variant_idx = torch.full(
+            (num_door_variants,), -1, dtype=torch.int64
+        )
+        for room_idx, door_variant_idx in door:
+            connection_variant_idx = room_connection_variant_idx[room_idx]
+            previous_connection_variant_idx = door_variant_connection_variant_idx[
+                door_variant_idx
+            ]
+            if (
+                previous_connection_variant_idx >= 0
+                and previous_connection_variant_idx != connection_variant_idx
+            ):
+                raise ValueError(
+                    f"door variant {door_variant_idx} maps to multiple connection variants"
+                )
+            door_variant_connection_variant_idx[door_variant_idx] = connection_variant_idx
+        if torch.any(door_variant_connection_variant_idx < 0):
+            raise ValueError("every door variant must map to a connection variant")
         return OutputMetadata(
             door=door,
             connection=connection,
@@ -1052,6 +1071,7 @@ class Engine:
             door_variant_compatibility=torch.tensor(
                 self.engine.get_door_variant_compatibility(), dtype=torch.bool
             ),
+            door_variant_connection_variant_idx=door_variant_connection_variant_idx,
         )
 
     def get_feature_sizes(self) -> tuple[int, int, int]:
