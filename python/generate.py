@@ -1318,7 +1318,7 @@ def compute_group_proposal_shortlist(
             group.config.proposal_temperature,
             device,
         )
-        shortlist_limited = proposal_pair_counts > group.config.shortlist_candidates
+        shortlist_limited = proposal_possible_counts > group.config.shortlist_candidates
         add_stat_totals(
             shared,
             {
