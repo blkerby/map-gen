@@ -9472,6 +9472,9 @@ mod tests {
         let expected_actions = env.actions.clone();
         let expected_frontier = env.frontier.clone();
         let expected_room_used = env.room_used.clone();
+        let expected_room_x = env.room_x.clone();
+        let expected_room_y = env.room_y.clone();
+        let expected_room_area = env.room_area.clone();
         let expected_connection_variant_unused_count = env.connection_variant_unused_count.clone();
         let expected_room_part_component = env.room_part_component.clone();
         let expected_scc_dag = env.scc_dag.clone();
@@ -9494,8 +9497,9 @@ mod tests {
         assert_eq!(env.actions, expected_actions);
         assert_eq!(env.frontier, expected_frontier);
         assert_eq!(env.room_used, expected_room_used);
-        assert_eq!(env.room_x[candidate.room_idx as usize], candidate.x);
-        assert_eq!(env.room_y[candidate.room_idx as usize], candidate.y);
+        assert_eq!(env.room_x, expected_room_x);
+        assert_eq!(env.room_y, expected_room_y);
+        assert_eq!(env.room_area, expected_room_area);
         assert_eq!(
             env.connection_variant_unused_count,
             expected_connection_variant_unused_count
