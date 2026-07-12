@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from env import (
+    AREA_COUNT,
     Actions,
     CandidateStats,
     CandidateSlot,
@@ -236,6 +237,7 @@ def transfer_features(
 @dataclass
 class ProposalCache:
     state: torch.Tensor
+    frontier_door_variant: torch.Tensor
     row_start_idx: torch.Tensor
     row_count: torch.Tensor
     action_index: torch.Tensor
@@ -357,6 +359,7 @@ class PipelineSharedState:
     gpu_lock: threading.Lock
     cancellation_event: threading.Event
     groups: list[GenerationGroup]
+    door_variant_compatibility: torch.Tensor
 
 
 @dataclass
@@ -445,6 +448,8 @@ def get_shortlist_candidate_batch(
 
 def sample_proposal_shortlist(
     proposal_scores: torch.Tensor,
+    frontier_door_variant: torch.Tensor,
+    door_variant_compatibility: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
     row_frontier_idx: torch.Tensor,
     environment_count: int,
@@ -469,7 +474,11 @@ def sample_proposal_shortlist(
         )
         return empty_sampled, empty_sampled, proposal_pair_counts
 
+    frontier_door_variant = frontier_door_variant.to(device=device, dtype=torch.int64)
+    compatible_variants = door_variant_compatibility[frontier_door_variant]
+    compatible_actions = compatible_variants.repeat_interleave(AREA_COUNT, dim=1)
     sample_keys = proposal_scores.to(dtype=torch.float32, copy=True)
+    sample_keys.masked_fill_(~compatible_actions, float("-inf"))
     row_temperature = proposal_temperature.to(device)[row_snapshot_idx]
     sample_keys.div_(row_temperature.unsqueeze(1).clamp_min(1e-6))
     sample_keys.add_(torch.empty_like(sample_keys).exponential_().log_().neg_())
@@ -799,6 +808,7 @@ def select_candidate_actions(
         row_start_idx = row_count_by_snapshot.cumsum(0) - row_count_by_snapshot
         selected_proposal_scores = ProposalCache(
             state=preds.proposal_state,
+            frontier_door_variant=features.frontier_features.frontier_door_variant,
             row_start_idx=row_start_idx,
             row_count=row_count_by_snapshot,
             action_index=action_index,
@@ -819,7 +829,7 @@ def selected_proposal_rows_from_cache(
     cache: ProposalCache,
     environment_count: int,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     row_start_idx = cache.row_start_idx.to(device)
     row_count = cache.row_count.to(device)
     action_index = cache.action_index.to(device)
@@ -831,7 +841,7 @@ def selected_proposal_rows_from_cache(
     max_frontiers = int(selected_row_count.max().item()) if environment_count > 0 else 0
     if max_frontiers == 0:
         empty_idx = torch.empty([0], dtype=torch.int64, device=device)
-        return cache.state[:0], empty_idx, empty_idx
+        return cache.state[:0], cache.frontier_door_variant[:0], empty_idx, empty_idx
     local_frontier_idx = torch.arange(max_frontiers, device=device, dtype=torch.int64)
     row_valid = local_frontier_idx.unsqueeze(0) < selected_row_count.unsqueeze(1)
     selected_row_idx = selected_row_start.unsqueeze(1) + local_frontier_idx.unsqueeze(0)
@@ -847,6 +857,7 @@ def selected_proposal_rows_from_cache(
     row_frontier_idx = local_frontier_idx.unsqueeze(0).expand_as(selected_row_idx)
     return (
         cache.state[selected_row_idx[row_valid]],
+        cache.frontier_door_variant[selected_row_idx[row_valid]],
         row_snapshot_idx[row_valid],
         row_frontier_idx[row_valid],
     )
@@ -1217,7 +1228,12 @@ def compute_group_proposal_shortlist(
     with shared.gpu_lock:
         if group.previous_proposal_scores is not None:
             profile_time = profile_start(profile)
-            proposal_state, row_snapshot_idx, row_frontier_idx = selected_proposal_rows_from_cache(
+            (
+                proposal_state,
+                frontier_door_variant,
+                row_snapshot_idx,
+                row_frontier_idx,
+            ) = selected_proposal_rows_from_cache(
                 group.previous_proposal_scores,
                 group.config.temperature.shape[0],
                 device,
@@ -1251,6 +1267,7 @@ def compute_group_proposal_shortlist(
                 )
             row_snapshot_idx = preds.proposal_row_snapshot_idx
             row_frontier_idx = preds.proposal_row_frontier_idx
+            frontier_door_variant = env_features.frontier_features.frontier_door_variant
             sync_profile_device(device, profile)
             shared.profiler.add("python.proposal.compute_fresh_scores", profile_time)
         shared.profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
@@ -1261,6 +1278,8 @@ def compute_group_proposal_shortlist(
             proposal_pair_counts,
         ) = sample_proposal_shortlist(
             proposal_scores,
+            frontier_door_variant,
+            shared.door_variant_compatibility,
             row_snapshot_idx,
             row_frontier_idx,
             group.config.temperature.shape[0],
@@ -1750,6 +1769,9 @@ def run_generation_groups(
         gpu_lock=threading.Lock(),
         cancellation_event=cancellation_event,
         groups=groups,
+        door_variant_compatibility=(
+            envs[0].engine.get_output_metadata().door_variant_compatibility.to(device)
+        ),
     )
     cpu_ready_queue: Queue[CpuReadyMessage] = Queue(maxsize=len(groups))
     worker_count = len(groups) + 1 + int(gpu_prefetch_batches > 0)

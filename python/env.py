@@ -969,6 +969,7 @@ class OutputMetadata:
     room_connection_variant_idx: list[int]
     num_room_connection_variants: int
     num_room_parts: int
+    door_variant_compatibility: torch.Tensor
 
     def get_output_sizes(self) -> tuple[int, int]:
         return len(self.door), len(self.connection)
@@ -978,11 +979,13 @@ class Engine:
     engine: map_gen.Engine
     rooms: list[dict]
     features: EngineFeatureConfig
+    output_metadata: OutputMetadata
 
     def __init__(self, rooms: list[dict], features: FeatureConfig):
         self.features = features.engine_config()
         self.engine = map_gen.Engine(json.dumps(rooms), self.features.model_dump_json())
         self.rooms = rooms
+        self.output_metadata = self._load_output_metadata()
 
     def create_environment_group(
         self,
@@ -1026,6 +1029,9 @@ class Engine:
         return self.engine.get_output_sizes()
 
     def get_output_metadata(self) -> OutputMetadata:
+        return self.output_metadata
+
+    def _load_output_metadata(self) -> OutputMetadata:
         (
             door,
             connection,
@@ -1043,6 +1049,9 @@ class Engine:
             room_connection_variant_idx=room_connection_variant_idx,
             num_room_connection_variants=num_room_connection_variants,
             num_room_parts=num_room_parts,
+            door_variant_compatibility=torch.tensor(
+                self.engine.get_door_variant_compatibility(), dtype=torch.bool
+            ),
         )
 
     def get_feature_sizes(self) -> tuple[int, int, int]:

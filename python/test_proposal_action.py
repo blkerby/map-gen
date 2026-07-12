@@ -95,11 +95,13 @@ def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:
     frontier_idx, action_idx, pair_counts = sample_proposal_shortlist(
         proposal_scores=torch.tensor(
             [
-                [1000.0, 0.0],
-                [500.0, 400.0],
-                [300.0, 200.0],
+                [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [500.0, 400.0, 0.0, 0.0, 0.0, 0.0],
+                [300.0, 200.0, 0.0, 0.0, 0.0, 0.0],
             ]
         ),
+        frontier_door_variant=torch.tensor([0, 0, 0]),
+        door_variant_compatibility=torch.ones((1, 1), dtype=torch.bool),
         row_snapshot_idx=torch.tensor([0, 0, 1]),
         row_frontier_idx=torch.tensor([0, 1, 0]),
         environment_count=2,
@@ -110,12 +112,14 @@ def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:
 
     assert frontier_idx.tolist() == [[0, 1], [0, 0]]
     assert action_idx.tolist() == [[0, 0], [0, 1]]
-    assert pair_counts.tolist() == [4, 2]
+    assert pair_counts.tolist() == [12, 6]
 
 
 def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
     frontier_idx, action_idx, pair_counts = sample_proposal_shortlist(
-        proposal_scores=torch.tensor([[10.0, 0.0]]),
+        proposal_scores=torch.tensor([[10.0, 0.0, 0.0, 0.0, 0.0, 0.0]]),
+        frontier_door_variant=torch.tensor([0]),
+        door_variant_compatibility=torch.ones((1, 1), dtype=torch.bool),
         row_snapshot_idx=torch.tensor([0]),
         row_frontier_idx=torch.tensor([0]),
         environment_count=2,
@@ -126,7 +130,41 @@ def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
 
     assert frontier_idx[1].tolist() == [-1, -1]
     assert action_idx[1].tolist() == [-1, -1]
-    assert pair_counts.tolist() == [2, 0]
+    assert pair_counts.tolist() == [6, 0]
+
+
+def test_proposal_shortlist_masks_incompatible_door_variants() -> None:
+    frontier_idx, action_idx, _ = sample_proposal_shortlist(
+        proposal_scores=torch.tensor([[0.0] * AREA_COUNT + [1000.0] * AREA_COUNT]),
+        frontier_door_variant=torch.tensor([0]),
+        door_variant_compatibility=torch.tensor([[True, False], [False, True]]),
+        row_snapshot_idx=torch.tensor([0]),
+        row_frontier_idx=torch.tensor([0]),
+        environment_count=1,
+        shortlist_candidates=AREA_COUNT,
+        proposal_temperature=torch.ones(1),
+        device=torch.device("cpu"),
+    )
+
+    assert frontier_idx.tolist() == [[0] * AREA_COUNT]
+    assert sorted(action_idx[0].tolist()) == list(range(AREA_COUNT))
+
+
+def test_proposal_shortlist_pads_fully_incompatible_frontier() -> None:
+    frontier_idx, action_idx, _ = sample_proposal_shortlist(
+        proposal_scores=torch.zeros((1, AREA_COUNT)),
+        frontier_door_variant=torch.tensor([0]),
+        door_variant_compatibility=torch.tensor([[False]]),
+        row_snapshot_idx=torch.tensor([0]),
+        row_frontier_idx=torch.tensor([0]),
+        environment_count=1,
+        shortlist_candidates=2,
+        proposal_temperature=torch.ones(1),
+        device=torch.device("cpu"),
+    )
+
+    assert frontier_idx.tolist() == [[-1, -1]]
+    assert action_idx.tolist() == [[-1, -1]]
 
 
 def main() -> None:
@@ -137,6 +175,8 @@ def main() -> None:
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()
     test_proposal_shortlist_pads_environment_without_frontiers()
+    test_proposal_shortlist_masks_incompatible_door_variants()
+    test_proposal_shortlist_pads_fully_incompatible_frontier()
 
 
 if __name__ == "__main__":

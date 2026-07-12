@@ -284,6 +284,7 @@ pub struct CommonData {
     pub num_door_output_variants: usize,
     pub num_connection_output_variants: usize,
     pub door_variant_direction: Vec<Direction>,
+    pub door_variant_compatibility: Vec<bool>,
     door_variant_idx_by_key:
         HashMap<(ConnectionVariantIdx, Direction, Coord, Coord, DoorKind), DoorVariantIdx>,
 }
@@ -849,9 +850,11 @@ impl CommonData {
             num_door_output_variants: door_output_variant_by_key.len(),
             num_connection_output_variants: connection_output_variant_by_key.len(),
             door_variant_direction,
+            door_variant_compatibility: vec![],
             door_variant_idx_by_key,
         };
         common.build_intersection_set();
+        common.build_door_variant_compatibility();
         Ok(common)
     }
 
@@ -867,6 +870,60 @@ impl CommonData {
             .door_variant_idx_by_key
             .get(&(connection_variant_idx, direction, x, y, kind))
             .expect("candidate door must have a door output variant")
+    }
+
+    fn build_door_variant_compatibility(&mut self) {
+        let variant_count = self.num_door_output_variants;
+        self.door_variant_compatibility = vec![false; variant_count * variant_count];
+        for (
+            &(
+                frontier_connection_variant,
+                frontier_direction,
+                frontier_x,
+                frontier_y,
+                frontier_kind,
+            ),
+            &frontier_variant,
+        ) in &self.door_variant_idx_by_key
+        {
+            let frontier_room_idx =
+                self.connection_variant_rooms[frontier_connection_variant as usize][0];
+            let frontier_geometry_idx = self.room[frontier_room_idx as usize].geometry_idx;
+            let (behind_x, behind_y) =
+                get_behind_door_position(frontier_direction, frontier_x, frontier_y);
+            for (
+                &(
+                    candidate_connection_variant,
+                    candidate_direction,
+                    candidate_x,
+                    candidate_y,
+                    candidate_kind,
+                ),
+                &candidate_variant,
+            ) in &self.door_variant_idx_by_key
+            {
+                if candidate_direction != frontier_direction.opposite()
+                    || candidate_kind != frontier_kind
+                {
+                    continue;
+                }
+                let candidate_room_idx =
+                    self.connection_variant_rooms[candidate_connection_variant as usize][0];
+                let candidate_geometry_idx = self.room[candidate_room_idx as usize].geometry_idx;
+                if !self.has_geometry_intersection(
+                    frontier_geometry_idx,
+                    0,
+                    0,
+                    candidate_geometry_idx,
+                    behind_x - candidate_x,
+                    behind_y - candidate_y,
+                ) {
+                    self.door_variant_compatibility
+                        [frontier_variant as usize * variant_count + candidate_variant as usize] =
+                        true;
+                }
+            }
+        }
     }
 
     fn build_intersection_set(&mut self) {
@@ -1028,6 +1085,44 @@ impl CommonData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn door_variant_compatibility_requires_a_nonintersecting_matching_door() {
+        let rooms: Vec<Room> = serde_json::from_str(
+            r#"
+            [
+                {"map": [[1]], "toilet_crossing_x": [], "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]], "connections": [], "missing_connections": []},
+                {"map": [[1]], "toilet_crossing_x": [], "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]], "connections": [], "missing_connections": []},
+                {"map": [[1]], "toilet_crossing_x": [], "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]], "connections": [], "missing_connections": []},
+                {"map": [[1]], "toilet_crossing_x": [], "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 1}]], "connections": [], "missing_connections": []}
+            ]
+            "#,
+        )
+        .unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let variant = |room_idx: usize| {
+            let room = &common.room[room_idx];
+            let door = &common.geometry[room.geometry_idx as usize].doors[0];
+            common.door_variant_idx(
+                room.connection_variant_idx,
+                door.direction,
+                door.x,
+                door.y,
+                door.kind,
+            ) as usize
+        };
+        let frontier_variant = variant(0);
+        let compatible_variant = variant(1);
+        let same_direction_variant = variant(2);
+        let wrong_kind_variant = variant(3);
+        let width = common.num_door_output_variants;
+
+        assert!(common.door_variant_compatibility[frontier_variant * width + compatible_variant]);
+        assert!(
+            !common.door_variant_compatibility[frontier_variant * width + same_direction_variant]
+        );
+        assert!(!common.door_variant_compatibility[frontier_variant * width + wrong_kind_variant]);
+    }
 
     #[test]
     fn output_metadata_shares_only_matching_connection_variants() {

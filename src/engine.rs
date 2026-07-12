@@ -3528,6 +3528,15 @@ impl Engine {
         )
     }
 
+    fn get_door_variant_compatibility(&self) -> Vec<Vec<bool>> {
+        let variant_count = self.common_data.num_door_output_variants;
+        self.common_data
+            .door_variant_compatibility
+            .chunks(variant_count)
+            .map(|row| row.to_vec())
+            .collect()
+    }
+
     fn get_output_metadata(
         &self,
     ) -> (
