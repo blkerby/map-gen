@@ -1334,7 +1334,6 @@ def compute_group_proposal_shortlist(
                 "proposal_evaluated_candidates": 0.0,
                 "proposal_rejected_candidates": 0.0,
                 "proposal_invalid_candidates": 0.0,
-                "proposal_noncanonical_candidates": 0.0,
                 "proposal_scored_invalid_candidates": 0.0,
                 "proposal_exhausted_rows": 0.0,
             },
@@ -1360,7 +1359,6 @@ def record_candidate_stats(
     evaluated_candidates = float(stats.evaluated_counts.sum().item())
     rejected_candidates = float(stats.rejected_counts.sum().item())
     invalid_candidates = float(stats.invalid_counts.sum().item())
-    noncanonical_candidates = float(stats.noncanonical_counts.sum().item())
     scored_invalid_candidates = float(
         (request.prepared_step.candidate_batch.scored_invalid_frontier_idx >= 0).sum().item()
     )
@@ -1379,7 +1377,6 @@ def record_candidate_stats(
             "proposal_evaluated_candidates": evaluated_candidates,
             "proposal_rejected_candidates": rejected_candidates,
             "proposal_invalid_candidates": invalid_candidates,
-            "proposal_noncanonical_candidates": noncanonical_candidates,
             "proposal_scored_invalid_candidates": scored_invalid_candidates,
             "proposal_exhausted_rows": exhausted_rows,
         },
@@ -1799,7 +1796,6 @@ def run_generation_groups(
         "proposal_evaluated_candidates": 0.0,
         "proposal_rejected_candidates": 0.0,
         "proposal_invalid_candidates": 0.0,
-        "proposal_noncanonical_candidates": 0.0,
         "proposal_scored_invalid_candidates": 0.0,
         "proposal_exhausted_rows": 0.0,
     }
@@ -1946,12 +1942,6 @@ def run_generation_groups(
         stat_totals["proposal_invalid_candidates"] + stat_totals["proposal_evaluated_candidates"],
         1.0,
     )
-    scanned = max(
-        stat_totals["proposal_invalid_candidates"]
-        + stat_totals["proposal_noncanonical_candidates"]
-        + stat_totals["proposal_evaluated_candidates"],
-        1.0,
-    )
     generation_stats = {
         "proposal_scored_candidates": (stat_totals["proposal_scored_candidates"] / proposal_rows),
         "proposal_possible_count": stat_totals["proposal_possible_count"] / proposal_rows,
@@ -1959,7 +1949,6 @@ def run_generation_groups(
         "proposal_clean_candidates": stat_totals["proposal_clean_candidates"] / proposal_rows,
         "proposal_rejection_rate": stat_totals["proposal_rejected_candidates"] / evaluated,
         "proposal_invalid_rate": stat_totals["proposal_invalid_candidates"] / resolved,
-        "proposal_noncanonical_rate": (stat_totals["proposal_noncanonical_candidates"] / scanned),
         "proposal_scored_invalid_candidates": (
             stat_totals["proposal_scored_invalid_candidates"] / proposal_rows
         ),
