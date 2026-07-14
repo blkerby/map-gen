@@ -75,6 +75,7 @@ class Args:
     verify_feature_consistency: bool
     device: str
     load_checkpoint: Path | None
+    continue_aim: bool
     profile: bool
     ignore_scores: bool
 
@@ -1816,6 +1817,11 @@ def parse_args() -> Args:
         help="resume mutable training state from a safetensors checkpoint",
     )
     parser.add_argument(
+        "--continue-aim",
+        action="store_true",
+        help="continue the Aim run referenced by the loaded checkpoint",
+    )
+    parser.add_argument(
         "--profile",
         action="store_true",
         help="log per-round Rust engine command timing",
@@ -1832,6 +1838,7 @@ def parse_args() -> Args:
         verify_feature_consistency=namespace.verify_feature_consistency,
         device=namespace.device,
         load_checkpoint=namespace.load_checkpoint,
+        continue_aim=namespace.continue_aim,
         profile=namespace.profile,
         ignore_scores=namespace.ignore_scores,
     )
@@ -2128,6 +2135,7 @@ def build_session(args: Args) -> TrainingSession:
     )
     if args.load_checkpoint is not None:
         checkpoint_metadata = session.load_checkpoint(args.load_checkpoint)
+    if args.load_checkpoint is not None and args.continue_aim:
         aim_run = open_or_create_aim_run(
             checkpoint_metadata["aim_run_hash"],
             config.experiment_name,
