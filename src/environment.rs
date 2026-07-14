@@ -1884,7 +1884,7 @@ impl Environment {
     }
 
     pub fn get_initial_action(&mut self, common: &CommonData) -> Action {
-        // Select a room and position uniformly at random.
+        // Select a room, position, and area uniformly at random.
         let room_idx = self.rng.random_range(0..common.room.len() as RoomIdx);
         let geometry_idx = common.room[room_idx as usize].geometry_idx;
         let geometry = &common.geometry[geometry_idx as usize];
@@ -1894,11 +1894,12 @@ impl Environment {
         let max_y = self.map_size.1 - 1 - geometry.max_y;
         let x = self.rng.random_range(min_x..=max_x);
         let y = self.rng.random_range(min_y..=max_y);
+        let area = self.rng.random_range(0..AREA_COUNT as AreaIdx);
         Action {
             room_idx,
             x,
             y,
-            area: 0,
+            area,
         }
     }
 
@@ -6052,6 +6053,20 @@ mod tests {
         "#;
         let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
         CommonData::new(rooms).unwrap()
+    }
+
+    #[test]
+    fn initial_actions_sample_all_areas() {
+        let common = spatial_index_test_common();
+        let mut env = Environment::new(&common, (8, 8), 8, 100, 100, 0);
+        let mut sampled = [false; AREA_COUNT];
+
+        for _ in 0..256 {
+            let action = env.get_initial_action(&common);
+            sampled[action.area as usize] = true;
+        }
+
+        assert!(sampled.into_iter().all(|value| value));
     }
 
     #[test]
