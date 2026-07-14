@@ -234,6 +234,7 @@ struct ConnectionsKey {
     special_type: Option<SpecialType>,
     save: bool,
     refill: bool,
+    map_station: bool,
     connections: Vec<(PartIdx, PartIdx)>,
     missing_connections: Vec<(PartIdx, PartIdx)>,
 }
@@ -326,6 +327,7 @@ impl ConnectionsKey {
             special_type: room.special_type.and_then(SpecialType::connection_key_type),
             save: room.save,
             refill: room.refill,
+            map_station: room.map_station,
             connections,
             missing_connections,
         }
@@ -1510,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn map_station_does_not_distinguish_connection_variants() {
+    fn map_station_distinguishes_connection_variants() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1536,8 +1538,8 @@ mod tests {
         let common = CommonData::new(rooms).unwrap();
 
         assert_eq!(common.geometry.len(), 1);
-        assert_eq!(common.connection_variant_rooms.len(), 1);
-        assert_eq!(
+        assert_eq!(common.connection_variant_rooms.len(), 2);
+        assert_ne!(
             common.room[0].connection_variant_idx,
             common.room[1].connection_variant_idx
         );
