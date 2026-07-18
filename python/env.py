@@ -129,7 +129,7 @@ class ProposalData:
     action_idx: torch.Tensor
     invalid: torch.Tensor
     selected_candidate: torch.Tensor
-    target_logits: torch.Tensor
+    target_reward: torch.Tensor
 
     def to(self, device: torch.device) -> "ProposalData":
         return ProposalData(
@@ -137,7 +137,7 @@ class ProposalData:
             action_idx=self.action_idx.to(device),
             invalid=self.invalid.to(device),
             selected_candidate=self.selected_candidate.to(device),
-            target_logits=self.target_logits.to(device),
+            target_reward=self.target_reward.to(device),
         )
 
     def slice(self, start: int, end: int) -> "ProposalData":
@@ -146,7 +146,7 @@ class ProposalData:
             action_idx=self.action_idx[start:end],
             invalid=self.invalid[start:end],
             selected_candidate=self.selected_candidate[start:end],
-            target_logits=self.target_logits[start:end],
+            target_reward=self.target_reward[start:end],
         )
 
 

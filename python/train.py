@@ -1171,8 +1171,8 @@ class TrainingSession:
                         for proposal_data in proposal_data_iterations
                     ]
                 ),
-                target_logits=torch.cat(
-                    [proposal_data.target_logits for proposal_data in proposal_data_iterations]
+                target_reward=torch.cat(
+                    [proposal_data.target_reward for proposal_data in proposal_data_iterations]
                 ),
             ),
             GeneratedFeatureData(
@@ -1548,6 +1548,7 @@ class TrainingSession:
                 step_config.generation.proposal_temperature,
                 "generation.proposal_temperature",
             ),
+            "proposal_target_temperature": step_config.train.proposal_target_temperature,
             "reward_door": variable_float_metric_value(
                 step_config.generation.reward_door,
                 "generation.reward_door",
@@ -1757,9 +1758,13 @@ class TrainingSession:
                 ) = self.generate_round()
                 if self.config.visualize > 0:
                     self.visualize_round(episode_data, round_idx)
-                candidate_diagnostics = compute_candidate_diagnostics(proposal_data)
                 self.num_episodes += self.episodes_per_round
                 step_config = instantiate_scheduleable_config(self.config, self.num_episodes)
+                candidate_diagnostics = compute_candidate_diagnostics(
+                    proposal_data,
+                    step_config.train.proposal_target_temperature,
+                    episode_data.temperature,
+                )
                 avg_loss, avg_balance_loss = self.train_round(
                     episode_data,
                     episode_outcomes,

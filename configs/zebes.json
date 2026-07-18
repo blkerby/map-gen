@@ -137,6 +137,7 @@
     "area_size_weight": 1.0,
     "area_map_station_weight": 1.0,
     "proposal_weight": 0.005,
+    "proposal_target_temperature": {"log": [1.0, 0.5, 0.3, 0.3, 0.3]},
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 8,
     "shuffle_buffer_batches": 1

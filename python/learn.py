@@ -29,6 +29,8 @@ from loss import (
 )
 from train_config import Config, episodes_per_round
 
+INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
+
 
 def distance_proximity_utility(
     distance: torch.Tensor,
@@ -54,7 +56,7 @@ class FeatureTrainBatch:
     proposal_frontier_idx: torch.Tensor | None
     proposal_action_idx: torch.Tensor | None
     proposal_invalid: torch.Tensor | None
-    proposal_target_logits: torch.Tensor | None
+    proposal_target_reward: torch.Tensor | None
 
 
 @dataclass
@@ -253,8 +255,18 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
     )
 
 
-def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagnostics:
-    target_logits = proposal_data.target_logits.to(torch.float32)
+def compute_candidate_diagnostics(
+    proposal_data: ProposalData,
+    proposal_target_temperature: float,
+    generation_temperature: torch.Tensor,
+) -> CandidateDiagnostics:
+    target_reward = proposal_data.target_reward.to(torch.float32)
+    target_logits = target_reward / proposal_target_temperature
+    target_logits = torch.where(
+        proposal_data.invalid,
+        torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
+        target_logits,
+    )
     present = (
         (proposal_data.frontier_idx >= 0)
         & (proposal_data.action_idx >= 0)
@@ -263,11 +275,17 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
     resolved = present & ~proposal_data.invalid
     candidate_count = target_logits.shape[-1]
     flat_logits = target_logits.reshape(-1, candidate_count)
+    temperature_shape = (-1,) + (1,) * (target_reward.ndim - 1)
+    sampling_logits = target_reward / generation_temperature.to(
+        device=target_reward.device,
+        dtype=torch.float32,
+    ).view(temperature_shape)
+    flat_sampling_logits = sampling_logits.reshape(-1, candidate_count)
     flat_present = present.reshape(-1, candidate_count)
     flat_resolved = resolved.reshape(-1, candidate_count)
     row_valid = torch.any(flat_resolved, dim=1)
     if not torch.any(row_valid):
-        zero = torch.sum(target_logits) * 0.0
+        zero = target_logits.new_zeros(())
         return CandidateDiagnostics(
             target_entropy=zero,
             uniform_kl=zero,
@@ -300,20 +318,26 @@ def compute_candidate_diagnostics(proposal_data: ProposalData) -> CandidateDiagn
     selected_in_range = (selected_candidate >= 0) & (selected_candidate < candidate_count)
     safe_selected_candidate = selected_candidate.clamp_min(0).clamp_max(candidate_count - 1)
     selected_valid = selected_in_range & torch.gather(
-        row_mask,
+        flat_resolved[row_valid],
         1,
         safe_selected_candidate.unsqueeze(1),
     ).squeeze(1)
     if torch.any(selected_valid):
+        row_sampling_logits = torch.where(
+            flat_resolved[row_valid],
+            flat_sampling_logits[row_valid],
+            torch.full_like(flat_sampling_logits[row_valid], float("-inf")),
+        )
+        sampling_probs = torch.softmax(row_sampling_logits, dim=1)
         selected_probability = torch.mean(
             torch.gather(
-                target_probs[selected_valid],
+                sampling_probs[selected_valid],
                 1,
                 selected_candidate[selected_valid].unsqueeze(1),
             ).squeeze(1)
         )
     else:
-        selected_probability = torch.sum(target_logits) * 0.0
+        selected_probability = target_logits.new_zeros(())
     return CandidateDiagnostics(
         target_entropy=target_entropy,
         uniform_kl=uniform_kl,
@@ -620,12 +644,12 @@ def prepare_feature_batches(
             proposal_frontier_idx = None
             proposal_action_idx = None
             proposal_invalid = None
-            proposal_target_logits = None
+            proposal_target_reward = None
             if proposal_data is not None and step + 1 < episode_length:
                 proposal_frontier_idx = proposal_data.frontier_idx[:, step]
                 proposal_action_idx = proposal_data.action_idx[:, step]
                 proposal_invalid = proposal_data.invalid[:, step]
-                proposal_target_logits = proposal_data.target_logits[:, step]
+                proposal_target_reward = proposal_data.target_reward[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
             if generated_feature_batches is not None and next_lookahead_outcomes is not None:
                 replay_feature_requirements = env.get_replay_action_feature_requirements(
@@ -736,7 +760,7 @@ def prepare_feature_batches(
                     proposal_frontier_idx=proposal_frontier_idx,
                     proposal_action_idx=proposal_action_idx,
                     proposal_invalid=proposal_invalid,
-                    proposal_target_logits=proposal_target_logits,
+                    proposal_target_reward=proposal_target_reward,
                 )
             )
     return (
@@ -866,13 +890,14 @@ def train_balance_batch_backward(
 
 def proposal_batch_loss(
     candidate_score: torch.Tensor,
-    target_logits: torch.Tensor,
+    target_reward: torch.Tensor,
     invalid: torch.Tensor,
+    proposal_target_temperature: float,
     device: torch.device,
 ) -> torch.Tensor:
-    target_logits = target_logits.to(device, dtype=torch.float32)
+    target_reward = target_reward.to(device, dtype=torch.float32)
     invalid = invalid.to(device=device, dtype=torch.bool)
-    present = torch.isfinite(candidate_score) & torch.isfinite(target_logits)
+    present = torch.isfinite(candidate_score) & torch.isfinite(target_reward)
     valid = present & ~invalid
     row_valid = torch.any(valid, dim=1)
     if not torch.any(row_valid):
@@ -883,6 +908,12 @@ def proposal_batch_loss(
         candidate_score,
         torch.full_like(candidate_score, invalid_logit),
     ).to(torch.float32)
+    target_logits = target_reward / proposal_target_temperature
+    target_logits = torch.where(
+        invalid,
+        torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
+        target_logits,
+    )
     target_logits = torch.where(
         present,
         target_logits,
@@ -1089,7 +1120,7 @@ def train_feature_batch_backward(
             and feature_batch.proposal_frontier_idx is not None
             and feature_batch.proposal_action_idx is not None
             and feature_batch.proposal_invalid is not None
-            and feature_batch.proposal_target_logits is not None
+            and feature_batch.proposal_target_reward is not None
         )
         with torch.amp.autocast(
             "cuda",
@@ -1198,8 +1229,9 @@ def train_feature_batch_backward(
             )
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,
-                feature_batch.proposal_target_logits,
+                feature_batch.proposal_target_reward,
                 feature_batch.proposal_invalid,
+                context.step_config.train.proposal_target_temperature,
                 context.device,
             )
             weighted_proposal_loss = (

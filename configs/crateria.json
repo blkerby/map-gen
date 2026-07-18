@@ -99,7 +99,7 @@
     "frontier_position": 128,
     "frontier_orientation": 4,
     "frontier_kind": 5,
-    "frontier_door_variant": 64,
+    "frontier_door_variant": 128,
     "frontier_occupancy": true,
     "frontier_neighbor": true,
     "frontier_neighbor_position_embedding": 256,
@@ -137,6 +137,7 @@
     "area_size_weight": 0.1,
     "area_map_station_weight": 0.02,
     "proposal_weight": 0.005,
+    "proposal_target_temperature": {"log": [10.0, 2.0, 0.03, 0.03]},
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 2,
     "shuffle_buffer_batches": 1

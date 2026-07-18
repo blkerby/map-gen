@@ -2,12 +2,17 @@ import torch
 
 from env import (
     AREA_COUNT,
+    ProposalData,
     proposal_action_door_variant_idx,
     proposal_action_idx,
     proposal_action_room_area,
 )
-from generate import INVALID_PROPOSAL_TARGET_LOGIT, sample_proposal_shortlist
-from learn import proposal_batch_loss, proposal_scores_for_candidates
+from generate import sample_proposal_shortlist
+from learn import (
+    compute_candidate_diagnostics,
+    proposal_batch_loss,
+    proposal_scores_for_candidates,
+)
 from model import ProposalOutput
 
 
@@ -24,21 +29,23 @@ def test_proposal_action_helpers_flatten_area_variants() -> None:
 
 def test_proposal_loss_compares_candidate_scores() -> None:
     device = torch.device("cpu")
-    target_logits = torch.tensor([[0.0, 10.0]], dtype=torch.float32)
+    target_reward = torch.tensor([[0.0, 10.0]], dtype=torch.float32)
 
     aligned_score = torch.tensor([[0.0, 10.0]], dtype=torch.float32)
     reversed_score = torch.tensor([[10.0, 0.0]], dtype=torch.float32)
 
     aligned_loss = proposal_batch_loss(
         aligned_score,
-        target_logits,
-        torch.zeros_like(target_logits, dtype=torch.bool),
+        target_reward,
+        torch.zeros_like(target_reward, dtype=torch.bool),
+        1.0,
         device,
     )
     reversed_loss = proposal_batch_loss(
         reversed_score,
-        target_logits,
-        torch.zeros_like(target_logits, dtype=torch.bool),
+        target_reward,
+        torch.zeros_like(target_reward, dtype=torch.bool),
+        1.0,
         device,
     )
 
@@ -51,8 +58,9 @@ def test_invalid_candidate_receives_downward_gradient() -> None:
     candidate_score = torch.tensor([[0.0, 5.0]], requires_grad=True)
     loss = proposal_batch_loss(
         candidate_score,
-        torch.tensor([[0.0, INVALID_PROPOSAL_TARGET_LOGIT]]),
+        torch.zeros((1, 2)),
         torch.tensor([[False, True]]),
+        1.0,
         torch.device("cpu"),
     )
 
@@ -65,12 +73,67 @@ def test_all_invalid_row_has_zero_proposal_loss() -> None:
     candidate_score = torch.tensor([[1.0, 2.0]], requires_grad=True)
     loss = proposal_batch_loss(
         candidate_score,
-        torch.full((1, 2), INVALID_PROPOSAL_TARGET_LOGIT),
+        torch.zeros((1, 2)),
         torch.ones((1, 2), dtype=torch.bool),
+        1.0,
         torch.device("cpu"),
     )
 
     assert loss.item() == 0.0
+
+
+def test_proposal_target_temperature_controls_target_sharpness() -> None:
+    candidate_score = torch.tensor([[0.0, 2.0]])
+    target_reward = torch.tensor([[0.0, 1.0]])
+    invalid = torch.zeros((1, 2), dtype=torch.bool)
+
+    matching_sharp_loss = proposal_batch_loss(
+        candidate_score,
+        target_reward,
+        invalid,
+        0.5,
+        torch.device("cpu"),
+    )
+    softer_loss = proposal_batch_loss(
+        candidate_score,
+        target_reward,
+        invalid,
+        1.0,
+        torch.device("cpu"),
+    )
+
+    assert matching_sharp_loss < softer_loss
+
+
+def test_selected_probability_uses_generation_temperature() -> None:
+    proposal_data = ProposalData(
+        frontier_idx=torch.tensor([[[0, 0]]], dtype=torch.int16),
+        action_idx=torch.tensor([[[0, 1]]], dtype=torch.int16),
+        invalid=torch.zeros((1, 1, 2), dtype=torch.bool),
+        selected_candidate=torch.ones((1, 1), dtype=torch.int64),
+        target_reward=torch.tensor([[[0.0, 1.0]]]),
+    )
+    soft_target = compute_candidate_diagnostics(
+        proposal_data,
+        proposal_target_temperature=1.0,
+        generation_temperature=torch.tensor([0.5]),
+    )
+    sharp_target = compute_candidate_diagnostics(
+        proposal_data,
+        proposal_target_temperature=0.1,
+        generation_temperature=torch.tensor([0.5]),
+    )
+
+    expected_selected_probability = torch.softmax(torch.tensor([0.0, 2.0]), dim=0)[1]
+    torch.testing.assert_close(
+        soft_target.selected_probability,
+        expected_selected_probability,
+    )
+    torch.testing.assert_close(
+        sharp_target.selected_probability,
+        expected_selected_probability,
+    )
+    assert sharp_target.target_entropy < soft_target.target_entropy
 
 
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
@@ -225,6 +288,8 @@ def main() -> None:
     test_proposal_loss_compares_candidate_scores()
     test_invalid_candidate_receives_downward_gradient()
     test_all_invalid_row_has_zero_proposal_loss()
+    test_proposal_target_temperature_controls_target_sharpness()
+    test_selected_probability_uses_generation_temperature()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()
     test_proposal_shortlist_pads_environment_without_frontiers()

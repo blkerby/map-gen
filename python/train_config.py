@@ -258,6 +258,7 @@ class TrainConfig(StrictBaseModel):
     area_size_weight: float
     area_map_station_weight: float
     proposal_weight: float
+    proposal_target_temperature: ScheduleableFloat
     ema_decay: ScheduleableFloat
     pipeline_groups: int
     gradient_accumulation_steps: int
@@ -510,6 +511,10 @@ def validate_config(config: Config) -> None:
         config.generation.proposal_temperature,
         "generation.proposal_temperature",
     )
+    validate_positive_scheduleable_float(
+        config.train.proposal_target_temperature,
+        "train.proposal_target_temperature",
+    )
     validate_nonnegative_variable_float(
         config.generation.reward_phantoon,
         "generation.reward_phantoon",
@@ -715,6 +720,19 @@ def validate_positive_variable_float(value: VariableFloat, path: str) -> None:
         if isinstance(values, VariableRange):
             validate_endpoint(values.min, f"{path}.min")
             validate_endpoint(values.max, f"{path}.max")
+            return
+        for index, item in enumerate(values):
+            if item <= 0.0:
+                raise ValueError(f"{path}[{index}] must be greater than zero")
+        return
+    if value <= 0.0:
+        raise ValueError(f"{path} must be greater than zero")
+
+
+def validate_positive_scheduleable_float(value: ScheduleableFloat, path: str) -> None:
+    if isinstance(value, Schedule):
+        values = value.linear if value.linear is not None else value.log
+        if values is None:
             return
         for index, item in enumerate(values):
             if item <= 0.0:
