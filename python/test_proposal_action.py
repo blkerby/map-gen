@@ -7,15 +7,17 @@ from env import (
     proposal_action_idx,
     proposal_action_room_area,
 )
-from generate import sample_proposal_shortlist
+from generate import (
+    gather_proposal_row_values,
+    match_sampled_proposal_values,
+    sample_proposal_shortlist,
+)
 from learn import (
-    ProposalBalanceInputs,
     compute_candidate_diagnostics,
     proposal_batch_loss,
     proposal_scores_for_candidates,
 )
-from loss import compute_balance_score_tables, compute_proposal_balance_score_table
-from model import BalancePredictions, ProposalOutput
+from model import ProposalOutput
 
 
 def test_proposal_action_helpers_flatten_area_variants() -> None:
@@ -138,6 +140,7 @@ def test_selected_probability_uses_generation_temperature() -> None:
         invalid=torch.zeros((1, 1, 2), dtype=torch.bool),
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
         target_reward=torch.tensor([[[0.0, 1.0]]]),
+        balance_residual=torch.zeros((1, 1, 2)),
     )
     soft_target = compute_candidate_diagnostics(
         proposal_data,
@@ -163,51 +166,53 @@ def test_selected_probability_uses_generation_temperature() -> None:
 
 
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
-    output = ProposalOutput(input_width=1, hidden_widths=[], output_width=24)
+    output = ProposalOutput(input_width=1, hidden_widths=[], output_width=3)
     with torch.no_grad():
-        output.layers[-1].weight[:, 0] = torch.arange(1.0, 25.0)
-    balance_predictions = BalancePredictions(
-        left=torch.zeros((1, 1, 1)),
-        right=torch.zeros((1, 1, 1)),
-        up=torch.zeros((1, 1, 1)),
-        down=torch.zeros((1, 1, 1)),
-        toilet_crossed_room=torch.zeros((1, 0)),
-        left_door_variant_idx=torch.tensor([0]),
-        right_door_variant_idx=torch.tensor([0]),
-        up_door_variant_idx=torch.tensor([0]),
-        down_door_variant_idx=torch.tensor([0]),
-        left_global_door_variant_idx=torch.tensor([0]),
-        right_global_door_variant_idx=torch.tensor([1]),
-        up_global_door_variant_idx=torch.tensor([2]),
-        down_global_door_variant_idx=torch.tensor([3]),
-    )
-    balance_score_tables = compute_balance_score_tables(balance_predictions)
-    proposal_balance_score_table = compute_proposal_balance_score_table(
-        balance_predictions,
-        balance_score_tables,
-        num_door_variants=4,
-    )
+        output.layers[-1].weight[:, 0] = torch.tensor([1.0, 2.0, 3.0])
     scores = proposal_scores_for_candidates(
         output,
         proposal_state=torch.tensor([[1.0], [2.0]]),
-        balance_inputs=ProposalBalanceInputs(
-            proposal_score_table=proposal_balance_score_table,
-            frontier_door_variant=torch.tensor([0, 1]),
-            reward_balance=torch.tensor([0.5]),
-        ),
         row_snapshot_idx=torch.tensor([0, 0]),
         row_frontier_idx=torch.tensor([0, 1]),
         frontier_idx=torch.tensor([[0, 1]], dtype=torch.int16),
-        action_idx=torch.tensor([[8, 0]], dtype=torch.int16),
+        action_idx=torch.tensor([[2, 0]], dtype=torch.int16),
         device=torch.device("cpu"),
     )
 
-    expected_residual = -0.5 * (
-        balance_score_tables.left[0, 0, 0] + balance_score_tables.right[0, 0, 0]
+    assert torch.equal(scores, torch.tensor([[3.0, 2.0]]))
+
+
+def test_proposal_residual_values_follow_sampled_candidates() -> None:
+    sampled_frontier_idx = torch.tensor([[1, 0, -1], [0, -1, -1]])
+    sampled_action_idx = torch.tensor([[2, 1, -1], [3, -1, -1]])
+    sampled_values = gather_proposal_row_values(
+        row_values=torch.tensor(
+            [
+                [0.0, 0.1, 0.2, 0.3],
+                [1.0, 1.1, 1.2, 1.3],
+                [2.0, 2.1, 2.2, 2.3],
+            ]
+        ),
+        row_snapshot_idx=torch.tensor([0, 0, 1]),
+        row_frontier_idx=torch.tensor([0, 1, 0]),
+        frontier_idx=sampled_frontier_idx,
+        action_idx=sampled_action_idx,
+        environment_count=2,
     )
     torch.testing.assert_close(
-        scores,
-        torch.tensor([[9.0, 2.0]]) + expected_residual,
+        sampled_values,
+        torch.tensor([[1.2, 0.1, 0.0], [2.3, 0.0, 0.0]]),
+    )
+    candidate_values = match_sampled_proposal_values(
+        sampled_frontier_idx,
+        sampled_action_idx,
+        sampled_values,
+        candidate_frontier_idx=torch.tensor([[0, 1, -1], [0, -1, -1]]),
+        candidate_action_idx=torch.tensor([[1, 2, -1], [3, -1, -1]]),
+    )
+    torch.testing.assert_close(
+        candidate_values,
+        torch.tensor([[0.1, 1.2, 0.0], [2.3, 0.0, 0.0]]),
     )
 
 
@@ -350,6 +355,7 @@ def main() -> None:
     test_proposal_target_temperature_scales_student_and_target_logits()
     test_selected_probability_uses_generation_temperature()
     test_proposal_scores_gather_candidates_across_frontiers()
+    test_proposal_residual_values_follow_sampled_candidates()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()
     test_proposal_shortlist_pads_environment_without_frontiers()
     test_proposal_shortlist_masks_incompatible_door_variants()

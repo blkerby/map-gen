@@ -130,6 +130,7 @@ class ProposalData:
     invalid: torch.Tensor
     selected_candidate: torch.Tensor
     target_reward: torch.Tensor
+    balance_residual: torch.Tensor
 
     def to(self, device: torch.device) -> "ProposalData":
         return ProposalData(
@@ -138,6 +139,7 @@ class ProposalData:
             invalid=self.invalid.to(device),
             selected_candidate=self.selected_candidate.to(device),
             target_reward=self.target_reward.to(device),
+            balance_residual=self.balance_residual.to(device),
         )
 
     def slice(self, start: int, end: int) -> "ProposalData":
@@ -147,6 +149,7 @@ class ProposalData:
             invalid=self.invalid[start:end],
             selected_candidate=self.selected_candidate[start:end],
             target_reward=self.target_reward[start:end],
+            balance_residual=self.balance_residual[start:end],
         )
 
 

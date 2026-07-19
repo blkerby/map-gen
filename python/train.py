@@ -1175,6 +1175,12 @@ class TrainingSession:
                 target_reward=torch.cat(
                     [proposal_data.target_reward for proposal_data in proposal_data_iterations]
                 ),
+                balance_residual=torch.cat(
+                    [
+                        proposal_data.balance_residual
+                        for proposal_data in proposal_data_iterations
+                    ]
+                ),
             ),
             GeneratedFeatureData(
                 [
