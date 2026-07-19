@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from device_util import is_gpu
 from env import AREA_COUNT, OutputMetadata, Features
 from features import (
     FRONTIER_NODE_FEATURES,
@@ -184,8 +185,8 @@ def normalize(x: torch.Tensor):
 
 
 def activation_dtype(device: torch.device, parameter_dtype: torch.dtype) -> torch.dtype:
-    if device.type == "cuda" and torch.is_autocast_enabled("cuda"):
-        return torch.get_autocast_dtype("cuda")
+    if is_gpu(device) and torch.is_autocast_enabled(device.type):
+        return torch.get_autocast_dtype(device.type)
     return parameter_dtype
 
 
@@ -834,7 +835,7 @@ class FrontierModel(torch.nn.Module):
                     messages = messages.sum(1) / pair_count
                 # messages [r, e]
                 X = X + update_layer(torch.cat([X, messages, global_rows], dim=-1))
-            if X.device.type == "cuda":
+            if is_gpu(X.device):
                 mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
                 mean_pool.index_add_(0, row_snapshot_idx, X)
                 count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)

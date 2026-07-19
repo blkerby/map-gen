@@ -72,7 +72,7 @@ def base_serving_config_payload() -> dict:
         "port": 5000,
         "device": "cpu",
         "compile_model": False,
-        "cuda_memory_fraction": 1.0,
+        "gpu_memory_fraction": 1.0,
         "model_dtype": "float32",
         "autocast": False,
         "verify_outcome_consistency": False,
