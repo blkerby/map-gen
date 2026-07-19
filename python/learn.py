@@ -919,7 +919,7 @@ def proposal_batch_loss(
         target_logits,
         torch.full_like(target_logits, invalid_logit),
     )
-    row_candidate_logits = candidate_score[row_valid]
+    row_candidate_logits = candidate_score[row_valid] / proposal_target_temperature
     row_target_logits = target_logits[row_valid]
     row_mask = valid[row_valid]
     proposal_log_probs = torch.nn.functional.log_softmax(

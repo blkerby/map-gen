@@ -82,27 +82,51 @@ def test_all_invalid_row_has_zero_proposal_loss() -> None:
     assert loss.item() == 0.0
 
 
-def test_proposal_target_temperature_controls_target_sharpness() -> None:
-    candidate_score = torch.tensor([[0.0, 2.0]])
+def test_proposal_target_temperature_preserves_reward_score_scale() -> None:
     target_reward = torch.tensor([[0.0, 1.0]])
+    candidate_score = target_reward.clone()
     invalid = torch.zeros((1, 2), dtype=torch.bool)
 
-    matching_sharp_loss = proposal_batch_loss(
+    sharp_loss = proposal_batch_loss(
         candidate_score,
         target_reward,
         invalid,
         0.5,
         torch.device("cpu"),
     )
-    softer_loss = proposal_batch_loss(
+    soft_loss = proposal_batch_loss(
         candidate_score,
         target_reward,
+        invalid,
+        2.0,
+        torch.device("cpu"),
+    )
+
+    torch.testing.assert_close(sharp_loss, torch.zeros(()), atol=1e-7, rtol=0.0)
+    torch.testing.assert_close(soft_loss, torch.zeros(()), atol=1e-7, rtol=0.0)
+
+
+def test_proposal_target_temperature_scales_student_and_target_logits() -> None:
+    candidate_score = torch.tensor([[0.0, 0.5]])
+    target_reward = torch.tensor([[0.0, 1.0]])
+    invalid = torch.zeros((1, 2), dtype=torch.bool)
+
+    temperature_loss = proposal_batch_loss(
+        candidate_score,
+        target_reward,
+        invalid,
+        0.5,
+        torch.device("cpu"),
+    )
+    explicitly_scaled_loss = proposal_batch_loss(
+        candidate_score / 0.5,
+        target_reward / 0.5,
         invalid,
         1.0,
         torch.device("cpu"),
     )
 
-    assert matching_sharp_loss < softer_loss
+    torch.testing.assert_close(temperature_loss, explicitly_scaled_loss)
 
 
 def test_selected_probability_uses_generation_temperature() -> None:
@@ -288,7 +312,8 @@ def main() -> None:
     test_proposal_loss_compares_candidate_scores()
     test_invalid_candidate_receives_downward_gradient()
     test_all_invalid_row_has_zero_proposal_loss()
-    test_proposal_target_temperature_controls_target_sharpness()
+    test_proposal_target_temperature_preserves_reward_score_scale()
+    test_proposal_target_temperature_scales_student_and_target_logits()
     test_selected_probability_uses_generation_temperature()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()
