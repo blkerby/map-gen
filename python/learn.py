@@ -1034,7 +1034,6 @@ def train_feature_batch_backward(
         )
         balance_score_tables = compute_balance_score_tables(balance_preds)
         balance_score_target_logits, balance_score_mask = compute_balance_score_target_logits(
-            balance_preds,
             balance_score_tables,
             prepared_batch.door_matches,
         )

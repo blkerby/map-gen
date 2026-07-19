@@ -345,6 +345,14 @@ def categorical_balance_loss(
     )
 
 
+def materialize_direction_balance_logits(
+    logits: torch.Tensor,
+    source_door_variant_idx: torch.Tensor,
+    target_door_variant_idx: torch.Tensor,
+) -> torch.Tensor:
+    return logits[:, source_door_variant_idx, :][:, :, target_door_variant_idx]
+
+
 def direction_variant_balance_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -354,13 +362,15 @@ def direction_variant_balance_loss(
     mask = targets >= 0
     if not torch.any(mask):
         return torch.sum(logits) * 0.0, logits.new_tensor(0.0)
-    safe_targets = targets.clamp(0, target_door_variant_idx.numel() - 1).to(torch.int64)
-    variant_targets = target_door_variant_idx[safe_targets]
-    concrete_source_logits = logits[:, source_door_variant_idx, :]
+    concrete_logits = materialize_direction_balance_logits(
+        logits,
+        source_door_variant_idx,
+        target_door_variant_idx,
+    )
     return (
         torch.nn.functional.cross_entropy(
-            concrete_source_logits[mask],
-            variant_targets[mask],
+            concrete_logits[mask],
+            targets[mask].to(torch.int64),
             reduction="sum",
         ),
         torch.sum(mask).to(logits.dtype),
@@ -410,16 +420,12 @@ def expand_direction_balance_probabilities(
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
 ) -> torch.Tensor:
-    variant_probabilities = torch.softmax(logits, dim=-1)
-    concrete_probabilities = variant_probabilities[:, source_door_variant_idx, :][
-        :, :, target_door_variant_idx
-    ]
-    target_variant_count = torch.bincount(
+    concrete_logits = materialize_direction_balance_logits(
+        logits,
+        source_door_variant_idx,
         target_door_variant_idx,
-        minlength=logits.shape[-1],
-    ).to(concrete_probabilities.dtype)
-    concrete_target_count = target_variant_count[target_door_variant_idx]
-    return concrete_probabilities / concrete_target_count.view(1, 1, -1)
+    )
+    return torch.softmax(concrete_logits, dim=-1)
 
 
 def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
@@ -468,60 +474,53 @@ def categorical_balance_score_target_logits(
         return logits.new_empty(targets.shape, dtype=torch.float32), mask
     safe_targets = torch.clamp(targets, min=0).to(torch.int64)
     target_logits = torch.gather(
-        direction_balance_score_logit_table(logits),
+        categorical_balance_score_logit_table(logits),
         -1,
         safe_targets.unsqueeze(-1),
     ).squeeze(-1)
     return target_logits.detach(), mask
 
 
-def direction_variant_balance_score_target_logits(
+def direction_balance_score_target_logits(
     logit_table: torch.Tensor,
     targets: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     mask = targets >= 0
     if logit_table.shape[-1] == 0:
         return logit_table.new_empty(targets.shape, dtype=torch.float32), mask
-    safe_targets = targets.clamp(0, target_door_variant_idx.numel() - 1).to(torch.int64)
-    variant_targets = target_door_variant_idx[safe_targets]
-    concrete_source_logit_table = logit_table[:, source_door_variant_idx, :]
+    safe_targets = targets.clamp(0, logit_table.shape[-1] - 1).to(torch.int64)
     target_logits = torch.gather(
-        concrete_source_logit_table,
+        logit_table,
         -1,
-        variant_targets.unsqueeze(-1),
+        safe_targets.unsqueeze(-1),
     ).squeeze(-1)
     return target_logits.detach(), mask
 
 
-def direction_valid_match_variant_balance_score_target_logits(
+def direction_valid_match_balance_score_target_logits(
     logit_table: torch.Tensor,
     targets: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = (targets >= 0) & (targets < target_door_variant_idx.numel())
+    mask = (targets >= 0) & (targets < logit_table.shape[-1])
     if logit_table.shape[-1] == 0:
         return logit_table.new_empty(targets.shape, dtype=torch.float32), mask
-    safe_targets = targets.clamp(0, target_door_variant_idx.numel() - 1).to(torch.int64)
-    variant_targets = target_door_variant_idx[safe_targets]
-    concrete_source_logit_table = logit_table[:, source_door_variant_idx, :]
-    while concrete_source_logit_table.ndim < safe_targets.ndim + 1:
-        concrete_source_logit_table = concrete_source_logit_table.unsqueeze(1)
-    concrete_source_logit_table = concrete_source_logit_table.expand(
+    safe_targets = targets.clamp(0, logit_table.shape[-1] - 1).to(torch.int64)
+    concrete_logit_table = logit_table
+    while concrete_logit_table.ndim < safe_targets.ndim + 1:
+        concrete_logit_table = concrete_logit_table.unsqueeze(1)
+    concrete_logit_table = concrete_logit_table.expand(
         *safe_targets.shape,
-        concrete_source_logit_table.shape[-1],
+        concrete_logit_table.shape[-1],
     )
     target_logits = torch.gather(
-        concrete_source_logit_table,
+        concrete_logit_table,
         -1,
-        variant_targets.unsqueeze(-1),
+        safe_targets.unsqueeze(-1),
     ).squeeze(-1)
     return target_logits.detach(), mask
 
 
-def direction_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
+def categorical_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
     logits = logits.to(torch.float32)
     log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
     non_target_log_probs = torch.log(-torch.expm1(log_probs))
@@ -532,43 +531,64 @@ def direction_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
     )
 
 
+def direction_balance_score_logit_table(
+    logits: torch.Tensor,
+    source_door_variant_idx: torch.Tensor,
+    target_door_variant_idx: torch.Tensor,
+) -> torch.Tensor:
+    return categorical_balance_score_logit_table(
+        materialize_direction_balance_logits(
+            logits,
+            source_door_variant_idx,
+            target_door_variant_idx,
+        )
+    )
+
+
 def compute_balance_score_tables(preds: BalancePredictions) -> BalanceScoreTables:
     return BalanceScoreTables(
-        left=direction_balance_score_logit_table(preds.left).detach(),
-        right=direction_balance_score_logit_table(preds.right).detach(),
-        up=direction_balance_score_logit_table(preds.up).detach(),
-        down=direction_balance_score_logit_table(preds.down).detach(),
+        left=direction_balance_score_logit_table(
+            preds.left,
+            preds.left_door_variant_idx,
+            preds.right_door_variant_idx,
+        ).detach(),
+        right=direction_balance_score_logit_table(
+            preds.right,
+            preds.right_door_variant_idx,
+            preds.left_door_variant_idx,
+        ).detach(),
+        up=direction_balance_score_logit_table(
+            preds.up,
+            preds.up_door_variant_idx,
+            preds.down_door_variant_idx,
+        ).detach(),
+        down=direction_balance_score_logit_table(
+            preds.down,
+            preds.down_door_variant_idx,
+            preds.up_door_variant_idx,
+        ).detach(),
     )
 
 
 def compute_balance_score_target_logits(
-    preds: BalancePredictions,
     tables: BalanceScoreTables,
     door_matches: DoorMatches,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    left_values, left_mask = direction_variant_balance_score_target_logits(
+    left_values, left_mask = direction_balance_score_target_logits(
         tables.left,
         door_matches.left,
-        preds.left_door_variant_idx,
-        preds.right_door_variant_idx,
     )
-    right_values, right_mask = direction_variant_balance_score_target_logits(
+    right_values, right_mask = direction_balance_score_target_logits(
         tables.right,
         door_matches.right,
-        preds.right_door_variant_idx,
-        preds.left_door_variant_idx,
     )
-    up_values, up_mask = direction_variant_balance_score_target_logits(
+    up_values, up_mask = direction_balance_score_target_logits(
         tables.up,
         door_matches.up,
-        preds.up_door_variant_idx,
-        preds.down_door_variant_idx,
     )
-    down_values, down_mask = direction_variant_balance_score_target_logits(
+    down_values, down_mask = direction_balance_score_target_logits(
         tables.down,
         door_matches.down,
-        preds.down_door_variant_idx,
-        preds.up_door_variant_idx,
     )
     return (
         torch.cat([left_values, right_values, up_values, down_values], dim=-1),
@@ -577,43 +597,34 @@ def compute_balance_score_target_logits(
 
 
 def compute_step_balance_score_target_logits(
-    preds: BalancePredictions,
     tables: BalanceScoreTables,
     door_match: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     left, right, up, down = torch.split(
         door_match,
         [
-            preds.left_door_variant_idx.numel(),
-            preds.right_door_variant_idx.numel(),
-            preds.up_door_variant_idx.numel(),
-            preds.down_door_variant_idx.numel(),
+            tables.left.shape[-2],
+            tables.right.shape[-2],
+            tables.up.shape[-2],
+            tables.down.shape[-2],
         ],
         dim=-1,
     )
-    left_values, left_mask = direction_valid_match_variant_balance_score_target_logits(
+    left_values, left_mask = direction_valid_match_balance_score_target_logits(
         tables.left,
         left,
-        preds.left_door_variant_idx,
-        preds.right_door_variant_idx,
     )
-    right_values, right_mask = direction_valid_match_variant_balance_score_target_logits(
+    right_values, right_mask = direction_valid_match_balance_score_target_logits(
         tables.right,
         right,
-        preds.right_door_variant_idx,
-        preds.left_door_variant_idx,
     )
-    up_values, up_mask = direction_valid_match_variant_balance_score_target_logits(
+    up_values, up_mask = direction_valid_match_balance_score_target_logits(
         tables.up,
         up,
-        preds.up_door_variant_idx,
-        preds.down_door_variant_idx,
     )
-    down_values, down_mask = direction_valid_match_variant_balance_score_target_logits(
+    down_values, down_mask = direction_valid_match_balance_score_target_logits(
         tables.down,
         down,
-        preds.down_door_variant_idx,
-        preds.up_door_variant_idx,
     )
     return (
         torch.cat([left_values, right_values, up_values, down_values], dim=-1),
@@ -625,6 +636,8 @@ def add_direction_proposal_balance_score_table(
     proposal_score_table: torch.Tensor,
     forward_score_table: torch.Tensor,
     reverse_score_table: torch.Tensor,
+    source_representative_door_idx: torch.Tensor,
+    target_representative_door_idx: torch.Tensor,
     source_global_door_variant_idx: torch.Tensor,
     target_global_door_variant_idx: torch.Tensor,
 ) -> None:
@@ -635,7 +648,35 @@ def add_direction_proposal_balance_score_table(
         :,
         source_global_door_variant_idx.unsqueeze(1),
         target_global_door_variant_idx.unsqueeze(0),
-    ] = forward_score_table + reverse_score_table.transpose(1, 2)
+    ] = forward_score_table[:, source_representative_door_idx, :][
+        :, :, target_representative_door_idx
+    ] + reverse_score_table[:, target_representative_door_idx, :][
+        :, :, source_representative_door_idx
+    ].transpose(1, 2)
+
+
+def first_concrete_door_idx_by_variant(
+    door_variant_idx: torch.Tensor,
+    variant_count: int,
+) -> torch.Tensor:
+    concrete_door_idx = torch.arange(
+        door_variant_idx.numel(),
+        dtype=torch.int64,
+        device=door_variant_idx.device,
+    )
+    first_idx = torch.full(
+        [variant_count],
+        door_variant_idx.numel(),
+        dtype=torch.int64,
+        device=door_variant_idx.device,
+    )
+    return first_idx.scatter_reduce(
+        0,
+        door_variant_idx,
+        concrete_door_idx,
+        reduce="amin",
+        include_self=True,
+    )
 
 
 def compute_proposal_balance_score_table(
@@ -648,28 +689,52 @@ def compute_proposal_balance_score_table(
         dtype=torch.float32,
         device=tables.left.device,
     )
+    left_representative_door_idx = first_concrete_door_idx_by_variant(
+        preds.left_door_variant_idx,
+        preds.left_global_door_variant_idx.numel(),
+    )
+    right_representative_door_idx = first_concrete_door_idx_by_variant(
+        preds.right_door_variant_idx,
+        preds.right_global_door_variant_idx.numel(),
+    )
+    up_representative_door_idx = first_concrete_door_idx_by_variant(
+        preds.up_door_variant_idx,
+        preds.up_global_door_variant_idx.numel(),
+    )
+    down_representative_door_idx = first_concrete_door_idx_by_variant(
+        preds.down_door_variant_idx,
+        preds.down_global_door_variant_idx.numel(),
+    )
     direction_inputs = (
         (
             tables.left,
             tables.right,
+            left_representative_door_idx,
+            right_representative_door_idx,
             preds.left_global_door_variant_idx,
             preds.right_global_door_variant_idx,
         ),
         (
             tables.right,
             tables.left,
+            right_representative_door_idx,
+            left_representative_door_idx,
             preds.right_global_door_variant_idx,
             preds.left_global_door_variant_idx,
         ),
         (
             tables.up,
             tables.down,
+            up_representative_door_idx,
+            down_representative_door_idx,
             preds.up_global_door_variant_idx,
             preds.down_global_door_variant_idx,
         ),
         (
             tables.down,
             tables.up,
+            down_representative_door_idx,
+            up_representative_door_idx,
             preds.down_global_door_variant_idx,
             preds.up_global_door_variant_idx,
         ),
@@ -677,6 +742,8 @@ def compute_proposal_balance_score_table(
     for (
         forward_score_table,
         reverse_score_table,
+        source_representative_door_idx,
+        target_representative_door_idx,
         source_global_door_variant_idx,
         target_global_door_variant_idx,
     ) in direction_inputs:
@@ -684,6 +751,8 @@ def compute_proposal_balance_score_table(
             proposal_score_table,
             forward_score_table,
             reverse_score_table,
+            source_representative_door_idx,
+            target_representative_door_idx,
             source_global_door_variant_idx,
             target_global_door_variant_idx,
         )
@@ -704,9 +773,10 @@ def compute_proposal_balance_score_residual(
         dtype=torch.float32,
         device=device,
     ).expand(proposal_score_table.shape[0])
-    variant_residual = -reward_balance_tensor[row_snapshot_idx].unsqueeze(
-        1
-    ) * proposal_score_table[row_snapshot_idx, frontier_door_variant]
+    variant_residual = (
+        -reward_balance_tensor[row_snapshot_idx].unsqueeze(1)
+        * proposal_score_table[row_snapshot_idx, frontier_door_variant]
+    )
     return (
         variant_residual.unsqueeze(-1)
         .expand(-1, -1, AREA_COUNT)

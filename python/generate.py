@@ -831,7 +831,6 @@ def select_candidate_actions(
     profile_time = profile_start(profile)
     balance_score = preds.balance_score.view(environment_count, candidate_count, -1)
     actual_balance_score, actual_balance_score_mask = compute_step_balance_score_target_logits(
-        group.balance_preds,
         group.balance_score_tables,
         post_candidate_door_match,
     )

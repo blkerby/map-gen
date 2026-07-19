@@ -10,6 +10,7 @@ from loss import (
     compute_proposal_balance_score_table,
     compute_step_balance_score_target_logits,
     expand_direction_balance_probabilities,
+    materialize_direction_balance_logits,
 )
 from model import BalanceModel, BalancePredictions
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
@@ -72,21 +73,43 @@ def test_balance_loss_maps_concrete_matches_to_variant_pairs() -> None:
         example_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
     )
-    concrete_source_logits = preds.left[:, preds.left_door_variant_idx, :]
-    target_variants = torch.tensor([[0, 1, 1]])
+    concrete_logits = materialize_direction_balance_logits(
+        preds.left,
+        preds.left_door_variant_idx,
+        preds.right_door_variant_idx,
+    )
     expected = torch.nn.functional.cross_entropy(
-        concrete_source_logits.flatten(0, 1),
-        target_variants.flatten(),
+        concrete_logits.flatten(0, 1),
+        example_door_matches().left.flatten(),
     )
 
     torch.testing.assert_close(loss, expected)
 
 
-def test_balance_target_scores_map_concrete_matches_to_variant_pairs() -> None:
+def test_balance_target_scores_expand_variant_probabilities_to_concrete_matches() -> None:
     preds = example_predictions()
     tables = compute_balance_score_tables(preds)
+    left_concrete_probabilities = torch.softmax(
+        materialize_direction_balance_logits(
+            preds.left,
+            preds.left_door_variant_idx,
+            preds.right_door_variant_idx,
+        ),
+        dim=-1,
+    )
+    torch.testing.assert_close(
+        torch.sigmoid(tables.left),
+        left_concrete_probabilities,
+    )
+    zero_preds = example_predictions()
+    zero_preds.left.zero_()
+    zero_tables = compute_balance_score_tables(zero_preds)
+    torch.testing.assert_close(
+        torch.sigmoid(zero_tables.left),
+        torch.full((1, 3, 3), 1.0 / 3.0),
+    )
+
     values, mask = compute_balance_score_target_logits(
-        preds,
         tables,
         example_door_matches(),
     )
@@ -94,8 +117,8 @@ def test_balance_target_scores_map_concrete_matches_to_variant_pairs() -> None:
     expected_left = torch.stack(
         [
             left_table[0, 0, 0],
-            left_table[0, 0, 1],
             left_table[0, 1, 1],
+            left_table[0, 2, 2],
         ]
     ).unsqueeze(0)
 
@@ -113,7 +136,6 @@ def test_balance_target_scores_map_concrete_matches_to_variant_pairs() -> None:
         dim=1,
     ).unsqueeze(1)
     step_values, step_mask = compute_step_balance_score_target_logits(
-        preds,
         tables,
         concrete_door_match,
     )
@@ -148,7 +170,7 @@ def test_proposal_balance_residual_adds_both_door_directions() -> None:
         residual[0, 2:4],
         expected_left_to_right.unsqueeze(1).expand(-1, AREA_COUNT),
     )
-    expected_right_to_left = -reward_balance[0] * (tables.right[0, 1, 1] + tables.left[0, 1, 1])
+    expected_right_to_left = -reward_balance[0] * (tables.right[0, 1, 2] + tables.left[0, 2, 1])
     torch.testing.assert_close(
         residual[1, 1],
         expected_right_to_left.expand(AREA_COUNT),
@@ -164,32 +186,14 @@ def test_balance_ss_materializes_concrete_pair_probabilities() -> None:
         preds.left_door_variant_idx,
         preds.right_door_variant_idx,
     )
-    left_variant_probabilities = torch.softmax(preds.left, dim=-1)
-    expected_left = torch.stack(
-        [
-            torch.stack(
-                [
-                    left_variant_probabilities[0, 0, 0],
-                    left_variant_probabilities[0, 0, 1] / 2,
-                    left_variant_probabilities[0, 0, 1] / 2,
-                ]
-            ),
-            torch.stack(
-                [
-                    left_variant_probabilities[0, 0, 0],
-                    left_variant_probabilities[0, 0, 1] / 2,
-                    left_variant_probabilities[0, 0, 1] / 2,
-                ]
-            ),
-            torch.stack(
-                [
-                    left_variant_probabilities[0, 1, 0],
-                    left_variant_probabilities[0, 1, 1] / 2,
-                    left_variant_probabilities[0, 1, 1] / 2,
-                ]
-            ),
-        ]
-    ).unsqueeze(0)
+    expected_left = torch.softmax(
+        materialize_direction_balance_logits(
+            preds.left,
+            preds.left_door_variant_idx,
+            preds.right_door_variant_idx,
+        ),
+        dim=-1,
+    )
 
     torch.testing.assert_close(expanded_left, expected_left)
     torch.testing.assert_close(
@@ -211,7 +215,7 @@ def test_balance_ss_materializes_concrete_pair_probabilities() -> None:
 def main() -> None:
     test_balance_model_outputs_direction_local_variant_pairs()
     test_balance_loss_maps_concrete_matches_to_variant_pairs()
-    test_balance_target_scores_map_concrete_matches_to_variant_pairs()
+    test_balance_target_scores_expand_variant_probabilities_to_concrete_matches()
     test_proposal_balance_residual_adds_both_door_directions()
     test_balance_ss_materializes_concrete_pair_probabilities()
 
