@@ -47,6 +47,7 @@ from loss import (
     LossConfig,
     compute_balance_toilet_crossed_room_ss,
     compute_balance_door_match_ss,
+    expand_direction_balance_probabilities,
 )
 from model import FrontierModel
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
@@ -643,7 +644,7 @@ def initialize_generation_process(
     model.eval()
     if config.model.compile:
         model = torch.compile(model)
-    balance_model = create_balance_model(config, rooms, device)
+    balance_model = create_balance_model(config, rooms, engine, device)
     balance_model.requires_grad_(False)
     balance_model.eval()
     map_gen.set_profile_enabled(profile)
@@ -1434,11 +1435,19 @@ class TrainingSession:
             balance_preds = self.balance_model(generate_config.generation_variable_floats)
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
             balance_left_topk = topk_or_zeros(
-                torch.softmax(balance_preds.left, dim=-1).flatten(),
+                expand_direction_balance_probabilities(
+                    balance_preds.left,
+                    balance_preds.left_door_variant_idx,
+                    balance_preds.right_door_variant_idx,
+                ).flatten(),
                 3,
             )
             balance_up_topk = topk_or_zeros(
-                torch.softmax(balance_preds.up, dim=-1).flatten(),
+                expand_direction_balance_probabilities(
+                    balance_preds.up,
+                    balance_preds.up_door_variant_idx,
+                    balance_preds.down_door_variant_idx,
+                ).flatten(),
                 3,
             )
             balance_toilet_crossed_room_p = torch.softmax(
@@ -2000,7 +2009,7 @@ def create_models(
     ema_model = copy.deepcopy(main_model).to(device)
     ema_model.requires_grad_(False)
     ema_model.eval()
-    balance_model = create_balance_model(config, rooms, device)
+    balance_model = create_balance_model(config, rooms, engine, device)
     balance_num_params = sum(p.numel() for p in balance_model.parameters())
     logging.info(f"Balance model parameters: {balance_num_params}")
     if config.model.compile:

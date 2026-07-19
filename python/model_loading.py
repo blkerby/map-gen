@@ -71,13 +71,21 @@ def count_room_doors_by_direction(rooms: list[dict], direction: str) -> int:
 
 
 def create_balance_model(
-    config: Config, rooms: list[dict], device: torch.device
+    config: Config,
+    rooms: list[dict],
+    engine: Engine,
+    device: torch.device,
 ) -> torch.nn.Module:
+    output_metadata = engine.get_output_metadata()
     return BalanceModel(
         left_count=count_room_doors_by_direction(rooms, "left"),
         right_count=count_room_doors_by_direction(rooms, "right"),
         up_count=count_room_doors_by_direction(rooms, "up"),
         down_count=count_room_doors_by_direction(rooms, "down"),
+        door_output_variant_idx=torch.tensor(
+            [variant_idx for _, variant_idx in output_metadata.door],
+            dtype=torch.int64,
+        ),
         num_rooms=len(rooms),
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,

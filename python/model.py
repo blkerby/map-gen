@@ -68,6 +68,10 @@ class BalancePredictions:
     up: torch.Tensor
     down: torch.Tensor
     toilet_crossed_room: torch.Tensor
+    left_door_variant_idx: torch.Tensor
+    right_door_variant_idx: torch.Tensor
+    up_door_variant_idx: torch.Tensor
+    down_door_variant_idx: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -1060,6 +1064,7 @@ class BalanceModel(torch.nn.Module):
         right_count: int,
         up_count: int,
         down_count: int,
+        door_output_variant_idx: torch.Tensor,
         num_rooms: int,
         hidden_width: int,
         num_layers: int,
@@ -1074,11 +1079,53 @@ class BalanceModel(torch.nn.Module):
         self.up_count = up_count
         self.down_count = down_count
         self.num_rooms = num_rooms
+        door_count = left_count + right_count + up_count + down_count
+        if door_output_variant_idx.shape != (door_count,):
+            raise ValueError(
+                "door_output_variant_idx must contain one variant for every directional door"
+            )
+        (
+            left_output_variant_idx,
+            right_output_variant_idx,
+            up_output_variant_idx,
+            down_output_variant_idx,
+        ) = torch.split(
+            door_output_variant_idx.to(torch.int64),
+            [left_count, right_count, up_count, down_count],
+        )
+        left_variants, left_door_variant_idx = torch.unique(
+            left_output_variant_idx,
+            sorted=True,
+            return_inverse=True,
+        )
+        right_variants, right_door_variant_idx = torch.unique(
+            right_output_variant_idx,
+            sorted=True,
+            return_inverse=True,
+        )
+        up_variants, up_door_variant_idx = torch.unique(
+            up_output_variant_idx,
+            sorted=True,
+            return_inverse=True,
+        )
+        down_variants, down_door_variant_idx = torch.unique(
+            down_output_variant_idx,
+            sorted=True,
+            return_inverse=True,
+        )
+        self.register_buffer("left_door_variant_idx", left_door_variant_idx)
+        self.register_buffer("right_door_variant_idx", right_door_variant_idx)
+        self.register_buffer("up_door_variant_idx", up_door_variant_idx)
+        self.register_buffer("down_door_variant_idx", down_door_variant_idx)
+        self.left_variant_count = left_variants.numel()
+        self.right_variant_count = right_variants.numel()
+        self.up_variant_count = up_variants.numel()
+        self.down_variant_count = down_variants.numel()
         self.output_width = (
-            left_count * right_count
-            + right_count * left_count
-            + up_count * down_count
-            + down_count * up_count
+            self.left_variant_count * self.right_variant_count
+            + self.right_variant_count * self.left_variant_count
+            + self.up_variant_count * self.down_variant_count
+            + self.down_variant_count * self.up_variant_count
             + num_rooms
         )
 
@@ -1105,24 +1152,32 @@ class BalanceModel(torch.nn.Module):
             )
         ).to(torch.float32)
         offset = 0
-        left_size = self.left_count * self.right_count
-        right_size = self.right_count * self.left_count
-        up_size = self.up_count * self.down_count
-        down_size = self.down_count * self.up_count
+        left_size = self.left_variant_count * self.right_variant_count
+        right_size = self.right_variant_count * self.left_variant_count
+        up_size = self.up_variant_count * self.down_variant_count
+        down_size = self.down_variant_count * self.up_variant_count
         left = raw[:, offset : offset + left_size].reshape(
-            generation_variable_floats.shape[0], self.left_count, self.right_count
+            generation_variable_floats.shape[0],
+            self.left_variant_count,
+            self.right_variant_count,
         )
         offset += left_size
         right = raw[:, offset : offset + right_size].reshape(
-            generation_variable_floats.shape[0], self.right_count, self.left_count
+            generation_variable_floats.shape[0],
+            self.right_variant_count,
+            self.left_variant_count,
         )
         offset += right_size
         up = raw[:, offset : offset + up_size].reshape(
-            generation_variable_floats.shape[0], self.up_count, self.down_count
+            generation_variable_floats.shape[0],
+            self.up_variant_count,
+            self.down_variant_count,
         )
         offset += up_size
         down = raw[:, offset : offset + down_size].reshape(
-            generation_variable_floats.shape[0], self.down_count, self.up_count
+            generation_variable_floats.shape[0],
+            self.down_variant_count,
+            self.up_variant_count,
         )
         offset += down_size
         toilet_crossed_room = raw[:, offset : offset + self.num_rooms]
@@ -1132,4 +1187,8 @@ class BalanceModel(torch.nn.Module):
             up=up,
             down=down,
             toilet_crossed_room=toilet_crossed_room,
+            left_door_variant_idx=self.left_door_variant_idx,
+            right_door_variant_idx=self.right_door_variant_idx,
+            up_door_variant_idx=self.up_door_variant_idx,
+            down_door_variant_idx=self.down_door_variant_idx,
         )

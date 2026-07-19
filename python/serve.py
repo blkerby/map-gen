@@ -366,7 +366,12 @@ def create_serving_state(
     model.to(dtype=model_dtype)
     model.requires_grad_(False)
     model.eval()
-    balance_model = create_balance_model(model_export.training_config, rooms, device)
+    balance_model = create_balance_model(
+        model_export.training_config,
+        rooms,
+        engine,
+        device,
+    )
     balance_model.load_state_dict(without_prefix(model_export.tensors, "balance_model"))
     balance_model.to(dtype=model_dtype)
     balance_model.requires_grad_(False)
