@@ -9,11 +9,13 @@ from env import (
 )
 from generate import sample_proposal_shortlist
 from learn import (
+    ProposalBalanceInputs,
     compute_candidate_diagnostics,
     proposal_batch_loss,
     proposal_scores_for_candidates,
 )
-from model import ProposalOutput
+from loss import compute_balance_score_tables, compute_proposal_balance_score_table
+from model import BalancePredictions, ProposalOutput
 
 
 def test_proposal_action_helpers_flatten_area_variants() -> None:
@@ -161,20 +163,52 @@ def test_selected_probability_uses_generation_temperature() -> None:
 
 
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
-    output = ProposalOutput(input_width=1, hidden_widths=[], output_width=3)
+    output = ProposalOutput(input_width=1, hidden_widths=[], output_width=24)
     with torch.no_grad():
-        output.layers[-1].weight[:, 0] = torch.tensor([1.0, 2.0, 3.0])
+        output.layers[-1].weight[:, 0] = torch.arange(1.0, 25.0)
+    balance_predictions = BalancePredictions(
+        left=torch.zeros((1, 1, 1)),
+        right=torch.zeros((1, 1, 1)),
+        up=torch.zeros((1, 1, 1)),
+        down=torch.zeros((1, 1, 1)),
+        toilet_crossed_room=torch.zeros((1, 0)),
+        left_door_variant_idx=torch.tensor([0]),
+        right_door_variant_idx=torch.tensor([0]),
+        up_door_variant_idx=torch.tensor([0]),
+        down_door_variant_idx=torch.tensor([0]),
+        left_global_door_variant_idx=torch.tensor([0]),
+        right_global_door_variant_idx=torch.tensor([1]),
+        up_global_door_variant_idx=torch.tensor([2]),
+        down_global_door_variant_idx=torch.tensor([3]),
+    )
+    balance_score_tables = compute_balance_score_tables(balance_predictions)
+    proposal_balance_score_table = compute_proposal_balance_score_table(
+        balance_predictions,
+        balance_score_tables,
+        num_door_variants=4,
+    )
     scores = proposal_scores_for_candidates(
         output,
         proposal_state=torch.tensor([[1.0], [2.0]]),
+        balance_inputs=ProposalBalanceInputs(
+            proposal_score_table=proposal_balance_score_table,
+            frontier_door_variant=torch.tensor([0, 1]),
+            reward_balance=torch.tensor([0.5]),
+        ),
         row_snapshot_idx=torch.tensor([0, 0]),
         row_frontier_idx=torch.tensor([0, 1]),
         frontier_idx=torch.tensor([[0, 1]], dtype=torch.int16),
-        action_idx=torch.tensor([[2, 0]], dtype=torch.int16),
+        action_idx=torch.tensor([[8, 0]], dtype=torch.int16),
         device=torch.device("cpu"),
     )
 
-    assert torch.equal(scores, torch.tensor([[3.0, 2.0]]))
+    expected_residual = -0.5 * (
+        balance_score_tables.left[0, 0, 0] + balance_score_tables.right[0, 0, 0]
+    )
+    torch.testing.assert_close(
+        scores,
+        torch.tensor([[9.0, 2.0]]) + expected_residual,
+    )
 
 
 def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:

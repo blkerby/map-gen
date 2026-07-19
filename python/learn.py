@@ -7,6 +7,7 @@ from typing import Literal
 import torch
 
 from env import (
+    AREA_COUNT,
     Actions,
     DoorMatches,
     EpisodeData,
@@ -23,13 +24,17 @@ from experience import ExperienceStorage
 from loss import (
     LossConfig,
     compute_balance_loss,
+    compute_balance_score_tables,
     compute_balance_score_target_logits,
+    compute_proposal_balance_score_residual,
+    compute_proposal_balance_score_table,
     compute_toilet_balance_score_target_logits,
     compute_loss_breakdown,
 )
-from train_config import Config, episodes_per_round
+from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, episodes_per_round
 
 INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
+REWARD_BALANCE_GENERATION_VARIABLE_IDX = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_balance")
 
 
 def distance_proximity_utility(
@@ -124,6 +129,13 @@ class CandidateDiagnostics:
     target_entropy: torch.Tensor
     uniform_kl: torch.Tensor
     selected_probability: torch.Tensor
+
+
+@dataclass
+class ProposalBalanceInputs:
+    proposal_score_table: torch.Tensor
+    frontier_door_variant: torch.Tensor
+    reward_balance: torch.Tensor
 
 
 @dataclass
@@ -955,6 +967,7 @@ def proposal_batch_loss(
 def proposal_scores_for_candidates(
     proposal_output: torch.nn.Module,
     proposal_state: torch.Tensor,
+    balance_inputs: ProposalBalanceInputs,
     row_snapshot_idx: torch.Tensor,
     row_frontier_idx: torch.Tensor,
     frontier_idx: torch.Tensor,
@@ -966,7 +979,7 @@ def proposal_scores_for_candidates(
     result = torch.full(
         frontier_idx.shape,
         float("-inf"),
-        dtype=proposal_output.output_dtype,
+        dtype=torch.float32,
         device=device,
     )
     if proposal_state.shape[0] == 0:
@@ -999,6 +1012,12 @@ def proposal_scores_for_candidates(
         unique_row_idx, inverse_idx = torch.unique(selected_row_idx, return_inverse=True)
         row_scores = proposal_output(
             proposal_state[unique_row_idx].to(proposal_output.output_dtype)
+        ).to(torch.float32)
+        row_scores = row_scores + compute_proposal_balance_score_residual(
+            balance_inputs.proposal_score_table,
+            balance_inputs.frontier_door_variant[unique_row_idx],
+            row_snapshot_idx[unique_row_idx],
+            balance_inputs.reward_balance,
         )
         result[candidate_valid] = row_scores[inverse_idx, action_idx[candidate_valid]]
     return result
@@ -1027,8 +1046,15 @@ def train_feature_batch_backward(
         balance_preds = context.balance_model(
             prepared_batch.episode_data.generation_variable_floats
         )
+        balance_score_tables = compute_balance_score_tables(balance_preds)
+        proposal_balance_score_table = compute_proposal_balance_score_table(
+            balance_preds,
+            balance_score_tables,
+            context.main_model.proposal_output.out_features // AREA_COUNT,
+        )
         balance_score_target_logits, balance_score_mask = compute_balance_score_target_logits(
             balance_preds,
+            balance_score_tables,
             prepared_batch.door_matches,
         )
         toilet_balance_score_target_logits, toilet_balance_score_mask = (
@@ -1221,6 +1247,13 @@ def train_feature_batch_backward(
             proposal_score = proposal_scores_for_candidates(
                 context.main_model.proposal_output,
                 preds.proposal_state,
+                ProposalBalanceInputs(
+                    proposal_score_table=proposal_balance_score_table,
+                    frontier_door_variant=(features.frontier_features.frontier_door_variant),
+                    reward_balance=prepared_batch.episode_data.generation_variable_floats[
+                        :, REWARD_BALANCE_GENERATION_VARIABLE_IDX
+                    ],
+                ),
                 preds.proposal_row_snapshot_idx,
                 preds.proposal_row_frontier_idx,
                 feature_batch.proposal_frontier_idx,

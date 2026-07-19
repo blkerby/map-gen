@@ -23,7 +23,13 @@ from env import (
     select_feature_snapshots,
     select_generated_features,
 )
-from loss import compute_step_balance_score_target_logits
+from loss import (
+    BalanceScoreTables,
+    compute_balance_score_tables,
+    compute_proposal_balance_score_residual,
+    compute_proposal_balance_score_table,
+    compute_step_balance_score_target_logits,
+)
 from model import BalancePredictions, Predictions
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -305,6 +311,8 @@ class GenerationGroup:
     feature_slot: FeatureSlot
     candidate_slot: CandidateSlot
     balance_preds: BalancePredictions
+    balance_score_tables: BalanceScoreTables
+    proposal_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
     previous_proposal_scores: ProposalCache | None
     score_result_queue: Queue[CandidateScoreResult]
@@ -726,6 +734,7 @@ def select_candidate_actions(
     balance_score = preds.balance_score.view(environment_count, candidate_count, -1)
     actual_balance_score, actual_balance_score_mask = compute_step_balance_score_target_logits(
         group.balance_preds,
+        group.balance_score_tables,
         post_candidate_door_match,
     )
     balance_score = torch.where(
@@ -1301,6 +1310,14 @@ def compute_group_proposal_shortlist(
             inventory = env_features.global_features.inventory
             sync_profile_device(device, profile)
             shared.profiler.add("python.proposal.compute_fresh_scores", profile_time)
+        proposal_scores = proposal_scores.to(torch.float32) + (
+            compute_proposal_balance_score_residual(
+                group.proposal_balance_score_table,
+                frontier_door_variant,
+                row_snapshot_idx,
+                group.config.reward_balance,
+            )
+        )
         shared.profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
         profile_time = profile_start(profile)
         (
@@ -1769,6 +1786,18 @@ def run_generation_groups(
     gpu_prefetch_batches = configs[0].gpu_prefetch_batches
     if any(config.gpu_prefetch_batches != gpu_prefetch_batches for config in configs):
         raise ValueError("generation groups require matching gpu_prefetch_batches")
+    balance_predictions = [balance_model(config.generation_variable_floats) for config in configs]
+    balance_score_tables = [
+        compute_balance_score_tables(balance_preds) for balance_preds in balance_predictions
+    ]
+    proposal_balance_score_tables = [
+        compute_proposal_balance_score_table(
+            balance_preds,
+            score_tables,
+            model.proposal_output.out_features // AREA_COUNT,
+        )
+        for balance_preds, score_tables in zip(balance_predictions, balance_score_tables)
+    ]
     groups = [
         GenerationGroup(
             env=env,
@@ -1776,12 +1805,20 @@ def run_generation_groups(
             step=0,
             feature_slot=FeatureSlot(env, pin_memory=device.type == "cuda"),
             candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
-            balance_preds=balance_model(config.generation_variable_floats),
+            balance_preds=balance_preds,
+            balance_score_tables=score_tables,
+            proposal_balance_score_table=proposal_score_table,
             previous_lookahead_outcomes=None,
             previous_proposal_scores=None,
             score_result_queue=Queue(maxsize=1),
         )
-        for env, config in zip(envs, configs)
+        for env, config, balance_preds, score_tables, proposal_score_table in zip(
+            envs,
+            configs,
+            balance_predictions,
+            balance_score_tables,
+            proposal_balance_score_tables,
+        )
     ]
     group_outputs = [
         GroupPipelineOutput(

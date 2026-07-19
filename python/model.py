@@ -72,6 +72,10 @@ class BalancePredictions:
     right_door_variant_idx: torch.Tensor
     up_door_variant_idx: torch.Tensor
     down_door_variant_idx: torch.Tensor
+    left_global_door_variant_idx: torch.Tensor
+    right_global_door_variant_idx: torch.Tensor
+    up_global_door_variant_idx: torch.Tensor
+    down_global_door_variant_idx: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -1117,6 +1121,10 @@ class BalanceModel(torch.nn.Module):
         self.register_buffer("right_door_variant_idx", right_door_variant_idx)
         self.register_buffer("up_door_variant_idx", up_door_variant_idx)
         self.register_buffer("down_door_variant_idx", down_door_variant_idx)
+        self.register_buffer("left_global_door_variant_idx", left_variants)
+        self.register_buffer("right_global_door_variant_idx", right_variants)
+        self.register_buffer("up_global_door_variant_idx", up_variants)
+        self.register_buffer("down_global_door_variant_idx", down_variants)
         self.left_variant_count = left_variants.numel()
         self.right_variant_count = right_variants.numel()
         self.up_variant_count = up_variants.numel()
@@ -1191,4 +1199,8 @@ class BalanceModel(torch.nn.Module):
             right_door_variant_idx=self.right_door_variant_idx,
             up_door_variant_idx=self.up_door_variant_idx,
             down_door_variant_idx=self.down_door_variant_idx,
+            left_global_door_variant_idx=self.left_global_door_variant_idx,
+            right_global_door_variant_idx=self.right_global_door_variant_idx,
+            up_global_door_variant_idx=self.up_global_door_variant_idx,
+            down_global_door_variant_idx=self.down_global_door_variant_idx,
         )
