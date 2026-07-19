@@ -3,12 +3,12 @@ import argparse
 import sys
 
 
-MAX_DURATION_SECONDS = 40 * 60
+MAX_DURATION_SECONDS = 120 * 60
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Delete Aim runs whose duration is less than 30 minutes.",
+        description="Delete Aim runs whose duration is less than specified duration.",
     )
     parser.add_argument(
         "--repo",
@@ -62,7 +62,7 @@ def main() -> int:
     run_hashes, skipped_count, corrupt_count = matching_run_hashes(repo, RepoIntegrityError)
     if not run_hashes:
         print(
-            f"No finished Aim runs shorter than 30 minutes found. "
+            f"No finished Aim runs shorter than specified duration found. "
             f"Skipped {skipped_count} active run(s) and {corrupt_count} corrupt run(s)."
         )
         return 0
