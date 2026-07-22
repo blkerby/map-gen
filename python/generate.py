@@ -447,6 +447,7 @@ def get_shortlist_candidate_batch(
         group.config.recommended_candidates,
         group.config.num_scored_invalid_candidates,
         group.config.max_candidate_areas_per_placement,
+        group.config.recommended_candidates_same_frontier,
     )
     return CandidateBatch(
         candidates=candidates,

@@ -566,6 +566,9 @@ def create_generate_config(
         shortlist_candidates=config.generation.shortlist_candidates,
         num_scored_invalid_candidates=config.generation.num_scored_invalid_candidates,
         max_candidate_areas_per_placement=(config.generation.max_candidate_areas_per_placement),
+        recommended_candidates_same_frontier=(
+            config.generation.recommended_candidates_same_frontier
+        ),
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,

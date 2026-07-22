@@ -22,6 +22,18 @@ def test_generation_area_bounding_box_fields_are_required() -> None:
         raise AssertionError("generation.area_bounding_box_width should be required")
 
 
+def test_recommended_candidates_same_frontier_is_required() -> None:
+    config_data = load_debug_config()
+    del config_data["generation"]["recommended_candidates_same_frontier"]
+
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("generation.recommended_candidates_same_frontier should be required")
+
+
 def test_proposal_target_temperature_is_required() -> None:
     config_data = load_debug_config()
     del config_data["train"]["proposal_target_temperature"]
@@ -110,6 +122,7 @@ def test_num_scored_invalid_candidates_must_fit_shortlist() -> None:
 
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
+    test_recommended_candidates_same_frontier_is_required()
     test_proposal_target_temperature_is_required()
     test_proposal_target_temperature_must_be_positive()
     test_generation_area_bounding_box_fields_must_be_positive()

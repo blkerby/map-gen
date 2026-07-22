@@ -36,6 +36,7 @@ class GenerateConfig:
     shortlist_candidates: int
     num_scored_invalid_candidates: int
     max_candidate_areas_per_placement: int
+    recommended_candidates_same_frontier: bool
     gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
@@ -1191,6 +1192,7 @@ class EnvironmentGroup:
         recommended_candidates: int,
         num_scored_invalid_candidates: int,
         max_candidate_areas_per_placement: int,
+        recommended_candidates_same_frontier: bool,
     ) -> tuple[
         Actions,
         torch.Tensor,
@@ -1221,6 +1223,9 @@ class EnvironmentGroup:
                     "recommended_candidates": recommended_candidates,
                     "num_scored_invalid_candidates": num_scored_invalid_candidates,
                     "max_candidate_areas_per_placement": max_candidate_areas_per_placement,
+                    "recommended_candidates_same_frontier": (
+                        recommended_candidates_same_frontier
+                    ),
                     "room_idx": candidate_slot.room_idx[: self.num_envs, :candidate_count].numpy(),
                     "room_x": candidate_slot.room_x[: self.num_envs, :candidate_count].numpy(),
                     "room_y": candidate_slot.room_y[: self.num_envs, :candidate_count].numpy(),

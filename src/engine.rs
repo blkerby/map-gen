@@ -295,6 +295,7 @@ enum WorkerCommand {
         shortlist_candidates: usize,
         num_scored_invalid_candidates: usize,
         max_candidate_areas_per_placement: usize,
+        recommended_candidates_same_frontier: bool,
         sampled_frontier_idx: InputShard<FrontierIdx>,
         sampled_proposal_action_idx: InputShard<ProposalActionIdx>,
         proposal_possible_counts: InputShard<i64>,
@@ -623,6 +624,7 @@ fn worker_loop(
                 shortlist_candidates,
                 num_scored_invalid_candidates,
                 max_candidate_areas_per_placement,
+                recommended_candidates_same_frontier,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
                 proposal_possible_counts,
@@ -775,6 +777,7 @@ fn worker_loop(
                         recommended_candidates,
                         num_scored_invalid_candidates,
                         max_candidate_areas_per_placement,
+                        recommended_candidates_same_frontier,
                         &features,
                         frontier_neighbor_algorithm,
                         frontier_neighbor_count,
@@ -1713,6 +1716,8 @@ pub struct ProposalCandidateBuffers {
     num_scored_invalid_candidates: usize,
     #[pyo3(get)]
     max_candidate_areas_per_placement: usize,
+    #[pyo3(get)]
+    recommended_candidates_same_frontier: bool,
     room_idx: Py<PyArray2<RoomIdx>>,
     room_x: Py<PyArray2<Coord>>,
     room_y: Py<PyArray2<Coord>>,
@@ -1830,6 +1835,10 @@ impl ProposalCandidateBuffers {
             max_candidate_areas_per_placement: required_py_field!(
                 fields,
                 "max_candidate_areas_per_placement"
+            ),
+            recommended_candidates_same_frontier: required_py_field!(
+                fields,
+                "recommended_candidates_same_frontier"
             ),
             room_idx: required_py_field!(fields, "room_idx"),
             room_x: required_py_field!(fields, "room_x"),
@@ -4205,6 +4214,7 @@ impl EnvironmentGroup {
         let recommended_candidates = buffers.recommended_candidates;
         let num_scored_invalid_candidates = buffers.num_scored_invalid_candidates;
         let max_candidate_areas_per_placement = buffers.max_candidate_areas_per_placement;
+        let recommended_candidates_same_frontier = buffers.recommended_candidates_same_frontier;
         if max_candidate_areas_per_placement == 0 {
             return Err(PyValueError::new_err(
                 "max_candidate_areas_per_placement must be greater than zero",
@@ -4566,6 +4576,7 @@ impl EnvironmentGroup {
                     shortlist_candidates,
                     num_scored_invalid_candidates,
                     max_candidate_areas_per_placement,
+                    recommended_candidates_same_frontier,
                     sampled_frontier_idx: InputShard::from_slice(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
                     ),

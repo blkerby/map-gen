@@ -22,6 +22,7 @@ def main() -> int:
         "shortlist_candidates": 16,
         "num_scored_invalid_candidates": 4,
         "max_candidate_areas_per_placement": 2,
+        "recommended_candidates_same_frontier": False,
         "temperature": 0.03,
         "proposal_temperature": 0.3,
         "reward_door": 1.0,

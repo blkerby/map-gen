@@ -114,6 +114,7 @@ class GenerationConfig(StrictBaseModel):
     shortlist_candidates: ScheduleableInt
     num_scored_invalid_candidates: int
     max_candidate_areas_per_placement: int
+    recommended_candidates_same_frontier: bool
     temperature: VariableFloat
     proposal_temperature: VariableFloat
     reward_door: VariableFloat
