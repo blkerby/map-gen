@@ -1033,7 +1033,11 @@ def train_feature_batch_backward(
             prepared_batch.episode_data.generation_variable_floats
         )
         balance_score_tables = compute_balance_score_tables(balance_preds)
-        balance_score_target_logits, balance_score_mask = compute_balance_score_target_logits(
+        (
+            balance_score_target_logits,
+            balance_score_uniform_log_odds,
+            balance_score_mask,
+        ) = compute_balance_score_target_logits(
             balance_score_tables,
             prepared_batch.door_matches,
         )
@@ -1044,6 +1048,7 @@ def train_feature_batch_backward(
             )
         )
     repeated_balance_score_target_logits = balance_score_target_logits.unsqueeze(1)
+    repeated_balance_score_uniform_log_odds = balance_score_uniform_log_odds.unsqueeze(1)
     repeated_toilet_balance_score_target_logits = toilet_balance_score_target_logits.unsqueeze(1)
     repeated_toilet_balance_score_mask = toilet_balance_score_mask.unsqueeze(1)
     batch_size = prepared_batch.episode_data.actions.room_idx.shape[0]
@@ -1148,6 +1153,7 @@ def train_feature_batch_backward(
             repeated_outcomes,
             mask,
             repeated_balance_score_target_logits,
+            repeated_balance_score_uniform_log_odds,
             prefix_balance_score_mask.unsqueeze(1),
             repeated_toilet_balance_score_target_logits,
             repeated_toilet_balance_score_mask,

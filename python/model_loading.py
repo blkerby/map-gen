@@ -86,6 +86,7 @@ def create_balance_model(
             [variant_idx for _, variant_idx in output_metadata.door],
             dtype=torch.int64,
         ),
+        door_variant_compatibility=output_metadata.door_variant_compatibility,
         num_rooms=len(rooms),
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,

@@ -1445,6 +1445,9 @@ class TrainingSession:
                     balance_preds.left,
                     balance_preds.left_door_variant_idx,
                     balance_preds.right_door_variant_idx,
+                    balance_preds.left_global_door_variant_idx,
+                    balance_preds.right_global_door_variant_idx,
+                    balance_preds.door_variant_compatibility,
                 ).flatten(),
                 3,
             )
@@ -1453,6 +1456,9 @@ class TrainingSession:
                     balance_preds.up,
                     balance_preds.up_door_variant_idx,
                     balance_preds.down_door_variant_idx,
+                    balance_preds.up_global_door_variant_idx,
+                    balance_preds.down_global_door_variant_idx,
+                    balance_preds.door_variant_compatibility,
                 ).flatten(),
                 3,
             )

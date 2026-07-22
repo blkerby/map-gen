@@ -76,6 +76,7 @@ class BalancePredictions:
     right_global_door_variant_idx: torch.Tensor
     up_global_door_variant_idx: torch.Tensor
     down_global_door_variant_idx: torch.Tensor
+    door_variant_compatibility: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -197,6 +198,13 @@ def activation_dtype(device: torch.device, parameter_dtype: torch.dtype) -> torc
     return parameter_dtype
 
 
+def zero_init_output_layer(layer: torch.nn.Linear) -> None:
+    with torch.no_grad():
+        layer.weight.zero_()
+        if layer.bias is not None:
+            layer.bias.zero_()
+
+
 class ProposalOutput(torch.nn.Module):
     def __init__(
         self,
@@ -217,7 +225,7 @@ class ProposalOutput(torch.nn.Module):
             prev_width = hidden_width
         layers.append(torch.nn.Linear(prev_width, output_width, bias=False))
         self.layers = torch.nn.Sequential(*layers)
-        self.layers[-1].weight.data.zero_()
+        zero_init_output_layer(self.layers[-1])
 
     @property
     def output_dtype(self) -> torch.dtype:
@@ -260,7 +268,7 @@ class MissingConnectQueryHead(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, 2, bias=False),
         )
-        self.output_layers[-1].weight.data.zero_()
+        zero_init_output_layer(self.output_layers[-1])
 
     def _gather(
         self,
@@ -392,7 +400,7 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, self.target_count, bias=False),
         )
-        self.output_layers[-1].weight.data.zero_()
+        zero_init_output_layer(self.output_layers[-1])
 
     def _gather(
         self,
@@ -756,6 +764,28 @@ class FrontierModel(torch.nn.Module):
             proposal_hidden_widths,
             output_metadata.num_door_variants * AREA_COUNT,
         )
+        output_layers = (
+            self.door_output,
+            self.frontier_door_invalid_output,
+            self.frontier_balance_score_output,
+            self.connection_output,
+            self.toilet_output,
+            self.phantoon_output,
+            self.balance_score_output,
+            self.toilet_balance_score_output,
+            self.avg_frontiers_output,
+            self.graph_diameter_output,
+            self.save_to_room_utility_output,
+            self.save_from_room_utility_output,
+            self.refill_to_room_utility_output,
+            self.refill_from_room_utility_output,
+            self.missing_connect_utility_output,
+            self.area_crossings_output,
+            self.area_size_output,
+            self.area_map_station_count_output,
+        )
+        for output_layer in output_layers:
+            zero_init_output_layer(output_layer)
 
     def _pair_features(self, features, neighbor, dtype):
         values = []
@@ -1069,6 +1099,7 @@ class BalanceModel(torch.nn.Module):
         up_count: int,
         down_count: int,
         door_output_variant_idx: torch.Tensor,
+        door_variant_compatibility: torch.Tensor,
         num_rooms: int,
         hidden_width: int,
         num_layers: int,
@@ -1088,6 +1119,20 @@ class BalanceModel(torch.nn.Module):
             raise ValueError(
                 "door_output_variant_idx must contain one variant for every directional door"
             )
+        if (
+            door_variant_compatibility.ndim != 2
+            or door_variant_compatibility.shape[0] != door_variant_compatibility.shape[1]
+        ):
+            raise ValueError("door_variant_compatibility must be square")
+        variant_count = door_variant_compatibility.shape[0]
+        if torch.any(door_output_variant_idx < 0) or torch.any(
+            door_output_variant_idx >= variant_count
+        ):
+            raise ValueError("door_output_variant_idx contains an out-of-range variant")
+        self.register_buffer(
+            "door_variant_compatibility",
+            door_variant_compatibility.to(torch.bool),
+        )
         (
             left_output_variant_idx,
             right_output_variant_idx,
@@ -1149,6 +1194,7 @@ class BalanceModel(torch.nn.Module):
             input_width = hidden_width
         output_layer = torch.nn.Linear(input_width, self.output_width)
         output_layer.weight.data.zero_()
+        output_layer.bias.data.zero_()
         layers.append(output_layer)
         self.net = torch.nn.Sequential(*layers)
 
@@ -1203,4 +1249,5 @@ class BalanceModel(torch.nn.Module):
             right_global_door_variant_idx=self.right_global_door_variant_idx,
             up_global_door_variant_idx=self.up_global_door_variant_idx,
             down_global_door_variant_idx=self.down_global_door_variant_idx,
+            door_variant_compatibility=self.door_variant_compatibility,
         )

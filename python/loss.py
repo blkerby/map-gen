@@ -66,6 +66,10 @@ class BalanceScoreTables:
     right: torch.Tensor
     up: torch.Tensor
     down: torch.Tensor
+    left_uniform_log_odds: torch.Tensor
+    right_uniform_log_odds: torch.Tensor
+    up_uniform_log_odds: torch.Tensor
+    down_uniform_log_odds: torch.Tensor
 
 
 def masked_binary_cross_entropy_loss(
@@ -103,6 +107,21 @@ def masked_bernoulli_kl_loss(
     )
 
 
+def masked_offset_bernoulli_kl_loss(
+    logits: torch.Tensor,
+    target_logits: torch.Tensor,
+    logit_offset: torch.Tensor,
+    mask: torch.Tensor,
+    weight: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return masked_bernoulli_kl_loss(
+        logits + logit_offset,
+        target_logits + logit_offset,
+        mask,
+        weight,
+    )
+
+
 def masked_mse_loss(
     preds: torch.Tensor,
     target: torch.Tensor,
@@ -136,6 +155,7 @@ def compute_loss_breakdown(
     outcomes: StepOutcomes,
     mask: torch.Tensor,
     balance_score_target_logits: torch.Tensor,
+    balance_score_uniform_log_odds: torch.Tensor,
     balance_score_mask: torch.Tensor,
     toilet_balance_score_target_logits: torch.Tensor,
     toilet_balance_score_mask: torch.Tensor,
@@ -173,9 +193,10 @@ def compute_loss_breakdown(
         mask.squeeze(-1),
         config.phantoon_weight,
     )
-    balance_loss, balance_wt = masked_bernoulli_kl_loss(
+    balance_loss, balance_wt = masked_offset_bernoulli_kl_loss(
         preds.balance_score,
         balance_score_target_logits,
+        balance_score_uniform_log_odds,
         mask & balance_score_mask,
         config.balance_weight,
     )
@@ -353,11 +374,29 @@ def materialize_direction_balance_logits(
     return logits[:, source_door_variant_idx, :][:, :, target_door_variant_idx]
 
 
+def materialize_direction_balance_compatibility(
+    door_variant_compatibility: torch.Tensor,
+    source_global_door_variant_idx: torch.Tensor,
+    target_global_door_variant_idx: torch.Tensor,
+    source_door_variant_idx: torch.Tensor,
+    target_door_variant_idx: torch.Tensor,
+) -> torch.Tensor:
+    source_variant_idx = source_global_door_variant_idx[source_door_variant_idx]
+    target_variant_idx = target_global_door_variant_idx[target_door_variant_idx]
+    return door_variant_compatibility[
+        source_variant_idx.unsqueeze(1),
+        target_variant_idx.unsqueeze(0),
+    ]
+
+
 def direction_variant_balance_loss(
     logits: torch.Tensor,
     targets: torch.Tensor,
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
+    source_global_door_variant_idx: torch.Tensor,
+    target_global_door_variant_idx: torch.Tensor,
+    door_variant_compatibility: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     mask = targets >= 0
     if not torch.any(mask):
@@ -367,6 +406,14 @@ def direction_variant_balance_loss(
         source_door_variant_idx,
         target_door_variant_idx,
     )
+    compatibility = materialize_direction_balance_compatibility(
+        door_variant_compatibility,
+        source_global_door_variant_idx,
+        target_global_door_variant_idx,
+        source_door_variant_idx,
+        target_door_variant_idx,
+    )
+    concrete_logits = concrete_logits.masked_fill(~compatibility.unsqueeze(0), -torch.inf)
     return (
         torch.nn.functional.cross_entropy(
             concrete_logits[mask],
@@ -387,24 +434,36 @@ def compute_balance_loss(
         door_matches.left,
         preds.left_door_variant_idx,
         preds.right_door_variant_idx,
+        preds.left_global_door_variant_idx,
+        preds.right_global_door_variant_idx,
+        preds.door_variant_compatibility,
     )
     right_loss, right_weight = direction_variant_balance_loss(
         preds.right,
         door_matches.right,
         preds.right_door_variant_idx,
         preds.left_door_variant_idx,
+        preds.right_global_door_variant_idx,
+        preds.left_global_door_variant_idx,
+        preds.door_variant_compatibility,
     )
     up_loss, up_weight = direction_variant_balance_loss(
         preds.up,
         door_matches.up,
         preds.up_door_variant_idx,
         preds.down_door_variant_idx,
+        preds.up_global_door_variant_idx,
+        preds.down_global_door_variant_idx,
+        preds.door_variant_compatibility,
     )
     down_loss, down_weight = direction_variant_balance_loss(
         preds.down,
         door_matches.down,
         preds.down_door_variant_idx,
         preds.up_door_variant_idx,
+        preds.down_global_door_variant_idx,
+        preds.up_global_door_variant_idx,
+        preds.door_variant_compatibility,
     )
     toilet_loss, toilet_weight = categorical_balance_loss(
         preds.toilet_crossed_room,
@@ -419,13 +478,28 @@ def expand_direction_balance_probabilities(
     logits: torch.Tensor,
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
+    source_global_door_variant_idx: torch.Tensor,
+    target_global_door_variant_idx: torch.Tensor,
+    door_variant_compatibility: torch.Tensor,
 ) -> torch.Tensor:
     concrete_logits = materialize_direction_balance_logits(
         logits,
         source_door_variant_idx,
         target_door_variant_idx,
     )
-    return torch.softmax(concrete_logits, dim=-1)
+    compatibility = materialize_direction_balance_compatibility(
+        door_variant_compatibility,
+        source_global_door_variant_idx,
+        target_global_door_variant_idx,
+        source_door_variant_idx,
+        target_door_variant_idx,
+    )
+    safe_compatibility = compatibility | ~torch.any(compatibility, dim=-1, keepdim=True)
+    probabilities = torch.softmax(
+        concrete_logits.masked_fill(~safe_compatibility.unsqueeze(0), -torch.inf),
+        dim=-1,
+    )
+    return torch.where(compatibility.unsqueeze(0), probabilities, 0.0)
 
 
 def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
@@ -435,6 +509,9 @@ def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
                 preds.left,
                 preds.left_door_variant_idx,
                 preds.right_door_variant_idx,
+                preds.left_global_door_variant_idx,
+                preds.right_global_door_variant_idx,
+                preds.door_variant_compatibility,
             ).square()
         )
         + torch.sum(
@@ -442,6 +519,9 @@ def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
                 preds.right,
                 preds.right_door_variant_idx,
                 preds.left_door_variant_idx,
+                preds.right_global_door_variant_idx,
+                preds.left_global_door_variant_idx,
+                preds.door_variant_compatibility,
             ).square()
         )
         + torch.sum(
@@ -449,6 +529,9 @@ def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
                 preds.up,
                 preds.up_door_variant_idx,
                 preds.down_door_variant_idx,
+                preds.up_global_door_variant_idx,
+                preds.down_global_door_variant_idx,
+                preds.door_variant_compatibility,
             ).square()
         )
         + torch.sum(
@@ -456,6 +539,9 @@ def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
                 preds.down,
                 preds.down_door_variant_idx,
                 preds.up_door_variant_idx,
+                preds.down_global_door_variant_idx,
+                preds.up_global_door_variant_idx,
+                preds.door_variant_compatibility,
             ).square()
         )
     )
@@ -483,18 +569,20 @@ def categorical_balance_score_target_logits(
 
 def direction_balance_score_target_logits(
     logit_table: torch.Tensor,
+    uniform_log_odds: torch.Tensor,
     targets: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     mask = targets >= 0
     if logit_table.shape[-1] == 0:
-        return logit_table.new_empty(targets.shape, dtype=torch.float32), mask
+        empty = logit_table.new_empty(targets.shape, dtype=torch.float32)
+        return empty, empty.clone(), mask
     safe_targets = targets.clamp(0, logit_table.shape[-1] - 1).to(torch.int64)
     target_logits = torch.gather(
         logit_table,
         -1,
         safe_targets.unsqueeze(-1),
     ).squeeze(-1)
-    return target_logits.detach(), mask
+    return target_logits.detach(), uniform_log_odds.expand_as(target_logits), mask
 
 
 def direction_valid_match_balance_score_target_logits(
@@ -531,67 +619,150 @@ def categorical_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
     )
 
 
+def compatibility_uniform_log_odds(compatibility: torch.Tensor) -> torch.Tensor:
+    if compatibility.shape[-1] == 0:
+        return torch.zeros(
+            compatibility.shape[:-1],
+            dtype=torch.float32,
+            device=compatibility.device,
+        )
+    has_compatible_match = torch.any(compatibility, dim=-1)
+    safe_compatibility = compatibility | ~has_compatible_match.unsqueeze(-1)
+    uniform_logits = torch.zeros(
+        [1, *compatibility.shape],
+        dtype=torch.float32,
+        device=compatibility.device,
+    ).masked_fill(~safe_compatibility.unsqueeze(0), -torch.inf)
+    uniform_log_odds_table = categorical_balance_score_logit_table(uniform_logits)
+    uniform_log_odds = torch.max(
+        uniform_log_odds_table.masked_fill(~compatibility.unsqueeze(0), -torch.inf),
+        dim=-1,
+    ).values.squeeze(0)
+    return torch.where(
+        has_compatible_match,
+        uniform_log_odds,
+        torch.zeros_like(uniform_log_odds),
+    )
+
+
 def direction_balance_score_logit_table(
     logits: torch.Tensor,
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
-) -> torch.Tensor:
-    return categorical_balance_score_logit_table(
-        materialize_direction_balance_logits(
-            logits,
-            source_door_variant_idx,
-            target_door_variant_idx,
-        )
+    source_global_door_variant_idx: torch.Tensor,
+    target_global_door_variant_idx: torch.Tensor,
+    door_variant_compatibility: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    concrete_logits = materialize_direction_balance_logits(
+        logits,
+        source_door_variant_idx,
+        target_door_variant_idx,
+    )
+    compatibility = materialize_direction_balance_compatibility(
+        door_variant_compatibility,
+        source_global_door_variant_idx,
+        target_global_door_variant_idx,
+        source_door_variant_idx,
+        target_door_variant_idx,
+    )
+    safe_compatibility = compatibility | ~torch.any(compatibility, dim=-1, keepdim=True)
+    safe_compatibility = safe_compatibility.unsqueeze(0)
+    masked_logits = concrete_logits.masked_fill(~safe_compatibility, -torch.inf)
+    uniform_log_odds = compatibility_uniform_log_odds(compatibility)
+    centered_scores = categorical_balance_score_logit_table(masked_logits) - uniform_log_odds.view(
+        1, -1, 1
+    )
+    centered_scores = torch.clamp(
+        centered_scores,
+        min=-BALANCE_TARGET_LOG_ODDS_LIMIT,
+        max=BALANCE_TARGET_LOG_ODDS_LIMIT,
+    )
+    return (
+        torch.where(compatibility.unsqueeze(0), centered_scores, 0.0),
+        uniform_log_odds,
     )
 
 
 def compute_balance_score_tables(preds: BalancePredictions) -> BalanceScoreTables:
+    left, left_uniform_log_odds = direction_balance_score_logit_table(
+        preds.left,
+        preds.left_door_variant_idx,
+        preds.right_door_variant_idx,
+        preds.left_global_door_variant_idx,
+        preds.right_global_door_variant_idx,
+        preds.door_variant_compatibility,
+    )
+    right, right_uniform_log_odds = direction_balance_score_logit_table(
+        preds.right,
+        preds.right_door_variant_idx,
+        preds.left_door_variant_idx,
+        preds.right_global_door_variant_idx,
+        preds.left_global_door_variant_idx,
+        preds.door_variant_compatibility,
+    )
+    up, up_uniform_log_odds = direction_balance_score_logit_table(
+        preds.up,
+        preds.up_door_variant_idx,
+        preds.down_door_variant_idx,
+        preds.up_global_door_variant_idx,
+        preds.down_global_door_variant_idx,
+        preds.door_variant_compatibility,
+    )
+    down, down_uniform_log_odds = direction_balance_score_logit_table(
+        preds.down,
+        preds.down_door_variant_idx,
+        preds.up_door_variant_idx,
+        preds.down_global_door_variant_idx,
+        preds.up_global_door_variant_idx,
+        preds.door_variant_compatibility,
+    )
     return BalanceScoreTables(
-        left=direction_balance_score_logit_table(
-            preds.left,
-            preds.left_door_variant_idx,
-            preds.right_door_variant_idx,
-        ).detach(),
-        right=direction_balance_score_logit_table(
-            preds.right,
-            preds.right_door_variant_idx,
-            preds.left_door_variant_idx,
-        ).detach(),
-        up=direction_balance_score_logit_table(
-            preds.up,
-            preds.up_door_variant_idx,
-            preds.down_door_variant_idx,
-        ).detach(),
-        down=direction_balance_score_logit_table(
-            preds.down,
-            preds.down_door_variant_idx,
-            preds.up_door_variant_idx,
-        ).detach(),
+        left=left.detach(),
+        right=right.detach(),
+        up=up.detach(),
+        down=down.detach(),
+        left_uniform_log_odds=left_uniform_log_odds,
+        right_uniform_log_odds=right_uniform_log_odds,
+        up_uniform_log_odds=up_uniform_log_odds,
+        down_uniform_log_odds=down_uniform_log_odds,
     )
 
 
 def compute_balance_score_target_logits(
     tables: BalanceScoreTables,
     door_matches: DoorMatches,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    left_values, left_mask = direction_balance_score_target_logits(
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    left_values, left_uniform_log_odds, left_mask = direction_balance_score_target_logits(
         tables.left,
+        tables.left_uniform_log_odds,
         door_matches.left,
     )
-    right_values, right_mask = direction_balance_score_target_logits(
+    right_values, right_uniform_log_odds, right_mask = direction_balance_score_target_logits(
         tables.right,
+        tables.right_uniform_log_odds,
         door_matches.right,
     )
-    up_values, up_mask = direction_balance_score_target_logits(
+    up_values, up_uniform_log_odds, up_mask = direction_balance_score_target_logits(
         tables.up,
+        tables.up_uniform_log_odds,
         door_matches.up,
     )
-    down_values, down_mask = direction_balance_score_target_logits(
+    down_values, down_uniform_log_odds, down_mask = direction_balance_score_target_logits(
         tables.down,
+        tables.down_uniform_log_odds,
         door_matches.down,
     )
     return (
         torch.cat([left_values, right_values, up_values, down_values], dim=-1),
+        torch.cat(
+            [
+                left_uniform_log_odds,
+                right_uniform_log_odds,
+                up_uniform_log_odds,
+                down_uniform_log_odds,
+            ],
+            dim=-1,
+        ),
         torch.cat([left_mask, right_mask, up_mask, down_mask], dim=-1),
     )
 

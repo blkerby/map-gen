@@ -43,13 +43,13 @@
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.001, 0.001, 0.0005, 0.0001, 0.00005]},
+    "lr": {"log": [0.001, 0.0002, 0.0001, 0.00002, 0.00001]},
     "beta1": 0.95,
     "beta2": 0.99
   },
   "generation": {
-    "num_environments": 4096,
-    "num_iterations": 2,
+    "num_environments": 8192,
+    "num_iterations": 1,
     "num_devices": 2,
     "pipeline_groups": 4,
     "gpu_prefetch_batches": 1,
@@ -63,8 +63,8 @@
     "reward_connection": 1.0,
     "reward_toilet": 1.0,
     "reward_phantoon": 1.0,
-    "reward_balance": {"log": [0.4, 0.4, 0.3, 0.2, 0.1]},
-    "reward_toilet_balance": {"log": [0.1, 0.4, 0.3, 0.2, 0.1]},
+    "reward_balance": {"log": [0.5, 0.4, 0.3, 0.2, 0.1]},
+    "reward_toilet_balance": {"log": [0.5, 0.4, 0.3, 0.2, 0.1]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},
@@ -115,7 +115,7 @@
     "known_distance": 1
   },
   "train": {
-    "batch_size": 256,
+    "batch_size": 1024,
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "sample_period": 16,
@@ -139,7 +139,7 @@
     "proposal_weight": 0.005,
     "proposal_target_temperature": {"log": [10.0, 2.0, 0.03, 0.03, 0.03]},
     "pipeline_groups": 4,
-    "gradient_accumulation_steps": 8,
+    "gradient_accumulation_steps": 2,
     "shuffle_buffer_batches": 1
   }
 }
