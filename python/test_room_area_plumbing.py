@@ -1,10 +1,12 @@
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import torch
 
-from env import Actions, AREA_COUNT, DUMMY_AREA, Engine, EpisodeData
+from env import Actions, AREA_COUNT, CandidateSlot, DUMMY_AREA, Engine, EpisodeData
 from experience import ExperienceStorage
+from generate import get_initial_candidate_batch
 from train_config import FeatureConfig
 
 
@@ -103,6 +105,36 @@ def test_environment_group_round_trips_room_area() -> None:
     assert actions.room_x.tolist() == [[0, 1, 0]]
     assert actions.room_y.tolist() == [[0, 0, 0]]
     assert actions.room_area.tolist() == [[2, 4, DUMMY_AREA]]
+
+
+def test_initial_candidate_batch_scores_every_area() -> None:
+    engine = Engine(
+        [one_tile_room("Room", "right")],
+        disabled_features(),
+        1,
+        100,
+    )
+    env = engine.create_environment_group(
+        map_size=(4, 4),
+        num_envs=1,
+        candidate_spatial_cell_size=4,
+        area_bounding_box_width=4,
+        area_bounding_box_height=4,
+        seed=0,
+        num_threads=1,
+    )
+    group = SimpleNamespace(
+        env=env,
+        config=SimpleNamespace(temperature=torch.ones([1]), recommended_candidates=1),
+        candidate_slot=CandidateSlot(env, pin_memory=False),
+    )
+
+    candidates = get_initial_candidate_batch(group).candidates
+    assert candidates.room_idx.shape == (1, AREA_COUNT)
+    assert torch.all(candidates.room_idx == candidates.room_idx[:, :1])
+    assert torch.all(candidates.room_x == candidates.room_x[:, :1])
+    assert torch.all(candidates.room_y == candidates.room_y[:, :1])
+    assert candidates.room_area.tolist() == [list(range(AREA_COUNT))]
 
 
 def test_environment_group_reports_area_outcome_state() -> None:
@@ -210,6 +242,7 @@ def test_experience_storage_round_trips_room_area() -> None:
 
 def main() -> None:
     test_environment_group_round_trips_room_area()
+    test_initial_candidate_batch_scores_every_area()
     test_environment_group_reports_area_outcome_state()
     test_experience_storage_round_trips_room_area()
 

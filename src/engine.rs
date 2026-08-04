@@ -69,7 +69,6 @@ macro_rules! profile_metrics {
 profile_metrics! {
     WorkerClear => "worker.clear",
     WorkerFinish => "worker.finish",
-    WorkerStepInitial => "worker.step_initial",
     WorkerStep => "worker.step",
     WorkerGetActions => "worker.get_actions",
     WorkerGetOutcomes => "worker.get_outcomes",
@@ -274,7 +273,6 @@ impl<T> OutputShard<T> {
 enum WorkerCommand {
     Clear,
     Finish,
-    StepInitial,
     Step {
         room_idx: InputShard<RoomIdx>,
         room_x: InputShard<Coord>,
@@ -288,6 +286,7 @@ enum WorkerCommand {
         room_area: InputShard<AreaIdx>,
     },
     GetCandidatesFromProposals {
+        initial_candidates: bool,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
@@ -432,7 +431,6 @@ impl WorkerCommand {
         match self {
             WorkerCommand::Clear => Some(ProfileMetric::WorkerClear),
             WorkerCommand::Finish => Some(ProfileMetric::WorkerFinish),
-            WorkerCommand::StepInitial => Some(ProfileMetric::WorkerStepInitial),
             WorkerCommand::Step { .. } => Some(ProfileMetric::WorkerStep),
             WorkerCommand::GetActions { .. } => Some(ProfileMetric::WorkerGetActions),
             WorkerCommand::GetOutcomes { .. } => Some(ProfileMetric::WorkerGetOutcomes),
@@ -555,13 +553,6 @@ fn worker_loop(
                 }
                 WorkerResponse::Done
             }
-            WorkerCommand::StepInitial => {
-                for env in &mut environments {
-                    let action = env.get_initial_action(&common_data);
-                    env.step(action, &common_data);
-                }
-                WorkerResponse::Done
-            }
             WorkerCommand::Step {
                 room_idx,
                 room_x,
@@ -623,6 +614,7 @@ fn worker_loop(
                 WorkerResponse::Done
             }
             WorkerCommand::GetCandidatesFromProposals {
+                initial_candidates,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
                 frontier_window_size,
@@ -780,29 +772,40 @@ fn worker_loop(
                 let mut consistency_error = None;
                 feature_scratch.recycle_plan_vec(&mut pending_feature_plans);
                 for (env_idx, env) in environments.iter_mut().enumerate() {
-                    let shortlist_start = env_idx * shortlist_candidates;
-                    let shortlist_end = shortlist_start
-                        + usize::try_from(proposal_possible_counts[env_idx])
-                            .expect("proposal possible count must be nonnegative")
-                            .min(shortlist_candidates);
-                    let proposal_candidates = match env.get_proposal_candidates_with_outcomes(
-                        &common_data,
-                        &sampled_frontier_idx[shortlist_start..shortlist_end],
-                        &sampled_proposal_action_idx[shortlist_start..shortlist_end],
-                        recommended_candidates,
-                        num_scored_invalid_candidates,
-                        max_candidate_areas_per_placement,
-                        recommended_candidates_same_frontier,
-                        &features,
-                        frontier_neighbor_algorithm,
-                        frontier_neighbor_count,
-                        frontier_window_size,
-                        &mut feature_scratch,
-                    ) {
-                        Ok(result) => result,
-                        Err(err) => {
-                            consistency_error = Some(err);
-                            break;
+                    let proposal_candidates = if initial_candidates {
+                        env.get_initial_candidates_with_outcomes(
+                            &common_data,
+                            &features,
+                            frontier_neighbor_algorithm,
+                            frontier_neighbor_count,
+                            frontier_window_size,
+                            &mut feature_scratch,
+                        )
+                    } else {
+                        let shortlist_start = env_idx * shortlist_candidates;
+                        let shortlist_end = shortlist_start
+                            + usize::try_from(proposal_possible_counts[env_idx])
+                                .expect("proposal possible count must be nonnegative")
+                                .min(shortlist_candidates);
+                        match env.get_proposal_candidates_with_outcomes(
+                            &common_data,
+                            &sampled_frontier_idx[shortlist_start..shortlist_end],
+                            &sampled_proposal_action_idx[shortlist_start..shortlist_end],
+                            recommended_candidates,
+                            num_scored_invalid_candidates,
+                            max_candidate_areas_per_placement,
+                            recommended_candidates_same_frontier,
+                            &features,
+                            frontier_neighbor_algorithm,
+                            frontier_neighbor_count,
+                            frontier_window_size,
+                            &mut feature_scratch,
+                        ) {
+                            Ok(result) => result,
+                            Err(err) => {
+                                consistency_error = Some(err);
+                                break;
+                            }
                         }
                     };
                     clean_counts[env_idx] = proposal_candidates.clean_count;
@@ -1745,6 +1748,8 @@ pub struct FeatureRequirements {
 
 #[pyclass(module = "map_gen")]
 pub struct ProposalCandidateBuffers {
+    #[pyo3(get)]
+    initial_candidates: bool,
     sampled_frontier_idx: Py<PyArray2<FrontierIdx>>,
     sampled_proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
     proposal_possible_counts: Py<PyArray1<i64>>,
@@ -1864,6 +1869,7 @@ impl ProposalCandidateBuffers {
     #[new]
     fn new(fields: &Bound<'_, PyDict>) -> PyResult<Self> {
         Ok(Self {
+            initial_candidates: required_py_field!(fields, "initial_candidates"),
             sampled_frontier_idx: required_py_field!(fields, "sampled_frontier_idx"),
             sampled_proposal_action_idx: required_py_field!(fields, "sampled_proposal_action_idx"),
             proposal_possible_counts: required_py_field!(fields, "proposal_possible_counts"),
@@ -4106,30 +4112,6 @@ impl EnvironmentGroup {
         })
     }
 
-    fn step_initial(&mut self, py: Python<'_>) -> PyResult<()> {
-        if self.action_count != 0 {
-            return Err(PyValueError::new_err(
-                "step_initial is only valid before any actions have been applied",
-            ));
-        }
-        py.detach(|| {
-            let mut sent_workers = Vec::with_capacity(self.workers.len());
-            let mut first_error = None;
-            for (worker_idx, worker) in self.workers.iter().enumerate() {
-                if let Err(err) = worker.send(WorkerCommand::StepInitial) {
-                    set_first_error(&mut first_error, err);
-                    break;
-                }
-                sent_workers.push(worker_idx);
-            }
-
-            wait_for_done_responses(&self.workers, sent_workers, first_error)
-        })?;
-
-        self.action_count = 1;
-        Ok(())
-    }
-
     #[allow(clippy::type_complexity)]
     fn get_actions<'py>(
         &self,
@@ -4263,9 +4245,20 @@ impl EnvironmentGroup {
         py: Python<'py>,
         buffers: PyRef<'py, ProposalCandidateBuffers>,
     ) -> PyResult<FeatureRequirements> {
-        if self.action_count == 0 {
+        let initial_candidates = buffers.initial_candidates;
+        if initial_candidates && self.action_count != 0 {
             return Err(PyValueError::new_err(
-                "pack_candidates_from_proposals_into requires step_initial to be called first",
+                "initial candidates require an empty environment",
+            ));
+        }
+        if initial_candidates && buffers.recommended_candidates != AREA_COUNT {
+            return Err(PyValueError::new_err(format!(
+                "initial candidates require exactly {AREA_COUNT} candidate slots"
+            )));
+        }
+        if !initial_candidates && self.action_count == 0 {
+            return Err(PyValueError::new_err(
+                "non-initial candidates require a non-empty environment",
             ));
         }
         let sampled_frontier_idx = buffers.sampled_frontier_idx.bind(py).readonly();
@@ -4652,6 +4645,7 @@ impl EnvironmentGroup {
                 let door_match_output_end =
                     door_match_output_start + (output_end - output_start) * door_outcome_count;
                 if let Err(err) = worker.send(WorkerCommand::GetCandidatesFromProposals {
+                    initial_candidates,
                     recommended_candidates,
                     shortlist_candidates,
                     num_scored_invalid_candidates,

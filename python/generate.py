@@ -20,7 +20,6 @@ from env import (
     GeneratedFeatureData,
     concatenate_features,
     extract_candidate_features,
-    select_feature_snapshots,
     select_generated_features,
 )
 from loss import (
@@ -464,6 +463,7 @@ def get_shortlist_candidate_batch(
         stats,
     ) = group.env.extract_candidates_from_proposals(
         group.candidate_slot,
+        False,
         sampled_frontier_idx,
         sampled_proposal_action_idx,
         proposal_possible_counts,
@@ -471,6 +471,44 @@ def get_shortlist_candidate_batch(
         group.config.num_scored_invalid_candidates,
         group.config.max_candidate_areas_per_placement,
         group.config.recommended_candidates_same_frontier,
+    )
+    return CandidateBatch(
+        candidates=candidates,
+        proposal_frontier_idx=proposal_frontier_idx,
+        proposal_action_idx=proposal_action_idx,
+        scored_invalid_frontier_idx=scored_invalid_frontier_idx,
+        scored_invalid_proposal_action_idx=scored_invalid_proposal_action_idx,
+        reward_outcomes=reward_outcomes,
+        post_candidate_outcomes=post_candidate_outcomes,
+        feature_requirements=feature_requirements,
+        stats=stats,
+    )
+
+
+def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
+    environment_count = group.config.temperature.shape[0]
+    empty_shortlist = torch.empty([environment_count, 0], dtype=torch.int16)
+    candidate_slot = CandidateSlot(group.env, pin_memory=group.candidate_slot.pin_memory)
+    (
+        candidates,
+        proposal_frontier_idx,
+        proposal_action_idx,
+        scored_invalid_frontier_idx,
+        scored_invalid_proposal_action_idx,
+        reward_outcomes,
+        post_candidate_outcomes,
+        feature_requirements,
+        stats,
+    ) = group.env.extract_candidates_from_proposals(
+        candidate_slot,
+        True,
+        empty_shortlist,
+        empty_shortlist,
+        torch.zeros([environment_count], dtype=torch.int64),
+        AREA_COUNT,
+        0,
+        AREA_COUNT,
+        False,
     )
     return CandidateBatch(
         candidates=candidates,
@@ -721,6 +759,7 @@ def prepare_candidate_features(
     env: EnvironmentGroup,
     config: GenerateConfig,
     candidate_batch: CandidateBatch,
+    initial_candidates: bool,
     feature_slot: FeatureSlot,
     proposal_balance_residual: torch.Tensor,
     scored_invalid_proposal_balance_residual: torch.Tensor,
@@ -735,14 +774,33 @@ def prepare_candidate_features(
                 scored_invalid_proposal_balance_residual
             ),
         )
-    (
-        candidate_log_temperature,
-        candidate_log_recommended_candidates,
-        candidate_generation_variable_floats,
-    ) = candidate_log_inputs(
-        config,
-        candidates.room_idx.shape,
-    )
+    if initial_candidates:
+        environment_count, candidate_count = candidates.room_idx.shape
+        (
+            log_temperature,
+            log_recommended_candidates,
+            generation_variable_floats,
+        ) = state_log_inputs(config, environment_count)
+        candidate_log_temperature = (
+            log_temperature.unsqueeze(1).expand(-1, candidate_count).contiguous()
+        )
+        candidate_log_recommended_candidates = (
+            log_recommended_candidates.unsqueeze(1).expand(-1, candidate_count).contiguous()
+        )
+        candidate_generation_variable_floats = (
+            generation_variable_floats.unsqueeze(1)
+            .expand(-1, candidate_count, -1)
+            .contiguous()
+        )
+    else:
+        (
+            candidate_log_temperature,
+            candidate_log_recommended_candidates,
+            candidate_generation_variable_floats,
+        ) = candidate_log_inputs(
+            config,
+            candidates.room_idx.shape,
+        )
     return PreparedGenerationStep(
         candidate_batch=candidate_batch,
         features=extract_candidate_features(
@@ -819,6 +877,7 @@ def prepare_shortlist_generation_step(
         group.env,
         group.config,
         candidate_batch,
+        False,
         group.feature_slot,
         proposal_balance_residual,
         scored_invalid_proposal_balance_residual,
@@ -1180,6 +1239,7 @@ def score_staged_candidate_request(
     profile_time = profile_start(profile)
     max_candidates = group.config.recommended_candidates
     candidate_frontier_idx = candidate_batch.proposal_frontier_idx
+    recorded_candidate_count = min(candidate_frontier_idx.shape[1], max_candidates)
     if candidate_frontier_idx.shape[1] == max_candidates:
         frontier_idx = candidate_frontier_idx
     else:
@@ -1189,7 +1249,9 @@ def score_staged_candidate_request(
             dtype=candidate_frontier_idx.dtype,
             device=device,
         )
-        frontier_idx[:, : candidate_frontier_idx.shape[1]] = candidate_frontier_idx
+        frontier_idx[:, :recorded_candidate_count] = candidate_frontier_idx[
+            :, :recorded_candidate_count
+        ]
     if candidate_batch.proposal_action_idx.shape[1] == max_candidates:
         proposal_action_idx = candidate_batch.proposal_action_idx
     else:
@@ -1199,8 +1261,8 @@ def score_staged_candidate_request(
             dtype=candidate_batch.proposal_action_idx.dtype,
             device=device,
         )
-        proposal_action_idx[:, : candidate_batch.proposal_action_idx.shape[1]] = (
-            candidate_batch.proposal_action_idx
+        proposal_action_idx[:, :recorded_candidate_count] = (
+            candidate_batch.proposal_action_idx[:, :recorded_candidate_count]
         )
     proposal_target_reward = torch.where(
         candidates.room_idx == num_rooms,
@@ -1216,9 +1278,9 @@ def score_staged_candidate_request(
             dtype=torch.float32,
             device=device,
         )
-        target_reward[:, : proposal_target_reward.shape[1]] = proposal_target_reward.to(
-            torch.float32
-        )
+        target_reward[:, :recorded_candidate_count] = proposal_target_reward[
+            :, :recorded_candidate_count
+        ].to(torch.float32)
     candidate_balance_residual = staged.request.prepared_step.proposal_balance_residual
     if candidate_balance_residual.shape[1] == max_candidates:
         balance_residual = candidate_balance_residual.to(torch.float32)
@@ -1227,8 +1289,8 @@ def score_staged_candidate_request(
             [candidates.room_idx.shape[0], max_candidates],
             dtype=torch.float32,
         )
-        balance_residual[:, : candidate_balance_residual.shape[1]] = (
-            candidate_balance_residual.to(torch.float32)
+        balance_residual[:, :recorded_candidate_count] = (
+            candidate_balance_residual[:, :recorded_candidate_count].to(torch.float32)
         )
     scored_invalid = (candidate_batch.scored_invalid_frontier_idx >= 0) & (
         candidate_batch.scored_invalid_proposal_action_idx >= 0
@@ -1567,6 +1629,37 @@ def record_candidate_stats(
     )
 
 
+def score_initial_action(
+    group: GenerationGroup,
+    group_index: int,
+    cpu_ready_queue: Queue[CpuReadyMessage],
+    shared: PipelineSharedState,
+) -> tuple[CandidateScoreSuccess, PreparedGenerationStep]:
+    candidate_batch = get_initial_candidate_batch(group)
+    environment_count = group.config.temperature.shape[0]
+    prepared_step = prepare_candidate_features(
+        group.env,
+        group.config,
+        candidate_batch,
+        True,
+        group.feature_slot,
+        torch.zeros([environment_count, AREA_COUNT]),
+        torch.empty([environment_count, 0]),
+    )
+    request = CandidateScoreRequest(
+        group=group,
+        group_index=group_index,
+        prepared_step=prepared_step,
+        shortlist_limited=torch.zeros([environment_count], dtype=torch.bool),
+    )
+    if not put_queue_until_done(cpu_ready_queue, request, shared.cancellation_event):
+        raise RuntimeError("generation pipeline cancelled")
+    result = get_queue_until_done(group.score_result_queue, shared.cancellation_event)
+    if isinstance(result, PipelineFailure):
+        raise result.error
+    return result, prepared_step
+
+
 def run_group_producer(
     group: GenerationGroup,
     group_index: int,
@@ -1580,14 +1673,31 @@ def run_group_producer(
 ) -> None:
     try:
         group.env.clear()
-        group.env.step_initial()
-        group.step = 1
-        group.previous_lookahead_outcomes = group.env.get_current_feature_outcomes(
-            torch.device("cpu"),
-            0,
-            group.config.temperature.shape[0],
+        initial_result, initial_step = score_initial_action(
+            group,
+            group_index,
+            cpu_ready_queue,
+            shared,
         )
-        group.previous_proposal_scores = None
+        if capture_generated_features:
+            if initial_step.features is None:
+                raise RuntimeError("initial candidates did not produce features")
+            output.feature_batches.append(
+                select_generated_features(
+                    initial_step.features,
+                    initial_result.action_index,
+                    AREA_COUNT,
+                )
+            )
+        group.previous_lookahead_outcomes = initial_result.selected_outcomes
+        group.previous_proposal_scores = initial_result.selected_proposal_scores
+        verify_and_step(
+            group,
+            initial_result.selected_actions,
+            torch.device("cpu"),
+            verify_outcome_consistency,
+        )
+        group.step = 1
         while group.step < group.config.episode_length and not shared.cancellation_event.is_set():
             (
                 sampled_frontier_idx,
@@ -1595,22 +1705,13 @@ def run_group_producer(
                 sampled_proposal_balance_residual,
                 proposal_possible_counts,
                 shortlist_limited,
-                proposal_features,
+                _proposal_features,
             ) = compute_group_proposal_shortlist(
                 group,
                 model,
                 device,
                 shared,
             )
-            if capture_generated_features and group.step == 1:
-                if proposal_features is None:
-                    raise RuntimeError("initial generation state did not produce features")
-                output.feature_batches.append(
-                    select_feature_snapshots(
-                        proposal_features,
-                        torch.arange(group.config.temperature.shape[0]),
-                    )
-                )
             profile_time = profile_start(shared.profiler.enabled)
             prepared_step = prepare_shortlist_generation_step(
                 group,

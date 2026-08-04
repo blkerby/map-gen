@@ -1206,9 +1206,6 @@ class EnvironmentGroup:
             actions.room_area.contiguous().cpu().numpy(),
         )
 
-    def step_initial(self):
-        self.env.step_initial()
-
     def step_known(self, actions: Actions):
         self.env.step_known(
             actions.room_idx.contiguous().cpu().numpy(),
@@ -1229,6 +1226,7 @@ class EnvironmentGroup:
     def extract_candidates_from_proposals(
         self,
         candidate_slot: CandidateSlot,
+        initial_candidates: bool,
         sampled_frontier_idx: torch.Tensor,
         sampled_proposal_action_idx: torch.Tensor,
         proposal_possible_counts: torch.Tensor,
@@ -1256,6 +1254,7 @@ class EnvironmentGroup:
         result = self.env.pack_candidates_from_proposals_into(
             map_gen.ProposalCandidateBuffers(
                 {
+                    "initial_candidates": initial_candidates,
                     "sampled_frontier_idx": sampled_frontier_idx.contiguous().cpu().numpy(),
                     "sampled_proposal_action_idx": sampled_proposal_action_idx.contiguous()
                     .cpu()

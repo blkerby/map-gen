@@ -1927,8 +1927,7 @@ impl Environment {
         self.frontier_count_steps = 0;
     }
 
-    pub fn get_initial_action(&mut self, common: &CommonData) -> Action {
-        // Select a room, position, and area uniformly at random.
+    fn sample_initial_placement(&mut self, common: &CommonData) -> Action {
         let room_idx = self.rng.random_range(0..common.room.len() as RoomIdx);
         let geometry_idx = common.room[room_idx as usize].geometry_idx;
         let geometry = &common.geometry[geometry_idx as usize];
@@ -1938,12 +1937,62 @@ impl Environment {
         let max_y = self.map_size.1 - 1 - geometry.max_y;
         let x = self.rng.random_range(min_x..=max_x);
         let y = self.rng.random_range(min_y..=max_y);
-        let area = self.rng.random_range(0..AREA_COUNT as AreaIdx);
         Action {
             room_idx,
             x,
             y,
-            area,
+            area: 0,
+        }
+    }
+
+    pub fn get_initial_candidates_with_outcomes(
+        &mut self,
+        common: &CommonData,
+        config: &FeatureConfig,
+        frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
+        frontier_neighbor_count: usize,
+        frontier_window_size: usize,
+        scratch: &mut FeatureScratch,
+    ) -> ProposalCandidates {
+        let initial_action = self.sample_initial_placement(common);
+        let pre_candidate_outcomes = self.outcomes(common);
+        let mut candidates = Vec::with_capacity(AREA_COUNT);
+        let mut post_candidate_outcomes = Vec::with_capacity(AREA_COUNT);
+        let mut door_matches = Vec::with_capacity(AREA_COUNT);
+        let mut feature_plans = Vec::with_capacity(AREA_COUNT);
+        for area in 0..AREA_COUNT {
+            let candidate = Action {
+                area: area as AreaIdx,
+                ..initial_action
+            };
+            let (outcomes, door_match, features) = self.outcomes_and_features_after_candidate(
+                common,
+                candidate,
+                config,
+                frontier_neighbor_algorithm,
+                frontier_neighbor_count,
+                frontier_window_size,
+                scratch,
+            );
+            candidates.push(candidate);
+            post_candidate_outcomes.push(outcomes);
+            door_matches.push(door_match);
+            feature_plans.push(features);
+        }
+        ProposalCandidates {
+            pre_candidate_outcomes,
+            candidates,
+            frontier_idx: vec![-1; AREA_COUNT],
+            proposal_action_idx: vec![-1; AREA_COUNT],
+            post_candidate_outcomes,
+            door_matches,
+            feature_plans,
+            scored_invalid_frontier_idx: Vec::new(),
+            scored_invalid_proposal_action_idx: Vec::new(),
+            clean_count: AREA_COUNT,
+            evaluated_count: AREA_COUNT,
+            rejected_count: 0,
+            invalid_count: 0,
         }
     }
 
@@ -6501,17 +6550,29 @@ mod tests {
     }
 
     #[test]
-    fn initial_actions_sample_all_areas() {
+    fn initial_candidates_share_placement_and_cover_all_areas() {
         let common = spatial_index_test_common();
         let mut env = Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
-        let mut sampled = [false; AREA_COUNT];
+        let mut scratch = FeatureScratch::default();
+        let result = env.get_initial_candidates_with_outcomes(
+            &common,
+            &FeatureConfig::all_disabled(),
+            FrontierNeighborAlgorithm::Nearest,
+            1,
+            4,
+            &mut scratch,
+        );
 
-        for _ in 0..256 {
-            let action = env.get_initial_action(&common);
-            sampled[action.area as usize] = true;
+        assert_eq!(result.candidates.len(), AREA_COUNT);
+        assert_eq!(result.post_candidate_outcomes.len(), AREA_COUNT);
+        assert_eq!(result.feature_plans.len(), AREA_COUNT);
+        let first = result.candidates[0];
+        for (area, candidate) in result.candidates.iter().enumerate() {
+            assert_eq!(candidate.room_idx, first.room_idx);
+            assert_eq!(candidate.x, first.x);
+            assert_eq!(candidate.y, first.y);
+            assert_eq!(candidate.area as usize, area);
         }
-
-        assert!(sampled.into_iter().all(|value| value));
     }
 
     #[test]
