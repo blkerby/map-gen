@@ -195,15 +195,15 @@ def compute_expected_reward(
         preds.area_map_station_count.to(torch.float32),
         dim=-1,
     )[..., 1]
-    area_tiles_reward = -torch.mean(
+    area_tiles_reward = -torch.sum(
         (preds.area_tiles.to(torch.float32) - config.target_area_tiles.unsqueeze(1)).square(),
         dim=2,
     )
-    area_x_reward = -torch.mean(
+    area_x_reward = -torch.sum(
         (preds.area_x.to(torch.float32) - config.target_area_x.unsqueeze(1)).square(),
         dim=2,
     )
-    area_y_reward = -torch.mean(
+    area_y_reward = -torch.sum(
         (preds.area_y.to(torch.float32) - config.target_area_y.unsqueeze(1)).square(),
         dim=2,
     )

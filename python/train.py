@@ -1319,6 +1319,7 @@ class TrainingSession:
 
     def log_outcomes(
         self,
+        episode_data: EpisodeData,
         episode_outcomes: EpisodeOutcomes,
         door_match_counts: DoorMatchCounts,
         loss: MainLossBreakdown,
@@ -1461,6 +1462,18 @@ class TrainingSession:
         avg_area_map_station = torch.mean(
             (end_outcomes.area_map_station_count == 1).to(torch.float32)
         )
+        normalized_area_outputs = {
+            "area_tiles": end_outcomes.area_size.to(torch.float32) / self.area_tile_scale,
+            "area_x": end_outcomes.area_x.to(torch.float32) / self.config.map_size[0],
+            "area_y": end_outcomes.area_y.to(torch.float32) / self.config.map_size[1],
+        }
+        average_area_errors = {}
+        for name, output in normalized_area_outputs.items():
+            target_start = GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_{name}_0")
+            target = episode_data.generation_variable_floats[
+                :, target_start : target_start + 6
+            ].to(output.device)
+            average_area_errors[name] = torch.mean((output - target).square())
 
         success = total_invalid == 0
         success_rate = torch.mean(success.to(torch.float32))
@@ -1630,6 +1643,9 @@ class TrainingSession:
             "avg_area_map_station_invalid": avg_area_map_station_invalid,
             "avg_area_size_valid": avg_area_size_valid,
             "avg_area_map_station": avg_area_map_station,
+            "avg_area_tiles": average_area_errors["area_tiles"],
+            "avg_area_x": average_area_errors["area_x"],
+            "avg_area_y": average_area_errors["area_y"],
             "avg_door": avg_door,
             "avg_conn": avg_conn,
             "avg_toilet": avg_toilet,
@@ -1899,6 +1915,7 @@ class TrainingSession:
                 self.experience.store(episode_data)
 
                 self.log_outcomes(
+                    episode_data,
                     episode_outcomes,
                     door_match_counts,
                     avg_loss,
