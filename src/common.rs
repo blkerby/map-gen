@@ -69,6 +69,7 @@ enum SpecialType {
     Toilet,
     PhantoonBoss,
     PhantoonMap,
+    PhantoonSave,
     Ship,
     MotherBrain,
 }
@@ -263,6 +264,7 @@ pub struct CommonData {
     toilet_room_idx: Option<RoomIdx>,
     phantoon_boss_room_idx: Option<RoomIdx>,
     phantoon_map_room_idx: Option<RoomIdx>,
+    phantoon_save_room_idx: Option<RoomIdx>,
     phantoon_boss_door: Option<(Direction, DirDoorIdx)>,
     phantoon_map_door: Option<(Direction, DirDoorIdx)>,
     pub geometry: Vec<GeometryData>,
@@ -337,7 +339,9 @@ impl ConnectionsKey {
 impl SpecialType {
     fn connection_key_type(self) -> Option<Self> {
         match self {
-            Self::Toilet | Self::PhantoonBoss | Self::PhantoonMap => Some(self),
+            Self::Toilet | Self::PhantoonBoss | Self::PhantoonMap | Self::PhantoonSave => {
+                Some(self)
+            }
             Self::Ship | Self::MotherBrain => None,
         }
     }
@@ -522,6 +526,10 @@ impl CommonData {
         self.phantoon_map_room_idx
     }
 
+    pub fn phantoon_save_room_idx(&self) -> Option<RoomIdx> {
+        self.phantoon_save_room_idx
+    }
+
     pub fn phantoon_boss_door(&self) -> Option<(Direction, DirDoorIdx)> {
         self.phantoon_boss_door
     }
@@ -554,6 +562,7 @@ impl CommonData {
         let mut toilet_room_idx = None;
         let mut phantoon_boss_room_idx = None;
         let mut phantoon_map_room_idx = None;
+        let mut phantoon_save_room_idx = None;
         let mut phantoon_boss_door = None;
         let mut phantoon_map_door = None;
         let mut geometry_dir_door: [Vec<GeometryDirDoorData>; NUM_DIRS] =
@@ -585,6 +594,14 @@ impl CommonData {
                         );
                     }
                     phantoon_map_room_idx = Some(room_idx as RoomIdx);
+                }
+                Some(SpecialType::PhantoonSave) => {
+                    if let Some(first_phantoon_save_room_idx) = phantoon_save_room_idx {
+                        bail!(
+                            "rooms {first_phantoon_save_room_idx} and {room_idx} both have special_type phantoon_save"
+                        );
+                    }
+                    phantoon_save_room_idx = Some(room_idx as RoomIdx);
                 }
                 Some(SpecialType::Ship | SpecialType::MotherBrain) | None => {}
             }
@@ -833,6 +850,7 @@ impl CommonData {
             toilet_room_idx,
             phantoon_boss_room_idx,
             phantoon_map_room_idx,
+            phantoon_save_room_idx,
             phantoon_boss_door,
             phantoon_map_door,
             geometry: geometry_data,
@@ -1420,55 +1438,19 @@ mod tests {
 
     #[test]
     fn common_data_rejects_multiple_phantoon_special_rooms() {
-        let rooms: Vec<Room> = serde_json::from_str(
-            r#"
-            [
-                {
-                    "map": [[1]],
-                    "toilet_crossing_x": [],
-                    "special_type": "phantoon_boss",
-                    "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
-                    "connections": [],
-                    "missing_connections": []
-                },
-                {
-                    "map": [[1]],
-                    "toilet_crossing_x": [],
-                    "special_type": "phantoon_boss",
-                    "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
-                    "connections": [],
-                    "missing_connections": []
-                }
-            ]
-            "#,
-        )
-        .unwrap();
-        assert!(CommonData::new(rooms).is_err());
+        for special_type in ["phantoon_boss", "phantoon_map", "phantoon_save"] {
+            let room = serde_json::json!({
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "special_type": special_type,
+                "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
+                "connections": [],
+                "missing_connections": []
+            });
+            let rooms = serde_json::from_value(serde_json::json!([room.clone(), room])).unwrap();
 
-        let rooms: Vec<Room> = serde_json::from_str(
-            r#"
-            [
-                {
-                    "map": [[1]],
-                    "toilet_crossing_x": [],
-                    "special_type": "phantoon_map",
-                    "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
-                    "connections": [],
-                    "missing_connections": []
-                },
-                {
-                    "map": [[1]],
-                    "toilet_crossing_x": [],
-                    "special_type": "phantoon_map",
-                    "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
-                    "connections": [],
-                    "missing_connections": []
-                }
-            ]
-            "#,
-        )
-        .unwrap();
-        assert!(CommonData::new(rooms).is_err());
+            assert!(CommonData::new(rooms).is_err());
+        }
     }
 
     #[test]
@@ -1495,6 +1477,16 @@ mod tests {
                 {
                     "map": [[1]],
                     "toilet_crossing_x": [],
+                    "save": true,
+                    "special_type": "phantoon_save",
+                    "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
+                    "connections": [],
+                    "missing_connections": []
+                },
+                {
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "save": true,
                     "doors": [[{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]],
                     "connections": [],
                     "missing_connections": []
@@ -1506,9 +1498,10 @@ mod tests {
         let common = CommonData::new(rooms).unwrap();
 
         assert_eq!(common.geometry.len(), 1);
-        assert_eq!(common.connection_variant_rooms.len(), 3);
+        assert_eq!(common.connection_variant_rooms.len(), 4);
         assert_eq!(common.phantoon_boss_room_idx(), Some(0));
         assert_eq!(common.phantoon_map_room_idx(), Some(1));
+        assert_eq!(common.phantoon_save_room_idx(), Some(2));
     }
 
     #[test]

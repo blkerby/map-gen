@@ -5744,14 +5744,26 @@ impl Environment {
     }
 
     fn phantoon_outcome(&self, common: &CommonData) -> DoorValidOutcome {
-        let (Some(boss_room_idx), Some(map_room_idx)) = (
+        let (Some(boss_room_idx), Some(map_room_idx), Some(save_room_idx)) = (
             common.phantoon_boss_room_idx(),
             common.phantoon_map_room_idx(),
+            common.phantoon_save_room_idx(),
         ) else {
             return DoorValidOutcome::Valid;
         };
+        let special_room_indices = [boss_room_idx, map_room_idx, save_room_idx];
+        let mut placed_areas = special_room_indices
+            .into_iter()
+            .filter(|&room_idx| self.room_used[room_idx as usize])
+            .map(|room_idx| self.room_area[room_idx as usize]);
+        if let Some(first_area) = placed_areas.next()
+            && placed_areas.any(|area| area != first_area)
+        {
+            return DoorValidOutcome::Invalid;
+        }
         let boss_used = self.room_used[boss_room_idx as usize];
         let map_used = self.room_used[map_room_idx as usize];
+        let save_used = self.room_used[save_room_idx as usize];
         let boss_neighbor = boss_used
             .then(|| self.matched_neighbor_room_idx(common, common.phantoon_boss_door()))
             .flatten();
@@ -5760,10 +5772,14 @@ impl Environment {
             .flatten();
         match (boss_neighbor, map_neighbor) {
             (Some(boss_neighbor), Some(map_neighbor)) => {
-                if boss_neighbor == map_neighbor {
-                    DoorValidOutcome::Valid
-                } else {
+                if boss_neighbor != map_neighbor {
                     DoorValidOutcome::Invalid
+                } else if save_used {
+                    DoorValidOutcome::Valid
+                } else if self.finished {
+                    DoorValidOutcome::Invalid
+                } else {
+                    DoorValidOutcome::Unknown
                 }
             }
             (Some(boss_neighbor), None) => {
@@ -10604,6 +10620,14 @@ mod tests {
                     "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
                     "connections": [],
                     "missing_connections": []
+                },
+                {
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "special_type": "phantoon_save",
+                    "doors": [],
+                    "connections": [],
+                    "missing_connections": []
                 }
             ]
             "#,
@@ -10636,6 +10660,14 @@ mod tests {
                     "toilet_crossing_x": [],
                     "special_type": "phantoon_map",
                     "doors": [[{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]],
+                    "connections": [],
+                    "missing_connections": []
+                },
+                {
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "special_type": "phantoon_save",
+                    "doors": [],
                     "connections": [],
                     "missing_connections": []
                 }
@@ -10712,11 +10744,66 @@ mod tests {
             },
             &common,
         );
+        assert_eq!(
+            env.outcomes(&common).phantoon_valid,
+            DoorValidOutcome::Unknown
+        );
+        env.step_known(
+            Action {
+                room_idx: 4,
+                x: 5,
+                y: 1,
+                area: 0,
+            },
+            &common,
+        );
 
         assert_eq!(
             env.outcomes(&common).phantoon_valid,
             DoorValidOutcome::Valid
         );
+    }
+
+    #[test]
+    fn phantoon_outcome_rejects_different_areas_in_lookahead() {
+        let common = phantoon_outcome_test_common();
+        let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+        for action in [
+            Action {
+                room_idx: 0,
+                x: 2,
+                y: 1,
+                area: 0,
+            },
+            Action {
+                room_idx: 2,
+                x: 1,
+                y: 1,
+                area: 0,
+            },
+            Action {
+                room_idx: 3,
+                x: 3,
+                y: 1,
+                area: 0,
+            },
+        ] {
+            env.step_known(action, &common);
+        }
+
+        let outcomes = env
+            .outcomes_after_candidate(
+                &common,
+                Action {
+                    room_idx: 4,
+                    x: 5,
+                    y: 1,
+                    area: 1,
+                },
+            )
+            .step_outcomes;
+
+        assert_eq!(outcomes.phantoon_valid, DoorValidOutcome::Invalid);
     }
 
     #[test]

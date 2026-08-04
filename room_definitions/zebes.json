@@ -4121,6 +4121,7 @@
         ],
         "connections": [],
         "missing_connections": [],
+        "special_type": "phantoon_save",
         "toilet_crossing_x": []
     },
     {
