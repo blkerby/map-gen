@@ -38,7 +38,8 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_door",
     "reward_connection",
     "reward_toilet",
-    "reward_phantoon",
+    "reward_phantoon_pair",
+    "reward_phantoon_area",
     "reward_balance",
     "reward_toilet_balance",
     "reward_frontier",
@@ -120,7 +121,8 @@ class GenerationConfig(StrictBaseModel):
     reward_door: VariableFloat
     reward_connection: VariableFloat
     reward_toilet: VariableFloat
-    reward_phantoon: VariableFloat
+    reward_phantoon_pair: VariableFloat
+    reward_phantoon_area: VariableFloat
     reward_balance: VariableFloat
     reward_toilet_balance: VariableFloat
     reward_frontier: VariableFloat
@@ -247,7 +249,8 @@ class TrainConfig(StrictBaseModel):
     door_weight: float
     connection_weight: float
     toilet_weight: float
-    phantoon_weight: float
+    phantoon_pair_weight: float
+    phantoon_area_weight: float
     balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
@@ -517,8 +520,12 @@ def validate_config(config: Config) -> None:
         "train.proposal_target_temperature",
     )
     validate_nonnegative_variable_float(
-        config.generation.reward_phantoon,
-        "generation.reward_phantoon",
+        config.generation.reward_phantoon_pair,
+        "generation.reward_phantoon_pair",
+    )
+    validate_nonnegative_variable_float(
+        config.generation.reward_phantoon_area,
+        "generation.reward_phantoon_area",
     )
     validate_nonnegative_variable_float(
         config.generation.reward_toilet_balance,
@@ -571,8 +578,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.proposal_weight must be greater than or equal to zero")
     if config.train.toilet_weight < 0:
         raise ValueError("train.toilet_weight must be greater than or equal to zero")
-    if config.train.phantoon_weight < 0:
-        raise ValueError("train.phantoon_weight must be greater than or equal to zero")
+    if config.train.phantoon_pair_weight < 0:
+        raise ValueError("train.phantoon_pair_weight must be greater than or equal to zero")
+    if config.train.phantoon_area_weight < 0:
+        raise ValueError("train.phantoon_area_weight must be greater than or equal to zero")
     if config.train.toilet_balance_weight < 0:
         raise ValueError("train.toilet_balance_weight must be greater than or equal to zero")
     if config.train.avg_frontiers_weight < 0:

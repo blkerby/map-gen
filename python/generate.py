@@ -152,7 +152,8 @@ def total_proximity_utility(utility: torch.Tensor) -> torch.Tensor:
 # preds.door_invalid: [batch_size, max_candidates, num_outputs]
 # preds.connection_invalid: [batch_size, max_candidates, num_outputs]
 # preds.toilet_invalid: [batch_size, max_candidates]
-# preds.phantoon_invalid: [batch_size, max_candidates]
+# preds.phantoon_pair_invalid: [batch_size, max_candidates]
+# preds.phantoon_area_invalid: [batch_size, max_candidates]
 def compute_expected_reward(
     preds,
     outcomes,
@@ -166,11 +167,17 @@ def compute_expected_reward(
     door_logprobs = torch.nn.functional.logsigmoid(-preds.door_invalid)
     connection_logprobs = torch.nn.functional.logsigmoid(-preds.connection_invalid)
     toilet_logprobs = torch.nn.functional.logsigmoid(-preds.toilet_invalid)
-    phantoon_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_invalid)
+    phantoon_pair_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_pair_invalid)
+    phantoon_area_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_area_invalid)
     door_logprobs = outcome_reward(door_logprobs, outcomes.door_invalid)
     connection_logprobs = outcome_reward(connection_logprobs, outcomes.connection_invalid)
     toilet_logprobs = outcome_reward(toilet_logprobs, outcomes.toilet_invalid)
-    phantoon_logprobs = outcome_reward(phantoon_logprobs, outcomes.phantoon_invalid)
+    phantoon_pair_logprobs = outcome_reward(
+        phantoon_pair_logprobs, outcomes.phantoon_pair_invalid
+    )
+    phantoon_area_logprobs = outcome_reward(
+        phantoon_area_logprobs, outcomes.phantoon_area_invalid
+    )
     balance_scores = balance_reward(
         preds.balance_score,
         preds.door_invalid,
@@ -193,7 +200,8 @@ def compute_expected_reward(
         batch_weight(config.reward_door) * torch.sum(door_logprobs, dim=2)
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
         + batch_weight(config.reward_toilet) * toilet_logprobs
-        + batch_weight(config.reward_phantoon) * phantoon_logprobs
+        + batch_weight(config.reward_phantoon_pair) * phantoon_pair_logprobs
+        + batch_weight(config.reward_phantoon_area) * phantoon_area_logprobs
         + batch_weight(config.reward_balance) * torch.sum(balance_scores, dim=2)
         + batch_weight(config.reward_toilet_balance) * toilet_balance_scores
         - batch_weight(config.reward_frontier) * preds.avg_frontiers.to(torch.float32)
@@ -660,7 +668,8 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
         door_invalid=gather(outcomes.door_invalid),
         connection_invalid=gather(outcomes.connection_invalid),
         toilet_invalid=gather_scalar(outcomes.toilet_invalid),
-        phantoon_invalid=gather_scalar(outcomes.phantoon_invalid),
+        phantoon_pair_invalid=gather_scalar(outcomes.phantoon_pair_invalid),
+        phantoon_area_invalid=gather_scalar(outcomes.phantoon_area_invalid),
         area_size_bucket=gather(outcomes.area_size_bucket),
         area_map_station_count_bucket=gather(outcomes.area_map_station_count_bucket),
         door_match=gather(outcomes.door_match),
@@ -849,7 +858,12 @@ def select_candidate_actions(
                 -1,
             ),
             toilet_invalid=preds.toilet_invalid.view(environment_count, candidate_count),
-            phantoon_invalid=preds.phantoon_invalid.view(environment_count, candidate_count),
+            phantoon_pair_invalid=preds.phantoon_pair_invalid.view(
+                environment_count, candidate_count
+            ),
+            phantoon_area_invalid=preds.phantoon_area_invalid.view(
+                environment_count, candidate_count
+            ),
             balance_score=balance_score,
             toilet_balance_score=preds.toilet_balance_score.view(
                 environment_count,
@@ -1689,9 +1703,15 @@ def merge_generation_results(
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),
-                phantoon_invalid=torch.cat(
+                phantoon_pair_invalid=torch.cat(
                     [
-                        episode_outcomes.step_outcomes.phantoon_invalid
+                        episode_outcomes.step_outcomes.phantoon_pair_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                phantoon_area_invalid=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.phantoon_area_invalid
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

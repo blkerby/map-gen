@@ -312,13 +312,15 @@ enum WorkerCommand {
         pre_door_valid: OutputShard<i8>,
         pre_connections_valid: OutputShard<i8>,
         pre_toilet_valid: OutputShard<i8>,
-        pre_phantoon_valid: OutputShard<i8>,
+        pre_phantoon_pair_valid: OutputShard<i8>,
+        pre_phantoon_area_valid: OutputShard<i8>,
         pre_area_size_bucket: OutputShard<i8>,
         pre_area_map_station_count_bucket: OutputShard<i8>,
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
         toilet_valid: OutputShard<i8>,
-        phantoon_valid: OutputShard<i8>,
+        phantoon_pair_valid: OutputShard<i8>,
+        phantoon_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_map_station_count_bucket: OutputShard<i8>,
         door_match: OutputShard<i16>,
@@ -341,7 +343,8 @@ enum WorkerCommand {
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
         toilet_valid: OutputShard<i8>,
-        phantoon_valid: OutputShard<i8>,
+        phantoon_pair_valid: OutputShard<i8>,
+        phantoon_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_map_station_count_bucket: OutputShard<i8>,
         toilet_crossed_room_idx: OutputShard<i16>,
@@ -379,7 +382,8 @@ enum WorkerCommand {
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
         toilet_valid: OutputShard<i8>,
-        phantoon_valid: OutputShard<i8>,
+        phantoon_pair_valid: OutputShard<i8>,
+        phantoon_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_map_station_count_bucket: OutputShard<i8>,
         door_match: OutputShard<i16>,
@@ -641,13 +645,15 @@ fn worker_loop(
                 pre_door_valid,
                 pre_connections_valid,
                 pre_toilet_valid,
-                pre_phantoon_valid,
+                pre_phantoon_pair_valid,
+                pre_phantoon_area_valid,
                 pre_area_size_bucket,
                 pre_area_map_station_count_bucket,
                 door_valid,
                 connections_valid,
                 toilet_valid,
-                phantoon_valid,
+                phantoon_pair_valid,
+                phantoon_area_valid,
                 area_size_bucket,
                 area_map_station_count_bucket,
                 door_match,
@@ -673,14 +679,16 @@ fn worker_loop(
                 let pre_door_valid = unsafe { pre_door_valid.into_mut_slice() };
                 let pre_connections_valid = unsafe { pre_connections_valid.into_mut_slice() };
                 let pre_toilet_valid = unsafe { pre_toilet_valid.into_mut_slice() };
-                let pre_phantoon_valid = unsafe { pre_phantoon_valid.into_mut_slice() };
+                let pre_phantoon_pair_valid = unsafe { pre_phantoon_pair_valid.into_mut_slice() };
+                let pre_phantoon_area_valid = unsafe { pre_phantoon_area_valid.into_mut_slice() };
                 let pre_area_size_bucket = unsafe { pre_area_size_bucket.into_mut_slice() };
                 let pre_area_map_station_count_bucket =
                     unsafe { pre_area_map_station_count_bucket.into_mut_slice() };
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
-                let phantoon_valid = unsafe { phantoon_valid.into_mut_slice() };
+                let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
+                let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
@@ -728,7 +736,8 @@ fn worker_loop(
                     environments.len() * connection_outcome_count
                 );
                 debug_assert_eq!(pre_toilet_valid.len(), environments.len());
-                debug_assert_eq!(pre_phantoon_valid.len(), environments.len());
+                debug_assert_eq!(pre_phantoon_pair_valid.len(), environments.len());
+                debug_assert_eq!(pre_phantoon_area_valid.len(), environments.len());
                 debug_assert_eq!(pre_area_size_bucket.len(), environments.len() * AREA_COUNT);
                 debug_assert_eq!(
                     pre_area_map_station_count_bucket.len(),
@@ -747,7 +756,11 @@ fn worker_loop(
                     environments.len() * recommended_candidates
                 );
                 debug_assert_eq!(
-                    phantoon_valid.len(),
+                    phantoon_pair_valid.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    phantoon_area_valid.len(),
                     environments.len() * recommended_candidates
                 );
                 debug_assert_eq!(
@@ -822,8 +835,10 @@ fn worker_loop(
                         pre_connections_valid[pre_connection_start + outcome_idx] = *outcome as i8;
                     }
                     pre_toilet_valid[env_idx] = outcome_to_i8(pre_candidate_outcomes.toilet_valid);
-                    pre_phantoon_valid[env_idx] =
-                        outcome_to_i8(pre_candidate_outcomes.phantoon_valid);
+                    pre_phantoon_pair_valid[env_idx] =
+                        outcome_to_i8(pre_candidate_outcomes.phantoon_pair_valid);
+                    pre_phantoon_area_valid[env_idx] =
+                        outcome_to_i8(pre_candidate_outcomes.phantoon_area_valid);
                     let pre_area_start = env_idx * AREA_COUNT;
                     for area in 0..AREA_COUNT {
                         pre_area_size_bucket[pre_area_start + area] =
@@ -899,7 +914,8 @@ fn worker_loop(
                             *dst = outcome as i8;
                         }
                         toilet_valid[idx] = outcome_to_i8(outcome.toilet_valid);
-                        phantoon_valid[idx] = outcome_to_i8(outcome.phantoon_valid);
+                        phantoon_pair_valid[idx] = outcome_to_i8(outcome.phantoon_pair_valid);
+                        phantoon_area_valid[idx] = outcome_to_i8(outcome.phantoon_area_valid);
                         let area_start = idx * AREA_COUNT;
                         for area in 0..AREA_COUNT {
                             area_size_bucket[area_start + area] =
@@ -962,7 +978,8 @@ fn worker_loop(
                 door_valid,
                 connections_valid,
                 toilet_valid,
-                phantoon_valid,
+                phantoon_pair_valid,
+                phantoon_area_valid,
                 area_size_bucket,
                 area_map_station_count_bucket,
                 toilet_crossed_room_idx,
@@ -992,7 +1009,8 @@ fn worker_loop(
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
-                let phantoon_valid = unsafe { phantoon_valid.into_mut_slice() };
+                let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
+                let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
@@ -1029,7 +1047,8 @@ fn worker_loop(
                     environments.len() * connection_outcome_count
                 );
                 debug_assert_eq!(toilet_valid.len(), environments.len());
-                debug_assert_eq!(phantoon_valid.len(), environments.len());
+                debug_assert_eq!(phantoon_pair_valid.len(), environments.len());
+                debug_assert_eq!(phantoon_area_valid.len(), environments.len());
                 debug_assert_eq!(area_size_bucket.len(), environments.len() * AREA_COUNT);
                 debug_assert_eq!(
                     area_map_station_count_bucket.len(),
@@ -1206,7 +1225,8 @@ fn worker_loop(
                         };
                     }
                     toilet_valid[env_idx] = outcome_to_i8(outcomes.toilet_valid);
-                    phantoon_valid[env_idx] = outcome_to_i8(outcomes.phantoon_valid);
+                    phantoon_pair_valid[env_idx] = outcome_to_i8(outcomes.phantoon_pair_valid);
+                    phantoon_area_valid[env_idx] = outcome_to_i8(outcomes.phantoon_area_valid);
                     for area in 0..AREA_COUNT {
                         area_size_bucket[area_row_start + area] =
                             outcomes.area_size_bucket[area] as i8;
@@ -1257,7 +1277,8 @@ fn worker_loop(
                 door_valid,
                 connections_valid,
                 toilet_valid,
-                phantoon_valid,
+                phantoon_pair_valid,
+                phantoon_area_valid,
                 area_size_bucket,
                 area_map_station_count_bucket,
                 door_match,
@@ -1267,7 +1288,8 @@ fn worker_loop(
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
-                let phantoon_valid = unsafe { phantoon_valid.into_mut_slice() };
+                let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
+                let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
@@ -1278,7 +1300,8 @@ fn worker_loop(
                     environment_count * connection_outcome_count
                 );
                 debug_assert_eq!(toilet_valid.len(), environment_count);
-                debug_assert_eq!(phantoon_valid.len(), environment_count);
+                debug_assert_eq!(phantoon_pair_valid.len(), environment_count);
+                debug_assert_eq!(phantoon_area_valid.len(), environment_count);
                 debug_assert_eq!(area_size_bucket.len(), environment_count * AREA_COUNT);
                 debug_assert_eq!(
                     area_map_station_count_bucket.len(),
@@ -1317,7 +1340,8 @@ fn worker_loop(
                         };
                     }
                     toilet_valid[env_idx] = outcome_to_i8(outcomes.toilet_valid);
-                    phantoon_valid[env_idx] = outcome_to_i8(outcomes.phantoon_valid);
+                    phantoon_pair_valid[env_idx] = outcome_to_i8(outcomes.phantoon_pair_valid);
+                    phantoon_area_valid[env_idx] = outcome_to_i8(outcomes.phantoon_area_valid);
                     let area_start = env_idx * AREA_COUNT;
                     for area in 0..AREA_COUNT {
                         area_size_bucket[area_start + area] = outcomes.area_size_bucket[area] as i8;
@@ -1645,7 +1669,8 @@ pub struct StepOutcomes {
     door_valid: Py<PyArray2<i8>>,
     connections_valid: Py<PyArray2<i8>>,
     toilet_valid: Py<PyArray1<i8>>,
-    phantoon_valid: Py<PyArray1<i8>>,
+    phantoon_pair_valid: Py<PyArray1<i8>>,
+    phantoon_area_valid: Py<PyArray1<i8>>,
     area_size_bucket: Py<PyArray2<i8>>,
     area_map_station_count_bucket: Py<PyArray2<i8>>,
     door_match: Py<PyArray2<i16>>,
@@ -1729,13 +1754,15 @@ pub struct ProposalCandidateBuffers {
     pre_door_valid: Py<PyArray2<i8>>,
     pre_connections_valid: Py<PyArray2<i8>>,
     pre_toilet_valid: Py<PyArray1<i8>>,
-    pre_phantoon_valid: Py<PyArray1<i8>>,
+    pre_phantoon_pair_valid: Py<PyArray1<i8>>,
+    pre_phantoon_area_valid: Py<PyArray1<i8>>,
     pre_area_size_bucket: Py<PyArray2<i8>>,
     pre_area_map_station_count_bucket: Py<PyArray2<i8>>,
     door_valid: Py<PyArray3<i8>>,
     connections_valid: Py<PyArray3<i8>>,
     toilet_valid: Py<PyArray2<i8>>,
-    phantoon_valid: Py<PyArray2<i8>>,
+    phantoon_pair_valid: Py<PyArray2<i8>>,
+    phantoon_area_valid: Py<PyArray2<i8>>,
     area_size_bucket: Py<PyArray3<i8>>,
     area_map_station_count_bucket: Py<PyArray3<i8>>,
     door_match: Py<PyArray3<i16>>,
@@ -1854,7 +1881,8 @@ impl ProposalCandidateBuffers {
             pre_door_valid: required_py_field!(fields, "pre_door_valid"),
             pre_connections_valid: required_py_field!(fields, "pre_connections_valid"),
             pre_toilet_valid: required_py_field!(fields, "pre_toilet_valid"),
-            pre_phantoon_valid: required_py_field!(fields, "pre_phantoon_valid"),
+            pre_phantoon_pair_valid: required_py_field!(fields, "pre_phantoon_pair_valid"),
+            pre_phantoon_area_valid: required_py_field!(fields, "pre_phantoon_area_valid"),
             pre_area_size_bucket: required_py_field!(fields, "pre_area_size_bucket"),
             pre_area_map_station_count_bucket: required_py_field!(
                 fields,
@@ -1863,7 +1891,8 @@ impl ProposalCandidateBuffers {
             door_valid: required_py_field!(fields, "door_valid"),
             connections_valid: required_py_field!(fields, "connections_valid"),
             toilet_valid: required_py_field!(fields, "toilet_valid"),
-            phantoon_valid: required_py_field!(fields, "phantoon_valid"),
+            phantoon_pair_valid: required_py_field!(fields, "phantoon_pair_valid"),
+            phantoon_area_valid: required_py_field!(fields, "phantoon_area_valid"),
             area_size_bucket: required_py_field!(fields, "area_size_bucket"),
             area_map_station_count_bucket: required_py_field!(
                 fields,
@@ -2059,8 +2088,13 @@ impl StepOutcomes {
     }
 
     #[getter]
-    fn phantoon_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
-        self.phantoon_valid.clone_ref(py)
+    fn phantoon_pair_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
+        self.phantoon_pair_valid.clone_ref(py)
+    }
+
+    #[getter]
+    fn phantoon_area_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
+        self.phantoon_area_valid.clone_ref(py)
     }
 
     #[getter]
@@ -2213,7 +2247,8 @@ impl EpisodeOutcomes {
             door_valid: self.step_outcomes.door_valid.clone_ref(py),
             connections_valid: self.step_outcomes.connections_valid.clone_ref(py),
             toilet_valid: self.step_outcomes.toilet_valid.clone_ref(py),
-            phantoon_valid: self.step_outcomes.phantoon_valid.clone_ref(py),
+            phantoon_pair_valid: self.step_outcomes.phantoon_pair_valid.clone_ref(py),
+            phantoon_area_valid: self.step_outcomes.phantoon_area_valid.clone_ref(py),
             area_size_bucket: self.step_outcomes.area_size_bucket.clone_ref(py),
             area_map_station_count_bucket: self
                 .step_outcomes
@@ -4240,7 +4275,8 @@ impl EnvironmentGroup {
         let mut pre_door_valid = buffers.pre_door_valid.bind(py).readwrite();
         let mut pre_connections_valid = buffers.pre_connections_valid.bind(py).readwrite();
         let mut pre_toilet_valid = buffers.pre_toilet_valid.bind(py).readwrite();
-        let mut pre_phantoon_valid = buffers.pre_phantoon_valid.bind(py).readwrite();
+        let mut pre_phantoon_pair_valid = buffers.pre_phantoon_pair_valid.bind(py).readwrite();
+        let mut pre_phantoon_area_valid = buffers.pre_phantoon_area_valid.bind(py).readwrite();
         let mut pre_area_size_bucket = buffers.pre_area_size_bucket.bind(py).readwrite();
         let mut pre_area_map_station_count_bucket = buffers
             .pre_area_map_station_count_bucket
@@ -4249,7 +4285,8 @@ impl EnvironmentGroup {
         let mut door_valid = buffers.door_valid.bind(py).readwrite();
         let mut connections_valid = buffers.connections_valid.bind(py).readwrite();
         let mut toilet_valid = buffers.toilet_valid.bind(py).readwrite();
-        let mut phantoon_valid = buffers.phantoon_valid.bind(py).readwrite();
+        let mut phantoon_pair_valid = buffers.phantoon_pair_valid.bind(py).readwrite();
+        let mut phantoon_area_valid = buffers.phantoon_area_valid.bind(py).readwrite();
         let mut area_size_bucket = buffers.area_size_bucket.bind(py).readwrite();
         let mut area_map_station_count_bucket =
             buffers.area_map_station_count_bucket.bind(py).readwrite();
@@ -4356,8 +4393,13 @@ impl EnvironmentGroup {
             &[self.num_environments],
         )?;
         check_shape(
-            "pre_phantoon_valid",
-            pre_phantoon_valid.as_array().shape(),
+            "pre_phantoon_pair_valid",
+            pre_phantoon_pair_valid.as_array().shape(),
+            &[self.num_environments],
+        )?;
+        check_shape(
+            "pre_phantoon_area_valid",
+            pre_phantoon_area_valid.as_array().shape(),
             &[self.num_environments],
         )?;
         check_shape(
@@ -4394,8 +4436,13 @@ impl EnvironmentGroup {
             &[self.num_environments, recommended_candidates],
         )?;
         check_shape(
-            "phantoon_valid",
-            phantoon_valid.as_array().shape(),
+            "phantoon_pair_valid",
+            phantoon_pair_valid.as_array().shape(),
+            &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "phantoon_area_valid",
+            phantoon_area_valid.as_array().shape(),
             &[self.num_environments, recommended_candidates],
         )?;
         check_shape(
@@ -4473,9 +4520,12 @@ impl EnvironmentGroup {
         let pre_toilet_valid = pre_toilet_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_toilet_valid must be contiguous"))?;
-        let pre_phantoon_valid = pre_phantoon_valid
+        let pre_phantoon_pair_valid = pre_phantoon_pair_valid
             .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("pre_phantoon_valid must be contiguous"))?;
+            .map_err(|_| PyValueError::new_err("pre_phantoon_pair_valid must be contiguous"))?;
+        let pre_phantoon_area_valid = pre_phantoon_area_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_phantoon_area_valid must be contiguous"))?;
         let pre_area_size_bucket = pre_area_size_bucket
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_area_size_bucket must be contiguous"))?;
@@ -4493,9 +4543,12 @@ impl EnvironmentGroup {
         let toilet_valid = toilet_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("toilet_valid must be contiguous"))?;
-        let phantoon_valid = phantoon_valid
+        let phantoon_pair_valid = phantoon_pair_valid
             .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("phantoon_valid must be contiguous"))?;
+            .map_err(|_| PyValueError::new_err("phantoon_pair_valid must be contiguous"))?;
+        let phantoon_area_valid = phantoon_area_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("phantoon_area_valid must be contiguous"))?;
         let area_size_bucket = area_size_bucket
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("area_size_bucket must be contiguous"))?;
@@ -4530,13 +4583,15 @@ impl EnvironmentGroup {
         pre_door_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_connections_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_toilet_valid.fill(DoorValidOutcome::Unknown as i8);
-        pre_phantoon_valid.fill(DoorValidOutcome::Unknown as i8);
+        pre_phantoon_pair_valid.fill(DoorValidOutcome::Unknown as i8);
+        pre_phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         pre_area_map_station_count_bucket.fill(AreaBucketOutcome::Unknown as i8);
         door_valid.fill(DoorValidOutcome::Unknown as i8);
         connections_valid.fill(DoorValidOutcome::Unknown as i8);
         toilet_valid.fill(DoorValidOutcome::Unknown as i8);
-        phantoon_valid.fill(DoorValidOutcome::Unknown as i8);
+        phantoon_pair_valid.fill(DoorValidOutcome::Unknown as i8);
+        phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
         area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         area_map_station_count_bucket.fill(AreaBucketOutcome::Unknown as i8);
         door_match.fill(-1);
@@ -4618,8 +4673,11 @@ impl EnvironmentGroup {
                     pre_toilet_valid: OutputShard::from_slice(
                         &mut pre_toilet_valid[worker.start..worker.end()],
                     ),
-                    pre_phantoon_valid: OutputShard::from_slice(
-                        &mut pre_phantoon_valid[worker.start..worker.end()],
+                    pre_phantoon_pair_valid: OutputShard::from_slice(
+                        &mut pre_phantoon_pair_valid[worker.start..worker.end()],
+                    ),
+                    pre_phantoon_area_valid: OutputShard::from_slice(
+                        &mut pre_phantoon_area_valid[worker.start..worker.end()],
                     ),
                     pre_area_size_bucket: OutputShard::from_slice(
                         &mut pre_area_size_bucket[pre_area_output_start..pre_area_output_end],
@@ -4637,8 +4695,11 @@ impl EnvironmentGroup {
                     toilet_valid: OutputShard::from_slice(
                         &mut toilet_valid[output_start..output_end],
                     ),
-                    phantoon_valid: OutputShard::from_slice(
-                        &mut phantoon_valid[output_start..output_end],
+                    phantoon_pair_valid: OutputShard::from_slice(
+                        &mut phantoon_pair_valid[output_start..output_end],
+                    ),
+                    phantoon_area_valid: OutputShard::from_slice(
+                        &mut phantoon_area_valid[output_start..output_end],
                     ),
                     area_size_bucket: OutputShard::from_slice(
                         &mut area_size_bucket[area_output_start..area_output_end],
@@ -4745,7 +4806,8 @@ impl EnvironmentGroup {
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
         let mut toilet_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
-        let mut phantoon_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
+        let mut phantoon_pair_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
+        let mut phantoon_area_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let area_outcome_len = self.num_environments * AREA_COUNT;
         let mut area_size_bucket = vec![AreaBucketOutcome::Unknown as i8; area_outcome_len];
         let mut area_map_station_count_bucket =
@@ -4806,8 +4868,11 @@ impl EnvironmentGroup {
                     toilet_valid: OutputShard::from_slice(
                         &mut toilet_valid[worker.start..worker.end()],
                     ),
-                    phantoon_valid: OutputShard::from_slice(
-                        &mut phantoon_valid[worker.start..worker.end()],
+                    phantoon_pair_valid: OutputShard::from_slice(
+                        &mut phantoon_pair_valid[worker.start..worker.end()],
+                    ),
+                    phantoon_area_valid: OutputShard::from_slice(
+                        &mut phantoon_area_valid[worker.start..worker.end()],
                     ),
                     area_size_bucket: OutputShard::from_slice(
                         &mut area_size_bucket[area_start..area_end],
@@ -4905,7 +4970,8 @@ impl EnvironmentGroup {
                 )?
                 .unbind(),
                 toilet_valid: toilet_valid.into_pyarray(py).unbind(),
-                phantoon_valid: phantoon_valid.into_pyarray(py).unbind(),
+                phantoon_pair_valid: phantoon_pair_valid.into_pyarray(py).unbind(),
+                phantoon_area_valid: phantoon_area_valid.into_pyarray(py).unbind(),
                 area_size_bucket: pyarray2_from_flat_vec(
                     py,
                     area_size_bucket,
@@ -5073,7 +5139,8 @@ impl EnvironmentGroup {
         let mut door_valid = vec![DoorValidOutcome::Unknown as i8; door_output_len];
         let mut connections_valid = vec![DoorValidOutcome::Unknown as i8; connection_output_len];
         let mut toilet_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
-        let mut phantoon_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
+        let mut phantoon_pair_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
+        let mut phantoon_area_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let area_output_len = environment_count * AREA_COUNT;
         let mut area_size_bucket = vec![AreaBucketOutcome::Unknown as i8; area_output_len];
         let mut area_map_station_count_bucket =
@@ -5115,8 +5182,11 @@ impl EnvironmentGroup {
                     toilet_valid: OutputShard::from_slice(
                         &mut toilet_valid[input_start..input_start + environment_count],
                     ),
-                    phantoon_valid: OutputShard::from_slice(
-                        &mut phantoon_valid[input_start..input_start + environment_count],
+                    phantoon_pair_valid: OutputShard::from_slice(
+                        &mut phantoon_pair_valid[input_start..input_start + environment_count],
+                    ),
+                    phantoon_area_valid: OutputShard::from_slice(
+                        &mut phantoon_area_valid[input_start..input_start + environment_count],
                     ),
                     area_size_bucket: OutputShard::from_slice(
                         &mut area_size_bucket[area_output_start..area_output_end],
@@ -5153,7 +5223,8 @@ impl EnvironmentGroup {
             )?
             .unbind(),
             toilet_valid: toilet_valid.into_pyarray(py).unbind(),
-            phantoon_valid: phantoon_valid.into_pyarray(py).unbind(),
+            phantoon_pair_valid: phantoon_pair_valid.into_pyarray(py).unbind(),
+            phantoon_area_valid: phantoon_area_valid.into_pyarray(py).unbind(),
             area_size_bucket: pyarray2_from_flat_vec(
                 py,
                 area_size_bucket,

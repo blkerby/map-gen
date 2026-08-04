@@ -43,7 +43,8 @@ class GenerateConfig:
     reward_door: float | torch.Tensor
     reward_connection: float | torch.Tensor
     reward_toilet: float | torch.Tensor
-    reward_phantoon: float | torch.Tensor
+    reward_phantoon_pair: float | torch.Tensor
+    reward_phantoon_area: float | torch.Tensor
     reward_balance: float | torch.Tensor
     reward_toilet_balance: float | torch.Tensor
     reward_frontier: float | torch.Tensor
@@ -166,7 +167,9 @@ class StepOutcomes:
     # -1 = unknown, 0 = valid (the Toilet crosses exactly one room), 1 = invalid
     toilet_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (Phantoon rooms connect to the same room), 1 = invalid
-    phantoon_invalid: torch.Tensor
+    phantoon_pair_invalid: torch.Tensor
+    # -1 = unknown, 0 = valid (Phantoon rooms share an area), 1 = invalid
+    phantoon_area_invalid: torch.Tensor
     # -1 = unknown; 0 = below minimum, 1 = valid range, 2 = above maximum.
     area_size_bucket: torch.Tensor
     # -1 = unknown; 0 = zero, 1 = one, 2 = two-or-more.
@@ -181,7 +184,12 @@ class StepOutcomes:
             door_invalid=self.door_invalid.to(device, non_blocking=non_blocking),
             connection_invalid=self.connection_invalid.to(device, non_blocking=non_blocking),
             toilet_invalid=self.toilet_invalid.to(device, non_blocking=non_blocking),
-            phantoon_invalid=self.phantoon_invalid.to(device, non_blocking=non_blocking),
+            phantoon_pair_invalid=self.phantoon_pair_invalid.to(
+                device, non_blocking=non_blocking
+            ),
+            phantoon_area_invalid=self.phantoon_area_invalid.to(
+                device, non_blocking=non_blocking
+            ),
             area_size_bucket=self.area_size_bucket.to(device, non_blocking=non_blocking),
             area_map_station_count_bucket=self.area_map_station_count_bucket.to(
                 device, non_blocking=non_blocking
@@ -194,7 +202,8 @@ class StepOutcomes:
             door_invalid=self.door_invalid[start:end],
             connection_invalid=self.connection_invalid[start:end],
             toilet_invalid=self.toilet_invalid[start:end],
-            phantoon_invalid=self.phantoon_invalid[start:end],
+            phantoon_pair_invalid=self.phantoon_pair_invalid[start:end],
+            phantoon_area_invalid=self.phantoon_area_invalid[start:end],
             area_size_bucket=self.area_size_bucket[start:end],
             area_map_station_count_bucket=self.area_map_station_count_bucket[start:end],
             door_match=self.door_match[start:end],
@@ -347,13 +356,15 @@ class CandidateSlot:
         self.pre_door_invalid = None
         self.pre_connection_invalid = None
         self.pre_toilet_invalid = None
-        self.pre_phantoon_invalid = None
+        self.pre_phantoon_pair_invalid = None
+        self.pre_phantoon_area_invalid = None
         self.pre_area_size_bucket = None
         self.pre_area_map_station_count_bucket = None
         self.door_invalid = None
         self.connection_invalid = None
         self.toilet_invalid = None
-        self.phantoon_invalid = None
+        self.phantoon_pair_invalid = None
+        self.phantoon_area_invalid = None
         self.area_size_bucket = None
         self.area_map_station_count_bucket = None
         self.door_match = None
@@ -403,7 +414,8 @@ class CandidateSlot:
             torch.int8,
         )
         self.pre_toilet_invalid = self._empty((self.environment_capacity,), torch.int8)
-        self.pre_phantoon_invalid = self._empty((self.environment_capacity,), torch.int8)
+        self.pre_phantoon_pair_invalid = self._empty((self.environment_capacity,), torch.int8)
+        self.pre_phantoon_area_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_area_size_bucket = self._empty(
             (self.environment_capacity, AREA_COUNT), torch.int8
         )
@@ -419,7 +431,8 @@ class CandidateSlot:
             torch.int8,
         )
         self.toilet_invalid = self._empty(candidate_shape, torch.int8)
-        self.phantoon_invalid = self._empty(candidate_shape, torch.int8)
+        self.phantoon_pair_invalid = self._empty(candidate_shape, torch.int8)
+        self.phantoon_area_invalid = self._empty(candidate_shape, torch.int8)
         self.area_size_bucket = self._empty((*candidate_shape, AREA_COUNT), torch.int8)
         self.area_map_station_count_bucket = self._empty(
             (*candidate_shape, AREA_COUNT), torch.int8
@@ -457,7 +470,8 @@ class CandidateSlot:
             door_invalid=self.pre_door_invalid[:environment_count],
             connection_invalid=self.pre_connection_invalid[:environment_count],
             toilet_invalid=self.pre_toilet_invalid[:environment_count],
-            phantoon_invalid=self.pre_phantoon_invalid[:environment_count],
+            phantoon_pair_invalid=self.pre_phantoon_pair_invalid[:environment_count],
+            phantoon_area_invalid=self.pre_phantoon_area_invalid[:environment_count],
             area_size_bucket=self.pre_area_size_bucket[:environment_count],
             area_map_station_count_bucket=self.pre_area_map_station_count_bucket[
                 :environment_count
@@ -474,7 +488,12 @@ class CandidateSlot:
             door_invalid=self.door_invalid[:environment_count, :candidate_count],
             connection_invalid=self.connection_invalid[:environment_count, :candidate_count],
             toilet_invalid=self.toilet_invalid[:environment_count, :candidate_count],
-            phantoon_invalid=self.phantoon_invalid[:environment_count, :candidate_count],
+            phantoon_pair_invalid=self.phantoon_pair_invalid[
+                :environment_count, :candidate_count
+            ],
+            phantoon_area_invalid=self.phantoon_area_invalid[
+                :environment_count, :candidate_count
+            ],
             area_size_bucket=self.area_size_bucket[:environment_count, :candidate_count],
             area_map_station_count_bucket=self.area_map_station_count_bucket[
                 :environment_count, :candidate_count
@@ -560,7 +579,8 @@ class GlobalFeatures:
     lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
     lookahead_toilet_invalid: torch.Tensor
-    lookahead_phantoon_invalid: torch.Tensor
+    lookahead_phantoon_pair_invalid: torch.Tensor
+    lookahead_phantoon_area_invalid: torch.Tensor
     lookahead_area_size_bucket: torch.Tensor
     lookahead_area_map_station_count_bucket: torch.Tensor
     connection_reachability: torch.Tensor
@@ -635,7 +655,10 @@ class GlobalFeatures:
             lookahead_toilet_invalid=self.lookahead_toilet_invalid.to(
                 device, non_blocking=non_blocking
             ),
-            lookahead_phantoon_invalid=self.lookahead_phantoon_invalid.to(
+            lookahead_phantoon_pair_invalid=self.lookahead_phantoon_pair_invalid.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.to(
                 device, non_blocking=non_blocking
             ),
             lookahead_area_size_bucket=self.lookahead_area_size_bucket.to(
@@ -693,7 +716,8 @@ class GlobalFeatures:
             lookahead_door_match=self.lookahead_door_match.flatten(0, 1),
             lookahead_connection_invalid=self.lookahead_connection_invalid.flatten(0, 1),
             lookahead_toilet_invalid=self.lookahead_toilet_invalid.flatten(0, 1),
-            lookahead_phantoon_invalid=self.lookahead_phantoon_invalid.flatten(0, 1),
+            lookahead_phantoon_pair_invalid=self.lookahead_phantoon_pair_invalid.flatten(0, 1),
+            lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.flatten(0, 1),
             lookahead_area_size_bucket=self.lookahead_area_size_bucket.flatten(0, 1),
             lookahead_area_map_station_count_bucket=(
                 self.lookahead_area_map_station_count_bucket.flatten(0, 1)
@@ -1253,7 +1277,10 @@ class EnvironmentGroup:
                         : self.num_envs
                     ].numpy(),
                     "pre_toilet_valid": candidate_slot.pre_toilet_invalid[: self.num_envs].numpy(),
-                    "pre_phantoon_valid": candidate_slot.pre_phantoon_invalid[
+                    "pre_phantoon_pair_valid": candidate_slot.pre_phantoon_pair_invalid[
+                        : self.num_envs
+                    ].numpy(),
+                    "pre_phantoon_area_valid": candidate_slot.pre_phantoon_area_invalid[
                         : self.num_envs
                     ].numpy(),
                     "pre_area_size_bucket": candidate_slot.pre_area_size_bucket[
@@ -1271,7 +1298,10 @@ class EnvironmentGroup:
                     "toilet_valid": candidate_slot.toilet_invalid[
                         : self.num_envs, :candidate_count
                     ].numpy(),
-                    "phantoon_valid": candidate_slot.phantoon_invalid[
+                    "phantoon_pair_valid": candidate_slot.phantoon_pair_invalid[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "phantoon_area_valid": candidate_slot.phantoon_area_invalid[
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "area_size_bucket": candidate_slot.area_size_bucket[
@@ -1356,7 +1386,12 @@ class EnvironmentGroup:
                     device
                 ),
                 toilet_invalid=torch.from_numpy(result.step_outcomes.toilet_valid).to(device),
-                phantoon_invalid=torch.from_numpy(result.step_outcomes.phantoon_valid).to(device),
+                phantoon_pair_invalid=torch.from_numpy(
+                    result.step_outcomes.phantoon_pair_valid
+                ).to(device),
+                phantoon_area_invalid=torch.from_numpy(
+                    result.step_outcomes.phantoon_area_valid
+                ).to(device),
                 area_size_bucket=torch.from_numpy(
                     result.step_outcomes.area_size_bucket
                 ).to(device),
@@ -1457,7 +1492,8 @@ class EnvironmentGroup:
             door_invalid=torch.from_numpy(result.door_valid).to(device),
             connection_invalid=torch.from_numpy(result.connections_valid).to(device),
             toilet_invalid=torch.from_numpy(result.toilet_valid).to(device),
-            phantoon_invalid=torch.from_numpy(result.phantoon_valid).to(device),
+            phantoon_pair_invalid=torch.from_numpy(result.phantoon_pair_valid).to(device),
+            phantoon_area_invalid=torch.from_numpy(result.phantoon_area_valid).to(device),
             area_size_bucket=torch.from_numpy(result.area_size_bucket).to(device),
             area_map_station_count_bucket=torch.from_numpy(
                 result.area_map_station_count_bucket
@@ -2014,7 +2050,8 @@ class FeatureSlot:
         lookahead_door_match = lookahead_outcomes.door_match
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
-        lookahead_phantoon_invalid = lookahead_outcomes.phantoon_invalid
+        lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
+        lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = (
             lookahead_outcomes.area_map_station_count_bucket
@@ -2044,9 +2081,15 @@ class FeatureSlot:
                     0,
                 ]
             )
-            lookahead_phantoon_invalid = lookahead_phantoon_invalid.new_empty(
+            lookahead_phantoon_pair_invalid = lookahead_phantoon_pair_invalid.new_empty(
                 [
-                    *lookahead_phantoon_invalid.shape,
+                    *lookahead_phantoon_pair_invalid.shape,
+                    0,
+                ]
+            )
+            lookahead_phantoon_area_invalid = lookahead_phantoon_area_invalid.new_empty(
+                [
+                    *lookahead_phantoon_area_invalid.shape,
                     0,
                 ]
             )
@@ -2111,7 +2154,8 @@ class FeatureSlot:
                 lookahead_door_match=lookahead_door_match,
                 lookahead_connection_invalid=lookahead_connection_invalid,
                 lookahead_toilet_invalid=lookahead_toilet_invalid,
-                lookahead_phantoon_invalid=lookahead_phantoon_invalid,
+                lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
+                lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
                 lookahead_area_map_station_count_bucket=(
                     lookahead_area_map_station_count_bucket
@@ -2218,7 +2262,8 @@ class FeatureSlot:
         lookahead_door_match = lookahead_outcomes.door_match
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
-        lookahead_phantoon_invalid = lookahead_outcomes.phantoon_invalid
+        lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
+        lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = (
             lookahead_outcomes.area_map_station_count_bucket
@@ -2236,7 +2281,10 @@ class FeatureSlot:
             lookahead_toilet_invalid = lookahead_toilet_invalid.new_empty(
                 [environment_count, candidate_count, 0]
             )
-            lookahead_phantoon_invalid = lookahead_phantoon_invalid.new_empty(
+            lookahead_phantoon_pair_invalid = lookahead_phantoon_pair_invalid.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_phantoon_area_invalid = lookahead_phantoon_area_invalid.new_empty(
                 [environment_count, candidate_count, 0]
             )
             lookahead_area_size_bucket = lookahead_area_size_bucket.new_empty(
@@ -2329,7 +2377,8 @@ class FeatureSlot:
                 lookahead_door_match=lookahead_door_match,
                 lookahead_connection_invalid=lookahead_connection_invalid,
                 lookahead_toilet_invalid=lookahead_toilet_invalid,
-                lookahead_phantoon_invalid=lookahead_phantoon_invalid,
+                lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
+                lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
                 lookahead_area_map_station_count_bucket=(
                     lookahead_area_map_station_count_bucket

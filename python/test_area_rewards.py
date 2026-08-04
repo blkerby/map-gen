@@ -6,13 +6,15 @@ from model import Predictions
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
-def zero_generate_config(**area_rewards) -> GenerateConfig:
+def zero_generate_config(**rewards) -> GenerateConfig:
     values = {
+        "reward_phantoon_pair": 0.0,
+        "reward_phantoon_area": 0.0,
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 0.0,
         "reward_area_map_station": 0.0,
     }
-    values.update(area_rewards)
+    values.update(rewards)
     generation_variable_floats = torch.zeros([1, len(GENERATION_VARIABLE_FLOAT_FIELDS)])
     return GenerateConfig(
         episode_length=1,
@@ -27,7 +29,8 @@ def zero_generate_config(**area_rewards) -> GenerateConfig:
         reward_door=0.0,
         reward_connection=0.0,
         reward_toilet=0.0,
-        reward_phantoon=0.0,
+        reward_phantoon_pair=values["reward_phantoon_pair"],
+        reward_phantoon_area=values["reward_phantoon_area"],
         reward_balance=0.0,
         reward_toilet_balance=0.0,
         reward_frontier=0.0,
@@ -63,7 +66,8 @@ def area_predictions() -> Predictions:
         door_invalid=torch.zeros([batch, candidate, door]),
         connection_invalid=torch.zeros([batch, candidate, connection]),
         toilet_invalid=torch.zeros([batch, candidate]),
-        phantoon_invalid=torch.zeros([batch, candidate]),
+        phantoon_pair_invalid=torch.zeros([batch, candidate]),
+        phantoon_area_invalid=torch.zeros([batch, candidate]),
         balance_score=torch.zeros([batch, candidate, door]),
         toilet_balance_score=torch.zeros([batch, candidate]),
         avg_frontiers=torch.zeros([batch, candidate]),
@@ -87,7 +91,8 @@ def unknown_outcomes() -> StepOutcomes:
         door_invalid=torch.full([1, 2, 3], -1.0),
         connection_invalid=torch.full([1, 2, 4], -1.0),
         toilet_invalid=torch.full([1, 2], -1.0),
-        phantoon_invalid=torch.full([1, 2], -1.0),
+        phantoon_pair_invalid=torch.full([1, 2], -1.0),
+        phantoon_area_invalid=torch.full([1, 2], -1.0),
         area_size_bucket=torch.full([1, 2, 6], -1.0),
         area_map_station_count_bucket=torch.full([1, 2, 6], -1.0),
         door_match=torch.full([1, 2, 3], -1.0),
@@ -101,6 +106,33 @@ def test_zero_area_rewards_leave_reward_unchanged() -> None:
         zero_generate_config(),
     )
     assert torch.equal(reward, torch.zeros([1, 2]))
+
+
+def test_phantoon_rewards_use_independent_coefficients() -> None:
+    predictions = area_predictions()
+    predictions.phantoon_pair_invalid = torch.tensor([[0.0, 1.0]])
+    predictions.phantoon_area_invalid = torch.tensor([[2.0, 3.0]])
+    outcomes = unknown_outcomes()
+
+    pair_reward = compute_expected_reward(
+        predictions,
+        outcomes,
+        zero_generate_config(reward_phantoon_pair=2.0),
+    )
+    area_reward = compute_expected_reward(
+        predictions,
+        outcomes,
+        zero_generate_config(reward_phantoon_area=3.0),
+    )
+
+    assert torch.allclose(
+        pair_reward,
+        2.0 * torch.nn.functional.logsigmoid(-predictions.phantoon_pair_invalid),
+    )
+    assert torch.allclose(
+        area_reward,
+        3.0 * torch.nn.functional.logsigmoid(-predictions.phantoon_area_invalid),
+    )
 
 
 def test_area_rewards_use_valid_bucket_logprobs() -> None:

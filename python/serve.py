@@ -51,8 +51,8 @@ from model_loading import create_balance_model, frontier_model_kwargs, without_p
 from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, validate_config
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v1"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v3"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v2"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v4"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -109,7 +109,8 @@ class GenerateRequest(StrictBaseModel):
     reward_door: float
     reward_connection: float
     reward_toilet: float
-    reward_phantoon: float
+    reward_phantoon_pair: float
+    reward_phantoon_area: float
     reward_balance: float
     reward_toilet_balance: float
     reward_frontier: float
@@ -478,7 +479,8 @@ def create_generate_configs(
         "reward_door": generate_request.reward_door,
         "reward_connection": generate_request.reward_connection,
         "reward_toilet": generate_request.reward_toilet,
-        "reward_phantoon": generate_request.reward_phantoon,
+        "reward_phantoon_pair": generate_request.reward_phantoon_pair,
+        "reward_phantoon_area": generate_request.reward_phantoon_area,
         "reward_balance": generate_request.reward_balance,
         "reward_toilet_balance": generate_request.reward_toilet_balance,
         "reward_frontier": generate_request.reward_frontier,
@@ -562,7 +564,8 @@ def create_generate_configs(
                 reward_door=generate_request.reward_door,
                 reward_connection=generate_request.reward_connection,
                 reward_toilet=generate_request.reward_toilet,
-                reward_phantoon=generate_request.reward_phantoon,
+                reward_phantoon_pair=generate_request.reward_phantoon_pair,
+                reward_phantoon_area=generate_request.reward_phantoon_area,
                 reward_balance=generate_request.reward_balance,
                 reward_toilet_balance=generate_request.reward_toilet_balance,
                 reward_frontier=generate_request.reward_frontier,
@@ -633,7 +636,8 @@ def valid_map_mask(outcomes, min_area_size: int, max_area_size: int) -> torch.Te
         tensor_has_invalid_outcome(step_outcomes.door_invalid)
         | tensor_has_invalid_outcome(step_outcomes.connection_invalid)
         | tensor_has_invalid_outcome(step_outcomes.toilet_invalid)
-        | tensor_has_invalid_outcome(step_outcomes.phantoon_invalid)
+        | tensor_has_invalid_outcome(step_outcomes.phantoon_pair_invalid)
+        | tensor_has_invalid_outcome(step_outcomes.phantoon_area_invalid)
         | tensor_has_invalid_outcome(area_size_invalid)
         | tensor_has_invalid_outcome(area_map_station_invalid)
     )
@@ -788,7 +792,8 @@ def warmup_generate_request() -> GenerateRequest:
         reward_door=1.0,
         reward_connection=1.0,
         reward_toilet=1.0,
-        reward_phantoon=1.0,
+        reward_phantoon_pair=1.0,
+        reward_phantoon_area=1.0,
         reward_balance=0.1,
         reward_toilet_balance=0.1,
         reward_frontier=0.0,

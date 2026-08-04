@@ -228,8 +228,10 @@ fn introduces_invalid_outcome(before: &StepOutcomes, after: &StepOutcomes) -> bo
             })
         || (before.toilet_valid == DoorValidOutcome::Unknown
             && after.toilet_valid == DoorValidOutcome::Invalid)
-        || (before.phantoon_valid == DoorValidOutcome::Unknown
-            && after.phantoon_valid == DoorValidOutcome::Invalid)
+        || (before.phantoon_pair_valid == DoorValidOutcome::Unknown
+            && after.phantoon_pair_valid == DoorValidOutcome::Invalid)
+        || (before.phantoon_area_valid == DoorValidOutcome::Unknown
+            && after.phantoon_area_valid == DoorValidOutcome::Invalid)
         || introduces_invalid_area_bucket(&before.area_size_bucket, &after.area_size_bucket)
         || introduces_invalid_area_bucket(
             &before.area_map_station_count_bucket,
@@ -330,7 +332,9 @@ pub struct StepOutcomes {
     // Whether the Toilet crosses exactly one room.
     pub toilet_valid: DoorValidOutcome,
     // Whether Phantoon's Room and Wrecked Ship Map Room connect to the same room.
-    pub phantoon_valid: DoorValidOutcome,
+    pub phantoon_pair_valid: DoorValidOutcome,
+    // Whether the Phantoon boss, map, and save rooms are in the same area.
+    pub phantoon_area_valid: DoorValidOutcome,
     // Final area-size bucket: below range, valid range, or above range.
     pub area_size_bucket: [AreaBucketOutcome; AREA_COUNT],
     // Final map-station-count bucket: zero, one, or two-or-more.
@@ -3921,18 +3925,33 @@ impl Environment {
             pre_candidate_outcomes.toilet_valid
         };
 
-        let phantoon_valid = if pre_candidate_outcomes.phantoon_valid == DoorValidOutcome::Unknown {
-            let after = self.phantoon_outcome(common);
-            if after == DoorValidOutcome::Invalid {
-                let profile = profile_start();
-                self.restore_lookahead_candidate(common, snapshot);
-                profile_end(ProfileMetric::EnvProposalRestore, profile);
-                return Ok(CandidateOutcome::Rejected);
-            }
-            after
-        } else {
-            pre_candidate_outcomes.phantoon_valid
-        };
+        let phantoon_pair_valid =
+            if pre_candidate_outcomes.phantoon_pair_valid == DoorValidOutcome::Unknown {
+                let after = self.phantoon_pair_outcome(common);
+                if after == DoorValidOutcome::Invalid {
+                    let profile = profile_start();
+                    self.restore_lookahead_candidate(common, snapshot);
+                    profile_end(ProfileMetric::EnvProposalRestore, profile);
+                    return Ok(CandidateOutcome::Rejected);
+                }
+                after
+            } else {
+                pre_candidate_outcomes.phantoon_pair_valid
+            };
+
+        let phantoon_area_valid =
+            if pre_candidate_outcomes.phantoon_area_valid == DoorValidOutcome::Unknown {
+                let after = self.phantoon_area_outcome(common);
+                if after == DoorValidOutcome::Invalid {
+                    let profile = profile_start();
+                    self.restore_lookahead_candidate(common, snapshot);
+                    profile_end(ProfileMetric::EnvProposalRestore, profile);
+                    return Ok(CandidateOutcome::Rejected);
+                }
+                after
+            } else {
+                pre_candidate_outcomes.phantoon_area_valid
+            };
 
         let (area_size_bucket, area_map_station_count_bucket) = self.area_bucket_outcomes(common);
         if introduces_invalid_area_bucket(
@@ -3963,7 +3982,8 @@ impl Environment {
             door_valid: door_valid.clone(),
             connections_valid: connections_valid.clone(),
             toilet_valid,
-            phantoon_valid,
+            phantoon_pair_valid,
+            phantoon_area_valid,
             area_size_bucket,
             area_map_station_count_bucket,
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
@@ -5673,7 +5693,8 @@ impl Environment {
             door_valid,
             connections_valid,
             toilet_valid: self.toilet_outcome(common),
-            phantoon_valid: self.phantoon_outcome(common),
+            phantoon_pair_valid: self.phantoon_pair_outcome(common),
+            phantoon_area_valid: self.phantoon_area_outcome(common),
             area_size_bucket,
             area_map_station_count_bucket,
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
@@ -5743,27 +5764,15 @@ impl Environment {
         crossed_room_idx
     }
 
-    fn phantoon_outcome(&self, common: &CommonData) -> DoorValidOutcome {
-        let (Some(boss_room_idx), Some(map_room_idx), Some(save_room_idx)) = (
+    fn phantoon_pair_outcome(&self, common: &CommonData) -> DoorValidOutcome {
+        let (Some(boss_room_idx), Some(map_room_idx)) = (
             common.phantoon_boss_room_idx(),
             common.phantoon_map_room_idx(),
-            common.phantoon_save_room_idx(),
         ) else {
             return DoorValidOutcome::Valid;
         };
-        let special_room_indices = [boss_room_idx, map_room_idx, save_room_idx];
-        let mut placed_areas = special_room_indices
-            .into_iter()
-            .filter(|&room_idx| self.room_used[room_idx as usize])
-            .map(|room_idx| self.room_area[room_idx as usize]);
-        if let Some(first_area) = placed_areas.next()
-            && placed_areas.any(|area| area != first_area)
-        {
-            return DoorValidOutcome::Invalid;
-        }
         let boss_used = self.room_used[boss_room_idx as usize];
         let map_used = self.room_used[map_room_idx as usize];
-        let save_used = self.room_used[save_room_idx as usize];
         let boss_neighbor = boss_used
             .then(|| self.matched_neighbor_room_idx(common, common.phantoon_boss_door()))
             .flatten();
@@ -5772,14 +5781,10 @@ impl Environment {
             .flatten();
         match (boss_neighbor, map_neighbor) {
             (Some(boss_neighbor), Some(map_neighbor)) => {
-                if boss_neighbor != map_neighbor {
-                    DoorValidOutcome::Invalid
-                } else if save_used {
+                if boss_neighbor == map_neighbor {
                     DoorValidOutcome::Valid
-                } else if self.finished {
-                    DoorValidOutcome::Invalid
                 } else {
-                    DoorValidOutcome::Unknown
+                    DoorValidOutcome::Invalid
                 }
             }
             (Some(boss_neighbor), None) => {
@@ -5813,6 +5818,36 @@ impl Environment {
                     DoorValidOutcome::Unknown
                 }
             }
+        }
+    }
+
+    fn phantoon_area_outcome(&self, common: &CommonData) -> DoorValidOutcome {
+        let (Some(boss_room_idx), Some(map_room_idx), Some(save_room_idx)) = (
+            common.phantoon_boss_room_idx(),
+            common.phantoon_map_room_idx(),
+            common.phantoon_save_room_idx(),
+        ) else {
+            return DoorValidOutcome::Valid;
+        };
+        let special_room_indices = [boss_room_idx, map_room_idx, save_room_idx];
+        let mut placed_areas = special_room_indices
+            .into_iter()
+            .filter(|&room_idx| self.room_used[room_idx as usize])
+            .map(|room_idx| self.room_area[room_idx as usize]);
+        if let Some(first_area) = placed_areas.next()
+            && placed_areas.any(|area| area != first_area)
+        {
+            return DoorValidOutcome::Invalid;
+        }
+        if special_room_indices
+            .into_iter()
+            .all(|room_idx| self.room_used[room_idx as usize])
+        {
+            DoorValidOutcome::Valid
+        } else if self.finished {
+            DoorValidOutcome::Invalid
+        } else {
+            DoorValidOutcome::Unknown
         }
     }
 
@@ -5936,9 +5971,15 @@ impl Environment {
                 stage,
             )?;
             check_outcome_transition_consistency(
-                &[known_outcomes.phantoon_valid],
-                &[outcomes.phantoon_valid],
-                "phantoon",
+                &[known_outcomes.phantoon_pair_valid],
+                &[outcomes.phantoon_pair_valid],
+                "phantoon pair",
+                stage,
+            )?;
+            check_outcome_transition_consistency(
+                &[known_outcomes.phantoon_area_valid],
+                &[outcomes.phantoon_area_valid],
+                "phantoon area",
                 stage,
             )?;
             check_area_bucket_transition_consistency(
@@ -5973,7 +6014,14 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
             &current.connections_valid,
         ),
         toilet_valid: merge_known_outcome_value(known.toilet_valid, current.toilet_valid),
-        phantoon_valid: merge_known_outcome_value(known.phantoon_valid, current.phantoon_valid),
+        phantoon_pair_valid: merge_known_outcome_value(
+            known.phantoon_pair_valid,
+            current.phantoon_pair_valid,
+        ),
+        phantoon_area_valid: merge_known_outcome_value(
+            known.phantoon_area_valid,
+            current.phantoon_area_valid,
+        ),
         area_size_bucket: std::array::from_fn(|area| {
             merge_known_area_bucket(known.area_size_bucket[area], current.area_size_bucket[area])
         }),
@@ -7893,7 +7941,8 @@ mod tests {
                 door_valid: vec![Unknown],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
-                phantoon_valid: Valid,
+                phantoon_pair_valid: Valid,
+                phantoon_area_valid: Valid,
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -7902,7 +7951,8 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
-                phantoon_valid: Valid,
+                phantoon_pair_valid: Valid,
+                phantoon_area_valid: Valid,
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -7913,7 +7963,8 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Unknown],
                 toilet_valid: Unknown,
-                phantoon_valid: Unknown,
+                phantoon_pair_valid: Unknown,
+                phantoon_area_valid: Unknown,
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -7922,7 +7973,8 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Unknown,
-                phantoon_valid: Unknown,
+                phantoon_pair_valid: Unknown,
+                phantoon_area_valid: Unknown,
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -10679,7 +10731,7 @@ mod tests {
     }
 
     #[test]
-    fn phantoon_outcome_is_valid_without_special_rooms() {
+    fn phantoon_outcomes_are_valid_without_special_rooms() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"[{"map": [[1]], "toilet_crossing_x": [], "doors": [], "connections": [], "missing_connections": []}]"#,
         )
@@ -10688,29 +10740,41 @@ mod tests {
         let env = Environment::new(&common, (4, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
 
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
+            DoorValidOutcome::Valid
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Valid
         );
     }
 
     #[test]
-    fn phantoon_outcome_requires_placed_rooms_at_finish() {
+    fn phantoon_outcomes_require_placed_rooms_at_finish() {
         let common = phantoon_outcome_test_common();
         let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
 
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
+            DoorValidOutcome::Unknown
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Unknown
         );
         env.finish();
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
+            DoorValidOutcome::Invalid
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Invalid
         );
     }
 
     #[test]
-    fn phantoon_outcome_accepts_same_neighbor_room() {
+    fn phantoon_outcomes_accept_same_neighbor_and_area() {
         let common = phantoon_outcome_test_common();
         let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
         env.step_known(
@@ -10732,7 +10796,11 @@ mod tests {
             &common,
         );
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
+            DoorValidOutcome::Unknown
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Unknown
         );
         env.step_known(
@@ -10745,7 +10813,11 @@ mod tests {
             &common,
         );
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
+            DoorValidOutcome::Valid
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Unknown
         );
         env.step_known(
@@ -10759,13 +10831,17 @@ mod tests {
         );
 
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
+            DoorValidOutcome::Valid
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Valid
         );
     }
 
     #[test]
-    fn phantoon_outcome_rejects_different_areas_in_lookahead() {
+    fn phantoon_area_outcome_rejects_different_areas_in_lookahead() {
         let common = phantoon_outcome_test_common();
         let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
         for action in [
@@ -10803,11 +10879,12 @@ mod tests {
             )
             .step_outcomes;
 
-        assert_eq!(outcomes.phantoon_valid, DoorValidOutcome::Invalid);
+        assert_eq!(outcomes.phantoon_pair_valid, DoorValidOutcome::Valid);
+        assert_eq!(outcomes.phantoon_area_valid, DoorValidOutcome::Invalid);
     }
 
     #[test]
-    fn phantoon_outcome_rejects_different_neighbor_rooms() {
+    fn phantoon_pair_outcome_rejects_different_neighbor_rooms() {
         let common = phantoon_outcome_test_common();
         let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
         env.step_known(
@@ -10846,15 +10923,28 @@ mod tests {
             },
             &common,
         );
+        env.step_known(
+            Action {
+                room_idx: 4,
+                x: 7,
+                y: 1,
+                area: 0,
+            },
+            &common,
+        );
 
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
             DoorValidOutcome::Invalid
+        );
+        assert_eq!(
+            env.outcomes(&common).phantoon_area_valid,
+            DoorValidOutcome::Valid
         );
     }
 
     #[test]
-    fn phantoon_outcome_rejects_partial_match_without_neighbor_frontier() {
+    fn phantoon_pair_outcome_rejects_partial_match_without_neighbor_frontier() {
         let common = phantoon_outcome_dead_end_test_common();
         let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
         env.step_known(
@@ -10877,7 +10967,7 @@ mod tests {
         );
 
         assert_eq!(
-            env.outcomes(&common).phantoon_valid,
+            env.outcomes(&common).phantoon_pair_valid,
             DoorValidOutcome::Invalid
         );
     }

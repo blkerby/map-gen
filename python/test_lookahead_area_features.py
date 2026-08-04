@@ -18,7 +18,8 @@ def test_lookahead_area_buckets_use_unknown_zero_and_known_one_hot() -> None:
             lookahead_door_match=torch.empty([1, 0], dtype=torch.int16),
             lookahead_connection_invalid=torch.empty([1, 0], dtype=torch.int8),
             lookahead_toilet_invalid=torch.tensor([-1], dtype=torch.int8),
-            lookahead_phantoon_invalid=torch.tensor([-1], dtype=torch.int8),
+            lookahead_phantoon_pair_invalid=torch.tensor([-1], dtype=torch.int8),
+            lookahead_phantoon_area_invalid=torch.tensor([-1], dtype=torch.int8),
             lookahead_area_size_bucket=torch.tensor([[-1, 0, 1, 2, -1, 1]], dtype=torch.int8),
             lookahead_area_map_station_count_bucket=torch.tensor(
                 [[2, 1, 0, -1, 1, 2]], dtype=torch.int8
@@ -28,8 +29,8 @@ def test_lookahead_area_buckets_use_unknown_zero_and_known_one_hot() -> None:
 
     result = feature(features, torch.float32)
 
-    assert result.shape == (1, 42)
-    area_features = result[0, 6:]
+    assert result.shape == (1, 44)
+    area_features = result[0, 8:]
     assert torch.equal(area_features[:3], torch.zeros(3))
     assert torch.equal(area_features[3:6], torch.tensor([1.0, 0.0, 0.0]))
     assert torch.equal(area_features[6:9], torch.tensor([0.0, 1.0, 0.0]))

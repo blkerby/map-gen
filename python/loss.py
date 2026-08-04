@@ -13,7 +13,8 @@ class LossConfig:
     door_weight: float
     connection_weight: float
     toilet_weight: float
-    phantoon_weight: float
+    phantoon_pair_weight: float
+    phantoon_area_weight: float
     balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
@@ -33,7 +34,8 @@ class LossBreakdown:
     door: torch.Tensor
     connection: torch.Tensor
     toilet: torch.Tensor
-    phantoon: torch.Tensor
+    phantoon_pair: torch.Tensor
+    phantoon_area: torch.Tensor
     balance: torch.Tensor
     toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
@@ -47,7 +49,8 @@ class LossBreakdown:
     door_contribution: torch.Tensor
     connection_contribution: torch.Tensor
     toilet_contribution: torch.Tensor
-    phantoon_contribution: torch.Tensor
+    phantoon_pair_contribution: torch.Tensor
+    phantoon_area_contribution: torch.Tensor
     balance_contribution: torch.Tensor
     toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
@@ -187,11 +190,17 @@ def compute_loss_breakdown(
     toilet_loss, toilet_wt = masked_binary_cross_entropy_loss(
         preds.toilet_invalid, outcomes.toilet_invalid, mask.squeeze(-1), config.toilet_weight
     )
-    phantoon_loss, phantoon_wt = masked_binary_cross_entropy_loss(
-        preds.phantoon_invalid,
-        outcomes.phantoon_invalid,
+    phantoon_pair_loss, phantoon_pair_wt = masked_binary_cross_entropy_loss(
+        preds.phantoon_pair_invalid,
+        outcomes.phantoon_pair_invalid,
         mask.squeeze(-1),
-        config.phantoon_weight,
+        config.phantoon_pair_weight,
+    )
+    phantoon_area_loss, phantoon_area_wt = masked_binary_cross_entropy_loss(
+        preds.phantoon_area_invalid,
+        outcomes.phantoon_area_invalid,
+        mask.squeeze(-1),
+        config.phantoon_area_weight,
     )
     balance_loss, balance_wt = masked_offset_bernoulli_kl_loss(
         preds.balance_score,
@@ -276,7 +285,8 @@ def compute_loss_breakdown(
         door_wt
         + conn_wt
         + toilet_wt
-        + phantoon_wt
+        + phantoon_pair_wt
+        + phantoon_area_wt
         + balance_wt
         + toilet_balance_wt
         + avg_frontiers_wt
@@ -292,7 +302,8 @@ def compute_loss_breakdown(
     door_contribution = door_loss / total_weight
     connection_contribution = conn_loss / total_weight
     toilet_contribution = toilet_loss / total_weight
-    phantoon_contribution = phantoon_loss / total_weight
+    phantoon_pair_contribution = phantoon_pair_loss / total_weight
+    phantoon_area_contribution = phantoon_area_loss / total_weight
     balance_contribution = balance_loss / total_weight
     toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
@@ -307,7 +318,8 @@ def compute_loss_breakdown(
         door_contribution
         + connection_contribution
         + toilet_contribution
-        + phantoon_contribution
+        + phantoon_pair_contribution
+        + phantoon_area_contribution
         + balance_contribution
         + toilet_balance_contribution
         + avg_frontiers_contribution
@@ -324,7 +336,8 @@ def compute_loss_breakdown(
         door=door_loss / (door_wt + 1e-15),
         connection=conn_loss / (conn_wt + 1e-15),
         toilet=toilet_loss / (toilet_wt + 1e-15),
-        phantoon=phantoon_loss / (phantoon_wt + 1e-15),
+        phantoon_pair=phantoon_pair_loss / (phantoon_pair_wt + 1e-15),
+        phantoon_area=phantoon_area_loss / (phantoon_area_wt + 1e-15),
         balance=balance_loss / (balance_wt + 1e-15),
         toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
@@ -340,7 +353,8 @@ def compute_loss_breakdown(
         door_contribution=door_contribution,
         connection_contribution=connection_contribution,
         toilet_contribution=toilet_contribution,
-        phantoon_contribution=phantoon_contribution,
+        phantoon_pair_contribution=phantoon_pair_contribution,
+        phantoon_area_contribution=phantoon_area_contribution,
         balance_contribution=balance_contribution,
         toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,

@@ -212,7 +212,7 @@ class LookaheadFeature(GlobalFeature):
         return (
             context.features.lookahead_outcomes
             + 2 * context.num_connection_outputs
-            + 4
+            + 6
             + 2 * AREA_COUNT * 3
         )
 
@@ -253,10 +253,17 @@ class LookaheadFeature(GlobalFeature):
             ],
             dim=-1,
         ).flatten(1)
-        phantoon_features = torch.stack(
+        phantoon_pair_features = torch.stack(
             [
-                (features.global_features.lookahead_phantoon_invalid == 0).to(dtype),
-                (features.global_features.lookahead_phantoon_invalid == 1).to(dtype),
+                (features.global_features.lookahead_phantoon_pair_invalid == 0).to(dtype),
+                (features.global_features.lookahead_phantoon_pair_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        phantoon_area_features = torch.stack(
+            [
+                (features.global_features.lookahead_phantoon_area_invalid == 0).to(dtype),
+                (features.global_features.lookahead_phantoon_area_invalid == 1).to(dtype),
             ],
             dim=-1,
         ).flatten(1)
@@ -279,7 +286,8 @@ class LookaheadFeature(GlobalFeature):
                 door_match_features,
                 connection_features,
                 toilet_features,
-                phantoon_features,
+                phantoon_pair_features,
+                phantoon_area_features,
                 area_size_features,
                 area_map_station_count_features,
             ],

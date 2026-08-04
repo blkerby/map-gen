@@ -28,7 +28,8 @@ def base_payload() -> dict:
         "reward_door": 1.0,
         "reward_connection": 1.0,
         "reward_toilet": 1.0,
-        "reward_phantoon": 1.0,
+        "reward_phantoon_pair": 1.0,
+        "reward_phantoon_area": 1.0,
         "reward_balance": 1.0,
         "reward_toilet_balance": 1.0,
         "reward_frontier": 1.0,
@@ -44,12 +45,17 @@ def base_payload() -> dict:
 
 
 def test_valid_map_mask_includes_area_outcomes() -> None:
-    batch_size = 4
+    batch_size = 6
+    phantoon_pair_invalid = torch.zeros([batch_size])
+    phantoon_pair_invalid[4] = 1
+    phantoon_area_invalid = torch.zeros([batch_size])
+    phantoon_area_invalid[5] = 1
     step_outcomes = SimpleNamespace(
         door_invalid=torch.zeros([batch_size, 1]),
         connection_invalid=torch.zeros([batch_size, 1]),
         toilet_invalid=torch.zeros([batch_size]),
-        phantoon_invalid=torch.zeros([batch_size]),
+        phantoon_pair_invalid=phantoon_pair_invalid,
+        phantoon_area_invalid=phantoon_area_invalid,
     )
     area_size = torch.full([batch_size, 6], 2)
     area_size[1, 0] = 0
@@ -64,7 +70,14 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         ),
     )
 
-    assert serve.valid_map_mask(outcomes, 1, 3).tolist() == [True, False, False, False]
+    assert serve.valid_map_mask(outcomes, 1, 3).tolist() == [
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+    ]
 
 
 def base_serving_config_payload() -> dict:

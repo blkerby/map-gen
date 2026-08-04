@@ -33,7 +33,9 @@ class Predictions:
     # log-odds of invalid Toilet crossing count:
     toilet_invalid: torch.Tensor
     # log-odds of invalid Phantoon same-room connection:
-    phantoon_invalid: torch.Tensor
+    phantoon_pair_invalid: torch.Tensor
+    # log-odds of invalid Phantoon area assignment:
+    phantoon_area_invalid: torch.Tensor
     # Predicted balance-model log-odds for the matched target door:
     balance_score: torch.Tensor
     # Predicted balance-model log-odds for the room crossed by the Toilet:
@@ -90,9 +92,10 @@ def get_predictions(raw_preds, output_sizes):
         door_invalid=preds[0],
         connection_invalid=preds[1],
         toilet_invalid=preds[2].squeeze(-1),
-        phantoon_invalid=preds[3].squeeze(-1),
-        balance_score=preds[4],
-        toilet_balance_score=preds[5].squeeze(-1),
+        phantoon_pair_invalid=preds[3].squeeze(-1),
+        phantoon_area_invalid=preds[4].squeeze(-1),
+        balance_score=preds[5],
+        toilet_balance_score=preds[6].squeeze(-1),
         avg_frontiers=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         graph_diameter=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         save_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
@@ -578,6 +581,7 @@ class FrontierModel(torch.nn.Module):
             connection_output_size,
             1,
             1,
+            1,
             door_output_size,
             1,
         )
@@ -728,7 +732,8 @@ class FrontierModel(torch.nn.Module):
             else None
         )
         self.toilet_output = torch.nn.Linear(embedding_width, 1)
-        self.phantoon_output = torch.nn.Linear(embedding_width, 1)
+        self.phantoon_pair_output = torch.nn.Linear(embedding_width, 1)
+        self.phantoon_area_output = torch.nn.Linear(embedding_width, 1)
         self.balance_score_output = torch.nn.Linear(
             embedding_width,
             output_metadata.num_door_variants,
@@ -770,7 +775,8 @@ class FrontierModel(torch.nn.Module):
             self.frontier_balance_score_output,
             self.connection_output,
             self.toilet_output,
-            self.phantoon_output,
+            self.phantoon_pair_output,
+            self.phantoon_area_output,
             self.balance_score_output,
             self.toilet_balance_score_output,
             self.avg_frontiers_output,
@@ -919,7 +925,8 @@ class FrontierModel(torch.nn.Module):
         connection_variant = self.connection_output(X)
         connection = connection_variant[..., self.connection_variant_outcome_idx]
         toilet = self.toilet_output(X)
-        phantoon = self.phantoon_output(X)
+        phantoon_pair = self.phantoon_pair_output(X)
+        phantoon_area = self.phantoon_area_output(X)
         balance_score_variant = self.balance_score_output(X)
         balance_score = balance_score_variant[..., self.door_variant_outcome_idx]
         toilet_balance_score = self.toilet_balance_score_output(X)
@@ -953,7 +960,15 @@ class FrontierModel(torch.nn.Module):
         )
         preds = get_predictions(
             torch.cat(
-                [door, connection, toilet, phantoon, balance_score, toilet_balance_score],
+                [
+                    door,
+                    connection,
+                    toilet,
+                    phantoon_pair,
+                    phantoon_area,
+                    balance_score,
+                    toilet_balance_score,
+                ],
                 dim=-1,
             ),
             self.output_sizes,
@@ -1066,7 +1081,8 @@ class FrontierModel(torch.nn.Module):
             door_invalid=door_invalid,
             connection_invalid=connection_invalid,
             toilet_invalid=preds.toilet_invalid,
-            phantoon_invalid=preds.phantoon_invalid,
+            phantoon_pair_invalid=preds.phantoon_pair_invalid,
+            phantoon_area_invalid=preds.phantoon_area_invalid,
             balance_score=balance_score,
             toilet_balance_score=preds.toilet_balance_score,
             avg_frontiers=avg_frontiers,
