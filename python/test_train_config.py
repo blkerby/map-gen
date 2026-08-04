@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from train_config import Config, validate_config
+from train_config import Config, VariableRange, VariableSchedule, instantiate_scheduleable_config, validate_config
 
 
 def load_debug_config() -> dict:
@@ -120,6 +120,38 @@ def test_num_scored_invalid_candidates_must_fit_shortlist() -> None:
         raise AssertionError("num_scored_invalid_candidates should fit the shortlist")
 
 
+def test_area_targets_require_six_finite_values_and_instantiate_schedules() -> None:
+    config_data = load_debug_config()
+    config_data["generation"]["target_area_x"] = [0.0] * 5
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("target_area_x should require six values")
+
+    config_data = load_debug_config()
+    config_data["generation"]["target_area_x"][0] = float("inf")
+    config = Config.model_validate(config_data)
+    try:
+        validate_config(config)
+    except ValueError as err:
+        assert "generation.target_area_x[0]" in str(err)
+    else:
+        raise AssertionError("target_area_x should reject non-finite values")
+
+    config_data = load_debug_config()
+    config_data["generation"]["target_area_x"][0] = {
+        "linear": {"min": [0.0, 10.0], "max": [20.0, 30.0]}
+    }
+    instantiated = instantiate_scheduleable_config(Config.model_validate(config_data), 320)
+    value = instantiated.generation.target_area_x[0]
+    assert isinstance(value, VariableSchedule)
+    assert isinstance(value.linear, VariableRange)
+    assert value.linear.min == 5.0
+    assert value.linear.max == 25.0
+
+
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
     test_recommended_candidates_same_frontier_is_required()
@@ -128,6 +160,7 @@ def main() -> None:
     test_generation_area_bounding_box_fields_must_be_positive()
     test_max_candidate_areas_per_placement_must_be_in_range()
     test_num_scored_invalid_candidates_must_fit_shortlist()
+    test_area_targets_require_six_finite_values_and_instantiate_schedules()
 
 
 if __name__ == "__main__":

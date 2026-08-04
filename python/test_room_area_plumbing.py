@@ -106,9 +106,11 @@ def test_environment_group_round_trips_room_area() -> None:
 
 
 def test_environment_group_reports_area_outcome_state() -> None:
+    two_tile_room = one_tile_room("Right", "right")
+    two_tile_room["map"] = [[1, 0, 1]]
     engine = Engine(
         [
-            one_tile_room("Right", "right"),
+            two_tile_room,
             one_tile_room("Left", "left"),
         ],
         disabled_features(),
@@ -145,13 +147,15 @@ def test_environment_group_reports_area_outcome_state() -> None:
 
     state = env.get_area_outcome_state(device)
     assert state.area_crossings.tolist() == [1]
-    assert state.area_size.tolist() == [[0, 0, 1, 0, 1, 0]]
+    assert state.area_size.tolist() == [[0, 0, 2, 0, 1, 0]]
     assert state.area_map_station_count.tolist() == [[0, 0, 0, 0, 0, 0]]
 
     env.finish()
     outcomes = env.get_outcomes(device, verify_consistency=True)
     assert outcomes.end_outcomes.area_crossings.tolist() == state.area_crossings.tolist()
     assert outcomes.end_outcomes.area_size.tolist() == state.area_size.tolist()
+    assert outcomes.end_outcomes.area_x.tolist() == [[0.0, 0.0, 1.0, 0.0, 1.0, 0.0]]
+    assert outcomes.end_outcomes.area_y.tolist() == [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]
     assert outcomes.end_outcomes.area_map_station_count.tolist() == (
         state.area_map_station_count.tolist()
     )

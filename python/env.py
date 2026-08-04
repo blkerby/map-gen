@@ -17,6 +17,13 @@ AREA_COUNT = 6
 DUMMY_AREA = AREA_COUNT
 
 
+def average_area_tile_count(rooms: list[dict]) -> float:
+    total = sum(bool(value) for room in rooms for row in room["map"] for value in row)
+    if total == 0:
+        raise ValueError("room set must contain at least one occupied map tile")
+    return total / AREA_COUNT
+
+
 def proposal_action_idx(door_variant_idx: torch.Tensor, room_area: torch.Tensor) -> torch.Tensor:
     return door_variant_idx * AREA_COUNT + room_area
 
@@ -55,6 +62,12 @@ class GenerateConfig:
     reward_area_crossing: float | torch.Tensor
     reward_area_size_valid: float | torch.Tensor
     reward_area_map_station: float | torch.Tensor
+    reward_area_tiles: float | torch.Tensor
+    reward_area_x: float | torch.Tensor
+    reward_area_y: float | torch.Tensor
+    target_area_tiles: torch.Tensor
+    target_area_x: torch.Tensor
+    target_area_y: torch.Tensor
     generation_variable_floats: torch.Tensor
     log_temperature_model: torch.Tensor
     log_recommended_candidates_model: torch.Tensor
@@ -232,6 +245,8 @@ class EndOutcomes:
     missing_connect_distance_mask: torch.Tensor
     area_crossings: torch.Tensor
     area_size: torch.Tensor
+    area_x: torch.Tensor
+    area_y: torch.Tensor
     area_map_station_count: torch.Tensor
 
     def to(self, device: torch.device) -> "EndOutcomes":
@@ -256,6 +271,8 @@ class EndOutcomes:
             missing_connect_distance_mask=self.missing_connect_distance_mask.to(device),
             area_crossings=self.area_crossings.to(device),
             area_size=self.area_size.to(device),
+            area_x=self.area_x.to(device),
+            area_y=self.area_y.to(device),
             area_map_station_count=self.area_map_station_count.to(device),
         )
 
@@ -281,6 +298,8 @@ class EndOutcomes:
             missing_connect_distance_mask=self.missing_connect_distance_mask[start:end],
             area_crossings=self.area_crossings[start:end],
             area_size=self.area_size[start:end],
+            area_x=self.area_x[start:end],
+            area_y=self.area_y[start:end],
             area_map_station_count=self.area_map_station_count[start:end],
         )
 
@@ -1458,6 +1477,8 @@ class EnvironmentGroup:
                     device=device,
                     dtype=torch.int64,
                 ),
+                area_x=torch.from_numpy(result.end_outcomes.area_x).to(device),
+                area_y=torch.from_numpy(result.end_outcomes.area_y).to(device),
                 area_map_station_count=torch.from_numpy(
                     result.end_outcomes.area_map_station_count
                 ).to(device=device, dtype=torch.int64),

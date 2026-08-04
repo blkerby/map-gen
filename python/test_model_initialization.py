@@ -102,6 +102,9 @@ def test_frontier_model_output_heads_are_zero_initialized() -> None:
         model.area_crossings_output,
         model.area_size_output,
         model.area_map_station_count_output,
+        model.area_tiles_output,
+        model.area_x_output,
+        model.area_y_output,
         model.proposal_output.layers[-1],
     )
 

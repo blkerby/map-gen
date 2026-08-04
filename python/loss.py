@@ -25,6 +25,12 @@ class LossConfig:
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
+    area_tiles_weight: float
+    area_x_weight: float
+    area_y_weight: float
+    area_tile_scale: float
+    map_width: int
+    map_height: int
     distance_proximity_scale: float
 
 
@@ -46,6 +52,9 @@ class LossBreakdown:
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station: torch.Tensor
+    area_tiles: torch.Tensor
+    area_x: torch.Tensor
+    area_y: torch.Tensor
     door_contribution: torch.Tensor
     connection_contribution: torch.Tensor
     toilet_contribution: torch.Tensor
@@ -61,6 +70,9 @@ class LossBreakdown:
     area_crossings_contribution: torch.Tensor
     area_size_contribution: torch.Tensor
     area_map_station_contribution: torch.Tensor
+    area_tiles_contribution: torch.Tensor
+    area_x_contribution: torch.Tensor
+    area_y_contribution: torch.Tensor
 
 
 @dataclass
@@ -177,7 +189,11 @@ def compute_loss_breakdown(
     area_crossings_target: torch.Tensor,
     area_size_target: torch.Tensor,
     area_map_station_target: torch.Tensor,
+    area_tiles_target: torch.Tensor,
+    area_x_target: torch.Tensor,
+    area_y_target: torch.Tensor,
     area_mask: torch.Tensor,
+    area_coordinate_mask: torch.Tensor,
     area_crossings_mask: torch.Tensor,
     config: LossConfig,
 ) -> LossBreakdown:
@@ -281,6 +297,24 @@ def compute_loss_breakdown(
         area_mask,
         config.area_map_station_weight,
     )
+    area_tiles_loss, area_tiles_wt = masked_mse_loss(
+        preds.area_tiles,
+        area_tiles_target,
+        area_mask,
+        config.area_tiles_weight,
+    )
+    area_x_loss, area_x_wt = masked_mse_loss(
+        preds.area_x,
+        area_x_target,
+        area_coordinate_mask,
+        config.area_x_weight,
+    )
+    area_y_loss, area_y_wt = masked_mse_loss(
+        preds.area_y,
+        area_y_target,
+        area_coordinate_mask,
+        config.area_y_weight,
+    )
     total_weight = (
         door_wt
         + conn_wt
@@ -297,6 +331,9 @@ def compute_loss_breakdown(
         + area_crossings_wt
         + area_size_wt
         + area_map_station_wt
+        + area_tiles_wt
+        + area_x_wt
+        + area_y_wt
         + 1e-15
     )
     door_contribution = door_loss / total_weight
@@ -314,6 +351,9 @@ def compute_loss_breakdown(
     area_crossings_contribution = area_crossings_loss / total_weight
     area_size_contribution = area_size_loss / total_weight
     area_map_station_contribution = area_map_station_loss / total_weight
+    area_tiles_contribution = area_tiles_loss / total_weight
+    area_x_contribution = area_x_loss / total_weight
+    area_y_contribution = area_y_loss / total_weight
     mean_loss = (
         door_contribution
         + connection_contribution
@@ -330,6 +370,9 @@ def compute_loss_breakdown(
         + area_crossings_contribution
         + area_size_contribution
         + area_map_station_contribution
+        + area_tiles_contribution
+        + area_x_contribution
+        + area_y_contribution
     )
     return LossBreakdown(
         total=mean_loss,
@@ -350,6 +393,9 @@ def compute_loss_breakdown(
         area_crossings=area_crossings_loss / (area_crossings_wt + 1e-15),
         area_size=area_size_loss / (area_size_wt + 1e-15),
         area_map_station=area_map_station_loss / (area_map_station_wt + 1e-15),
+        area_tiles=area_tiles_loss / (area_tiles_wt + 1e-15),
+        area_x=area_x_loss / (area_x_wt + 1e-15),
+        area_y=area_y_loss / (area_y_wt + 1e-15),
         door_contribution=door_contribution,
         connection_contribution=connection_contribution,
         toilet_contribution=toilet_contribution,
@@ -365,6 +411,9 @@ def compute_loss_breakdown(
         area_crossings_contribution=area_crossings_contribution,
         area_size_contribution=area_size_contribution,
         area_map_station_contribution=area_map_station_contribution,
+        area_tiles_contribution=area_tiles_contribution,
+        area_x_contribution=area_x_contribution,
+        area_y_contribution=area_y_contribution,
     )
 
 

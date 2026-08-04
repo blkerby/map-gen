@@ -196,6 +196,18 @@ def compute_expected_reward(
         preds.area_map_station_count.to(torch.float32),
         dim=-1,
     )[..., 1]
+    area_tiles_reward = -torch.mean(
+        (preds.area_tiles.to(torch.float32) - config.target_area_tiles.unsqueeze(1)).square(),
+        dim=2,
+    )
+    area_x_reward = -torch.mean(
+        (preds.area_x.to(torch.float32) - config.target_area_x.unsqueeze(1)).square(),
+        dim=2,
+    )
+    area_y_reward = -torch.mean(
+        (preds.area_y.to(torch.float32) - config.target_area_y.unsqueeze(1)).square(),
+        dim=2,
+    )
     return (
         batch_weight(config.reward_door) * torch.sum(door_logprobs, dim=2)
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
@@ -225,6 +237,9 @@ def compute_expected_reward(
         * torch.sum(area_size_valid_log_probability, dim=2)
         + batch_weight(config.reward_area_map_station)
         * torch.sum(area_map_station_log_probability, dim=2)
+        + batch_weight(config.reward_area_tiles) * area_tiles_reward
+        + batch_weight(config.reward_area_x) * area_x_reward
+        + batch_weight(config.reward_area_y) * area_y_reward
     )
 
 
@@ -904,6 +919,9 @@ def select_candidate_actions(
                 -1,
                 3,
             ),
+            area_tiles=preds.area_tiles.view(environment_count, candidate_count, -1),
+            area_x=preds.area_x.view(environment_count, candidate_count, -1),
+            area_y=preds.area_y.view(environment_count, candidate_count, -1),
             proposal_state=preds.proposal_state,
             proposal_row_snapshot_idx=preds.proposal_row_snapshot_idx,
             proposal_row_frontier_idx=preds.proposal_row_frontier_idx,
@@ -1852,6 +1870,18 @@ def merge_generation_results(
                 area_size=torch.cat(
                     [
                         episode_outcomes.end_outcomes.area_size
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                area_x=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.area_x
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                area_y=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.area_y
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

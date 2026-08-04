@@ -1,9 +1,9 @@
 from pathlib import Path
 import math
-from typing import Literal
+from typing import Annotated, Literal
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class StrictBaseModel(BaseModel):
@@ -31,6 +31,9 @@ class VariableSchedule(StrictBaseModel):
 type ScheduleableFloat = float | Schedule
 type ScheduleableInt = int | Schedule
 type VariableFloat = float | VariableSchedule
+type AreaVariableFloats = Annotated[list[VariableFloat], Field(min_length=6, max_length=6)]
+
+AREA_TARGET_FIELDS = ("target_area_tiles", "target_area_x", "target_area_y")
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "temperature",
@@ -50,6 +53,10 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_area_crossing",
     "reward_area_size_valid",
     "reward_area_map_station",
+    "reward_area_tiles",
+    "reward_area_x",
+    "reward_area_y",
+    *(f"{field}_{area}" for field in AREA_TARGET_FIELDS for area in range(6)),
 )
 
 
@@ -133,6 +140,12 @@ class GenerationConfig(StrictBaseModel):
     reward_area_crossing: VariableFloat
     reward_area_size_valid: VariableFloat
     reward_area_map_station: VariableFloat
+    reward_area_tiles: VariableFloat
+    reward_area_x: VariableFloat
+    reward_area_y: VariableFloat
+    target_area_tiles: AreaVariableFloats
+    target_area_x: AreaVariableFloats
+    target_area_y: AreaVariableFloats
     min_area_size: int
     max_area_size: int
     frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"]
@@ -261,6 +274,9 @@ class TrainConfig(StrictBaseModel):
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
+    area_tiles_weight: float
+    area_x_weight: float
+    area_y_weight: float
     proposal_weight: float
     proposal_target_temperature: ScheduleableFloat
     ema_decay: ScheduleableFloat
@@ -298,6 +314,11 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
                 updates[field_name] = instantiate_float(value, field_path)
             elif field_info.annotation is VariableFloat:
                 updates[field_name] = instantiate_variable_float(value, field_path)
+            elif field_name in AREA_TARGET_FIELDS:
+                updates[field_name] = [
+                    instantiate_variable_float(item, f"{field_path}[{index}]")
+                    for index, item in enumerate(value)
+                ]
             elif field_info.annotation is ScheduleableInt:
                 updates[field_name] = instantiate_int(value, field_path)
             elif isinstance(value, BaseModel):
@@ -559,6 +580,14 @@ def validate_config(config: Config) -> None:
         config.generation.reward_area_map_station,
         "generation.reward_area_map_station",
     )
+    for field_name in ("reward_area_tiles", "reward_area_x", "reward_area_y"):
+        validate_nonnegative_variable_float(
+            getattr(config.generation, field_name),
+            f"generation.{field_name}",
+        )
+    for field_name in AREA_TARGET_FIELDS:
+        for area, value in enumerate(getattr(config.generation, field_name)):
+            validate_finite_variable_float(value, f"generation.{field_name}[{area}]")
     if config.generation.num_threads is not None and config.generation.num_threads <= 0:
         raise ValueError("generation.num_threads must be greater than zero")
     if (
@@ -602,6 +631,9 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.area_size_weight must be greater than or equal to zero")
     if config.train.area_map_station_weight < 0:
         raise ValueError("train.area_map_station_weight must be greater than or equal to zero")
+    for field_name in ("area_tiles_weight", "area_x_weight", "area_y_weight"):
+        if getattr(config.train, field_name) < 0:
+            raise ValueError(f"train.{field_name} must be greater than or equal to zero")
     validate_ema_decay_config(config.train.ema_decay, "train.ema_decay", config.knot_episodes)
     if (
         config.generation.num_threads is not None
@@ -711,6 +743,28 @@ def validate_nonnegative_variable_float(value: VariableFloat, path: str) -> None
         return
     if value < 0:
         raise ValueError(f"{path} must be greater than or equal to zero")
+
+
+def validate_finite_endpoint(value: VariableEndpoint, path: str) -> None:
+    values = value if isinstance(value, list) else [value]
+    for index, item in enumerate(values):
+        if not math.isfinite(item):
+            item_path = f"{path}[{index}]" if isinstance(value, list) else path
+            raise ValueError(f"{item_path} must be finite")
+
+
+def validate_finite_variable_float(value: VariableFloat, path: str) -> None:
+    if isinstance(value, VariableSchedule):
+        values = value.linear if value.linear is not None else value.log
+        if values is None:
+            return
+        if isinstance(values, VariableRange):
+            validate_finite_endpoint(values.min, f"{path}.min")
+            validate_finite_endpoint(values.max, f"{path}.max")
+        else:
+            validate_finite_endpoint(values, path)
+        return
+    validate_finite_endpoint(value, path)
 
 
 def validate_positive_variable_float(value: VariableFloat, path: str) -> None:

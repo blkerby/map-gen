@@ -57,6 +57,9 @@ class Predictions:
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station_count: torch.Tensor
+    area_tiles: torch.Tensor
+    area_x: torch.Tensor
+    area_y: torch.Tensor
     # Optional frontier-local state before global pooling:
     proposal_state: torch.Tensor
     proposal_row_snapshot_idx: torch.Tensor
@@ -108,6 +111,9 @@ def get_predictions(raw_preds, output_sizes):
         area_map_station_count=raw_preds.new_empty(
             [raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT, 3]
         ),
+        area_tiles=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT]),
+        area_x=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT]),
+        area_y=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT]),
         proposal_state=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         proposal_row_snapshot_idx=raw_preds.new_empty([0], dtype=torch.int64),
         proposal_row_frontier_idx=raw_preds.new_empty([0], dtype=torch.int16),
@@ -764,6 +770,9 @@ class FrontierModel(torch.nn.Module):
         self.area_crossings_output = torch.nn.Linear(embedding_width, 1)
         self.area_size_output = torch.nn.Linear(embedding_width, AREA_COUNT * 3)
         self.area_map_station_count_output = torch.nn.Linear(embedding_width, AREA_COUNT * 3)
+        self.area_tiles_output = torch.nn.Linear(embedding_width, AREA_COUNT)
+        self.area_x_output = torch.nn.Linear(embedding_width, AREA_COUNT)
+        self.area_y_output = torch.nn.Linear(embedding_width, AREA_COUNT)
         self.proposal_output = ProposalOutput(
             embedding_width,
             proposal_hidden_widths,
@@ -789,6 +798,9 @@ class FrontierModel(torch.nn.Module):
             self.area_crossings_output,
             self.area_size_output,
             self.area_map_station_count_output,
+            self.area_tiles_output,
+            self.area_x_output,
+            self.area_y_output,
         )
         for output_layer in output_layers:
             zero_init_output_layer(output_layer)
@@ -958,6 +970,9 @@ class FrontierModel(torch.nn.Module):
             )
             .to(torch.float32)
         )
+        area_tiles = self.area_tiles_output(X).to(torch.float32)
+        area_x = self.area_x_output(X).to(torch.float32)
+        area_y = self.area_y_output(X).to(torch.float32)
         preds = get_predictions(
             torch.cat(
                 [
@@ -1095,6 +1110,9 @@ class FrontierModel(torch.nn.Module):
             area_crossings=area_crossings,
             area_size=area_size,
             area_map_station_count=area_map_station_count,
+            area_tiles=area_tiles,
+            area_x=area_x,
+            area_y=area_y,
             proposal_state=proposal_state,
             proposal_row_snapshot_idx=(
                 row_snapshot_idx if return_proposal_state else row_snapshot_idx.new_empty([0])

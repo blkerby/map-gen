@@ -13,6 +13,9 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 0.0,
         "reward_area_map_station": 0.0,
+        "reward_area_tiles": 0.0,
+        "reward_area_x": 0.0,
+        "reward_area_y": 0.0,
     }
     values.update(rewards)
     generation_variable_floats = torch.zeros([1, len(GENERATION_VARIABLE_FLOAT_FIELDS)])
@@ -41,6 +44,12 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         reward_area_crossing=values["reward_area_crossing"],
         reward_area_size_valid=values["reward_area_size_valid"],
         reward_area_map_station=values["reward_area_map_station"],
+        reward_area_tiles=values["reward_area_tiles"],
+        reward_area_x=values["reward_area_x"],
+        reward_area_y=values["reward_area_y"],
+        target_area_tiles=torch.zeros([1, 6]),
+        target_area_x=torch.zeros([1, 6]),
+        target_area_y=torch.zeros([1, 6]),
         generation_variable_floats=generation_variable_floats,
         log_temperature_model=torch.zeros([1]),
         log_recommended_candidates_model=torch.zeros([1]),
@@ -80,6 +89,9 @@ def area_predictions() -> Predictions:
         area_crossings=torch.tensor([[2.0, 0.0]]),
         area_size=torch.zeros([batch, candidate, area, 3]),
         area_map_station_count=torch.zeros([batch, candidate, area, 3]),
+        area_tiles=torch.zeros([batch, candidate, area]),
+        area_x=torch.zeros([batch, candidate, area]),
+        area_y=torch.zeros([batch, candidate, area]),
         proposal_state=torch.empty([0]),
         proposal_row_snapshot_idx=torch.empty([0], dtype=torch.int64),
         proposal_row_frontier_idx=torch.empty([0], dtype=torch.int64),
@@ -154,9 +166,21 @@ def test_area_rewards_use_valid_bucket_logprobs() -> None:
     assert torch.allclose(reward, expected, atol=1e-6)
 
 
+def test_numeric_area_rewards_use_negative_mean_squared_error() -> None:
+    predictions = area_predictions()
+    predictions.area_tiles = torch.tensor([[[1.0] * 6, [2.0] * 6]])
+    reward = compute_expected_reward(
+        predictions,
+        unknown_outcomes(),
+        zero_generate_config(reward_area_tiles=2.0),
+    )
+    assert torch.equal(reward, torch.tensor([[-2.0, -8.0]]))
+
+
 def main() -> None:
     test_zero_area_rewards_leave_reward_unchanged()
     test_area_rewards_use_valid_bucket_logprobs()
+    test_numeric_area_rewards_use_negative_mean_squared_error()
 
 
 if __name__ == "__main__":

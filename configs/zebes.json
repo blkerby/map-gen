@@ -75,6 +75,33 @@
     "reward_area_crossing": 0.0,
     "reward_area_size_valid": 1.0,
     "reward_area_map_station": 1.0,
+    "reward_area_tiles": {"linear": {"min": 0.0, "max": 1.0}},
+    "reward_area_x": {"linear": {"min": 0.0, "max": 1.0}},
+    "reward_area_y": {"linear": {"min": 0.0, "max": 1.0}},
+    "target_area_tiles": [
+      {"linear": {"min": 100, "max": 350.0}},
+      {"linear": {"min": 100, "max": 350.0}},
+      {"linear": {"min": 100, "max": 350.0}},
+      {"linear": {"min": 100, "max": 350.0}},
+      {"linear": {"min": 100, "max": 350.0}},
+      {"linear": {"min": 100, "max": 350.0}}
+    ],
+    "target_area_x": [
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}}
+    ],
+    "target_area_y": [
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}},
+      {"linear": {"min": 8, "max": 64}}
+    ],
     "min_area_size": 80,
     "max_area_size": 400,
     "frontier_neighbor_algorithm": "nearest-exclusive",
@@ -139,6 +166,9 @@
     "area_crossing_weight": 0.0,
     "area_size_weight": 1.0,
     "area_map_station_weight": 1.0,
+    "area_tiles_weight": 0.1,
+    "area_x_weight": 0.1,
+    "area_y_weight": 0.1,
     "proposal_weight": 0.005,
     "proposal_target_temperature": {"log": [10.0, 2.0, 0.03, 0.03, 0.03]},
     "pipeline_groups": 4,

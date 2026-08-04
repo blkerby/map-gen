@@ -8,11 +8,13 @@ import serve
 from serve import (
     GenerateRequest,
     ServingConfig,
+    create_generate_configs,
     run_warmup_requests,
     validate_generate_request,
     validate_serving_config,
     warmup_generate_request,
 )
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
 def base_payload() -> dict:
@@ -40,6 +42,12 @@ def base_payload() -> dict:
         "reward_area_crossing": 1.0,
         "reward_area_size_valid": 1.0,
         "reward_area_map_station": 1.0,
+        "reward_area_tiles": 1.0,
+        "reward_area_x": 1.0,
+        "reward_area_y": 1.0,
+        "target_area_tiles": [1.0] * 6,
+        "target_area_x": [1.0] * 6,
+        "target_area_y": [1.0] * 6,
         "area_assignment_base_order": "random",
     }
 
@@ -78,6 +86,42 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         False,
         False,
     ]
+
+
+def test_create_generate_configs_normalizes_area_targets() -> None:
+    generate_request = GenerateRequest.model_validate(
+        base_payload()
+        | {
+            "small_map": False,
+            "target_area_tiles": [1.0] * 6,
+            "target_area_x": [5.0] * 6,
+            "target_area_y": [10.0] * 6,
+        }
+    )
+    state = SimpleNamespace(
+        rooms=[{"map": [[1] * 6]}],
+        area_tile_scale=1.0,
+        serving_config=SimpleNamespace(gpu_prefetch_batches=0, autocast=False),
+        training_config=SimpleNamespace(
+            map_size=(10, 20),
+            distance_proximity_scale=1.0,
+            model=SimpleNamespace(generation_autocast=False),
+        ),
+    )
+    config = create_generate_configs(
+        generate_request,
+        state,
+        [SimpleNamespace(num_envs=2)],
+        torch.device("cpu"),
+    )[0]
+    assert torch.equal(config.target_area_tiles, torch.ones([2, 6]))
+    assert torch.equal(config.target_area_x, torch.full([2, 6], 0.5))
+    assert torch.equal(config.target_area_y, torch.full([2, 6], 0.5))
+    target_x_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_x_0")
+    assert torch.equal(
+        config.generation_variable_floats[:, target_x_index],
+        torch.full([2], 0.5),
+    )
 
 
 def base_serving_config_payload() -> dict:
@@ -391,6 +435,7 @@ def assert_prefetch_refill_yields_to_foreground() -> None:
 
 def main() -> None:
     test_valid_map_mask_includes_area_outcomes()
+    test_create_generate_configs_normalizes_area_targets()
     full_map_payload = base_payload() | {"small_map": False}
     full_map_request = GenerateRequest.model_validate(full_map_payload)
     validate_generate_request(full_map_request, rooms=[{}, {}, {}])
@@ -411,6 +456,19 @@ def main() -> None:
     assert_invalid_value(
         base_payload() | {"small_map": False, "max_candidate_areas_per_placement": 7},
         "max_candidate_areas_per_placement must be at most AREA_COUNT",
+    )
+
+    try:
+        GenerateRequest.model_validate(
+            base_payload() | {"small_map": False, "target_area_x": [0.0] * 5}
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("target_area_x should require six values")
+    assert_invalid_value(
+        base_payload() | {"small_map": False, "target_area_x": [float("inf")] * 6},
+        "target_area_x[0] must be finite",
     )
 
     try:

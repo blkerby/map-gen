@@ -104,6 +104,9 @@ class MainLossBreakdown:
     area_crossings: float
     area_size: float
     area_map_station: float
+    area_tiles: float
+    area_x: float
+    area_y: float
     proposal: float
     door_contribution: float
     connection_contribution: float
@@ -120,6 +123,9 @@ class MainLossBreakdown:
     area_crossings_contribution: float
     area_size_contribution: float
     area_map_station_contribution: float
+    area_tiles_contribution: float
+    area_x_contribution: float
+    area_y_contribution: float
     proposal_contribution: float
 
 
@@ -169,6 +175,9 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         area_crossings=0.0,
         area_size=0.0,
         area_map_station=0.0,
+        area_tiles=0.0,
+        area_x=0.0,
+        area_y=0.0,
         proposal=0.0,
         door_contribution=0.0,
         connection_contribution=0.0,
@@ -185,6 +194,9 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         area_crossings_contribution=0.0,
         area_size_contribution=0.0,
         area_map_station_contribution=0.0,
+        area_tiles_contribution=0.0,
+        area_x_contribution=0.0,
+        area_y_contribution=0.0,
         proposal_contribution=0.0,
     )
 
@@ -206,6 +218,9 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.area_crossings += source.area_crossings
     target.area_size += source.area_size
     target.area_map_station += source.area_map_station
+    target.area_tiles += source.area_tiles
+    target.area_x += source.area_x
+    target.area_y += source.area_y
     target.proposal += source.proposal
     target.door_contribution += source.door_contribution
     target.connection_contribution += source.connection_contribution
@@ -222,6 +237,9 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.area_crossings_contribution += source.area_crossings_contribution
     target.area_size_contribution += source.area_size_contribution
     target.area_map_station_contribution += source.area_map_station_contribution
+    target.area_tiles_contribution += source.area_tiles_contribution
+    target.area_x_contribution += source.area_x_contribution
+    target.area_y_contribution += source.area_y_contribution
     target.proposal_contribution += source.proposal_contribution
 
 
@@ -243,6 +261,9 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         area_crossings=total_loss.area_crossings / count,
         area_size=total_loss.area_size / count,
         area_map_station=total_loss.area_map_station / count,
+        area_tiles=total_loss.area_tiles / count,
+        area_x=total_loss.area_x / count,
+        area_y=total_loss.area_y / count,
         proposal=total_loss.proposal / count,
         door_contribution=total_loss.door_contribution / count,
         connection_contribution=total_loss.connection_contribution / count,
@@ -261,6 +282,9 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         area_crossings_contribution=total_loss.area_crossings_contribution / count,
         area_size_contribution=total_loss.area_size_contribution / count,
         area_map_station_contribution=total_loss.area_map_station_contribution / count,
+        area_tiles_contribution=total_loss.area_tiles_contribution / count,
+        area_x_contribution=total_loss.area_x_contribution / count,
+        area_y_contribution=total_loss.area_y_contribution / count,
         proposal_contribution=total_loss.proposal_contribution / count,
     )
 
@@ -1127,7 +1151,17 @@ def train_feature_batch_backward(
     ).unsqueeze(1)
     area_map_station_values = end_outcomes.area_map_station_count.to(context.device)
     area_map_station_target = torch.clamp(area_map_station_values, max=2).unsqueeze(1)
+    area_tiles_target = (
+        area_size_values.to(torch.float32) / context.loss_config.area_tile_scale
+    ).unsqueeze(1)
+    area_x_target = (
+        end_outcomes.area_x.to(context.device) / context.loss_config.map_width
+    ).unsqueeze(1)
+    area_y_target = (
+        end_outcomes.area_y.to(context.device) / context.loss_config.map_height
+    ).unsqueeze(1)
     area_mask = torch.ones_like(area_size_target, dtype=torch.bool)
+    area_coordinate_mask = (area_size_values > 0).unsqueeze(1)
     area_crossings_mask = torch.ones_like(area_crossings_target, dtype=torch.bool)
     mask = torch.ones(
         [batch_size, 1, 1],
@@ -1186,7 +1220,11 @@ def train_feature_batch_backward(
             area_crossings_target,
             area_size_target,
             area_map_station_target,
+            area_tiles_target,
+            area_x_target,
+            area_y_target,
             area_mask,
+            area_coordinate_mask,
             area_crossings_mask,
             context.loss_config,
         )
@@ -1209,6 +1247,9 @@ def train_feature_batch_backward(
         total_loss.area_crossings += prefix_loss.area_crossings.item() * prefix_weight
         total_loss.area_size += prefix_loss.area_size.item() * prefix_weight
         total_loss.area_map_station += prefix_loss.area_map_station.item() * prefix_weight
+        total_loss.area_tiles += prefix_loss.area_tiles.item() * prefix_weight
+        total_loss.area_x += prefix_loss.area_x.item() * prefix_weight
+        total_loss.area_y += prefix_loss.area_y.item() * prefix_weight
         total_loss.door_contribution += prefix_loss.door_contribution.item() * prefix_weight
         total_loss.connection_contribution += (
             prefix_loss.connection_contribution.item() * prefix_weight
@@ -1248,6 +1289,11 @@ def train_feature_batch_backward(
         total_loss.area_map_station_contribution += (
             prefix_loss.area_map_station_contribution.item() * prefix_weight
         )
+        total_loss.area_tiles_contribution += (
+            prefix_loss.area_tiles_contribution.item() * prefix_weight
+        )
+        total_loss.area_x_contribution += prefix_loss.area_x_contribution.item() * prefix_weight
+        total_loss.area_y_contribution += prefix_loss.area_y_contribution.item() * prefix_weight
         if return_proposal_state:
             proposal_score = proposal_scores_for_candidates(
                 context.main_model.proposal_output,

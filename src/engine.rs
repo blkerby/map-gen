@@ -367,6 +367,8 @@ enum WorkerCommand {
         missing_connect_distance_mask: OutputShard<u8>,
         area_crossings: OutputShard<i32>,
         area_size: OutputShard<i32>,
+        area_x: OutputShard<f32>,
+        area_y: OutputShard<f32>,
         area_map_station_count: OutputShard<i32>,
     },
     GetAreaOutcomeState {
@@ -1002,6 +1004,8 @@ fn worker_loop(
                 missing_connect_distance_mask,
                 area_crossings,
                 area_size,
+                area_x,
+                area_y,
                 area_map_station_count,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
@@ -1040,6 +1044,8 @@ fn worker_loop(
                     unsafe { missing_connect_distance_mask.into_mut_slice() };
                 let area_crossings = unsafe { area_crossings.into_mut_slice() };
                 let area_size = unsafe { area_size.into_mut_slice() };
+                let area_x = unsafe { area_x.into_mut_slice() };
+                let area_y = unsafe { area_y.into_mut_slice() };
                 let area_map_station_count = unsafe { area_map_station_count.into_mut_slice() };
                 debug_assert_eq!(door_valid.len(), environments.len() * door_outcome_count);
                 debug_assert_eq!(
@@ -1119,6 +1125,8 @@ fn worker_loop(
                 );
                 debug_assert_eq!(area_crossings.len(), environments.len());
                 debug_assert_eq!(area_size.len(), environments.len() * AREA_COUNT);
+                debug_assert_eq!(area_x.len(), environments.len() * AREA_COUNT);
+                debug_assert_eq!(area_y.len(), environments.len() * AREA_COUNT);
                 debug_assert_eq!(
                     area_map_station_count.len(),
                     environments.len() * AREA_COUNT
@@ -1149,9 +1157,12 @@ fn worker_loop(
                     avg_frontiers[env_idx] = avg_frontier_count;
                     graph_diameter[env_idx] = f32::from(env.graph_diameter());
                     let area_state = env.area_outcome_state();
+                    let (env_area_x, env_area_y) = env.area_mean_coordinates(&common_data);
                     let area_row_start = env_idx * AREA_COUNT;
                     for area in 0..AREA_COUNT {
                         area_size[area_row_start + area] = area_state.size[area] as i32;
+                        area_x[area_row_start + area] = env_area_x[area];
+                        area_y[area_row_start + area] = env_area_y[area];
                         area_map_station_count[area_row_start + area] =
                             area_state.map_station_count[area] as i32;
                     }
@@ -1698,6 +1709,8 @@ pub struct EndOutcomes {
     missing_connect_distance_mask: Py<PyArray2<u8>>,
     area_crossings: Py<PyArray1<i32>>,
     area_size: Py<PyArray2<i32>>,
+    area_x: Py<PyArray2<f32>>,
+    area_y: Py<PyArray2<f32>>,
     area_map_station_count: Py<PyArray2<i32>>,
 }
 
@@ -2216,6 +2229,16 @@ impl EndOutcomes {
     }
 
     #[getter]
+    fn area_x(&self, py: Python<'_>) -> Py<PyArray2<f32>> {
+        self.area_x.clone_ref(py)
+    }
+
+    #[getter]
+    fn area_y(&self, py: Python<'_>) -> Py<PyArray2<f32>> {
+        self.area_y.clone_ref(py)
+    }
+
+    #[getter]
     fn area_map_station_count(&self, py: Python<'_>) -> Py<PyArray2<i32>> {
         self.area_map_station_count.clone_ref(py)
     }
@@ -2293,6 +2316,8 @@ impl EpisodeOutcomes {
                 .clone_ref(py),
             area_crossings: self.end_outcomes.area_crossings.clone_ref(py),
             area_size: self.end_outcomes.area_size.clone_ref(py),
+            area_x: self.end_outcomes.area_x.clone_ref(py),
+            area_y: self.end_outcomes.area_y.clone_ref(py),
             area_map_station_count: self.end_outcomes.area_map_station_count.clone_ref(py),
         }
     }
@@ -4835,6 +4860,8 @@ impl EnvironmentGroup {
             vec![0; self.num_environments * connection_outcome_count];
         let mut area_crossings = vec![0i32; self.num_environments];
         let mut area_size = vec![0i32; area_outcome_len];
+        let mut area_x = vec![0.0f32; area_outcome_len];
+        let mut area_y = vec![0.0f32; area_outcome_len];
         let mut area_map_station_count = vec![0i32; area_outcome_len];
 
         py.detach(|| {
@@ -4940,6 +4967,8 @@ impl EnvironmentGroup {
                         &mut area_crossings[worker.start..worker.end()],
                     ),
                     area_size: OutputShard::from_slice(&mut area_size[area_start..area_end]),
+                    area_x: OutputShard::from_slice(&mut area_x[area_start..area_end]),
+                    area_y: OutputShard::from_slice(&mut area_y[area_start..area_end]),
                     area_map_station_count: OutputShard::from_slice(
                         &mut area_map_station_count[area_start..area_end],
                     ),
@@ -5111,6 +5140,10 @@ impl EnvironmentGroup {
                     AREA_COUNT,
                 )?
                 .unbind(),
+                area_x: pyarray2_from_flat_vec(py, area_x, self.num_environments, AREA_COUNT)?
+                    .unbind(),
+                area_y: pyarray2_from_flat_vec(py, area_y, self.num_environments, AREA_COUNT)?
+                    .unbind(),
                 area_map_station_count: pyarray2_from_flat_vec(
                     py,
                     area_map_station_count,

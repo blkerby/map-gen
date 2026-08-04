@@ -31,6 +31,7 @@ from env import (
     StepOutcomes,
     ProposalData,
     GeneratedFeatureData,
+    average_area_tile_count,
     concatenate_features,
 )
 from experience import ExperienceStorage
@@ -84,7 +85,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v4"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v5"
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -434,6 +435,7 @@ def create_generate_config(
     num_envs: int,
     device: torch.device,
     ignore_scores: bool,
+    area_tile_scale: float,
 ) -> GenerateConfig:
     def variable_float_tensor(value: VariableFloat, path: str) -> torch.Tensor:
         if isinstance(value, VariableSchedule):
@@ -532,7 +534,37 @@ def create_generate_config(
             config.generation.reward_area_map_station,
             "generation.reward_area_map_station",
         ),
+        "reward_area_tiles": variable_float_tensor(
+            config.generation.reward_area_tiles,
+            "generation.reward_area_tiles",
+        ),
+        "reward_area_x": variable_float_tensor(
+            config.generation.reward_area_x,
+            "generation.reward_area_x",
+        ),
+        "reward_area_y": variable_float_tensor(
+            config.generation.reward_area_y,
+            "generation.reward_area_y",
+        ),
     }
+    target_scales = {
+        "target_area_tiles": area_tile_scale,
+        "target_area_x": config.map_size[0],
+        "target_area_y": config.map_size[1],
+    }
+    target_tensors = {}
+    for field_name, scale in target_scales.items():
+        values = torch.stack(
+            [
+                variable_float_tensor(value, f"generation.{field_name}[{area}]")
+                for area, value in enumerate(getattr(config.generation, field_name))
+            ],
+            dim=1,
+        ) / scale
+        target_tensors[field_name] = values
+        generation_variable_floats_by_name.update(
+            {f"{field_name}_{area}": values[:, area] for area in range(6)}
+        )
     generation_variable_floats = torch.stack(
         [generation_variable_floats_by_name[name] for name in GENERATION_VARIABLE_FLOAT_FIELDS],
         dim=1,
@@ -593,6 +625,12 @@ def create_generate_config(
         reward_area_crossing=generation_variable_floats_by_name["reward_area_crossing"],
         reward_area_size_valid=generation_variable_floats_by_name["reward_area_size_valid"],
         reward_area_map_station=generation_variable_floats_by_name["reward_area_map_station"],
+        reward_area_tiles=generation_variable_floats_by_name["reward_area_tiles"],
+        reward_area_x=generation_variable_floats_by_name["reward_area_x"],
+        reward_area_y=generation_variable_floats_by_name["reward_area_y"],
+        target_area_tiles=target_tensors["target_area_tiles"],
+        target_area_x=target_tensors["target_area_x"],
+        target_area_y=target_tensors["target_area_y"],
         generation_variable_floats=generation_variable_floats,
         log_temperature_model=log_temperature_model,
         log_recommended_candidates_model=log_recommended_candidates_model,
@@ -615,6 +653,7 @@ class GenerationProcessState:
     balance_model: torch.nn.Module
     profile: bool
     ignore_scores: bool
+    area_tile_scale: float
     cleared_cuda_cache_after_first_task: bool
 
 
@@ -665,6 +704,7 @@ def initialize_generation_process(
         balance_model=balance_model,
         profile=profile,
         ignore_scores=ignore_scores,
+        area_tile_scale=average_area_tile_count(rooms),
         cleared_cuda_cache_after_first_task=False,
     )
 
@@ -694,6 +734,7 @@ def run_generation_process_task(
             env.num_envs,
             state.device,
             state.ignore_scores,
+            state.area_tile_scale,
         )
         for env in state.envs
     ]
@@ -750,6 +791,7 @@ class TrainingSession:
     config: Config
     run_path: str
     rooms: list[dict]
+    area_tile_scale: float
     device: torch.device
     generation_devices: list[torch.device]
     engine: Engine
@@ -1152,6 +1194,12 @@ class TrainingSession:
                     area_size=torch.cat(
                         [outcomes.end_outcomes.area_size for outcomes in outcome_iterations]
                     ),
+                    area_x=torch.cat(
+                        [outcomes.end_outcomes.area_x for outcomes in outcome_iterations]
+                    ),
+                    area_y=torch.cat(
+                        [outcomes.end_outcomes.area_y for outcomes in outcome_iterations]
+                    ),
                     area_map_station_count=torch.cat(
                         [
                             outcomes.end_outcomes.area_map_station_count
@@ -1455,6 +1503,7 @@ class TrainingSession:
                 1,
                 self.device,
                 False,
+                self.area_tile_scale,
             )
             balance_preds = self.balance_model(generate_config.generation_variable_floats)
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
@@ -1504,6 +1553,9 @@ class TrainingSession:
         area_crossings_loss_pct = 100.0 * loss.area_crossings_contribution / loss_denominator
         area_size_loss_pct = 100.0 * loss.area_size_contribution / loss_denominator
         area_map_station_loss_pct = 100.0 * loss.area_map_station_contribution / loss_denominator
+        area_tiles_loss_pct = 100.0 * loss.area_tiles_contribution / loss_denominator
+        area_x_loss_pct = 100.0 * loss.area_x_contribution / loss_denominator
+        area_y_loss_pct = 100.0 * loss.area_y_contribution / loss_denominator
         proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
 
         metrics = {
@@ -1538,6 +1590,12 @@ class TrainingSession:
             "area_size_loss_pct": area_size_loss_pct,
             "area_map_station_loss": loss.area_map_station,
             "area_map_station_loss_pct": area_map_station_loss_pct,
+            "area_tiles_loss": loss.area_tiles,
+            "area_tiles_loss_pct": area_tiles_loss_pct,
+            "area_x_loss": loss.area_x,
+            "area_x_loss_pct": area_x_loss_pct,
+            "area_y_loss": loss.area_y,
+            "area_y_loss_pct": area_y_loss_pct,
             "proposal_loss": loss.proposal,
             "proposal_loss_pct": proposal_loss_pct,
             "candidate_target_entropy": candidate_diagnostics.target_entropy,
@@ -1659,6 +1717,18 @@ class TrainingSession:
                     "generation.reward_area_map_station",
                 )
             ),
+            "reward_area_tiles": variable_float_metric_value(
+                step_config.generation.reward_area_tiles,
+                "generation.reward_area_tiles",
+            ),
+            "reward_area_x": variable_float_metric_value(
+                step_config.generation.reward_area_x,
+                "generation.reward_area_x",
+            ),
+            "reward_area_y": variable_float_metric_value(
+                step_config.generation.reward_area_y,
+                "generation.reward_area_y",
+            ),
             "distance_proximity_scale": step_config.distance_proximity_scale,
             "ema_decay": step_config.train.ema_decay,
             "toilet_weight": step_config.train.toilet_weight,
@@ -1673,6 +1743,9 @@ class TrainingSession:
             "area_crossing_weight": step_config.train.area_crossing_weight,
             "area_size_weight": step_config.train.area_size_weight,
             "area_map_station_weight": step_config.train.area_map_station_weight,
+            "area_tiles_weight": step_config.train.area_tiles_weight,
+            "area_x_weight": step_config.train.area_x_weight,
+            "area_y_weight": step_config.train.area_y_weight,
             "door_match_left_top1": left_topk[0],
             "door_match_left_top2": left_topk[1],
             "door_match_left_top3": left_topk[2],
@@ -2154,6 +2227,7 @@ def build_session(args: Args) -> TrainingSession:
         args.ignore_scores,
     )
     initial_config = instantiate_scheduleable_config(config, 0)
+    area_tile_scale = average_area_tile_count(rooms)
     main_optimizer = create_main_optimizer(
         main_model,
         config.optimizer,
@@ -2169,6 +2243,7 @@ def build_session(args: Args) -> TrainingSession:
         config=config,
         run_path=run_path,
         rooms=rooms,
+        area_tile_scale=area_tile_scale,
         device=device,
         generation_devices=generation_devices,
         engine=engine,
@@ -2194,6 +2269,12 @@ def build_session(args: Args) -> TrainingSession:
             area_crossing_weight=config.train.area_crossing_weight,
             area_size_weight=config.train.area_size_weight,
             area_map_station_weight=config.train.area_map_station_weight,
+            area_tiles_weight=config.train.area_tiles_weight,
+            area_x_weight=config.train.area_x_weight,
+            area_y_weight=config.train.area_y_weight,
+            area_tile_scale=area_tile_scale,
+            map_width=config.map_size[0],
+            map_height=config.map_size[1],
             distance_proximity_scale=config.distance_proximity_scale,
         ),
         experience=ExperienceStorage(

@@ -2018,6 +2018,39 @@ impl Environment {
         }
     }
 
+    pub fn area_mean_coordinates(
+        &self,
+        common: &CommonData,
+    ) -> ([f32; AREA_COUNT], [f32; AREA_COUNT]) {
+        let mut x_sum = [0i64; AREA_COUNT];
+        let mut y_sum = [0i64; AREA_COUNT];
+        for action in &self.actions {
+            let Some(room) = common.room.get(action.room_idx as usize) else {
+                continue;
+            };
+            let area = action.area as usize;
+            for &(tile_x, tile_y) in &common.geometry[room.geometry_idx as usize].occupied_tiles {
+                x_sum[area] += i64::from(action.x + tile_x);
+                y_sum[area] += i64::from(action.y + tile_y);
+            }
+        }
+        let area_x = std::array::from_fn(|area| {
+            if self.area_size[area] == 0 {
+                0.0
+            } else {
+                x_sum[area] as f32 / self.area_size[area] as f32
+            }
+        });
+        let area_y = std::array::from_fn(|area| {
+            if self.area_size[area] == 0 {
+                0.0
+            } else {
+                y_sum[area] as f32 / self.area_size[area] as f32
+            }
+        });
+        (area_x, area_y)
+    }
+
     fn exact_area_size_bucket(&self, area: usize) -> AreaBucketOutcome {
         let size = self.area_size[area];
         if size < self.area_size_limits.min {

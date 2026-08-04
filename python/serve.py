@@ -9,11 +9,11 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Annotated, Literal, NamedTuple
 
 import torch
 from flask import Flask, Response, jsonify, request
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from safetensors import safe_open
 from werkzeug.exceptions import BadRequest
 
@@ -34,6 +34,7 @@ from env import (
     EpisodeData,
     EpisodeOutcomes,
     GenerateConfig,
+    average_area_tile_count,
 )
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from model import FrontierModel
@@ -51,8 +52,8 @@ from model_loading import create_balance_model, frontier_model_kwargs, without_p
 from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, validate_config
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v2"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v4"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v3"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v5"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -121,6 +122,12 @@ class GenerateRequest(StrictBaseModel):
     reward_area_crossing: float
     reward_area_size_valid: float
     reward_area_map_station: float
+    reward_area_tiles: float
+    reward_area_x: float
+    reward_area_y: float
+    target_area_tiles: Annotated[list[float], Field(min_length=6, max_length=6)]
+    target_area_x: Annotated[list[float], Field(min_length=6, max_length=6)]
+    target_area_y: Annotated[list[float], Field(min_length=6, max_length=6)]
     area_assignment_base_order: Literal["random", "depth", "size"]
     small_map: bool
     min_rooms: int | None = None
@@ -177,6 +184,7 @@ class ServingState:
     serving_config: ServingConfig
     training_config: Config
     rooms: list[dict]
+    area_tile_scale: float
     device: torch.device
     envs: list
     model: torch.nn.Module
@@ -395,6 +403,7 @@ def create_serving_state(
         serving_config=serving_config,
         training_config=model_export.training_config,
         rooms=rooms,
+        area_tile_scale=average_area_tile_count(rooms),
         device=device,
         envs=envs,
         model=model,
@@ -445,9 +454,16 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         "reward_area_crossing",
         "reward_area_size_valid",
         "reward_area_map_station",
+        "reward_area_tiles",
+        "reward_area_x",
+        "reward_area_y",
     ):
         if getattr(generate_request, name) < 0.0:
             raise ValueError(f"{name} must be greater than or equal to zero")
+    for name in ("target_area_tiles", "target_area_x", "target_area_y"):
+        for area, value in enumerate(getattr(generate_request, name)):
+            if not math.isfinite(value):
+                raise ValueError(f"{name}[{area}] must be finite")
     if generate_request.small_map:
         missing_fields = [
             field
@@ -473,6 +489,15 @@ def create_generate_configs(
     envs: list,
     device: torch.device,
 ) -> list[GenerateConfig]:
+    target_scales = {
+        "target_area_tiles": state.area_tile_scale,
+        "target_area_x": state.training_config.map_size[0],
+        "target_area_y": state.training_config.map_size[1],
+    }
+    normalized_targets = {
+        name: [value / target_scales[name] for value in getattr(generate_request, name)]
+        for name in target_scales
+    }
     generation_variable_float_values = {
         "temperature": generate_request.temperature,
         "proposal_temperature": generate_request.proposal_temperature,
@@ -491,7 +516,17 @@ def create_generate_configs(
         "reward_area_crossing": generate_request.reward_area_crossing,
         "reward_area_size_valid": generate_request.reward_area_size_valid,
         "reward_area_map_station": generate_request.reward_area_map_station,
+        "reward_area_tiles": generate_request.reward_area_tiles,
+        "reward_area_x": generate_request.reward_area_x,
+        "reward_area_y": generate_request.reward_area_y,
     }
+    generation_variable_float_values.update(
+        {
+            f"{name}_{area}": values[area]
+            for name, values in normalized_targets.items()
+            for area in range(6)
+        }
+    )
     configs = []
     for env in envs:
         temperature = torch.full(
@@ -576,6 +611,18 @@ def create_generate_configs(
                 reward_area_crossing=generate_request.reward_area_crossing,
                 reward_area_size_valid=generate_request.reward_area_size_valid,
                 reward_area_map_station=generate_request.reward_area_map_station,
+                reward_area_tiles=generate_request.reward_area_tiles,
+                reward_area_x=generate_request.reward_area_x,
+                reward_area_y=generate_request.reward_area_y,
+                target_area_tiles=torch.tensor(
+                    normalized_targets["target_area_tiles"], dtype=torch.float32, device=device
+                ).expand(env.num_envs, 6),
+                target_area_x=torch.tensor(
+                    normalized_targets["target_area_x"], dtype=torch.float32, device=device
+                ).expand(env.num_envs, 6),
+                target_area_y=torch.tensor(
+                    normalized_targets["target_area_y"], dtype=torch.float32, device=device
+                ).expand(env.num_envs, 6),
                 generation_variable_floats=generation_variable_floats_model,
                 log_temperature_model=log_temperature_model,
                 log_recommended_candidates_model=log_recommended_candidates_model,
@@ -804,6 +851,12 @@ def warmup_generate_request() -> GenerateRequest:
         reward_area_crossing=0.0,
         reward_area_size_valid=0.0,
         reward_area_map_station=0.0,
+        reward_area_tiles=0.0,
+        reward_area_x=0.0,
+        reward_area_y=0.0,
+        target_area_tiles=[0.0] * 6,
+        target_area_x=[0.0] * 6,
+        target_area_y=[0.0] * 6,
         area_assignment_base_order="random",
         small_map=False,
     )
