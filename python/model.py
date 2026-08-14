@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from env import AREA_COUNT, OutputMetadata, Features
+from env import AREA_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, OutputMetadata, Features
 from features import (
     FRONTIER_NODE_FEATURES,
     FRONTIER_PAIR_FEATURES,
@@ -36,6 +36,7 @@ class Predictions:
     phantoon_pair_invalid: torch.Tensor
     # log-odds of invalid Phantoon area assignment:
     phantoon_area_invalid: torch.Tensor
+    vanilla_area_invalid: torch.Tensor
     # Predicted balance-model log-odds for the matched target door:
     balance_score: torch.Tensor
     # Predicted balance-model log-odds for the room crossed by the Toilet:
@@ -97,8 +98,9 @@ def get_predictions(raw_preds, output_sizes):
         toilet_invalid=preds[2].squeeze(-1),
         phantoon_pair_invalid=preds[3].squeeze(-1),
         phantoon_area_invalid=preds[4].squeeze(-1),
-        balance_score=preds[5],
-        toilet_balance_score=preds[6].squeeze(-1),
+        vanilla_area_invalid=preds[5],
+        balance_score=preds[6],
+        toilet_balance_score=preds[7].squeeze(-1),
         avg_frontiers=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         graph_diameter=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         save_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
@@ -588,6 +590,7 @@ class FrontierModel(torch.nn.Module):
             1,
             1,
             1,
+            VANILLA_AREA_CONSTRAINT_COUNT,
             door_output_size,
             1,
         )
@@ -740,6 +743,9 @@ class FrontierModel(torch.nn.Module):
         self.toilet_output = torch.nn.Linear(embedding_width, 1)
         self.phantoon_pair_output = torch.nn.Linear(embedding_width, 1)
         self.phantoon_area_output = torch.nn.Linear(embedding_width, 1)
+        self.vanilla_area_output = torch.nn.Linear(
+            embedding_width, VANILLA_AREA_CONSTRAINT_COUNT
+        )
         self.balance_score_output = torch.nn.Linear(
             embedding_width,
             output_metadata.num_door_variants,
@@ -786,6 +792,7 @@ class FrontierModel(torch.nn.Module):
             self.toilet_output,
             self.phantoon_pair_output,
             self.phantoon_area_output,
+            self.vanilla_area_output,
             self.balance_score_output,
             self.toilet_balance_score_output,
             self.avg_frontiers_output,
@@ -939,6 +946,7 @@ class FrontierModel(torch.nn.Module):
         toilet = self.toilet_output(X)
         phantoon_pair = self.phantoon_pair_output(X)
         phantoon_area = self.phantoon_area_output(X)
+        vanilla_area = self.vanilla_area_output(X)
         balance_score_variant = self.balance_score_output(X)
         balance_score = balance_score_variant[..., self.door_variant_outcome_idx]
         toilet_balance_score = self.toilet_balance_score_output(X)
@@ -981,6 +989,7 @@ class FrontierModel(torch.nn.Module):
                     toilet,
                     phantoon_pair,
                     phantoon_area,
+                    vanilla_area,
                     balance_score,
                     toilet_balance_score,
                 ],
@@ -1098,6 +1107,7 @@ class FrontierModel(torch.nn.Module):
             toilet_invalid=preds.toilet_invalid,
             phantoon_pair_invalid=preds.phantoon_pair_invalid,
             phantoon_area_invalid=preds.phantoon_area_invalid,
+            vanilla_area_invalid=preds.vanilla_area_invalid,
             balance_score=balance_score,
             toilet_balance_score=preds.toilet_balance_score,
             avg_frontiers=avg_frontiers,

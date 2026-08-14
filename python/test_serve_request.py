@@ -32,6 +32,18 @@ def base_payload() -> dict:
         "reward_toilet": 1.0,
         "reward_phantoon_pair": 1.0,
         "reward_phantoon_area": 1.0,
+        "reward_ship_in_crateria": 1.0,
+        "reward_kraid_in_brinstar": 1.0,
+        "reward_ridley_in_norfair": 1.0,
+        "reward_phantoon_in_wrecked_ship": 1.0,
+        "reward_draygon_in_maridia": 1.0,
+        "reward_mother_brain_in_tourian": 1.0,
+        "force_ship_in_crateria": False,
+        "force_kraid_in_brinstar": False,
+        "force_ridley_in_norfair": False,
+        "force_phantoon_in_wrecked_ship": False,
+        "force_draygon_in_maridia": False,
+        "force_mother_brain_in_tourian": False,
         "reward_balance": 1.0,
         "reward_toilet_balance": 1.0,
         "reward_frontier": 1.0,
@@ -64,6 +76,7 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         toilet_invalid=torch.zeros([batch_size]),
         phantoon_pair_invalid=phantoon_pair_invalid,
         phantoon_area_invalid=phantoon_area_invalid,
+        vanilla_area_invalid=torch.zeros([batch_size, 6], dtype=torch.bool),
     )
     area_size = torch.full([batch_size, 6], 2)
     area_size[1, 0] = 0
@@ -78,7 +91,7 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         ),
     )
 
-    assert serve.valid_map_mask(outcomes, 1, 3).tolist() == [
+    assert serve.valid_map_mask(outcomes, torch.zeros([6], dtype=torch.bool), 1, 3).tolist() == [
         True,
         False,
         False,
@@ -86,6 +99,14 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         False,
         False,
     ]
+
+    step_outcomes.vanilla_area_invalid[0, 0] = True
+    assert not serve.valid_map_mask(
+        outcomes,
+        torch.tensor([True, False, False, False, False, False]),
+        1,
+        3,
+    )[0]
 
 
 def test_create_generate_configs_normalizes_area_targets() -> None:

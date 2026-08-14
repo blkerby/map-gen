@@ -22,6 +22,26 @@ def test_generation_area_bounding_box_fields_are_required() -> None:
         raise AssertionError("generation.area_bounding_box_width should be required")
 
 
+def test_vanilla_area_probability_is_required_and_bounded() -> None:
+    config_data = load_debug_config()
+    del config_data["generation"]["force_ship_in_crateria_probability"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("force_ship_in_crateria_probability should be required")
+
+    config_data = load_debug_config()
+    config_data["generation"]["force_ship_in_crateria_probability"] = 1.1
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "force_ship_in_crateria_probability" in str(err)
+    else:
+        raise AssertionError("force_ship_in_crateria_probability should reject values above one")
+
+
 def test_recommended_candidates_same_frontier_is_required() -> None:
     config_data = load_debug_config()
     del config_data["generation"]["recommended_candidates_same_frontier"]
@@ -164,6 +184,7 @@ def test_area_targets_require_six_finite_values_and_instantiate_schedules() -> N
 
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
+    test_vanilla_area_probability_is_required_and_bounded()
     test_recommended_candidates_same_frontier_is_required()
     test_proposal_target_temperature_is_required()
     test_proposal_target_temperature_must_be_positive()

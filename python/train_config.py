@@ -34,6 +34,19 @@ type VariableFloat = float | VariableSchedule
 type AreaVariableFloats = Annotated[list[VariableFloat], Field(min_length=6, max_length=6)]
 
 AREA_TARGET_FIELDS = ("target_area_tiles", "target_area_x", "target_area_y")
+VANILLA_AREA_OUTCOME_NAMES = (
+    "ship_in_crateria",
+    "kraid_in_brinstar",
+    "ridley_in_norfair",
+    "phantoon_in_wrecked_ship",
+    "draygon_in_maridia",
+    "mother_brain_in_tourian",
+)
+VANILLA_AREA_PROBABILITY_FIELDS = tuple(
+    f"force_{name}_probability" for name in VANILLA_AREA_OUTCOME_NAMES
+)
+VANILLA_AREA_REWARD_FIELDS = tuple(f"reward_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
+VANILLA_AREA_CONDITION_FIELDS = tuple(f"force_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "temperature",
@@ -43,6 +56,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_toilet",
     "reward_phantoon_pair",
     "reward_phantoon_area",
+    *VANILLA_AREA_REWARD_FIELDS,
     "reward_balance",
     "reward_toilet_balance",
     "reward_frontier",
@@ -57,6 +71,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_area_x",
     "reward_area_y",
     *(f"{field}_{area}" for field in AREA_TARGET_FIELDS for area in range(6)),
+    *VANILLA_AREA_CONDITION_FIELDS,
 )
 
 
@@ -130,6 +145,12 @@ class GenerationConfig(StrictBaseModel):
     reward_toilet: VariableFloat
     reward_phantoon_pair: VariableFloat
     reward_phantoon_area: VariableFloat
+    reward_ship_in_crateria: VariableFloat
+    reward_kraid_in_brinstar: VariableFloat
+    reward_ridley_in_norfair: VariableFloat
+    reward_phantoon_in_wrecked_ship: VariableFloat
+    reward_draygon_in_maridia: VariableFloat
+    reward_mother_brain_in_tourian: VariableFloat
     reward_balance: VariableFloat
     reward_toilet_balance: VariableFloat
     reward_frontier: VariableFloat
@@ -146,6 +167,12 @@ class GenerationConfig(StrictBaseModel):
     target_area_tiles: AreaVariableFloats
     target_area_x: AreaVariableFloats
     target_area_y: AreaVariableFloats
+    force_ship_in_crateria_probability: float
+    force_kraid_in_brinstar_probability: float
+    force_ridley_in_norfair_probability: float
+    force_phantoon_in_wrecked_ship_probability: float
+    force_draygon_in_maridia_probability: float
+    force_mother_brain_in_tourian_probability: float
     min_area_size: int
     max_area_size: int
     frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"]
@@ -264,6 +291,7 @@ class TrainConfig(StrictBaseModel):
     toilet_weight: float
     phantoon_pair_weight: float
     phantoon_area_weight: float
+    vanilla_area_weight: float
     balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
@@ -548,6 +576,15 @@ def validate_config(config: Config) -> None:
         config.generation.reward_phantoon_area,
         "generation.reward_phantoon_area",
     )
+    for field_name in VANILLA_AREA_REWARD_FIELDS:
+        validate_nonnegative_variable_float(
+            getattr(config.generation, field_name),
+            f"generation.{field_name}",
+        )
+    for field_name in VANILLA_AREA_PROBABILITY_FIELDS:
+        probability = getattr(config.generation, field_name)
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError(f"generation.{field_name} must be between zero and one")
     validate_nonnegative_variable_float(
         config.generation.reward_toilet_balance,
         "generation.reward_toilet_balance",
@@ -613,6 +650,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.phantoon_pair_weight must be greater than or equal to zero")
     if config.train.phantoon_area_weight < 0:
         raise ValueError("train.phantoon_area_weight must be greater than or equal to zero")
+    if config.train.vanilla_area_weight < 0:
+        raise ValueError("train.vanilla_area_weight must be greater than or equal to zero")
     if config.train.toilet_balance_weight < 0:
         raise ValueError("train.toilet_balance_weight must be greater than or equal to zero")
     if config.train.avg_frontiers_weight < 0:

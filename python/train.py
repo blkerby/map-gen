@@ -59,6 +59,9 @@ from train_config import (
     AdamParamsConfig,
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
+    VANILLA_AREA_CONDITION_FIELDS,
+    VANILLA_AREA_PROBABILITY_FIELDS,
+    VANILLA_AREA_REWARD_FIELDS,
     MuonOptimizerConfig,
     OptimizerConfig,
     VariableFloat,
@@ -548,6 +551,28 @@ def create_generate_config(
             "generation.reward_area_y",
         ),
     }
+    generation_variable_floats_by_name.update(
+        {
+            field_name: variable_float_tensor(
+                getattr(config.generation, field_name), f"generation.{field_name}"
+            )
+            for field_name in VANILLA_AREA_REWARD_FIELDS
+        }
+    )
+    vanilla_area_constraint_mask = torch.stack(
+        [
+            torch.rand([num_envs], device=device)
+            < getattr(config.generation, probability_field)
+            for probability_field in VANILLA_AREA_PROBABILITY_FIELDS
+        ],
+        dim=1,
+    )
+    generation_variable_floats_by_name.update(
+        {
+            field_name: vanilla_area_constraint_mask[:, idx].to(torch.float32)
+            for idx, field_name in enumerate(VANILLA_AREA_CONDITION_FIELDS)
+        }
+    )
     target_scales = {
         "target_area_x": config.map_size[0],
         "target_area_y": config.map_size[1],
@@ -620,6 +645,10 @@ def create_generate_config(
         reward_toilet=generation_variable_floats_by_name["reward_toilet"],
         reward_phantoon_pair=generation_variable_floats_by_name["reward_phantoon_pair"],
         reward_phantoon_area=generation_variable_floats_by_name["reward_phantoon_area"],
+        reward_vanilla_area=torch.stack(
+            [generation_variable_floats_by_name[name] for name in VANILLA_AREA_REWARD_FIELDS],
+            dim=1,
+        ),
         reward_balance=generation_variable_floats_by_name["reward_balance"],
         reward_toilet_balance=generation_variable_floats_by_name["reward_toilet_balance"],
         reward_frontier=generation_variable_floats_by_name["reward_frontier"],
@@ -638,6 +667,7 @@ def create_generate_config(
         target_area_tiles=target_tensors["target_area_tiles"],
         target_area_x=target_tensors["target_area_x"],
         target_area_y=target_tensors["target_area_y"],
+        vanilla_area_constraint_mask=vanilla_area_constraint_mask,
         generation_variable_floats=generation_variable_floats,
         log_temperature_model=log_temperature_model,
         log_recommended_candidates_model=log_recommended_candidates_model,
@@ -1082,6 +1112,12 @@ class TrainingSession:
                             for outcomes in outcome_iterations
                         ]
                     ),
+                    vanilla_area_invalid=torch.cat(
+                        [
+                            outcomes.step_outcomes.vanilla_area_invalid
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
                     area_size_bucket=torch.cat(
                         [
                             outcomes.step_outcomes.area_size_bucket
@@ -1352,6 +1388,17 @@ class TrainingSession:
         avg_phantoon_pair = torch.mean(phantoon_pair_invalid.to(torch.float32))
         phantoon_area_invalid = (outcomes.phantoon_area_invalid != 0).to(torch.int64)
         avg_phantoon_area = torch.mean(phantoon_area_invalid.to(torch.float32))
+        vanilla_area_constraint_mask = episode_data.generation_variable_floats[
+            :,
+            [
+                GENERATION_VARIABLE_FLOAT_FIELDS.index(name)
+                for name in VANILLA_AREA_CONDITION_FIELDS
+            ],
+        ].to(torch.bool)
+        vanilla_area_invalid = (outcomes.vanilla_area_invalid != 0) & vanilla_area_constraint_mask
+        avg_vanilla_area = torch.sum(vanilla_area_invalid) / (
+            torch.sum(vanilla_area_constraint_mask) + 1e-15
+        )
 
         end_outcomes = episode_outcomes.end_outcomes
         area_size = end_outcomes.area_size
@@ -1370,6 +1417,7 @@ class TrainingSession:
             + toilet_invalid
             + phantoon_pair_invalid
             + phantoon_area_invalid
+            + torch.sum(vanilla_area_invalid.to(torch.int64), dim=1)
             + area_size_invalid
             + area_map_station_invalid
         )
@@ -1561,6 +1609,7 @@ class TrainingSession:
         toilet_loss_pct = 100.0 * loss.toilet_contribution / loss_denominator
         phantoon_pair_loss_pct = 100.0 * loss.phantoon_pair_contribution / loss_denominator
         phantoon_area_loss_pct = 100.0 * loss.phantoon_area_contribution / loss_denominator
+        vanilla_area_loss_pct = 100.0 * loss.vanilla_area_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
         main_toilet_balance_loss_pct = 100.0 * loss.toilet_balance_contribution / loss_denominator
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
@@ -1590,6 +1639,8 @@ class TrainingSession:
             "phantoon_pair_loss_pct": phantoon_pair_loss_pct,
             "phantoon_area_loss": loss.phantoon_area,
             "phantoon_area_loss_pct": phantoon_area_loss_pct,
+            "vanilla_area_loss": loss.vanilla_area,
+            "vanilla_area_loss_pct": vanilla_area_loss_pct,
             "main_balance_loss": loss.balance,
             "main_balance_loss_pct": main_balance_loss_pct,
             "main_toilet_balance_loss": loss.toilet_balance,
@@ -1658,6 +1709,7 @@ class TrainingSession:
             "avg_toilet": avg_toilet,
             "avg_phantoon_pair": avg_phantoon_pair,
             "avg_phantoon_area": avg_phantoon_area,
+            "avg_vanilla_area": avg_vanilla_area,
             "min_invalid": min_invalid,
             "min_door": min_door,
             "min_conn": min_conn,
@@ -1694,6 +1746,17 @@ class TrainingSession:
                 step_config.generation.reward_phantoon_area,
                 "generation.reward_phantoon_area",
             ),
+            **{
+                name: variable_float_metric_value(
+                    getattr(step_config.generation, name),
+                    f"generation.{name}",
+                )
+                for name in VANILLA_AREA_REWARD_FIELDS
+            },
+            **{
+                name: getattr(step_config.generation, name)
+                for name in VANILLA_AREA_PROBABILITY_FIELDS
+            },
             "reward_balance": variable_float_metric_value(
                 step_config.generation.reward_balance,
                 "generation.reward_balance",
@@ -1815,7 +1878,7 @@ class TrainingSession:
             door_loss_pct,
             connection_loss_pct,
             toilet_loss_pct,
-            phantoon_pair_loss_pct + phantoon_area_loss_pct,
+            phantoon_pair_loss_pct + phantoon_area_loss_pct + vanilla_area_loss_pct,
             main_balance_loss_pct,
             main_toilet_balance_loss_pct,
             graph_diameter_loss_pct,
@@ -2283,6 +2346,7 @@ def build_session(args: Args) -> TrainingSession:
             toilet_weight=config.train.toilet_weight,
             phantoon_pair_weight=config.train.phantoon_pair_weight,
             phantoon_area_weight=config.train.phantoon_area_weight,
+            vanilla_area_weight=config.train.vanilla_area_weight,
             balance_weight=config.train.balance_weight,
             toilet_balance_weight=config.train.toilet_balance_weight,
             avg_frontiers_weight=config.train.avg_frontiers_weight,

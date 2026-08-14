@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from env import (
     AREA_COUNT,
+    VANILLA_AREA_CONSTRAINT_COUNT,
     Actions,
     CandidateStats,
     CandidateSlot,
@@ -168,6 +169,7 @@ def compute_expected_reward(
     toilet_logprobs = torch.nn.functional.logsigmoid(-preds.toilet_invalid)
     phantoon_pair_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_pair_invalid)
     phantoon_area_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_area_invalid)
+    vanilla_area_logprobs = torch.nn.functional.logsigmoid(-preds.vanilla_area_invalid)
     door_logprobs = outcome_reward(door_logprobs, outcomes.door_invalid)
     connection_logprobs = outcome_reward(connection_logprobs, outcomes.connection_invalid)
     toilet_logprobs = outcome_reward(toilet_logprobs, outcomes.toilet_invalid)
@@ -176,6 +178,9 @@ def compute_expected_reward(
     )
     phantoon_area_logprobs = outcome_reward(
         phantoon_area_logprobs, outcomes.phantoon_area_invalid
+    )
+    vanilla_area_logprobs = outcome_reward(
+        vanilla_area_logprobs, outcomes.vanilla_area_invalid
     )
     balance_scores = balance_reward(
         preds.balance_score,
@@ -213,6 +218,12 @@ def compute_expected_reward(
         + batch_weight(config.reward_toilet) * toilet_logprobs
         + batch_weight(config.reward_phantoon_pair) * phantoon_pair_logprobs
         + batch_weight(config.reward_phantoon_area) * phantoon_area_logprobs
+        + torch.sum(
+            config.reward_vanilla_area.to(preds.door_invalid.device).unsqueeze(1)
+            * config.vanilla_area_constraint_mask.to(preds.door_invalid.device).unsqueeze(1)
+            * vanilla_area_logprobs,
+            dim=2,
+        )
         + batch_weight(config.reward_balance) * torch.sum(balance_scores, dim=2)
         + batch_weight(config.reward_toilet_balance) * toilet_balance_scores
         - batch_weight(config.reward_frontier) * preds.avg_frontiers.to(torch.float32)
@@ -467,6 +478,7 @@ def get_shortlist_candidate_batch(
         sampled_frontier_idx,
         sampled_proposal_action_idx,
         proposal_possible_counts,
+        group.config.vanilla_area_constraint_mask,
         group.config.recommended_candidates,
         group.config.num_scored_invalid_candidates,
         group.config.max_candidate_areas_per_placement,
@@ -505,6 +517,7 @@ def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
         empty_shortlist,
         empty_shortlist,
         torch.zeros([environment_count], dtype=torch.int64),
+        group.config.vanilla_area_constraint_mask,
         AREA_COUNT,
         0,
         AREA_COUNT,
@@ -723,6 +736,7 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
         toilet_invalid=gather_scalar(outcomes.toilet_invalid),
         phantoon_pair_invalid=gather_scalar(outcomes.phantoon_pair_invalid),
         phantoon_area_invalid=gather_scalar(outcomes.phantoon_area_invalid),
+        vanilla_area_invalid=gather(outcomes.vanilla_area_invalid),
         area_size_bucket=gather(outcomes.area_size_bucket),
         area_map_station_count_bucket=gather(outcomes.area_map_station_count_bucket),
         door_match=gather(outcomes.door_match),
@@ -937,6 +951,11 @@ def select_candidate_actions(
             ),
             phantoon_area_invalid=preds.phantoon_area_invalid.view(
                 environment_count, candidate_count
+            ),
+            vanilla_area_invalid=preds.vanilla_area_invalid.view(
+                environment_count,
+                candidate_count,
+                VANILLA_AREA_CONSTRAINT_COUNT,
             ),
             balance_score=balance_score,
             toilet_balance_score=preds.toilet_balance_score.view(
@@ -1831,6 +1850,12 @@ def merge_generation_results(
                 phantoon_area_invalid=torch.cat(
                     [
                         episode_outcomes.step_outcomes.phantoon_area_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                vanilla_area_invalid=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.vanilla_area_invalid
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

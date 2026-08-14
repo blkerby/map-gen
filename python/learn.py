@@ -28,9 +28,17 @@ from loss import (
     compute_toilet_balance_score_target_logits,
     compute_loss_breakdown,
 )
-from train_config import Config, episodes_per_round
+from train_config import (
+    Config,
+    GENERATION_VARIABLE_FLOAT_FIELDS,
+    VANILLA_AREA_CONDITION_FIELDS,
+    episodes_per_round,
+)
 
 INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
+VANILLA_AREA_CONDITION_INDICES = [
+    GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_CONDITION_FIELDS
+]
 
 
 def distance_proximity_utility(
@@ -94,6 +102,7 @@ class MainLossBreakdown:
     toilet: float
     phantoon_pair: float
     phantoon_area: float
+    vanilla_area: float
     balance: float
     toilet_balance: float
     avg_frontiers: float
@@ -113,6 +122,7 @@ class MainLossBreakdown:
     toilet_contribution: float
     phantoon_pair_contribution: float
     phantoon_area_contribution: float
+    vanilla_area_contribution: float
     balance_contribution: float
     toilet_balance_contribution: float
     avg_frontiers_contribution: float
@@ -165,6 +175,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet=0.0,
         phantoon_pair=0.0,
         phantoon_area=0.0,
+        vanilla_area=0.0,
         balance=0.0,
         toilet_balance=0.0,
         avg_frontiers=0.0,
@@ -184,6 +195,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet_contribution=0.0,
         phantoon_pair_contribution=0.0,
         phantoon_area_contribution=0.0,
+        vanilla_area_contribution=0.0,
         balance_contribution=0.0,
         toilet_balance_contribution=0.0,
         avg_frontiers_contribution=0.0,
@@ -227,6 +239,8 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet_contribution += source.toilet_contribution
     target.phantoon_pair_contribution += source.phantoon_pair_contribution
     target.phantoon_area_contribution += source.phantoon_area_contribution
+    target.vanilla_area += source.vanilla_area
+    target.vanilla_area_contribution += source.vanilla_area_contribution
     target.balance_contribution += source.balance_contribution
     target.toilet_balance_contribution += source.toilet_balance_contribution
     target.avg_frontiers_contribution += source.avg_frontiers_contribution
@@ -251,6 +265,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet=total_loss.toilet / count,
         phantoon_pair=total_loss.phantoon_pair / count,
         phantoon_area=total_loss.phantoon_area / count,
+        vanilla_area=total_loss.vanilla_area / count,
         balance=total_loss.balance / count,
         toilet_balance=total_loss.toilet_balance / count,
         avg_frontiers=total_loss.avg_frontiers / count,
@@ -270,6 +285,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet_contribution=total_loss.toilet_contribution / count,
         phantoon_pair_contribution=total_loss.phantoon_pair_contribution / count,
         phantoon_area_contribution=total_loss.phantoon_area_contribution / count,
+        vanilla_area_contribution=total_loss.vanilla_area_contribution / count,
         balance_contribution=total_loss.balance_contribution / count,
         toilet_balance_contribution=total_loss.toilet_balance_contribution / count,
         avg_frontiers_contribution=total_loss.avg_frontiers_contribution / count,
@@ -719,6 +735,9 @@ def prepare_feature_batches(
                         phantoon_area_invalid=(
                             next_lookahead_outcomes.phantoon_area_invalid.unsqueeze(1)
                         ),
+                        vanilla_area_invalid=(
+                            next_lookahead_outcomes.vanilla_area_invalid.unsqueeze(1)
+                        ),
                         area_size_bucket=next_lookahead_outcomes.area_size_bucket.unsqueeze(1),
                         area_map_station_count_bucket=(
                             next_lookahead_outcomes.area_map_station_count_bucket.unsqueeze(1)
@@ -1062,6 +1081,7 @@ def train_feature_batch_backward(
         toilet_invalid=step_outcomes.toilet_invalid.unsqueeze(1),
         phantoon_pair_invalid=step_outcomes.phantoon_pair_invalid.unsqueeze(1),
         phantoon_area_invalid=step_outcomes.phantoon_area_invalid.unsqueeze(1),
+        vanilla_area_invalid=step_outcomes.vanilla_area_invalid.unsqueeze(1),
         area_size_bucket=step_outcomes.area_size_bucket.unsqueeze(1),
         area_map_station_count_bucket=step_outcomes.area_map_station_count_bucket.unsqueeze(1),
         door_match=step_outcomes.door_match.unsqueeze(1),
@@ -1168,6 +1188,10 @@ def train_feature_batch_backward(
         dtype=torch.bool,
         device=context.device,
     )
+    vanilla_area_constraint_mask = prepared_batch.episode_data.generation_variable_floats[
+        :,
+        VANILLA_AREA_CONDITION_INDICES,
+    ].to(device=context.device, dtype=torch.bool)
     total_loss = empty_main_loss_breakdown()
     prefix_weight = 1.0 / len(prepared_batch.feature_batches)
 
@@ -1200,6 +1224,7 @@ def train_feature_batch_backward(
             preds,
             repeated_outcomes,
             mask,
+            vanilla_area_constraint_mask,
             repeated_balance_score_target_logits,
             repeated_balance_score_uniform_log_odds,
             prefix_balance_score_mask.unsqueeze(1),
@@ -1235,6 +1260,7 @@ def train_feature_batch_backward(
         total_loss.toilet += prefix_loss.toilet.item() * prefix_weight
         total_loss.phantoon_pair += prefix_loss.phantoon_pair.item() * prefix_weight
         total_loss.phantoon_area += prefix_loss.phantoon_area.item() * prefix_weight
+        total_loss.vanilla_area += prefix_loss.vanilla_area.item() * prefix_weight
         total_loss.balance += prefix_loss.balance.item() * prefix_weight
         total_loss.toilet_balance += prefix_loss.toilet_balance.item() * prefix_weight
         total_loss.avg_frontiers += prefix_loss.avg_frontiers.item() * prefix_weight
@@ -1260,6 +1286,9 @@ def train_feature_batch_backward(
         )
         total_loss.phantoon_area_contribution += (
             prefix_loss.phantoon_area_contribution.item() * prefix_weight
+        )
+        total_loss.vanilla_area_contribution += (
+            prefix_loss.vanilla_area_contribution.item() * prefix_weight
         )
         total_loss.balance_contribution += prefix_loss.balance_contribution.item() * prefix_weight
         total_loss.toilet_balance_contribution += (

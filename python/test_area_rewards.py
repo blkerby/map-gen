@@ -34,6 +34,8 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         reward_toilet=0.0,
         reward_phantoon_pair=values["reward_phantoon_pair"],
         reward_phantoon_area=values["reward_phantoon_area"],
+        reward_vanilla_area=torch.zeros([1, 6]),
+        vanilla_area_constraint_mask=torch.zeros([1, 6], dtype=torch.bool),
         reward_balance=0.0,
         reward_toilet_balance=0.0,
         reward_frontier=0.0,
@@ -77,6 +79,7 @@ def area_predictions() -> Predictions:
         toilet_invalid=torch.zeros([batch, candidate]),
         phantoon_pair_invalid=torch.zeros([batch, candidate]),
         phantoon_area_invalid=torch.zeros([batch, candidate]),
+        vanilla_area_invalid=torch.zeros([batch, candidate, 6]),
         balance_score=torch.zeros([batch, candidate, door]),
         toilet_balance_score=torch.zeros([batch, candidate]),
         avg_frontiers=torch.zeros([batch, candidate]),
@@ -105,6 +108,7 @@ def unknown_outcomes() -> StepOutcomes:
         toilet_invalid=torch.full([1, 2], -1.0),
         phantoon_pair_invalid=torch.full([1, 2], -1.0),
         phantoon_area_invalid=torch.full([1, 2], -1.0),
+        vanilla_area_invalid=torch.full([1, 2, 6], -1.0),
         area_size_bucket=torch.full([1, 2, 6], -1.0),
         area_map_station_count_bucket=torch.full([1, 2, 6], -1.0),
         door_match=torch.full([1, 2, 3], -1.0),
@@ -147,6 +151,24 @@ def test_phantoon_rewards_use_independent_coefficients() -> None:
     )
 
 
+def test_vanilla_area_reward_is_masked_by_enabled_constraint() -> None:
+    predictions = area_predictions()
+    predictions.vanilla_area_invalid[:, :, 0] = torch.tensor([[0.0, 1.0]])
+    config = zero_generate_config()
+    config.reward_vanilla_area[:, 0] = 2.0
+
+    assert torch.equal(
+        compute_expected_reward(predictions, unknown_outcomes(), config),
+        torch.zeros([1, 2]),
+    )
+
+    config.vanilla_area_constraint_mask[:, 0] = True
+    assert torch.allclose(
+        compute_expected_reward(predictions, unknown_outcomes(), config),
+        2.0 * torch.nn.functional.logsigmoid(-predictions.vanilla_area_invalid[:, :, 0]),
+    )
+
+
 def test_area_rewards_use_valid_bucket_logprobs() -> None:
     reward = compute_expected_reward(
         area_predictions(),
@@ -179,6 +201,8 @@ def test_numeric_area_rewards_use_negative_mean_squared_error() -> None:
 
 def main() -> None:
     test_zero_area_rewards_leave_reward_unchanged()
+    test_phantoon_rewards_use_independent_coefficients()
+    test_vanilla_area_reward_is_masked_by_enabled_constraint()
     test_area_rewards_use_valid_bucket_logprobs()
     test_numeric_area_rewards_use_negative_mean_squared_error()
 

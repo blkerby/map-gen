@@ -50,7 +50,14 @@ from small_map import (
     prune_small_maps,
 )
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
-from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, validate_config
+from train_config import (
+    Config,
+    GENERATION_VARIABLE_FLOAT_FIELDS,
+    VANILLA_AREA_CONDITION_FIELDS,
+    VANILLA_AREA_OUTCOME_NAMES,
+    VANILLA_AREA_REWARD_FIELDS,
+    validate_config,
+)
 
 
 MODEL_EXPORT_FORMAT = "map-gen-model-export-v3"
@@ -113,6 +120,18 @@ class GenerateRequest(StrictBaseModel):
     reward_toilet: float
     reward_phantoon_pair: float
     reward_phantoon_area: float
+    reward_ship_in_crateria: float
+    reward_kraid_in_brinstar: float
+    reward_ridley_in_norfair: float
+    reward_phantoon_in_wrecked_ship: float
+    reward_draygon_in_maridia: float
+    reward_mother_brain_in_tourian: float
+    force_ship_in_crateria: bool
+    force_kraid_in_brinstar: bool
+    force_ridley_in_norfair: bool
+    force_phantoon_in_wrecked_ship: bool
+    force_draygon_in_maridia: bool
+    force_mother_brain_in_tourian: bool
     reward_balance: float
     reward_toilet_balance: float
     reward_frontier: float
@@ -530,6 +549,21 @@ def create_generate_configs(
     }
     generation_variable_float_values.update(
         {
+            field_name: getattr(generate_request, field_name)
+            for field_name in VANILLA_AREA_REWARD_FIELDS
+        }
+    )
+    generation_variable_float_values.update(
+        {
+            field_name: float(getattr(generate_request, field_name))
+            for field_name in VANILLA_AREA_CONDITION_FIELDS
+        }
+    )
+    vanilla_area_constraint_values = [
+        getattr(generate_request, f"force_{name}") for name in VANILLA_AREA_OUTCOME_NAMES
+    ]
+    generation_variable_float_values.update(
+        {
             f"{name}_{area}": values[area]
             for name, values in normalized_targets.items()
             for area in range(6)
@@ -609,6 +643,11 @@ def create_generate_configs(
                 reward_toilet=generate_request.reward_toilet,
                 reward_phantoon_pair=generate_request.reward_phantoon_pair,
                 reward_phantoon_area=generate_request.reward_phantoon_area,
+                reward_vanilla_area=torch.tensor(
+                    [getattr(generate_request, name) for name in VANILLA_AREA_REWARD_FIELDS],
+                    dtype=torch.float32,
+                    device=device,
+                ).expand(env.num_envs, 6),
                 reward_balance=generate_request.reward_balance,
                 reward_toilet_balance=generate_request.reward_toilet_balance,
                 reward_frontier=generate_request.reward_frontier,
@@ -630,6 +669,9 @@ def create_generate_configs(
                 ).expand(env.num_envs, 6),
                 target_area_y=torch.tensor(
                     normalized_targets["target_area_y"], dtype=torch.float32, device=device
+                ).expand(env.num_envs, 6),
+                vanilla_area_constraint_mask=torch.tensor(
+                    vanilla_area_constraint_values, dtype=torch.bool, device=device
                 ).expand(env.num_envs, 6),
                 generation_variable_floats=generation_variable_floats_model,
                 log_temperature_model=log_temperature_model,
@@ -680,7 +722,12 @@ def tensor_has_invalid_outcome(tensor: torch.Tensor) -> torch.Tensor:
     return torch.any(invalid, dim=tuple(range(1, invalid.ndim)))
 
 
-def valid_map_mask(outcomes, min_area_size: int, max_area_size: int) -> torch.Tensor:
+def valid_map_mask(
+    outcomes,
+    vanilla_area_constraint_mask: torch.Tensor,
+    min_area_size: int,
+    max_area_size: int,
+) -> torch.Tensor:
     step_outcomes = outcomes.step_outcomes
     end_outcomes = outcomes.end_outcomes
     area_size_invalid = (end_outcomes.area_size < min_area_size) | (
@@ -693,6 +740,9 @@ def valid_map_mask(outcomes, min_area_size: int, max_area_size: int) -> torch.Te
         | tensor_has_invalid_outcome(step_outcomes.toilet_invalid)
         | tensor_has_invalid_outcome(step_outcomes.phantoon_pair_invalid)
         | tensor_has_invalid_outcome(step_outcomes.phantoon_area_invalid)
+        | tensor_has_invalid_outcome(
+            step_outcomes.vanilla_area_invalid & vanilla_area_constraint_mask
+        )
         | tensor_has_invalid_outcome(area_size_invalid)
         | tensor_has_invalid_outcome(area_map_station_invalid)
     )
@@ -849,6 +899,18 @@ def warmup_generate_request() -> GenerateRequest:
         reward_toilet=1.0,
         reward_phantoon_pair=1.0,
         reward_phantoon_area=1.0,
+        reward_ship_in_crateria=1.0,
+        reward_kraid_in_brinstar=1.0,
+        reward_ridley_in_norfair=1.0,
+        reward_phantoon_in_wrecked_ship=1.0,
+        reward_draygon_in_maridia=1.0,
+        reward_mother_brain_in_tourian=1.0,
+        force_ship_in_crateria=False,
+        force_kraid_in_brinstar=False,
+        force_ridley_in_norfair=False,
+        force_phantoon_in_wrecked_ship=False,
+        force_draygon_in_maridia=False,
+        force_mother_brain_in_tourian=False,
         reward_balance=0.1,
         reward_toilet_balance=0.1,
         reward_frontier=0.0,
@@ -1050,6 +1112,11 @@ def build_generate_response_data(
     profile_time = profile_start(state.profile)
     valid_mask = valid_map_mask(
         outcomes,
+        torch.tensor(
+            [getattr(generate_request, name) for name in VANILLA_AREA_CONDITION_FIELDS],
+            dtype=torch.bool,
+            device=outcomes.step_outcomes.vanilla_area_invalid.device,
+        ),
         state.training_config.generation.min_area_size,
         state.training_config.generation.max_area_size,
     )

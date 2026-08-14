@@ -29,6 +29,7 @@ pub enum DoorValidOutcome {
 
 pub const AREA_COUNT: usize = 6;
 pub const DUMMY_AREA: AreaIdx = AREA_COUNT as AreaIdx;
+pub const VANILLA_AREA_CONSTRAINT_COUNT: usize = 6;
 pub const NUM_DIRS: usize = 4; // left, right, up, down
 
 #[cfg(test)]
@@ -264,6 +265,7 @@ pub struct GeometryDirDoorData {
 
 pub struct CommonData {
     pub room: Vec<RoomData>,
+    vanilla_area_room_idx: [Option<RoomIdx>; VANILLA_AREA_CONSTRAINT_COUNT],
     toilet_room_idx: Option<RoomIdx>,
     phantoon_boss_room_idx: Option<RoomIdx>,
     phantoon_map_room_idx: Option<RoomIdx>,
@@ -335,6 +337,20 @@ impl ConnectionsKey {
             map_station: room.map_station,
             connections,
             missing_connections,
+        }
+    }
+}
+
+impl SpecialType {
+    fn vanilla_area_constraint(self) -> Option<(usize, &'static str)> {
+        match self {
+            Self::Ship => Some((0, "ship")),
+            Self::KraidBoss => Some((1, "kraid_boss")),
+            Self::RidleyBoss => Some((2, "ridley_boss")),
+            Self::PhantoonBoss => Some((3, "phantoon_boss")),
+            Self::DraygonBoss => Some((4, "draygon_boss")),
+            Self::MotherBrain => Some((5, "mother_brain")),
+            Self::Toilet | Self::PhantoonMap | Self::PhantoonSave => None,
         }
     }
 }
@@ -506,6 +522,10 @@ fn has_disallowed_toilet_crossing(
 }
 
 impl CommonData {
+    pub fn vanilla_area_room_idx(&self) -> &[Option<RoomIdx>; VANILLA_AREA_CONSTRAINT_COUNT] {
+        &self.vanilla_area_room_idx
+    }
+
     pub fn toilet_room_idx(&self) -> Option<RoomIdx> {
         self.toilet_room_idx
     }
@@ -551,6 +571,7 @@ impl CommonData {
         let mut room_connection = vec![];
         let mut geometry_by_key = HashMap::new();
         let mut connection_variant_by_key = HashMap::new();
+        let mut vanilla_area_room_idx = [None; VANILLA_AREA_CONSTRAINT_COUNT];
         let mut toilet_room_idx = None;
         let mut phantoon_boss_room_idx = None;
         let mut phantoon_map_room_idx = None;
@@ -562,6 +583,17 @@ impl CommonData {
         let mut room_dir_door: [Vec<RoomDirDoorData>; NUM_DIRS] = std::array::from_fn(|_| vec![]);
 
         for (room_idx, room) in rooms.iter().enumerate() {
+            if let Some((constraint_idx, special_type)) = room
+                .special_type
+                .and_then(SpecialType::vanilla_area_constraint)
+            {
+                if let Some(first_room_idx) = vanilla_area_room_idx[constraint_idx] {
+                    bail!(
+                        "rooms {first_room_idx} and {room_idx} both have special_type {special_type}"
+                    );
+                }
+                vanilla_area_room_idx[constraint_idx] = Some(room_idx as RoomIdx);
+            }
             match room.special_type {
                 Some(SpecialType::Toilet) => {
                     if let Some(first_toilet_room_idx) = toilet_room_idx {
@@ -846,6 +878,7 @@ impl CommonData {
 
         let mut common = Self {
             room: room_data,
+            vanilla_area_room_idx,
             toilet_room_idx,
             phantoon_boss_room_idx,
             phantoon_map_room_idx,

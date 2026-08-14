@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from env import AREA_COUNT, Features, OutputMetadata
+from env import AREA_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, Features, OutputMetadata
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 if TYPE_CHECKING:
@@ -213,6 +213,7 @@ class LookaheadFeature(GlobalFeature):
             context.features.lookahead_outcomes
             + 2 * context.num_connection_outputs
             + 6
+            + 2 * VANILLA_AREA_CONSTRAINT_COUNT
             + 2 * AREA_COUNT * 3
         )
 
@@ -267,6 +268,13 @@ class LookaheadFeature(GlobalFeature):
             ],
             dim=-1,
         ).flatten(1)
+        vanilla_area_features = torch.stack(
+            [
+                (features.global_features.lookahead_vanilla_area_invalid == 0).to(dtype),
+                (features.global_features.lookahead_vanilla_area_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
         area_size_features = torch.stack(
             [
                 features.global_features.lookahead_area_size_bucket == bucket
@@ -288,6 +296,7 @@ class LookaheadFeature(GlobalFeature):
                 toilet_features,
                 phantoon_pair_features,
                 phantoon_area_features,
+                vanilla_area_features,
                 area_size_features,
                 area_map_station_count_features,
             ],

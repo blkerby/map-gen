@@ -12,7 +12,8 @@ use crate::common::{
     AREA_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx, Coord, DUMMY_AREA,
     DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
     GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
-    RoomPartIdx, SpatialCellIdx, get_behind_door_position, proposal_action_parts,
+    RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT, get_behind_door_position,
+    proposal_action_parts,
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
 use crate::scc_dag::SccDag;
@@ -335,6 +336,8 @@ pub struct StepOutcomes {
     pub phantoon_pair_valid: DoorValidOutcome,
     // Whether the Phantoon boss, map, and save rooms are in the same area.
     pub phantoon_area_valid: DoorValidOutcome,
+    // Whether each constrained special room is assigned to its vanilla area.
+    pub vanilla_area_valid: [DoorValidOutcome; VANILLA_AREA_CONSTRAINT_COUNT],
     // Final area-size bucket: below range, valid range, or above range.
     pub area_size_bucket: [AreaBucketOutcome; AREA_COUNT],
     // Final map-station-count bucket: zero, one, or two-or-more.
@@ -1948,6 +1951,7 @@ impl Environment {
     pub fn get_initial_candidates_with_outcomes(
         &mut self,
         common: &CommonData,
+        vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -1974,11 +1978,19 @@ impl Environment {
                 frontier_window_size,
                 scratch,
             );
+            if vanilla_area_constraint_mask
+                .iter()
+                .zip(outcomes.vanilla_area_valid)
+                .any(|(&enabled, outcome)| enabled && outcome == DoorValidOutcome::Invalid)
+            {
+                continue;
+            }
             candidates.push(candidate);
             post_candidate_outcomes.push(outcomes);
             door_matches.push(door_match);
             feature_plans.push(features);
         }
+        let clean_count = candidates.len();
         ProposalCandidates {
             pre_candidate_outcomes,
             candidates,
@@ -1989,9 +2001,9 @@ impl Environment {
             feature_plans,
             scored_invalid_frontier_idx: Vec::new(),
             scored_invalid_proposal_action_idx: Vec::new(),
-            clean_count: AREA_COUNT,
+            clean_count,
             evaluated_count: AREA_COUNT,
-            rejected_count: 0,
+            rejected_count: AREA_COUNT - clean_count,
             invalid_count: 0,
         }
     }
@@ -2392,6 +2404,7 @@ impl Environment {
         &mut self,
         common: &CommonData,
         pre_candidate_outcomes: &StepOutcomes,
+        vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
         candidate: CandidateAction,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
@@ -2403,6 +2416,7 @@ impl Environment {
             match self.evaluate_candidate_outcome(
                 common,
                 pre_candidate_outcomes,
+                vanilla_area_constraint_mask,
                 candidate.action,
                 config,
                 frontier_neighbor_algorithm,
@@ -3661,6 +3675,7 @@ impl Environment {
         common: &CommonData,
         sampled_frontier_idx: &[FrontierIdx],
         sampled_proposal_action_idx: &[ProposalActionIdx],
+        vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
         recommended_candidates: usize,
         num_scored_invalid_candidates: usize,
         max_candidate_areas_per_placement: usize,
@@ -3765,6 +3780,7 @@ impl Environment {
             match self.evaluate_resolved_proposal_action(
                 common,
                 &pre_candidate_outcomes,
+                vanilla_area_constraint_mask,
                 candidate,
                 config,
                 frontier_neighbor_algorithm,
@@ -3819,6 +3835,7 @@ impl Environment {
                 match self.evaluate_resolved_proposal_action(
                     common,
                     &pre_candidate_outcomes,
+                    vanilla_area_constraint_mask,
                     candidate,
                     config,
                     frontier_neighbor_algorithm,
@@ -3932,6 +3949,7 @@ impl Environment {
         &mut self,
         common: &CommonData,
         pre_candidate_outcomes: &StepOutcomes,
+        vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
         candidate: Action,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
@@ -4036,6 +4054,21 @@ impl Environment {
             };
 
         let (area_size_bucket, area_map_station_count_bucket) = self.area_bucket_outcomes(common);
+        let vanilla_area_valid = self.vanilla_area_outcomes(common);
+        if vanilla_area_constraint_mask
+            .iter()
+            .enumerate()
+            .any(|(idx, &enabled)| {
+                enabled
+                    && pre_candidate_outcomes.vanilla_area_valid[idx] == DoorValidOutcome::Unknown
+                    && vanilla_area_valid[idx] == DoorValidOutcome::Invalid
+            })
+        {
+            let profile = profile_start();
+            self.restore_lookahead_candidate(common, snapshot);
+            profile_end(ProfileMetric::EnvProposalRestore, profile);
+            return Ok(CandidateOutcome::Rejected);
+        }
         if introduces_invalid_area_bucket(
             &pre_candidate_outcomes.area_size_bucket,
             &area_size_bucket,
@@ -4066,6 +4099,7 @@ impl Environment {
             toilet_valid,
             phantoon_pair_valid,
             phantoon_area_valid,
+            vanilla_area_valid,
             area_size_bucket,
             area_map_station_count_bucket,
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
@@ -5777,10 +5811,33 @@ impl Environment {
             toilet_valid: self.toilet_outcome(common),
             phantoon_pair_valid: self.phantoon_pair_outcome(common),
             phantoon_area_valid: self.phantoon_area_outcome(common),
+            vanilla_area_valid: self.vanilla_area_outcomes(common),
             area_size_bucket,
             area_map_station_count_bucket,
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
         }
+    }
+
+    fn vanilla_area_outcomes(
+        &self,
+        common: &CommonData,
+    ) -> [DoorValidOutcome; VANILLA_AREA_CONSTRAINT_COUNT] {
+        std::array::from_fn(|constraint_idx| {
+            let Some(room_idx) = common.vanilla_area_room_idx()[constraint_idx] else {
+                return DoorValidOutcome::Valid;
+            };
+            if self.room_used[room_idx as usize] {
+                if self.room_area[room_idx as usize] as usize == constraint_idx {
+                    DoorValidOutcome::Valid
+                } else {
+                    DoorValidOutcome::Invalid
+                }
+            } else if self.finished {
+                DoorValidOutcome::Invalid
+            } else {
+                DoorValidOutcome::Unknown
+            }
+        })
     }
 
     fn toilet_outcome(&self, common: &CommonData) -> DoorValidOutcome {
@@ -6064,6 +6121,12 @@ impl Environment {
                 "phantoon area",
                 stage,
             )?;
+            check_outcome_transition_consistency(
+                &known_outcomes.vanilla_area_valid,
+                &outcomes.vanilla_area_valid,
+                "vanilla area",
+                stage,
+            )?;
             check_area_bucket_transition_consistency(
                 &known_outcomes.area_size_bucket,
                 &outcomes.area_size_bucket,
@@ -6104,6 +6167,12 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
             known.phantoon_area_valid,
             current.phantoon_area_valid,
         ),
+        vanilla_area_valid: std::array::from_fn(|idx| {
+            merge_known_outcome_value(
+                known.vanilla_area_valid[idx],
+                current.vanilla_area_valid[idx],
+            )
+        }),
         area_size_bucket: std::array::from_fn(|area| {
             merge_known_area_bucket(known.area_size_bucket[area], current.area_size_bucket[area])
         }),
@@ -6227,6 +6296,9 @@ fn write_direction_door_matches(matches: &[DirDoorIdx], output: &mut [i16]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NO_VANILLA_AREA_CONSTRAINTS: [bool; VANILLA_AREA_CONSTRAINT_COUNT] =
+        [false; VANILLA_AREA_CONSTRAINT_COUNT];
     use crate::common::{Direction, Room, proposal_action_idx};
 
     const TEST_AREA_SIZE_LIMITS: AreaSizeLimits = AreaSizeLimits {
@@ -6505,6 +6577,7 @@ mod tests {
                 &common,
                 &[0],
                 &[proposal_action],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 1,
                 0,
                 1,
@@ -6556,6 +6629,7 @@ mod tests {
         let mut scratch = FeatureScratch::default();
         let result = env.get_initial_candidates_with_outcomes(
             &common,
+            &NO_VANILLA_AREA_CONSTRAINTS,
             &FeatureConfig::all_disabled(),
             FrontierNeighborAlgorithm::Nearest,
             1,
@@ -6936,6 +7010,7 @@ mod tests {
                 &common,
                 &[0],
                 &[proposal_action],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 1,
                 0,
                 1,
@@ -7440,6 +7515,7 @@ mod tests {
                 &common,
                 &[0],
                 &[mismatched_action],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 1,
                 1,
                 1,
@@ -7571,6 +7647,7 @@ mod tests {
                     proposal_action_idx(second_door_variant_idx, 1),
                     proposal_action,
                 ],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 1,
@@ -7720,6 +7797,7 @@ mod tests {
                 &common,
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 1,
@@ -7769,6 +7847,7 @@ mod tests {
                 &common,
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 1,
@@ -7790,6 +7869,7 @@ mod tests {
                 &common,
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 1,
@@ -7814,6 +7894,7 @@ mod tests {
                     sampled_proposal_action_idx[0],
                     sampled_proposal_action_idx[2],
                 ],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 1,
@@ -7847,6 +7928,7 @@ mod tests {
                 &common,
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 3,
                 1,
                 2,
@@ -7887,6 +7969,7 @@ mod tests {
                     proposal_action_idx(door_variant_idx, 2),
                     proposal_action_idx(door_variant_idx, 2),
                 ],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 2,
@@ -7959,6 +8042,7 @@ mod tests {
                 &common,
                 &sampled_frontier_idx,
                 &sampled_proposal_action_idx,
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 2,
                 1,
                 1,
@@ -7985,6 +8069,7 @@ mod tests {
                     second_frontier_action_idx,
                     sampled_proposal_action_idx[1],
                 ],
+                &NO_VANILLA_AREA_CONSTRAINTS,
                 3,
                 1,
                 1,
@@ -8037,6 +8122,7 @@ mod tests {
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
+                vanilla_area_valid: [Valid; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -8047,6 +8133,7 @@ mod tests {
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
+                vanilla_area_valid: [Valid; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -8059,6 +8146,7 @@ mod tests {
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,
+                vanilla_area_valid: [Unknown; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
@@ -8069,6 +8157,7 @@ mod tests {
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,
+                vanilla_area_valid: [Unknown; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 toilet_crossed_room_idx: -1,
