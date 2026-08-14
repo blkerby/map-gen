@@ -1523,6 +1523,7 @@
         ],
         "connections": [],
         "missing_connections": [],
+        "special_type": "kraid_boss",
         "toilet_crossing_x": []
     },
     {
@@ -2042,6 +2043,7 @@
         ],
         "connections": [],
         "missing_connections": [],
+        "special_type": "draygon_boss",
         "toilet_crossing_x": []
     },
     {
@@ -2751,6 +2753,7 @@
         ],
         "connections": [],
         "missing_connections": [],
+        "special_type": "ridley_boss",
         "toilet_crossing_x": []
     },
     {

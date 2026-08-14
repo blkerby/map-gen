@@ -213,6 +213,7 @@
         ],
         "connections": [],
         "missing_connections": [],
+        "special_type": "ridley_boss",
         "toilet_crossing_x": []
     },
     {

@@ -67,6 +67,9 @@ pub struct Room {
 #[serde(rename_all = "snake_case")]
 enum SpecialType {
     Toilet,
+    KraidBoss,
+    DraygonBoss,
+    RidleyBoss,
     PhantoonBoss,
     PhantoonMap,
     PhantoonSave,
@@ -326,23 +329,12 @@ impl ConnectionsKey {
         let mut missing_connections = room.missing_connections.clone();
         missing_connections.sort_unstable();
         Self {
-            special_type: room.special_type.and_then(SpecialType::connection_key_type),
+            special_type: room.special_type,
             save: room.save,
             refill: room.refill,
             map_station: room.map_station,
             connections,
             missing_connections,
-        }
-    }
-}
-
-impl SpecialType {
-    fn connection_key_type(self) -> Option<Self> {
-        match self {
-            Self::Toilet | Self::PhantoonBoss | Self::PhantoonMap | Self::PhantoonSave => {
-                Some(self)
-            }
-            Self::Ship | Self::MotherBrain => None,
         }
     }
 }
@@ -603,7 +595,14 @@ impl CommonData {
                     }
                     phantoon_save_room_idx = Some(room_idx as RoomIdx);
                 }
-                Some(SpecialType::Ship | SpecialType::MotherBrain) | None => {}
+                Some(
+                    SpecialType::KraidBoss
+                    | SpecialType::DraygonBoss
+                    | SpecialType::RidleyBoss
+                    | SpecialType::Ship
+                    | SpecialType::MotherBrain,
+                )
+                | None => {}
             }
             if matches!(
                 room.special_type,
@@ -1261,7 +1260,7 @@ mod tests {
     }
 
     #[test]
-    fn ship_and_mother_brain_do_not_create_connection_variants() {
+    fn special_types_create_connection_variants() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1299,8 +1298,8 @@ mod tests {
             .iter()
             .map(|room| room.connection_variant_idx)
             .collect();
-        assert_eq!(room_connection_variant_idx, vec![0, 0, 0]);
-        assert_eq!(common.connection_variant_rooms.len(), 1);
+        assert_eq!(room_connection_variant_idx, vec![0, 1, 2]);
+        assert_eq!(common.connection_variant_rooms.len(), 3);
     }
 
     #[test]
