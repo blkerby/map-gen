@@ -107,6 +107,7 @@ class MainLossBreakdown:
     toilet_balance: float
     avg_frontiers: float
     graph_diameter: float
+    heat_water: float
     save_distance: float
     refill_distance: float
     missing_connect_utility: float
@@ -127,6 +128,7 @@ class MainLossBreakdown:
     toilet_balance_contribution: float
     avg_frontiers_contribution: float
     graph_diameter_contribution: float
+    heat_water_contribution: float
     save_distance_contribution: float
     refill_distance_contribution: float
     missing_connect_utility_contribution: float
@@ -180,6 +182,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet_balance=0.0,
         avg_frontiers=0.0,
         graph_diameter=0.0,
+        heat_water=0.0,
         save_distance=0.0,
         refill_distance=0.0,
         missing_connect_utility=0.0,
@@ -200,6 +203,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet_balance_contribution=0.0,
         avg_frontiers_contribution=0.0,
         graph_diameter_contribution=0.0,
+        heat_water_contribution=0.0,
         save_distance_contribution=0.0,
         refill_distance_contribution=0.0,
         missing_connect_utility_contribution=0.0,
@@ -224,6 +228,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet_balance += source.toilet_balance
     target.avg_frontiers += source.avg_frontiers
     target.graph_diameter += source.graph_diameter
+    target.heat_water += source.heat_water
     target.save_distance += source.save_distance
     target.refill_distance += source.refill_distance
     target.missing_connect_utility += source.missing_connect_utility
@@ -245,6 +250,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet_balance_contribution += source.toilet_balance_contribution
     target.avg_frontiers_contribution += source.avg_frontiers_contribution
     target.graph_diameter_contribution += source.graph_diameter_contribution
+    target.heat_water_contribution += source.heat_water_contribution
     target.save_distance_contribution += source.save_distance_contribution
     target.refill_distance_contribution += source.refill_distance_contribution
     target.missing_connect_utility_contribution += source.missing_connect_utility_contribution
@@ -270,6 +276,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet_balance=total_loss.toilet_balance / count,
         avg_frontiers=total_loss.avg_frontiers / count,
         graph_diameter=total_loss.graph_diameter / count,
+        heat_water=total_loss.heat_water / count,
         save_distance=total_loss.save_distance / count,
         refill_distance=total_loss.refill_distance / count,
         missing_connect_utility=total_loss.missing_connect_utility / count,
@@ -290,6 +297,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet_balance_contribution=total_loss.toilet_balance_contribution / count,
         avg_frontiers_contribution=total_loss.avg_frontiers_contribution / count,
         graph_diameter_contribution=total_loss.graph_diameter_contribution / count,
+        heat_water_contribution=total_loss.heat_water_contribution / count,
         save_distance_contribution=total_loss.save_distance_contribution / count,
         refill_distance_contribution=total_loss.refill_distance_contribution / count,
         missing_connect_utility_contribution=(
@@ -1122,6 +1130,10 @@ def train_feature_batch_backward(
         dtype=torch.bool,
         device=context.device,
     )
+    heat_water_target = torch.cat(
+        [end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1
+    ).to(device=context.device, dtype=torch.float32).unsqueeze(1)
+    heat_water_mask = torch.ones_like(heat_water_target, dtype=torch.bool)
     active_room_part_mask = end_outcomes.active_room_part_mask.to(
         device=context.device,
         dtype=torch.bool,
@@ -1234,6 +1246,8 @@ def train_feature_batch_backward(
             avg_frontiers_mask,
             graph_diameter_target,
             graph_diameter_mask,
+            heat_water_target,
+            heat_water_mask,
             save_to_room_utility_target,
             save_from_room_utility_target,
             active_room_part_mask,
@@ -1265,6 +1279,7 @@ def train_feature_batch_backward(
         total_loss.toilet_balance += prefix_loss.toilet_balance.item() * prefix_weight
         total_loss.avg_frontiers += prefix_loss.avg_frontiers.item() * prefix_weight
         total_loss.graph_diameter += prefix_loss.graph_diameter.item() * prefix_weight
+        total_loss.heat_water += prefix_loss.heat_water.item() * prefix_weight
         total_loss.save_distance += prefix_loss.save_distance.item() * prefix_weight
         total_loss.refill_distance += prefix_loss.refill_distance.item() * prefix_weight
         total_loss.missing_connect_utility += (
@@ -1299,6 +1314,9 @@ def train_feature_batch_backward(
         )
         total_loss.graph_diameter_contribution += (
             prefix_loss.graph_diameter_contribution.item() * prefix_weight
+        )
+        total_loss.heat_water_contribution += (
+            prefix_loss.heat_water_contribution.item() * prefix_weight
         )
         total_loss.save_distance_contribution += (
             prefix_loss.save_distance_contribution.item() * prefix_weight

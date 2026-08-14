@@ -48,6 +48,12 @@ def base_payload() -> dict:
         "reward_toilet_balance": 1.0,
         "reward_frontier": 1.0,
         "reward_graph_diameter": 1.0,
+        "reward_maridia_water_1": 0.1,
+        "reward_maridia_water_2": 0.2,
+        "reward_maridia_water_3": 0.3,
+        "reward_norfair_heat_1": 0.1,
+        "reward_norfair_heat_2": 0.2,
+        "reward_norfair_heat_3": 0.3,
         "reward_save_distance": 1.0,
         "reward_refill_distance": 1.0,
         "reward_missing_connect_utility": 1.0,
@@ -504,6 +510,15 @@ def main() -> None:
     assert_invalid_value(
         base_payload() | {"small_map": False, "target_area_tiles": [0.0] * 6},
         "target_area_tiles must have a positive sum",
+    )
+    assert_invalid_value(
+        base_payload()
+        | {
+            "small_map": False,
+            "reward_maridia_water_1": 0.2,
+            "reward_maridia_water_2": 0.1,
+        },
+        "reward_maridia_water values must be nonnegative and nondecreasing",
     )
 
     try:

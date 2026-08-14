@@ -47,6 +47,15 @@ VANILLA_AREA_PROBABILITY_FIELDS = tuple(
 )
 VANILLA_AREA_REWARD_FIELDS = tuple(f"reward_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
 VANILLA_AREA_CONDITION_FIELDS = tuple(f"force_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
+HEAT_WATER_FAMILIES = ("maridia_water", "norfair_heat")
+HEAT_WATER_REWARD_FIELDS = tuple(
+    f"reward_{family}_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 4)
+)
+HEAT_WATER_INCREMENT_FIELDS = tuple(
+    f"reward_{family}_increment_{tier}"
+    for family in HEAT_WATER_FAMILIES
+    for tier in range(1, 4)
+)
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "temperature",
@@ -61,6 +70,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_toilet_balance",
     "reward_frontier",
     "reward_graph_diameter",
+    *HEAT_WATER_REWARD_FIELDS,
     "reward_save_distance",
     "reward_refill_distance",
     "reward_missing_connect_utility",
@@ -155,6 +165,12 @@ class GenerationConfig(StrictBaseModel):
     reward_toilet_balance: VariableFloat
     reward_frontier: VariableFloat
     reward_graph_diameter: VariableFloat
+    reward_maridia_water_increment_1: VariableFloat
+    reward_maridia_water_increment_2: VariableFloat
+    reward_maridia_water_increment_3: VariableFloat
+    reward_norfair_heat_increment_1: VariableFloat
+    reward_norfair_heat_increment_2: VariableFloat
+    reward_norfair_heat_increment_3: VariableFloat
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
@@ -296,6 +312,7 @@ class TrainConfig(StrictBaseModel):
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
+    heat_water_weight: float
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
@@ -593,6 +610,11 @@ def validate_config(config: Config) -> None:
         config.generation.reward_graph_diameter,
         "generation.reward_graph_diameter",
     )
+    for field_name in HEAT_WATER_INCREMENT_FIELDS:
+        validate_nonnegative_variable_float(
+            getattr(config.generation, field_name),
+            f"generation.{field_name}",
+        )
     validate_nonnegative_variable_float(
         config.generation.reward_save_distance,
         "generation.reward_save_distance",
@@ -658,6 +680,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.avg_frontiers_weight must be greater than or equal to zero")
     if config.train.graph_diameter_weight < 0:
         raise ValueError("train.graph_diameter_weight must be greater than or equal to zero")
+    if config.train.heat_water_weight < 0:
+        raise ValueError("train.heat_water_weight must be greater than or equal to zero")
     if config.train.save_distance_weight < 0:
         raise ValueError("train.save_distance_weight must be greater than or equal to zero")
     if config.train.refill_distance_weight < 0:

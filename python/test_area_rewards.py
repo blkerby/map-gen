@@ -1,9 +1,11 @@
 import torch
+from pathlib import Path
 
 from env import GenerateConfig, StepOutcomes
 from generate import compute_expected_reward
+from train import create_generate_config
 from model import Predictions
-from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
+from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, instantiate_scheduleable_config
 
 
 def zero_generate_config(**rewards) -> GenerateConfig:
@@ -16,6 +18,8 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         "reward_area_tiles": 0.0,
         "reward_area_x": 0.0,
         "reward_area_y": 0.0,
+        "reward_maridia_water": torch.zeros([1, 3]),
+        "reward_norfair_heat": torch.zeros([1, 3]),
     }
     values.update(rewards)
     generation_variable_floats = torch.zeros([1, len(GENERATION_VARIABLE_FLOAT_FIELDS)])
@@ -40,6 +44,8 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         reward_toilet_balance=0.0,
         reward_frontier=0.0,
         reward_graph_diameter=0.0,
+        reward_maridia_water=values["reward_maridia_water"],
+        reward_norfair_heat=values["reward_norfair_heat"],
         reward_save_distance=0.0,
         reward_refill_distance=0.0,
         reward_missing_connect_utility=0.0,
@@ -84,6 +90,8 @@ def area_predictions() -> Predictions:
         toilet_balance_score=torch.zeros([batch, candidate]),
         avg_frontiers=torch.zeros([batch, candidate]),
         graph_diameter=torch.zeros([batch, candidate]),
+        maridia_water=torch.zeros([batch, candidate, 3]),
+        norfair_heat=torch.zeros([batch, candidate, 3]),
         save_to_room_utility=torch.zeros([batch, candidate, room_part]),
         save_from_room_utility=torch.zeros([batch, candidate, room_part]),
         refill_to_room_utility=torch.zeros([batch, candidate, room_part]),
@@ -199,12 +207,53 @@ def test_numeric_area_rewards_use_negative_mean_squared_error() -> None:
     assert torch.equal(reward, torch.tensor([[-12.0, -48.0]]))
 
 
+def test_heat_water_rewards_use_final_tier_coefficients() -> None:
+    predictions = area_predictions()
+    predictions.maridia_water = torch.tensor([[[1.0, 2.0, 3.0], [0.0, 1.0, 0.0]]])
+    predictions.norfair_heat = torch.tensor([[[4.0, 5.0, 6.0], [2.0, 0.0, 1.0]]])
+    reward = compute_expected_reward(
+        predictions,
+        unknown_outcomes(),
+        zero_generate_config(
+            reward_maridia_water=torch.tensor([[0.1, 0.2, 0.3]]),
+            reward_norfair_heat=torch.tensor([[0.4, 0.5, 0.6]]),
+        ),
+    )
+    assert torch.allclose(reward, torch.tensor([[9.1, 1.6]]))
+
+
+def test_training_samples_store_monotone_final_coefficients() -> None:
+    config = instantiate_scheduleable_config(
+        Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
+    )
+    generate_config = create_generate_config(
+        config,
+        episode_length=4,
+        num_envs=32,
+        device=torch.device("cpu"),
+        ignore_scores=False,
+        area_tile_scale=1.0,
+    )
+    for family, coefficients in (
+        ("maridia_water", generate_config.reward_maridia_water),
+        ("norfair_heat", generate_config.reward_norfair_heat),
+    ):
+        assert torch.all(coefficients[:, 1:] >= coefficients[:, :-1])
+        indices = [
+            GENERATION_VARIABLE_FLOAT_FIELDS.index(f"reward_{family}_{tier}")
+            for tier in range(1, 4)
+        ]
+        assert torch.equal(generate_config.generation_variable_floats[:, indices], coefficients)
+
+
 def main() -> None:
     test_zero_area_rewards_leave_reward_unchanged()
     test_phantoon_rewards_use_independent_coefficients()
     test_vanilla_area_reward_is_masked_by_enabled_constraint()
     test_area_rewards_use_valid_bucket_logprobs()
     test_numeric_area_rewards_use_negative_mean_squared_error()
+    test_heat_water_rewards_use_final_tier_coefficients()
+    test_training_samples_store_monotone_final_coefficients()
 
 
 if __name__ == "__main__":

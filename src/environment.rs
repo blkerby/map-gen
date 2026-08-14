@@ -359,6 +359,8 @@ pub struct AreaOutcomeState {
     pub map_station_count: [usize; AREA_COUNT],
 }
 
+pub const HEAT_WATER_COUNT: usize = 6;
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeatureConfig {
@@ -543,6 +545,7 @@ pub struct Features {
     pub area_min_y: Vec<Coord>,
     pub area_max_y: Vec<Coord>,
     pub area_crossings: Vec<u16>,
+    pub heat_water_count: Vec<u16>,
     pub area_size: Vec<u16>,
     pub area_map_station_count: Vec<u8>,
     // mask, x, y, vertical, kind
@@ -635,6 +638,7 @@ pub struct FeaturePlan {
     pub area_min_y: Vec<Coord>,
     pub area_max_y: Vec<Coord>,
     pub area_crossings: Vec<u16>,
+    pub heat_water_count: Vec<u16>,
     pub area_size: Vec<u16>,
     pub area_map_station_count: Vec<u8>,
     pub frontiers: Vec<FeatureFrontierPlanRow>,
@@ -725,6 +729,7 @@ impl Features {
         self.area_min_y.clear();
         self.area_max_y.clear();
         self.area_crossings.clear();
+        self.heat_water_count.clear();
         self.area_size.clear();
         self.area_map_station_count.clear();
         self.frontier.clear();
@@ -1192,6 +1197,7 @@ pub struct Environment {
     area_max_y: [Coord; AREA_COUNT],
     area_map_station_count: [usize; AREA_COUNT],
     area_crossings: usize,
+    heat_water_count: [usize; HEAT_WATER_COUNT],
     area_size: [usize; AREA_COUNT],
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
@@ -1233,6 +1239,7 @@ struct FeatureSnapshot {
     area_map_station_count: usize,
     area_size: usize,
     area_crossings: usize,
+    heat_water_count: [usize; HEAT_WATER_COUNT],
     connection_variant_idx: Option<ConnectionVariantIdx>,
     connection_variant_unused_count: usize,
     room_part_component: Vec<usize>,
@@ -1262,6 +1269,7 @@ struct LookaheadSnapshot {
     area_map_station_count: usize,
     area_size: usize,
     area_crossings: usize,
+    heat_water_count: [usize; HEAT_WATER_COUNT],
     geometry_idx: Option<GeometryIdx>,
     geometry_unused_count: usize,
     connection_variant_idx: Option<ConnectionVariantIdx>,
@@ -1844,6 +1852,7 @@ impl Environment {
             area_max_y: [0; AREA_COUNT],
             area_map_station_count: [0; AREA_COUNT],
             area_crossings: 0,
+            heat_water_count: [0; HEAT_WATER_COUNT],
             area_size: [0; AREA_COUNT],
             geometry_unused_count: common
                 .geometry_rooms
@@ -1899,6 +1908,7 @@ impl Environment {
         self.area_max_y = [0; AREA_COUNT];
         self.area_map_station_count = [0; AREA_COUNT];
         self.area_crossings = 0;
+        self.heat_water_count = [0; HEAT_WATER_COUNT];
         self.area_size = [0; AREA_COUNT];
         self.geometry_unused_count.clear();
         self.geometry_unused_count
@@ -2051,6 +2061,12 @@ impl Environment {
         if common.room[action.room_idx as usize].map_station {
             self.area_map_station_count[area] += 1;
         }
+        if area == 4 && (1..=3).contains(&common.room[room_idx].water) {
+            self.heat_water_count[(common.room[room_idx].water - 1) as usize] += 1;
+        }
+        if area == 2 && (1..=3).contains(&common.room[room_idx].heat) {
+            self.heat_water_count[3 + (common.room[room_idx].heat - 1) as usize] += 1;
+        }
         let geometry_idx = common.room[room_idx].geometry_idx as usize;
         self.area_size[area] += common.geometry[geometry_idx].occupied_tiles.len();
     }
@@ -2077,6 +2093,10 @@ impl Environment {
             size: self.area_size,
             map_station_count: self.area_map_station_count,
         }
+    }
+
+    pub fn heat_water_count(&self) -> [usize; HEAT_WATER_COUNT] {
+        self.heat_water_count
     }
 
     pub fn area_mean_coordinates(
@@ -2185,6 +2205,7 @@ impl Environment {
         area_min_y: &mut Vec<Coord>,
         area_max_y: &mut Vec<Coord>,
         area_crossings: &mut Vec<u16>,
+        heat_water_count: &mut Vec<u16>,
         area_size: &mut Vec<u16>,
         area_map_station_count: &mut Vec<u8>,
     ) {
@@ -2194,6 +2215,7 @@ impl Environment {
         area_min_y.extend(self.area_min_y);
         area_max_y.extend(self.area_max_y);
         area_crossings.push(self.area_crossings as u16);
+        heat_water_count.extend(self.heat_water_count.iter().map(|&value| value as u16));
         area_size.extend(self.area_size.iter().copied().map(|value| value as u16));
         area_map_station_count.extend(
             self.area_map_station_count
@@ -4287,6 +4309,7 @@ impl Environment {
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
+            heat_water_count: self.heat_water_count,
             geometry_idx,
             geometry_unused_count: geometry_idx
                 .map_or(0, |idx| self.geometry_unused_count[idx as usize]),
@@ -4330,6 +4353,7 @@ impl Environment {
             self.area_size[area] = snapshot.area_size;
         }
         self.area_crossings = snapshot.area_crossings;
+        self.heat_water_count = snapshot.heat_water_count;
         if let Some(geometry_idx) = snapshot.geometry_idx {
             self.geometry_unused_count[geometry_idx as usize] = snapshot.geometry_unused_count;
         }
@@ -4402,6 +4426,7 @@ impl Environment {
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
+            heat_water_count: self.heat_water_count,
             connection_variant_idx,
             connection_variant_unused_count: connection_variant_idx
                 .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
@@ -4442,6 +4467,7 @@ impl Environment {
             self.area_size[area] = snapshot.area_size;
         }
         self.area_crossings = snapshot.area_crossings;
+        self.heat_water_count = snapshot.heat_water_count;
         if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
             self.connection_variant_unused_count[connection_variant_idx as usize] =
                 snapshot.connection_variant_unused_count;
@@ -4632,6 +4658,7 @@ impl Environment {
                 &mut plan.area_min_y,
                 &mut plan.area_max_y,
                 &mut plan.area_crossings,
+                &mut plan.heat_water_count,
                 &mut plan.area_size,
                 &mut plan.area_map_station_count,
             );
@@ -5044,6 +5071,7 @@ impl Environment {
         let mut area_min_y = std::mem::take(&mut output.area_min_y);
         let mut area_max_y = std::mem::take(&mut output.area_max_y);
         let mut area_crossings = std::mem::take(&mut output.area_crossings);
+        let mut heat_water_count = std::mem::take(&mut output.heat_water_count);
         let mut area_size = std::mem::take(&mut output.area_size);
         let mut area_map_station_count = std::mem::take(&mut output.area_map_station_count);
         if config.area_state {
@@ -5054,6 +5082,7 @@ impl Environment {
                 &mut area_min_y,
                 &mut area_max_y,
                 &mut area_crossings,
+                &mut heat_water_count,
                 &mut area_size,
                 &mut area_map_station_count,
             );
@@ -5626,6 +5655,7 @@ impl Environment {
             area_min_y,
             area_max_y,
             area_crossings,
+            heat_water_count,
             area_size,
             area_map_station_count,
             frontier,
@@ -6799,12 +6829,14 @@ mod tests {
                 "map": [[1, 1]],
                 "toilet_crossing_x": [],
                 "map_station": true,
+                "heat": 2,
                 "doors": [[]],
                 "connections": [],
                 "missing_connections": []
             },
             {
                 "map": [[1]],
+                "heat": 3,
                 "toilet_crossing_x": [],
                 "doors": [[]],
                 "connections": [],
@@ -6831,6 +6863,7 @@ mod tests {
         assert_eq!(env.area_min_y[2], 3);
         assert_eq!(env.area_max_y[2], 3);
         assert_eq!(env.area_map_station_count[2], 1);
+        assert_eq!(env.heat_water_count, [0, 0, 0, 0, 1, 0]);
 
         let snapshot = env.apply_lookahead_candidate(
             Action {
@@ -6843,13 +6876,16 @@ mod tests {
         );
         assert_eq!(env.area_max_x[2], 5);
         assert_eq!(env.area_max_y[2], 4);
+        assert_eq!(env.heat_water_count, [0, 0, 0, 0, 1, 1]);
         env.restore_lookahead_candidate(&common, snapshot);
 
         assert_eq!(env.area_max_x[2], 3);
         assert_eq!(env.area_max_y[2], 3);
+        assert_eq!(env.heat_water_count, [0, 0, 0, 0, 1, 0]);
         env.clear(&common);
         assert_eq!(env.area_used, [false; AREA_COUNT]);
         assert_eq!(env.area_map_station_count, [0; AREA_COUNT]);
+        assert_eq!(env.heat_water_count, [0; HEAT_WATER_COUNT]);
     }
 
     #[test]

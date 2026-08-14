@@ -58,6 +58,8 @@ class GenerateConfig:
     reward_toilet_balance: float | torch.Tensor
     reward_frontier: float | torch.Tensor
     reward_graph_diameter: float | torch.Tensor
+    reward_maridia_water: torch.Tensor
+    reward_norfair_heat: torch.Tensor
     reward_save_distance: float | torch.Tensor
     reward_refill_distance: float | torch.Tensor
     reward_missing_connect_utility: float | torch.Tensor
@@ -237,6 +239,8 @@ class EndOutcomes:
     toilet_crossed_room_idx: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
+    maridia_water: torch.Tensor
+    norfair_heat: torch.Tensor
     active_room_part_mask: torch.Tensor
     save_distance: torch.Tensor
     save_distance_mask: torch.Tensor
@@ -263,6 +267,8 @@ class EndOutcomes:
             toilet_crossed_room_idx=self.toilet_crossed_room_idx.to(device),
             avg_frontiers=self.avg_frontiers.to(device),
             graph_diameter=self.graph_diameter.to(device),
+            maridia_water=self.maridia_water.to(device),
+            norfair_heat=self.norfair_heat.to(device),
             active_room_part_mask=self.active_room_part_mask.to(device),
             save_distance=self.save_distance.to(device),
             save_distance_mask=self.save_distance_mask.to(device),
@@ -290,6 +296,8 @@ class EndOutcomes:
             toilet_crossed_room_idx=self.toilet_crossed_room_idx[start:end],
             avg_frontiers=self.avg_frontiers[start:end],
             graph_diameter=self.graph_diameter[start:end],
+            maridia_water=self.maridia_water[start:end],
+            norfair_heat=self.norfair_heat[start:end],
             active_room_part_mask=self.active_room_part_mask[start:end],
             save_distance=self.save_distance[start:end],
             save_distance_mask=self.save_distance_mask[start:end],
@@ -610,6 +618,7 @@ class GlobalFeatures:
     area_min_y: torch.Tensor
     area_max_y: torch.Tensor
     area_crossings: torch.Tensor
+    heat_water_count: torch.Tensor
     area_size: torch.Tensor
     area_map_station_count: torch.Tensor
     log_temperature: torch.Tensor
@@ -675,6 +684,7 @@ class GlobalFeatures:
             area_min_y=self.area_min_y.to(device, non_blocking=non_blocking),
             area_max_y=self.area_max_y.to(device, non_blocking=non_blocking),
             area_crossings=self.area_crossings.to(device, non_blocking=non_blocking),
+            heat_water_count=self.heat_water_count.to(device, non_blocking=non_blocking),
             area_size=self.area_size.to(device, non_blocking=non_blocking),
             area_map_station_count=self.area_map_station_count.to(
                 device, non_blocking=non_blocking
@@ -751,6 +761,7 @@ class GlobalFeatures:
             area_min_y=self.area_min_y.flatten(0, 1),
             area_max_y=self.area_max_y.flatten(0, 1),
             area_crossings=self.area_crossings.flatten(0, 1),
+            heat_water_count=self.heat_water_count.flatten(0, 1),
             area_size=self.area_size.flatten(0, 1),
             area_map_station_count=self.area_map_station_count.flatten(0, 1),
             log_temperature=self.log_temperature.flatten(0, 1),
@@ -1469,6 +1480,8 @@ class EnvironmentGroup:
                 ),
                 avg_frontiers=torch.from_numpy(result.end_outcomes.avg_frontiers).to(device),
                 graph_diameter=torch.from_numpy(result.end_outcomes.graph_diameter).to(device),
+                maridia_water=torch.from_numpy(result.end_outcomes.maridia_water).to(device),
+                norfair_heat=torch.from_numpy(result.end_outcomes.norfair_heat).to(device),
                 active_room_part_mask=torch.from_numpy(
                     result.end_outcomes.active_room_part_mask
                 ).to(device),
@@ -1714,6 +1727,7 @@ class EnvironmentGroup:
                     "area_min_y": feature_slot.area_min_y.numpy(),
                     "area_max_y": feature_slot.area_max_y.numpy(),
                     "area_crossings": feature_slot.area_crossings.numpy(),
+                    "heat_water_count": feature_slot.heat_water_count.numpy(),
                     "area_size": feature_slot.area_size.numpy(),
                     "area_map_station_count": feature_slot.area_map_station_count.numpy(),
                     "frontier": feature_slot.frontier.numpy(),
@@ -1821,6 +1835,7 @@ class FeatureSlot:
         self.known_distance_width = room_part_count
         self.area_width = AREA_COUNT * int(features.area_state)
         self.area_crossings_width = int(features.area_state)
+        self.heat_water_count_width = 6 * int(features.area_state)
         self.frontier_occupancy_width = (
             (env.frontier_window_size * env.frontier_window_size + 7) // 8
         ) * int(features.frontier_occupancy)
@@ -1865,6 +1880,7 @@ class FeatureSlot:
         self.area_min_y = None
         self.area_max_y = None
         self.area_crossings = None
+        self.heat_water_count = None
         self.area_size = None
         self.area_map_station_count = None
         self.frontier = None
@@ -1971,6 +1987,10 @@ class FeatureSlot:
         self.area_max_y = self._empty((self.snapshot_capacity, self.area_width), torch.int8)
         self.area_crossings = self._empty(
             (self.snapshot_capacity, self.area_crossings_width),
+            torch.uint16,
+        )
+        self.heat_water_count = self._empty(
+            (self.snapshot_capacity, self.heat_water_count_width),
             torch.uint16,
         )
         self.area_size = self._empty((self.snapshot_capacity, self.area_width), torch.uint16)
@@ -2212,6 +2232,7 @@ class FeatureSlot:
                 area_min_y=self.area_min_y[:environment_count],
                 area_max_y=self.area_max_y[:environment_count],
                 area_crossings=self.area_crossings[:environment_count],
+                heat_water_count=self.heat_water_count[:environment_count],
                 area_size=self.area_size[:environment_count],
                 area_map_station_count=self.area_map_station_count[:environment_count],
                 log_temperature=log_temperature,
@@ -2436,6 +2457,9 @@ class FeatureSlot:
                 area_crossings=self.area_crossings[:snapshot_count].view(
                     environment_count, candidate_count, self.area_crossings_width
                 ),
+                heat_water_count=self.heat_water_count[:snapshot_count].view(
+                    environment_count, candidate_count, self.heat_water_count_width
+                ),
                 area_size=self.area_size[:snapshot_count].view(
                     environment_count, candidate_count, self.area_width
                 ),
@@ -2618,6 +2642,7 @@ def extract_candidate_features(
                 "area_min_y": feature_slot.area_min_y.numpy(),
                 "area_max_y": feature_slot.area_max_y.numpy(),
                 "area_crossings": feature_slot.area_crossings.numpy(),
+                "heat_water_count": feature_slot.heat_water_count.numpy(),
                 "area_size": feature_slot.area_size.numpy(),
                 "area_map_station_count": feature_slot.area_map_station_count.numpy(),
                 "frontier": feature_slot.frontier.numpy(),

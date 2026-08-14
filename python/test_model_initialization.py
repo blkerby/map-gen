@@ -93,6 +93,7 @@ def test_frontier_model_output_heads_are_zero_initialized() -> None:
         model.toilet_balance_score_output,
         model.avg_frontiers_output,
         model.graph_diameter_output,
+        model.heat_water_output,
         model.save_to_room_utility_output,
         model.save_from_room_utility_output,
         model.refill_to_room_utility_output,

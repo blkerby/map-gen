@@ -59,6 +59,8 @@ from train_config import (
     AdamParamsConfig,
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
+    HEAT_WATER_FAMILIES,
+    HEAT_WATER_REWARD_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_PROBABILITY_FIELDS,
     VANILLA_AREA_REWARD_FIELDS,
@@ -89,7 +91,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v5"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v6"
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -266,13 +268,13 @@ def validate_checkpoint_metadata(path: Path, metadata: dict[str, str] | None) ->
         raise ValueError(f"checkpoint metadata missing in {path}")
     if metadata["format"] != TRAINING_CHECKPOINT_FORMAT:
         logging.warning(f"unsupported checkpoint format in {path}")
-    for field in (
+    for field_name in (
         "aim_run_hash",
         "num_episodes",
         "experience_num_files",
     ):
-        if field not in metadata:
-            raise ValueError(f"checkpoint metadata field {field!r} missing in {path}")
+        if field_name not in metadata:
+            raise ValueError(f"checkpoint metadata field {field_name!r} missing in {path}")
     return metadata
 
 
@@ -559,6 +561,24 @@ def create_generate_config(
             for field_name in VANILLA_AREA_REWARD_FIELDS
         }
     )
+    for family in HEAT_WATER_FAMILIES:
+        increments = torch.stack(
+            [
+                variable_float_tensor(
+                    getattr(config.generation, f"reward_{family}_increment_{tier}"),
+                    f"generation.reward_{family}_increment_{tier}",
+                )
+                for tier in range(1, 4)
+            ],
+            dim=1,
+        )
+        coefficients = torch.cumsum(increments, dim=1)
+        generation_variable_floats_by_name.update(
+            {
+                f"reward_{family}_{tier}": coefficients[:, tier - 1]
+                for tier in range(1, 4)
+            }
+        )
     vanilla_area_constraint_mask = torch.stack(
         [
             torch.rand([num_envs], device=device)
@@ -653,6 +673,20 @@ def create_generate_config(
         reward_toilet_balance=generation_variable_floats_by_name["reward_toilet_balance"],
         reward_frontier=generation_variable_floats_by_name["reward_frontier"],
         reward_graph_diameter=generation_variable_floats_by_name["reward_graph_diameter"],
+        reward_maridia_water=torch.stack(
+            [
+                generation_variable_floats_by_name[f"reward_maridia_water_{tier}"]
+                for tier in range(1, 4)
+            ],
+            dim=1,
+        ),
+        reward_norfair_heat=torch.stack(
+            [
+                generation_variable_floats_by_name[f"reward_norfair_heat_{tier}"]
+                for tier in range(1, 4)
+            ],
+            dim=1,
+        ),
         reward_save_distance=generation_variable_floats_by_name["reward_save_distance"],
         reward_refill_distance=generation_variable_floats_by_name["reward_refill_distance"],
         reward_missing_connect_utility=(
@@ -1147,6 +1181,12 @@ class TrainingSession:
                     graph_diameter=torch.cat(
                         [outcomes.end_outcomes.graph_diameter for outcomes in outcome_iterations]
                     ),
+                    maridia_water=torch.cat(
+                        [outcomes.end_outcomes.maridia_water for outcomes in outcome_iterations]
+                    ),
+                    norfair_heat=torch.cat(
+                        [outcomes.end_outcomes.norfair_heat for outcomes in outcome_iterations]
+                    ),
                     active_room_part_mask=torch.cat(
                         [
                             outcomes.end_outcomes.active_room_part_mask
@@ -1401,6 +1441,12 @@ class TrainingSession:
         )
 
         end_outcomes = episode_outcomes.end_outcomes
+        heat_water_counts = torch.mean(
+            torch.cat([end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1).to(
+                torch.float32
+            ),
+            dim=0,
+        )
         area_size = end_outcomes.area_size
         area_size_invalid = torch.sum(
             (area_size < step_config.generation.min_area_size)
@@ -1614,6 +1660,7 @@ class TrainingSession:
         main_toilet_balance_loss_pct = 100.0 * loss.toilet_balance_contribution / loss_denominator
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
         graph_diameter_loss_pct = 100.0 * loss.graph_diameter_contribution / loss_denominator
+        heat_water_loss_pct = 100.0 * loss.heat_water_contribution / loss_denominator
         save_distance_loss_pct = 100.0 * loss.save_distance_contribution / loss_denominator
         refill_distance_loss_pct = 100.0 * loss.refill_distance_contribution / loss_denominator
         missing_connect_utility_loss_pct = (
@@ -1649,6 +1696,20 @@ class TrainingSession:
             "avg_frontiers_loss_pct": avg_frontiers_loss_pct,
             "graph_diameter_loss": loss.graph_diameter,
             "graph_diameter_loss_pct": graph_diameter_loss_pct,
+            "heat_water_loss": loss.heat_water,
+            "heat_water_loss_pct": heat_water_loss_pct,
+            **{
+                f"avg_{name.removeprefix('reward_')}": heat_water_counts[idx]
+                for idx, name in enumerate(HEAT_WATER_REWARD_FIELDS)
+            },
+            **{
+                name: torch.mean(
+                    episode_data.generation_variable_floats[
+                        :, GENERATION_VARIABLE_FLOAT_FIELDS.index(name)
+                    ]
+                )
+                for name in HEAT_WATER_REWARD_FIELDS
+            },
             "save_distance_loss": loss.save_distance,
             "save_distance_loss_pct": save_distance_loss_pct,
             "refill_distance_loss": loss.refill_distance,
@@ -1832,6 +1893,7 @@ class TrainingSession:
             "area_tiles_weight": step_config.train.area_tiles_weight,
             "area_x_weight": step_config.train.area_x_weight,
             "area_y_weight": step_config.train.area_y_weight,
+            "heat_water_weight": step_config.train.heat_water_weight,
             "door_match_left_top1": left_topk[0],
             "door_match_left_top2": left_topk[1],
             "door_match_left_top3": left_topk[2],
@@ -2352,6 +2414,7 @@ def build_session(args: Args) -> TrainingSession:
             toilet_balance_weight=config.train.toilet_balance_weight,
             avg_frontiers_weight=config.train.avg_frontiers_weight,
             graph_diameter_weight=config.train.graph_diameter_weight,
+            heat_water_weight=config.train.heat_water_weight,
             save_distance_weight=config.train.save_distance_weight,
             refill_distance_weight=config.train.refill_distance_weight,
             missing_connect_utility_weight=config.train.missing_connect_utility_weight,

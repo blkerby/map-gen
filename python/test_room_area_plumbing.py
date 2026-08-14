@@ -173,10 +173,13 @@ def test_initial_candidate_batch_enforces_enabled_ship_area() -> None:
 def test_environment_group_reports_area_outcome_state() -> None:
     two_tile_room = one_tile_room("Right", "right")
     two_tile_room["map"] = [[1, 0, 1]]
+    two_tile_room["heat"] = 2
+    water_room = one_tile_room("Left", "left")
+    water_room["water"] = 3
     engine = Engine(
         [
             two_tile_room,
-            one_tile_room("Left", "left"),
+            water_room,
         ],
         disabled_features(),
         1,
@@ -218,6 +221,8 @@ def test_environment_group_reports_area_outcome_state() -> None:
     env.finish()
     outcomes = env.get_outcomes(device, verify_consistency=True)
     assert outcomes.end_outcomes.area_crossings.tolist() == state.area_crossings.tolist()
+    assert outcomes.end_outcomes.maridia_water.tolist() == [[0, 0, 1]]
+    assert outcomes.end_outcomes.norfair_heat.tolist() == [[0, 1, 0]]
     assert outcomes.end_outcomes.area_size.tolist() == state.area_size.tolist()
     assert outcomes.end_outcomes.area_x.tolist() == [[0.0, 0.0, 1.0, 0.0, 1.0, 0.0]]
     assert outcomes.end_outcomes.area_y.tolist() == [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]

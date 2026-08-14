@@ -20,6 +20,7 @@ class LossConfig:
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
+    heat_water_weight: float
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
@@ -48,6 +49,7 @@ class LossBreakdown:
     toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
+    heat_water: torch.Tensor
     save_distance: torch.Tensor
     refill_distance: torch.Tensor
     missing_connect_utility: torch.Tensor
@@ -67,6 +69,7 @@ class LossBreakdown:
     toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
     graph_diameter_contribution: torch.Tensor
+    heat_water_contribution: torch.Tensor
     save_distance_contribution: torch.Tensor
     refill_distance_contribution: torch.Tensor
     missing_connect_utility_contribution: torch.Tensor
@@ -182,6 +185,8 @@ def compute_loss_breakdown(
     avg_frontiers_mask: torch.Tensor,
     graph_diameter_target: torch.Tensor,
     graph_diameter_mask: torch.Tensor,
+    heat_water_target: torch.Tensor,
+    heat_water_mask: torch.Tensor,
     save_to_room_utility_target: torch.Tensor,
     save_from_room_utility_target: torch.Tensor,
     save_utility_mask: torch.Tensor,
@@ -254,6 +259,12 @@ def compute_loss_breakdown(
         graph_diameter_target,
         graph_diameter_mask,
         config.graph_diameter_weight,
+    )
+    heat_water_loss, heat_water_wt = masked_mse_loss(
+        torch.cat([preds.maridia_water, preds.norfair_heat], dim=-1),
+        heat_water_target,
+        heat_water_mask,
+        config.heat_water_weight,
     )
     save_to_room_loss, save_to_room_wt = masked_mse_loss(
         preds.save_to_room_utility,
@@ -336,6 +347,7 @@ def compute_loss_breakdown(
         + toilet_balance_wt
         + avg_frontiers_wt
         + graph_diameter_wt
+        + heat_water_wt
         + save_distance_wt
         + refill_distance_wt
         + missing_connect_utility_wt
@@ -357,6 +369,7 @@ def compute_loss_breakdown(
     toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
     graph_diameter_contribution = graph_diameter_loss / total_weight
+    heat_water_contribution = heat_water_loss / total_weight
     save_distance_contribution = save_distance_loss / total_weight
     refill_distance_contribution = refill_distance_loss / total_weight
     missing_connect_utility_contribution = missing_connect_utility_loss / total_weight
@@ -377,6 +390,7 @@ def compute_loss_breakdown(
         + toilet_balance_contribution
         + avg_frontiers_contribution
         + graph_diameter_contribution
+        + heat_water_contribution
         + save_distance_contribution
         + refill_distance_contribution
         + missing_connect_utility_contribution
@@ -399,6 +413,7 @@ def compute_loss_breakdown(
         toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
         graph_diameter=graph_diameter_loss / (graph_diameter_wt + 1e-15),
+        heat_water=heat_water_loss / (heat_water_wt + 1e-15),
         save_distance=save_distance_loss / (save_distance_wt + 1e-15),
         refill_distance=refill_distance_loss / (refill_distance_wt + 1e-15),
         missing_connect_utility=(
@@ -420,6 +435,7 @@ def compute_loss_breakdown(
         toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,
         graph_diameter_contribution=graph_diameter_contribution,
+        heat_water_contribution=heat_water_contribution,
         save_distance_contribution=save_distance_contribution,
         refill_distance_contribution=refill_distance_contribution,
         missing_connect_utility_contribution=missing_connect_utility_contribution,

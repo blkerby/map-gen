@@ -61,7 +61,7 @@ from train_config import (
 
 
 MODEL_EXPORT_FORMAT = "map-gen-model-export-v3"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v5"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v6"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -136,6 +136,12 @@ class GenerateRequest(StrictBaseModel):
     reward_toilet_balance: float
     reward_frontier: float
     reward_graph_diameter: float
+    reward_maridia_water_1: float
+    reward_maridia_water_2: float
+    reward_maridia_water_3: float
+    reward_norfair_heat_1: float
+    reward_norfair_heat_2: float
+    reward_norfair_heat_3: float
     reward_save_distance: float
     reward_refill_distance: float
     reward_missing_connect_utility: float
@@ -480,6 +486,12 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
     ):
         if getattr(generate_request, name) < 0.0:
             raise ValueError(f"{name} must be greater than or equal to zero")
+    for family in ("maridia_water", "norfair_heat"):
+        rewards = [getattr(generate_request, f"reward_{family}_{tier}") for tier in range(1, 4)]
+        if any(not math.isfinite(value) for value in rewards):
+            raise ValueError(f"reward_{family} values must be finite")
+        if not 0.0 <= rewards[0] <= rewards[1] <= rewards[2]:
+            raise ValueError(f"reward_{family} values must be nonnegative and nondecreasing")
     for name in ("target_area_tiles", "target_area_x", "target_area_y"):
         for area, value in enumerate(getattr(generate_request, name)):
             if not math.isfinite(value):
@@ -537,6 +549,13 @@ def create_generate_configs(
         "reward_toilet_balance": generate_request.reward_toilet_balance,
         "reward_frontier": generate_request.reward_frontier,
         "reward_graph_diameter": generate_request.reward_graph_diameter,
+        **{
+            f"reward_{family}_{tier}": getattr(
+                generate_request, f"reward_{family}_{tier}"
+            )
+            for family in ("maridia_water", "norfair_heat")
+            for tier in range(1, 4)
+        },
         "reward_save_distance": generate_request.reward_save_distance,
         "reward_refill_distance": generate_request.reward_refill_distance,
         "reward_missing_connect_utility": generate_request.reward_missing_connect_utility,
@@ -652,6 +671,24 @@ def create_generate_configs(
                 reward_toilet_balance=generate_request.reward_toilet_balance,
                 reward_frontier=generate_request.reward_frontier,
                 reward_graph_diameter=generate_request.reward_graph_diameter,
+                reward_maridia_water=torch.tensor(
+                    [
+                        generate_request.reward_maridia_water_1,
+                        generate_request.reward_maridia_water_2,
+                        generate_request.reward_maridia_water_3,
+                    ],
+                    dtype=torch.float32,
+                    device=device,
+                ).expand(env.num_envs, 3),
+                reward_norfair_heat=torch.tensor(
+                    [
+                        generate_request.reward_norfair_heat_1,
+                        generate_request.reward_norfair_heat_2,
+                        generate_request.reward_norfair_heat_3,
+                    ],
+                    dtype=torch.float32,
+                    device=device,
+                ).expand(env.num_envs, 3),
                 reward_save_distance=generate_request.reward_save_distance,
                 reward_refill_distance=generate_request.reward_refill_distance,
                 reward_missing_connect_utility=generate_request.reward_missing_connect_utility,
@@ -915,6 +952,12 @@ def warmup_generate_request() -> GenerateRequest:
         reward_toilet_balance=0.1,
         reward_frontier=0.0,
         reward_graph_diameter=0.1,
+        reward_maridia_water_1=0.0,
+        reward_maridia_water_2=0.0,
+        reward_maridia_water_3=0.0,
+        reward_norfair_heat_1=0.0,
+        reward_norfair_heat_2=0.0,
+        reward_norfair_heat_3=0.0,
         reward_save_distance=0.1,
         reward_refill_distance=0.1,
         reward_missing_connect_utility=0.5,

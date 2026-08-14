@@ -228,6 +228,16 @@ def compute_expected_reward(
         + batch_weight(config.reward_toilet_balance) * toilet_balance_scores
         - batch_weight(config.reward_frontier) * preds.avg_frontiers.to(torch.float32)
         - batch_weight(config.reward_graph_diameter) * preds.graph_diameter.to(torch.float32)
+        + torch.sum(
+            config.reward_maridia_water.to(preds.door_invalid.device).unsqueeze(1)
+            * preds.maridia_water.to(torch.float32),
+            dim=2,
+        )
+        + torch.sum(
+            config.reward_norfair_heat.to(preds.door_invalid.device).unsqueeze(1)
+            * preds.norfair_heat.to(torch.float32),
+            dim=2,
+        )
         + batch_weight(config.reward_save_distance)
         * (
             total_proximity_utility(preds.save_to_room_utility)
@@ -964,6 +974,8 @@ def select_candidate_actions(
             ),
             avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
             graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
+            maridia_water=preds.maridia_water.view(environment_count, candidate_count, 3),
+            norfair_heat=preds.norfair_heat.view(environment_count, candidate_count, 3),
             save_to_room_utility=preds.save_to_room_utility.view(
                 environment_count,
                 candidate_count,
@@ -1894,6 +1906,18 @@ def merge_generation_results(
                 graph_diameter=torch.cat(
                     [
                         episode_outcomes.end_outcomes.graph_diameter
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                maridia_water=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.maridia_water
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                norfair_heat=torch.cat(
+                    [
+                        episode_outcomes.end_outcomes.norfair_heat
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),
