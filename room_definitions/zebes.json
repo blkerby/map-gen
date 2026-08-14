@@ -3783,7 +3783,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 125,
