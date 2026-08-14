@@ -49,7 +49,7 @@
   },
   "generation": {
     "num_environments": 4096,
-    "num_iterations": 1,
+    "num_iterations": 2,
     "num_devices": 2,
     "pipeline_groups": 4,
     "gpu_prefetch_batches": 1,

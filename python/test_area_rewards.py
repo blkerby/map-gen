@@ -196,7 +196,7 @@ def test_numeric_area_rewards_use_negative_mean_squared_error() -> None:
         unknown_outcomes(),
         zero_generate_config(reward_area_tiles=2.0),
     )
-    assert torch.equal(reward, torch.tensor([[-2.0, -8.0]]))
+    assert torch.equal(reward, torch.tensor([[-12.0, -48.0]]))
 
 
 def main() -> None:

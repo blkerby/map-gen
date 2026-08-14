@@ -2131,13 +2131,7 @@ impl Environment {
         }
     }
 
-    fn area_bucket_outcomes(
-        &self,
-        common: &CommonData,
-    ) -> (
-        [AreaBucketOutcome; AREA_COUNT],
-        [AreaBucketOutcome; AREA_COUNT],
-    ) {
+    fn usable_area_frontiers(&self, common: &CommonData) -> [bool; AREA_COUNT] {
         let mut has_usable_frontier = [false; AREA_COUNT];
         if !self.finished {
             for frontier in self
@@ -2150,7 +2144,16 @@ impl Environment {
                 has_usable_frontier[area] = true;
             }
         }
+        has_usable_frontier
+    }
 
+    fn area_bucket_outcomes(
+        &self,
+        has_usable_frontier: &[bool; AREA_COUNT],
+    ) -> (
+        [AreaBucketOutcome; AREA_COUNT],
+        [AreaBucketOutcome; AREA_COUNT],
+    ) {
         let area_size_bucket = std::array::from_fn(|area| {
             if self.area_size[area] > self.area_size_limits.max
                 || self.finished
@@ -4053,8 +4056,10 @@ impl Environment {
                 pre_candidate_outcomes.phantoon_area_valid
             };
 
-        let (area_size_bucket, area_map_station_count_bucket) = self.area_bucket_outcomes(common);
-        let vanilla_area_valid = self.vanilla_area_outcomes(common);
+        let has_usable_area_frontier = self.usable_area_frontiers(common);
+        let (area_size_bucket, area_map_station_count_bucket) =
+            self.area_bucket_outcomes(&has_usable_area_frontier);
+        let vanilla_area_valid = self.vanilla_area_outcomes(common, &has_usable_area_frontier);
         if vanilla_area_constraint_mask
             .iter()
             .enumerate()
@@ -5803,7 +5808,9 @@ impl Environment {
             ));
         }
 
-        let (area_size_bucket, area_map_station_count_bucket) = self.area_bucket_outcomes(common);
+        let has_usable_area_frontier = self.usable_area_frontiers(common);
+        let (area_size_bucket, area_map_station_count_bucket) =
+            self.area_bucket_outcomes(&has_usable_area_frontier);
 
         StepOutcomes {
             door_valid,
@@ -5811,7 +5818,7 @@ impl Environment {
             toilet_valid: self.toilet_outcome(common),
             phantoon_pair_valid: self.phantoon_pair_outcome(common),
             phantoon_area_valid: self.phantoon_area_outcome(common),
-            vanilla_area_valid: self.vanilla_area_outcomes(common),
+            vanilla_area_valid: self.vanilla_area_outcomes(common, &has_usable_area_frontier),
             area_size_bucket,
             area_map_station_count_bucket,
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
@@ -5821,6 +5828,7 @@ impl Environment {
     fn vanilla_area_outcomes(
         &self,
         common: &CommonData,
+        has_usable_area_frontier: &[bool; AREA_COUNT],
     ) -> [DoorValidOutcome; VANILLA_AREA_CONSTRAINT_COUNT] {
         std::array::from_fn(|constraint_idx| {
             let Some(room_idx) = common.vanilla_area_room_idx()[constraint_idx] else {
@@ -5832,7 +5840,9 @@ impl Environment {
                 } else {
                     DoorValidOutcome::Invalid
                 }
-            } else if self.finished {
+            } else if self.finished
+                || (self.area_used[constraint_idx] && !has_usable_area_frontier[constraint_idx])
+            {
                 DoorValidOutcome::Invalid
             } else {
                 DoorValidOutcome::Unknown
@@ -6550,6 +6560,57 @@ mod tests {
         assert_eq!(
             finished.area_map_station_count_bucket[1],
             AreaBucketOutcome::Low
+        );
+    }
+
+    #[test]
+    fn vanilla_area_outcome_is_invalid_when_target_area_is_finalized() {
+        let rooms_json = r#"
+        [
+            {
+                "map": [[1]],
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"id": 0, "direction": "right", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            },
+            {
+                "map": [[1]],
+                "special_type": "ship",
+                "toilet_crossing_x": [],
+                "doors": [
+                    [{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]
+                ],
+                "connections": [],
+                "missing_connections": []
+            }
+        ]
+        "#;
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
+        let common = CommonData::new(rooms).unwrap();
+        let mut env = Environment::new(&common, (4, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+        env.step(
+            Action {
+                room_idx: 0,
+                x: 0,
+                y: 0,
+                area: 0,
+            },
+            &common,
+        );
+        assert_eq!(
+            env.outcomes(&common).vanilla_area_valid[0],
+            DoorValidOutcome::Unknown
+        );
+
+        for frontier in env.frontier.values_mut() {
+            frontier.candidates.clear();
+        }
+        assert_eq!(
+            env.outcomes(&common).vanilla_area_valid[0],
+            DoorValidOutcome::Invalid
         );
     }
 

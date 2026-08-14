@@ -1980,6 +1980,7 @@ class TrainingSession:
                     generated_feature_data,
                     step_config,
                 )
+                episode_data = episode_data.to(torch.device("cpu"))
                 episode_outcomes = episode_outcomes.to(torch.device("cpu"))
 
                 self.experience.store(episode_data)
