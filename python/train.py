@@ -21,6 +21,7 @@ from aim.sdk.errors import MissingRunError
 from safetensors import safe_open
 
 from env import (
+    AREA_COUNT,
     Actions,
     DoorMatchCounts,
     Engine,
@@ -548,19 +549,25 @@ def create_generate_config(
         ),
     }
     target_scales = {
-        "target_area_tiles": area_tile_scale,
         "target_area_x": config.map_size[0],
         "target_area_y": config.map_size[1],
     }
     target_tensors = {}
-    for field_name, scale in target_scales.items():
+    for field_name in ("target_area_tiles", *target_scales):
         values = torch.stack(
             [
                 variable_float_tensor(value, f"generation.{field_name}[{area}]")
                 for area, value in enumerate(getattr(config.generation, field_name))
             ],
             dim=1,
-        ) / scale
+        )
+        if field_name == "target_area_tiles":
+            value_sums = values.sum(dim=1, keepdim=True)
+            if torch.any(value_sums <= 0.0):
+                raise ValueError("generation.target_area_tiles must have a positive sum")
+            values = values * AREA_COUNT / value_sums
+        else:
+            values = values / target_scales[field_name]
         target_tensors[field_name] = values
         generation_variable_floats_by_name.update(
             {f"{field_name}_{area}": values[:, area] for area in range(6)}

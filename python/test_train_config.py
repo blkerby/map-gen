@@ -151,6 +151,16 @@ def test_area_targets_require_six_finite_values_and_instantiate_schedules() -> N
     assert value.linear.min == 5.0
     assert value.linear.max == 25.0
 
+    config_data = load_debug_config()
+    config_data["generation"]["target_area_tiles"][0] = -1.0
+    config = Config.model_validate(config_data)
+    try:
+        validate_config(config)
+    except ValueError as err:
+        assert "generation.target_area_tiles[0]" in str(err)
+    else:
+        raise AssertionError("target_area_tiles should reject negative values")
+
 
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()

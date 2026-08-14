@@ -29,6 +29,7 @@ from area_assignment import (
     build_toilet_data,
 )
 from env import (
+    AREA_COUNT,
     DoorMatches,
     Engine,
     EpisodeData,
@@ -464,6 +465,10 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         for area, value in enumerate(getattr(generate_request, name)):
             if not math.isfinite(value):
                 raise ValueError(f"{name}[{area}] must be finite")
+    if any(value < 0.0 for value in generate_request.target_area_tiles):
+        raise ValueError("target_area_tiles values must be greater than or equal to zero")
+    if sum(generate_request.target_area_tiles) <= 0.0:
+        raise ValueError("target_area_tiles must have a positive sum")
     if generate_request.small_map:
         missing_fields = [
             field
@@ -490,7 +495,6 @@ def create_generate_configs(
     device: torch.device,
 ) -> list[GenerateConfig]:
     target_scales = {
-        "target_area_tiles": state.area_tile_scale,
         "target_area_x": state.training_config.map_size[0],
         "target_area_y": state.training_config.map_size[1],
     }
@@ -498,6 +502,10 @@ def create_generate_configs(
         name: [value / target_scales[name] for value in getattr(generate_request, name)]
         for name in target_scales
     }
+    area_tile_sum = sum(generate_request.target_area_tiles)
+    normalized_targets["target_area_tiles"] = [
+        value * AREA_COUNT / area_tile_sum for value in generate_request.target_area_tiles
+    ]
     generation_variable_float_values = {
         "temperature": generate_request.temperature,
         "proposal_temperature": generate_request.proposal_temperature,
@@ -854,7 +862,7 @@ def warmup_generate_request() -> GenerateRequest:
         reward_area_tiles=0.0,
         reward_area_x=0.0,
         reward_area_y=0.0,
-        target_area_tiles=[0.0] * 6,
+        target_area_tiles=[1.0] * 6,
         target_area_x=[0.0] * 6,
         target_area_y=[0.0] * 6,
         area_assignment_base_order="random",

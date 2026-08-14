@@ -588,6 +588,8 @@ def validate_config(config: Config) -> None:
     for field_name in AREA_TARGET_FIELDS:
         for area, value in enumerate(getattr(config.generation, field_name)):
             validate_finite_variable_float(value, f"generation.{field_name}[{area}]")
+    for area, value in enumerate(config.generation.target_area_tiles):
+        validate_nonnegative_variable_float(value, f"generation.target_area_tiles[{area}]")
     if config.generation.num_threads is not None and config.generation.num_threads <= 0:
         raise ValueError("generation.num_threads must be greater than zero")
     if (

@@ -93,7 +93,7 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         base_payload()
         | {
             "small_map": False,
-            "target_area_tiles": [1.0] * 6,
+            "target_area_tiles": [1.0, 2.0, 3.0, 4.0, 5.0, 9.0],
             "target_area_x": [5.0] * 6,
             "target_area_y": [10.0] * 6,
         }
@@ -114,9 +114,15 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         [SimpleNamespace(num_envs=2)],
         torch.device("cpu"),
     )[0]
-    assert torch.equal(config.target_area_tiles, torch.ones([2, 6]))
+    expected_area_tiles = torch.tensor([0.25, 0.5, 0.75, 1.0, 1.25, 2.25]).expand(2, 6)
+    assert torch.equal(config.target_area_tiles, expected_area_tiles)
     assert torch.equal(config.target_area_x, torch.full([2, 6], 0.5))
     assert torch.equal(config.target_area_y, torch.full([2, 6], 0.5))
+    target_tiles_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_tiles_0")
+    assert torch.equal(
+        config.generation_variable_floats[:, target_tiles_index : target_tiles_index + 6],
+        expected_area_tiles,
+    )
     target_x_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_x_0")
     assert torch.equal(
         config.generation_variable_floats[:, target_x_index],
@@ -470,6 +476,14 @@ def main() -> None:
         base_payload() | {"small_map": False, "target_area_x": [float("inf")] * 6},
         "target_area_x[0] must be finite",
     )
+    assert_invalid_value(
+        base_payload() | {"small_map": False, "target_area_tiles": [-1.0] + [1.0] * 5},
+        "target_area_tiles values must be greater than or equal to zero",
+    )
+    assert_invalid_value(
+        base_payload() | {"small_map": False, "target_area_tiles": [0.0] * 6},
+        "target_area_tiles must have a positive sum",
+    )
 
     try:
         GenerateRequest.model_validate(base_payload())
@@ -607,6 +621,7 @@ def main() -> None:
     assert warmup_request.reward_balance == 0.1
     assert warmup_request.reward_toilet_balance == 0.1
     assert warmup_request.reward_missing_connect_utility == 0.5
+    assert warmup_request.target_area_tiles == [1.0] * 6
     assert warmup_request.area_assignment_base_order == "random"
     assert not warmup_request.small_map
     validate_generate_request(warmup_request, rooms=[{} for _ in range(253)])

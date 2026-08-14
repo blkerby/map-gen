@@ -43,12 +43,12 @@
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.001, 0.0005, 0.0002, 0.0005, 0.00002]},
+    "lr": {"log": [0.001, 0.0005, 0.0002, 0.00005, 0.00002]},
     "beta1": 0.95,
     "beta2": 0.99
   },
   "generation": {
-    "num_environments": 8192,
+    "num_environments": 4096,
     "num_iterations": 1,
     "num_devices": 2,
     "pipeline_groups": 4,
@@ -75,9 +75,9 @@
     "reward_area_crossing": 0.0,
     "reward_area_size_valid": 1.0,
     "reward_area_map_station": 1.0,
-    "reward_area_tiles": {"linear": {"min": 0.0, "max": 1.0}},
-    "reward_area_x": {"linear": {"min": 0.0, "max": 1.0}},
-    "reward_area_y": {"linear": {"min": 0.0, "max": 1.0}},
+    "reward_area_tiles": {"linear": {"min": 0.0, "max": 5.0}},
+    "reward_area_x": {"linear": {"min": 0.0, "max": 10.0}},
+    "reward_area_y": {"linear": {"min": 0.0, "max": 10.0}},
     "target_area_tiles": [
       {"linear": {"min": 100, "max": 350.0}},
       {"linear": {"min": 100, "max": 350.0}},
@@ -144,7 +144,7 @@
     "known_distance": 1
   },
   "train": {
-    "batch_size": 1024,
+    "batch_size": 512,
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "sample_period": 16,
@@ -166,13 +166,13 @@
     "area_crossing_weight": 0.0,
     "area_size_weight": 1.0,
     "area_map_station_weight": 1.0,
-    "area_tiles_weight": 3.0,
+    "area_tiles_weight": 5.0,
     "area_x_weight": 10.0,
     "area_y_weight": 10.0,
     "proposal_weight": 0.005,
     "proposal_target_temperature": {"log": [10.0, 2.0, 0.03, 0.03, 0.03]},
     "pipeline_groups": 4,
-    "gradient_accumulation_steps": 2,
+    "gradient_accumulation_steps": 4,
     "shuffle_buffer_batches": 1
   }
 }
