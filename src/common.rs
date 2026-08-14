@@ -56,6 +56,10 @@ pub struct Room {
     refill: bool,
     #[serde(default, rename = "map_station")]
     map_station: bool,
+    #[serde(default)]
+    heat: i32,
+    #[serde(default)]
+    water: i32,
     map: Vec<Vec<u8>>,
     toilet_crossing_x: Vec<Coord>,
     special_type: Option<SpecialType>,
@@ -211,6 +215,8 @@ pub struct RoomData {
     pub geometry_idx: GeometryIdx,
     pub connection_variant_idx: ConnectionVariantIdx,
     pub map_station: bool,
+    pub heat: i32,
+    pub water: i32,
     pub doors: Vec<RoomDoorData>,
     pub door_group_offset: usize,
     pub door_group_count: usize,
@@ -240,6 +246,8 @@ struct ConnectionsKey {
     save: bool,
     refill: bool,
     map_station: bool,
+    heat: i32,
+    water: i32,
     connections: Vec<(PartIdx, PartIdx)>,
     missing_connections: Vec<(PartIdx, PartIdx)>,
 }
@@ -335,6 +343,8 @@ impl ConnectionsKey {
             save: room.save,
             refill: room.refill,
             map_station: room.map_station,
+            heat: room.heat,
+            water: room.water,
             connections,
             missing_connections,
         }
@@ -809,6 +819,8 @@ impl CommonData {
                 geometry_idx,
                 connection_variant_idx,
                 map_station: room.map_station,
+                heat: room.heat,
+                water: room.water,
                 doors: door_data,
                 door_group_offset: door_group_count,
                 door_group_count: room.doors.len(),
@@ -1137,6 +1149,33 @@ impl CommonData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn room_heat_and_water_are_optional_connection_variant_metadata() {
+        let rooms: Vec<Room> = serde_json::from_str(
+            r#"
+            [
+                {"map": [[1]], "toilet_crossing_x": [], "doors": [[]], "connections": [], "missing_connections": []},
+                {"heat": 2, "map": [[1]], "toilet_crossing_x": [], "doors": [[]], "connections": [], "missing_connections": []},
+                {"water": 3, "map": [[1]], "toilet_crossing_x": [], "doors": [[]], "connections": [], "missing_connections": []}
+            ]
+            "#,
+        )
+        .unwrap();
+        let common = CommonData::new(rooms).unwrap();
+
+        assert_eq!((common.room[0].heat, common.room[0].water), (0, 0));
+        assert_eq!((common.room[1].heat, common.room[1].water), (2, 0));
+        assert_eq!((common.room[2].heat, common.room[2].water), (0, 3));
+        assert_ne!(
+            common.room[0].connection_variant_idx,
+            common.room[1].connection_variant_idx
+        );
+        assert_ne!(
+            common.room[0].connection_variant_idx,
+            common.room[2].connection_variant_idx
+        );
+    }
 
     #[test]
     fn door_variant_compatibility_requires_a_nonintersecting_matching_door() {
