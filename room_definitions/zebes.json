@@ -1622,7 +1622,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "water": 1
     },
     {
         "room_id": 172,
@@ -2612,7 +2613,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 133,
@@ -2632,7 +2634,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 2
     },
     {
         "room_id": 134,
@@ -2648,7 +2651,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 135,
@@ -2670,7 +2674,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 3
     },
     {
         "room_id": 136,
@@ -2690,7 +2695,8 @@
             [0, 1]
         ],
         "missing_connections": [[1, 0]],
-        "toilet_crossing_x": [0, 1, 2, 3]
+        "toilet_crossing_x": [0, 1, 2, 3],
+        "heat": 3
     },
     {
         "room_id": 137,
@@ -2712,7 +2718,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 3
     },
     {
         "room_id": 312,
@@ -2744,7 +2751,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [1]
+        "toilet_crossing_x": [1],
+        "heat": 3
     },
     {
         "room_id": 139,
@@ -2760,7 +2768,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 140,
@@ -2776,7 +2785,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 141,
@@ -2792,7 +2802,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 142,
@@ -2809,7 +2820,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 0
     },
     {
         "room_id": 143,
@@ -2822,7 +2834,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 144,
@@ -2841,7 +2854,8 @@
             [1, 0]
         ],
         "missing_connections": [[0, 1]],
-        "toilet_crossing_x": [3]
+        "toilet_crossing_x": [3],
+        "heat": 3
     },
     {
         "room_id": 145,
@@ -2885,7 +2899,8 @@
             [0, 1]
         ],
         "missing_connections": [[1, 0]],
-        "toilet_crossing_x": [1]
+        "toilet_crossing_x": [1],
+        "heat": 2
     },
     {
         "room_id": 147,
@@ -2901,7 +2916,8 @@
             [1, 0]
         ],
         "missing_connections": [[0, 1]],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 148,
@@ -2919,7 +2935,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [1]
+        "toilet_crossing_x": [1],
+        "heat": 3
     },
     {
         "room_id": 149,
@@ -2937,7 +2954,8 @@
             [0, 1]
         ],
         "missing_connections": [[1, 0]],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 3
     },
     {
         "room_id": 150,
@@ -2954,7 +2972,8 @@
             [0, 1]
         ],
         "missing_connections": [[1, 0]],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 3
     },
     {
         "room_id": 151,
@@ -2973,7 +2992,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 2
     },
     {
         "room_id": 152,
@@ -3003,7 +3023,8 @@
             [0, 1]
         ],
         "missing_connections": [[1, 0]],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 86,
@@ -3091,7 +3112,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [1, 2]
+        "toilet_crossing_x": [1, 2],
+        "heat": 2
     },
     {
         "room_id": 91,
@@ -3108,7 +3130,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0, 1, 2]
+        "toilet_crossing_x": [0, 1, 2],
+        "heat": 2
     },
     {
         "room_id": 92,
@@ -3124,7 +3147,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 93,
@@ -3159,7 +3183,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 95,
@@ -3178,7 +3203,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 96,
@@ -3191,7 +3217,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 302,
@@ -3262,7 +3289,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 99,
@@ -3275,7 +3303,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 100,
@@ -3293,7 +3322,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 2
     },
     {
         "room_id": 101,
@@ -3310,7 +3340,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 102,
@@ -3323,7 +3354,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 103,
@@ -3349,7 +3381,8 @@
             [1, 0]
         ],
         "missing_connections": [[0, 1]],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 2
     },
     {
         "room_id": 104,
@@ -3367,7 +3400,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0, 1, 2, 3]
+        "toilet_crossing_x": [0, 1, 2, 3],
+        "heat": 2
     },
     {
         "room_id": 105,
@@ -3421,7 +3455,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 108,
@@ -3440,7 +3475,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 2
     },
     {
         "room_id": 109,
@@ -3469,7 +3505,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 111,
@@ -3488,7 +3525,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [0]
+        "toilet_crossing_x": [0],
+        "heat": 2
     },
     {
         "room_id": 308,
@@ -3521,7 +3559,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 113,
@@ -3541,7 +3580,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [1]
+        "toilet_crossing_x": [1],
+        "heat": 2
     },
     {
         "room_id": 114,
@@ -3557,7 +3597,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 115,
@@ -3575,7 +3616,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [1]
+        "toilet_crossing_x": [1],
+        "heat": 3
     },
     {
         "room_id": 116,
@@ -3593,7 +3635,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [2]
+        "toilet_crossing_x": [2],
+        "heat": 2
     },
     {
         "room_id": 117,
@@ -3609,7 +3652,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 118,
@@ -3645,7 +3689,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 120,
@@ -3670,7 +3715,8 @@
             [0, 1]
         ],
         "missing_connections": [[1, 0]],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 2
     },
     {
         "room_id": 121,
@@ -3687,7 +3733,8 @@
             [1, 0]
         ],
         "missing_connections": [[0, 1]],
-        "toilet_crossing_x": [1]
+        "toilet_crossing_x": [1],
+        "heat": 2
     },
     {
         "room_id": 122,
@@ -3907,7 +3954,8 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": []
+        "toilet_crossing_x": [],
+        "heat": 1
     },
     {
         "room_id": 310,
