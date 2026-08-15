@@ -21,14 +21,18 @@ _COLORS = [
     "#cdb4db",
 ]
 _SPECIAL_TYPE_MARKERS = {
-    "phantoon_boss": "P",
+    "kraid_boss": "X",
+    "phantoon_boss": "X",
+    "draygon_boss": "X",
+    "ridley_boss": "X",
+    "mother_brain": "X",
     "phantoon_map": "W",
 }
 _AREA_COLORS = {
     0: "#7b2cbf",  # Crateria
     1: "#2f9e44",  # Brinstar
     2: "#d00000",  # Norfair
-    3: "#ffff00",  # Wrecked Ship
+    3: "#b59b00",  # Wrecked Ship
     4: "#228be6",  # Maridia
     5: "#f08c00",  # Tourian
 }
@@ -129,6 +133,17 @@ def _placement_fill(step_idx: int, room_area: Optional[int]) -> str:
     if room_area is not None and room_area in _AREA_COLORS:
         return _AREA_COLORS[room_area]
     return _COLORS[step_idx % len(_COLORS)]
+
+
+def _scale_color_lightness(color: str, scale: float, offset: float) -> str:
+    red, green, blue = (int(color[index : index + 2], 16) / 255.0 for index in (1, 3, 5))
+    hue, lightness, saturation = colorsys.rgb_to_hls(red, green, blue)
+    red, green, blue = colorsys.hls_to_rgb(
+        hue,
+        min(1.0, lightness * scale + offset),
+        saturation,
+    )
+    return f"#{round(red * 255):02x}{round(green * 255):02x}{round(blue * 255):02x}"
 
 
 def _occupied_cells(room: dict) -> Set[Tuple[int, int]]:
@@ -634,6 +649,7 @@ def save_episode_frames(
     geometries = _room_geometries(rooms)
     room_polygons: List[Tuple[Tuple[int, int], ...]] = []
     room_colors: List[str] = []
+    water_polygons: List[Tuple[Tuple[Tuple[int, int], ...], str]] = []
     wall_segments: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
     saved_paths = []
     placements = _normalize_placements(actions, environment_index)
@@ -644,14 +660,23 @@ def save_episode_frames(
             continue
 
         geometry = geometries[room_idx]
+        fill = _placement_fill(step_idx, room_area)
+        if rooms[room_idx].get("heat", 0) > 0:
+            fill = _scale_color_lightness(fill, 1.0, 0.3)
+        water = rooms[room_idx].get("water", 0) > 0
+        if water:
+            fill = _scale_color_lightness(fill, 0.85, 0.0)
         polygons, colors, segments = _placement_elements(
             geometry,
             room_x,
             room_y,
-            _placement_fill(step_idx, room_area),
+            fill,
         )
         room_polygons.extend(polygons)
         room_colors.extend(colors)
+        if water:
+            dark = _scale_color_lightness(fill, 0.7, 0.0)
+            water_polygons.extend((polygon, dark) for polygon in polygons)
         wall_segments.extend(segments)
         marker = geometry["special_marker"]
         if marker is not None:
@@ -673,6 +698,16 @@ def save_episode_frames(
                 [(margin + x * scale, margin + y * scale) for x, y in polygon],
                 fill=color,
             )
+        for polygon, dark in water_polygons:
+            left = margin + polygon[0][0] * scale
+            top = margin + polygon[0][1] * scale
+            for pixel_y in range(top, top + scale, 3):
+                for pixel_x in range(left, left + scale, 3):
+                    if ((pixel_x - left) // 3 + (pixel_y - top) // 3) % 2 == 0:
+                        draw.rectangle(
+                            (pixel_x, pixel_y, pixel_x + 2, pixel_y + 2),
+                            fill=dark,
+                        )
         for (x1, y1), (x2, y2) in wall_segments:
             draw.line(
                 [
