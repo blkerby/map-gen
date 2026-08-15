@@ -230,12 +230,12 @@ def compute_expected_reward(
         - batch_weight(config.reward_graph_diameter) * preds.graph_diameter.to(torch.float32)
         + torch.sum(
             config.reward_maridia_water.to(preds.door_invalid.device).unsqueeze(1)
-            * preds.maridia_water.to(torch.float32),
+            * preds.maridia_water_count.to(torch.float32),
             dim=2,
         )
         + torch.sum(
             config.reward_norfair_heat.to(preds.door_invalid.device).unsqueeze(1)
-            * preds.norfair_heat.to(torch.float32),
+            * preds.norfair_heat_count.to(torch.float32),
             dim=2,
         )
         + batch_weight(config.reward_save_distance)
@@ -749,6 +749,8 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
         vanilla_area_invalid=gather(outcomes.vanilla_area_invalid),
         area_size_bucket=gather(outcomes.area_size_bucket),
         area_map_station_count_bucket=gather(outcomes.area_map_station_count_bucket),
+        maridia_water=gather(outcomes.maridia_water),
+        norfair_heat=gather(outcomes.norfair_heat),
         door_match=gather(outcomes.door_match),
     )
 
@@ -974,8 +976,18 @@ def select_candidate_actions(
             ),
             avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
             graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
-            maridia_water=preds.maridia_water.view(environment_count, candidate_count, 3),
-            norfair_heat=preds.norfair_heat.view(environment_count, candidate_count, 3),
+            maridia_water=preds.maridia_water.view(
+                environment_count, candidate_count, preds.maridia_water.shape[-1]
+            ),
+            norfair_heat=preds.norfair_heat.view(
+                environment_count, candidate_count, preds.norfair_heat.shape[-1]
+            ),
+            maridia_water_count=preds.maridia_water_count.view(
+                environment_count, candidate_count, 3
+            ),
+            norfair_heat_count=preds.norfair_heat_count.view(
+                environment_count, candidate_count, 3
+            ),
             save_to_room_utility=preds.save_to_room_utility.view(
                 environment_count,
                 candidate_count,
@@ -1880,6 +1892,18 @@ def merge_generation_results(
                 area_map_station_count_bucket=torch.cat(
                     [
                         episode_outcomes.step_outcomes.area_map_station_count_bucket
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                maridia_water=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.maridia_water
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                norfair_heat=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.norfair_heat
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

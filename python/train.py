@@ -91,7 +91,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v6"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v7"
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -1164,6 +1164,12 @@ class TrainingSession:
                             for outcomes in outcome_iterations
                         ]
                     ),
+                    maridia_water=torch.cat(
+                        [outcomes.step_outcomes.maridia_water for outcomes in outcome_iterations]
+                    ),
+                    norfair_heat=torch.cat(
+                        [outcomes.step_outcomes.norfair_heat for outcomes in outcome_iterations]
+                    ),
                     door_match=torch.cat(
                         [outcomes.step_outcomes.door_match for outcomes in outcome_iterations]
                     ),
@@ -1441,12 +1447,16 @@ class TrainingSession:
         )
 
         end_outcomes = episode_outcomes.end_outcomes
-        heat_water_counts = torch.mean(
-            torch.cat([end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1).to(
-                torch.float32
-            ),
-            dim=0,
-        )
+        heat_water_counts = []
+        for values, tiers in (
+            (end_outcomes.maridia_water, self.engine.output_metadata.maridia_water_tier),
+            (end_outcomes.norfair_heat, self.engine.output_metadata.norfair_heat_tier),
+        ):
+            tier_tensor = torch.tensor(tiers, device=values.device)
+            heat_water_counts.extend(
+                torch.mean(torch.sum(values[:, tier_tensor == tier], dim=1).to(torch.float32))
+                for tier in range(1, 4)
+            )
         area_size = end_outcomes.area_size
         area_size_invalid = torch.sum(
             (area_size < step_config.generation.min_area_size)

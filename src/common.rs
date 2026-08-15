@@ -273,6 +273,8 @@ pub struct GeometryDirDoorData {
 
 pub struct CommonData {
     pub room: Vec<RoomData>,
+    water_room_idx: Vec<RoomIdx>,
+    heat_room_idx: Vec<RoomIdx>,
     vanilla_area_room_idx: [Option<RoomIdx>; VANILLA_AREA_CONSTRAINT_COUNT],
     toilet_room_idx: Option<RoomIdx>,
     phantoon_boss_room_idx: Option<RoomIdx>,
@@ -532,6 +534,14 @@ fn has_disallowed_toilet_crossing(
 }
 
 impl CommonData {
+    pub fn water_room_idx(&self) -> &[RoomIdx] {
+        &self.water_room_idx
+    }
+
+    pub fn heat_room_idx(&self) -> &[RoomIdx] {
+        &self.heat_room_idx
+    }
+
     pub fn vanilla_area_room_idx(&self) -> &[Option<RoomIdx>; VANILLA_AREA_CONSTRAINT_COUNT] {
         &self.vanilla_area_room_idx
     }
@@ -830,6 +840,17 @@ impl CommonData {
             door_group_count += room.doors.len();
         }
 
+        let water_room_idx = room_data
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, room)| (room.water > 0).then_some(idx as RoomIdx))
+            .collect();
+        let heat_room_idx = room_data
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, room)| (room.heat > 0).then_some(idx as RoomIdx))
+            .collect();
+
         let mut door_output = vec![];
         let mut door_output_variant_by_key = HashMap::new();
         for door in room_dir_door.iter().flatten() {
@@ -890,6 +911,8 @@ impl CommonData {
 
         let mut common = Self {
             room: room_data,
+            water_room_idx,
+            heat_room_idx,
             vanilla_area_room_idx,
             toilet_room_idx,
             phantoon_boss_room_idx,

@@ -47,6 +47,8 @@ class Predictions:
     graph_diameter: torch.Tensor
     maridia_water: torch.Tensor
     norfair_heat: torch.Tensor
+    maridia_water_count: torch.Tensor
+    norfair_heat_count: torch.Tensor
     # Predicted save-to-room proximity utility for each global room part:
     save_to_room_utility: torch.Tensor
     # Predicted room-to-save proximity utility for each global room part:
@@ -107,6 +109,8 @@ def get_predictions(raw_preds, output_sizes):
         graph_diameter=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         maridia_water=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 3]),
         norfair_heat=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 3]),
+        maridia_water_count=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 3]),
+        norfair_heat_count=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 3]),
         save_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         save_from_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         refill_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
@@ -757,7 +761,24 @@ class FrontierModel(torch.nn.Module):
         self.toilet_balance_score_output = torch.nn.Linear(embedding_width, 1)
         self.avg_frontiers_output = torch.nn.Linear(embedding_width, 1)
         self.graph_diameter_output = torch.nn.Linear(embedding_width, 1)
-        self.heat_water_output = torch.nn.Linear(embedding_width, 6)
+        self.maridia_water_output = torch.nn.Linear(
+            embedding_width, len(output_metadata.maridia_water_room_idx)
+        )
+        self.norfair_heat_output = torch.nn.Linear(
+            embedding_width, len(output_metadata.norfair_heat_room_idx)
+        )
+        self.register_buffer(
+            "maridia_water_tier_mask",
+            torch.nn.functional.one_hot(
+                torch.tensor(output_metadata.maridia_water_tier, dtype=torch.int64) - 1, 3
+            ).to(torch.float32),
+        )
+        self.register_buffer(
+            "norfair_heat_tier_mask",
+            torch.nn.functional.one_hot(
+                torch.tensor(output_metadata.norfair_heat_tier, dtype=torch.int64) - 1, 3
+            ).to(torch.float32),
+        )
         self.save_to_room_utility_output = torch.nn.Linear(embedding_width, self.num_room_parts)
         self.save_from_room_utility_output = torch.nn.Linear(embedding_width, self.num_room_parts)
         self.refill_to_room_utility_output = torch.nn.Linear(embedding_width, self.num_room_parts)
@@ -802,7 +823,8 @@ class FrontierModel(torch.nn.Module):
             self.toilet_balance_score_output,
             self.avg_frontiers_output,
             self.graph_diameter_output,
-            self.heat_water_output,
+            self.maridia_water_output,
+            self.norfair_heat_output,
             self.save_to_room_utility_output,
             self.save_from_room_utility_output,
             self.refill_to_room_utility_output,
@@ -958,7 +980,8 @@ class FrontierModel(torch.nn.Module):
         toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
         graph_diameter = self.graph_diameter_output(X).squeeze(-1).to(torch.float32)
-        heat_water = self.heat_water_output(X).to(torch.float32)
+        maridia_water = self.maridia_water_output(X).to(torch.float32)
+        norfair_heat = self.norfair_heat_output(X).to(torch.float32)
         save_to_room_utility = self.save_to_room_utility_output(X).to(torch.float32)
         save_from_room_utility = self.save_from_room_utility_output(X).to(torch.float32)
         refill_to_room_utility = self.refill_to_room_utility_output(X).to(torch.float32)
@@ -1046,6 +1069,16 @@ class FrontierModel(torch.nn.Module):
             features.global_features.lookahead_connection_invalid,
             "connection",
         )
+        maridia_water = apply_known_invalid_logits(
+            maridia_water,
+            features.global_features.lookahead_maridia_water,
+            "Maridia water",
+        )
+        norfair_heat = apply_known_invalid_logits(
+            norfair_heat,
+            features.global_features.lookahead_norfair_heat,
+            "Norfair heat",
+        )
         balance_score = apply_frontier_door_output_logits(
             preds.balance_score,
             frontier_balance_score,
@@ -1119,8 +1152,10 @@ class FrontierModel(torch.nn.Module):
             toilet_balance_score=preds.toilet_balance_score,
             avg_frontiers=avg_frontiers,
             graph_diameter=graph_diameter,
-            maridia_water=heat_water[..., :3],
-            norfair_heat=heat_water[..., 3:],
+            maridia_water=maridia_water,
+            norfair_heat=norfair_heat,
+            maridia_water_count=torch.sigmoid(maridia_water) @ self.maridia_water_tier_mask,
+            norfair_heat_count=torch.sigmoid(norfair_heat) @ self.norfair_heat_tier_mask,
             save_to_room_utility=save_to_room_utility,
             save_from_room_utility=save_from_room_utility,
             refill_to_room_utility=refill_to_room_utility,

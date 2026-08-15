@@ -260,7 +260,7 @@ def compute_loss_breakdown(
         graph_diameter_mask,
         config.graph_diameter_weight,
     )
-    heat_water_loss, heat_water_wt = masked_mse_loss(
+    heat_water_loss, heat_water_wt = masked_binary_cross_entropy_loss(
         torch.cat([preds.maridia_water, preds.norfair_heat], dim=-1),
         heat_water_target,
         heat_water_mask,

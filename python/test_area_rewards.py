@@ -92,6 +92,8 @@ def area_predictions() -> Predictions:
         graph_diameter=torch.zeros([batch, candidate]),
         maridia_water=torch.zeros([batch, candidate, 3]),
         norfair_heat=torch.zeros([batch, candidate, 3]),
+        maridia_water_count=torch.zeros([batch, candidate, 3]),
+        norfair_heat_count=torch.zeros([batch, candidate, 3]),
         save_to_room_utility=torch.zeros([batch, candidate, room_part]),
         save_from_room_utility=torch.zeros([batch, candidate, room_part]),
         refill_to_room_utility=torch.zeros([batch, candidate, room_part]),
@@ -119,6 +121,8 @@ def unknown_outcomes() -> StepOutcomes:
         vanilla_area_invalid=torch.full([1, 2, 6], -1.0),
         area_size_bucket=torch.full([1, 2, 6], -1.0),
         area_map_station_count_bucket=torch.full([1, 2, 6], -1.0),
+        maridia_water=torch.full([1, 2, 3], -1.0),
+        norfair_heat=torch.full([1, 2, 3], -1.0),
         door_match=torch.full([1, 2, 3], -1.0),
     )
 
@@ -209,8 +213,12 @@ def test_numeric_area_rewards_use_negative_mean_squared_error() -> None:
 
 def test_heat_water_rewards_use_final_tier_coefficients() -> None:
     predictions = area_predictions()
-    predictions.maridia_water = torch.tensor([[[1.0, 2.0, 3.0], [0.0, 1.0, 0.0]]])
-    predictions.norfair_heat = torch.tensor([[[4.0, 5.0, 6.0], [2.0, 0.0, 1.0]]])
+    predictions.maridia_water_count = torch.tensor(
+        [[[1.0, 2.0, 3.0], [0.0, 1.0, 0.0]]]
+    )
+    predictions.norfair_heat_count = torch.tensor(
+        [[[4.0, 5.0, 6.0], [2.0, 0.0, 1.0]]]
+    )
     reward = compute_expected_reward(
         predictions,
         unknown_outcomes(),

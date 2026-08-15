@@ -318,6 +318,8 @@ enum WorkerCommand {
         pre_vanilla_area_valid: OutputShard<i8>,
         pre_area_size_bucket: OutputShard<i8>,
         pre_area_map_station_count_bucket: OutputShard<i8>,
+        pre_maridia_water: OutputShard<i8>,
+        pre_norfair_heat: OutputShard<i8>,
         door_valid: OutputShard<i8>,
         connections_valid: OutputShard<i8>,
         toilet_valid: OutputShard<i8>,
@@ -326,6 +328,8 @@ enum WorkerCommand {
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_map_station_count_bucket: OutputShard<i8>,
+        maridia_water: OutputShard<i8>,
+        norfair_heat: OutputShard<i8>,
         door_match: OutputShard<i16>,
         clean_counts: OutputShard<usize>,
         evaluated_counts: OutputShard<usize>,
@@ -354,8 +358,8 @@ enum WorkerCommand {
         toilet_crossed_room_idx: OutputShard<i16>,
         avg_frontiers: OutputShard<f32>,
         graph_diameter: OutputShard<f32>,
-        maridia_water: OutputShard<i32>,
-        norfair_heat: OutputShard<i32>,
+        maridia_water: OutputShard<u8>,
+        norfair_heat: OutputShard<u8>,
         active_room_part_mask: OutputShard<u8>,
         save_distance: OutputShard<f32>,
         save_distance_mask: OutputShard<u8>,
@@ -395,6 +399,8 @@ enum WorkerCommand {
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_map_station_count_bucket: OutputShard<i8>,
+        maridia_water: OutputShard<i8>,
+        norfair_heat: OutputShard<i8>,
         door_match: OutputShard<i16>,
     },
     GetDoorMatchCounts {
@@ -653,6 +659,8 @@ fn worker_loop(
                 pre_vanilla_area_valid,
                 pre_area_size_bucket,
                 pre_area_map_station_count_bucket,
+                pre_maridia_water,
+                pre_norfair_heat,
                 door_valid,
                 connections_valid,
                 toilet_valid,
@@ -661,6 +669,8 @@ fn worker_loop(
                 vanilla_area_valid,
                 area_size_bucket,
                 area_map_station_count_bucket,
+                maridia_water,
+                norfair_heat,
                 door_match,
                 clean_counts,
                 evaluated_counts,
@@ -692,6 +702,8 @@ fn worker_loop(
                 let pre_area_size_bucket = unsafe { pre_area_size_bucket.into_mut_slice() };
                 let pre_area_map_station_count_bucket =
                     unsafe { pre_area_map_station_count_bucket.into_mut_slice() };
+                let pre_maridia_water = unsafe { pre_maridia_water.into_mut_slice() };
+                let pre_norfair_heat = unsafe { pre_norfair_heat.into_mut_slice() };
                 let door_valid = unsafe { door_valid.into_mut_slice() };
                 let connections_valid = unsafe { connections_valid.into_mut_slice() };
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
@@ -701,6 +713,8 @@ fn worker_loop(
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
+                let maridia_water = unsafe { maridia_water.into_mut_slice() };
+                let norfair_heat = unsafe { norfair_heat.into_mut_slice() };
                 let door_match = unsafe { door_match.into_mut_slice() };
                 let clean_counts = unsafe { clean_counts.into_mut_slice() };
                 let evaluated_counts = unsafe { evaluated_counts.into_mut_slice() };
@@ -757,6 +771,14 @@ fn worker_loop(
                 );
                 debug_assert_eq!(pre_area_size_bucket.len(), environments.len() * AREA_COUNT);
                 debug_assert_eq!(
+                    pre_maridia_water.len(),
+                    environments.len() * common_data.water_room_idx().len()
+                );
+                debug_assert_eq!(
+                    pre_norfair_heat.len(),
+                    environments.len() * common_data.heat_room_idx().len()
+                );
+                debug_assert_eq!(
                     pre_area_map_station_count_bucket.len(),
                     environments.len() * AREA_COUNT
                 );
@@ -791,6 +813,16 @@ fn worker_loop(
                 debug_assert_eq!(
                     area_map_station_count_bucket.len(),
                     environments.len() * recommended_candidates * AREA_COUNT
+                );
+                debug_assert_eq!(
+                    maridia_water.len(),
+                    environments.len()
+                        * recommended_candidates
+                        * common_data.water_room_idx().len()
+                );
+                debug_assert_eq!(
+                    norfair_heat.len(),
+                    environments.len() * recommended_candidates * common_data.heat_room_idx().len()
                 );
                 debug_assert_eq!(
                     door_match.len(),
@@ -890,6 +922,14 @@ fn worker_loop(
                         pre_area_map_station_count_bucket[pre_area_start + area] =
                             pre_candidate_outcomes.area_map_station_count_bucket[area] as i8;
                     }
+                    let pre_water_start = env_idx * common_data.water_room_idx().len();
+                    pre_maridia_water
+                        [pre_water_start..pre_water_start + common_data.water_room_idx().len()]
+                        .copy_from_slice(&pre_candidate_outcomes.maridia_water);
+                    let pre_heat_start = env_idx * common_data.heat_room_idx().len();
+                    pre_norfair_heat
+                        [pre_heat_start..pre_heat_start + common_data.heat_room_idx().len()]
+                        .copy_from_slice(&pre_candidate_outcomes.norfair_heat);
                     let row_start = env_idx * recommended_candidates;
                     let dummy_candidate = Action {
                         room_idx: common_data.room.len() as RoomIdx,
@@ -974,6 +1014,13 @@ fn worker_loop(
                             area_map_station_count_bucket[area_start + area] =
                                 outcome.area_map_station_count_bucket[area] as i8;
                         }
+                        let water_start = idx * common_data.water_room_idx().len();
+                        maridia_water
+                            [water_start..water_start + common_data.water_room_idx().len()]
+                            .copy_from_slice(&outcome.maridia_water);
+                        let heat_start = idx * common_data.heat_room_idx().len();
+                        norfair_heat[heat_start..heat_start + common_data.heat_room_idx().len()]
+                            .copy_from_slice(&outcome.norfair_heat);
                         for (dst, &value) in door_match[door_start..door_end]
                             .iter_mut()
                             .zip(match_values)
@@ -1122,8 +1169,14 @@ fn worker_loop(
                 debug_assert_eq!(toilet_crossed_room_idx.len(), environments.len());
                 debug_assert_eq!(avg_frontiers.len(), environments.len());
                 debug_assert_eq!(graph_diameter.len(), environments.len());
-                debug_assert_eq!(maridia_water.len(), environments.len() * 3);
-                debug_assert_eq!(norfair_heat.len(), environments.len() * 3);
+                debug_assert_eq!(
+                    maridia_water.len(),
+                    environments.len() * common_data.water_room_idx().len()
+                );
+                debug_assert_eq!(
+                    norfair_heat.len(),
+                    environments.len() * common_data.heat_room_idx().len()
+                );
                 debug_assert_eq!(
                     active_room_part_mask.len(),
                     environments.len() * common_data.room_part.len()
@@ -1217,10 +1270,21 @@ fn worker_loop(
                     debug_assert_eq!(outcomes.connections_valid.len(), connection_outcome_count);
                     avg_frontiers[env_idx] = avg_frontier_count;
                     graph_diameter[env_idx] = f32::from(env.graph_diameter());
-                    let heat_water_count = env.heat_water_count();
-                    for tier in 0..3 {
-                        maridia_water[env_idx * 3 + tier] = heat_water_count[tier] as i32;
-                        norfair_heat[env_idx * 3 + tier] = heat_water_count[3 + tier] as i32;
+                    let water_start = env_idx * common_data.water_room_idx().len();
+                    for (dst, &value) in maridia_water
+                        [water_start..water_start + common_data.water_room_idx().len()]
+                        .iter_mut()
+                        .zip(&outcomes.maridia_water)
+                    {
+                        *dst = u8::try_from(value).expect("final water outcome must be known");
+                    }
+                    let heat_start = env_idx * common_data.heat_room_idx().len();
+                    for (dst, &value) in norfair_heat
+                        [heat_start..heat_start + common_data.heat_room_idx().len()]
+                        .iter_mut()
+                        .zip(&outcomes.norfair_heat)
+                    {
+                        *dst = u8::try_from(value).expect("final heat outcome must be known");
                     }
                     let area_state = env.area_outcome_state();
                     let (env_area_x, env_area_y) = env.area_mean_coordinates(&common_data);
@@ -1363,6 +1427,8 @@ fn worker_loop(
                 vanilla_area_valid,
                 area_size_bucket,
                 area_map_station_count_bucket,
+                maridia_water,
+                norfair_heat,
                 door_match,
             } => {
                 // SAFETY: The main thread guarantees that for the duration of this command,
@@ -1376,6 +1442,8 @@ fn worker_loop(
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
+                let maridia_water = unsafe { maridia_water.into_mut_slice() };
+                let norfair_heat = unsafe { norfair_heat.into_mut_slice() };
                 let door_match = unsafe { door_match.into_mut_slice() };
                 debug_assert_eq!(door_valid.len(), environment_count * door_outcome_count);
                 debug_assert_eq!(
@@ -1395,6 +1463,14 @@ fn worker_loop(
                     environment_count * AREA_COUNT
                 );
                 debug_assert_eq!(door_match.len(), environment_count * door_outcome_count);
+                debug_assert_eq!(
+                    maridia_water.len(),
+                    environment_count * common_data.water_room_idx().len()
+                );
+                debug_assert_eq!(
+                    norfair_heat.len(),
+                    environment_count * common_data.heat_room_idx().len()
+                );
 
                 for (env_idx, env) in environments
                     .iter()
@@ -1439,6 +1515,12 @@ fn worker_loop(
                         area_map_station_count_bucket[area_start + area] =
                             outcomes.area_map_station_count_bucket[area] as i8;
                     }
+                    let water_start = env_idx * common_data.water_room_idx().len();
+                    maridia_water[water_start..water_start + common_data.water_room_idx().len()]
+                        .copy_from_slice(&outcomes.maridia_water);
+                    let heat_start = env_idx * common_data.heat_room_idx().len();
+                    norfair_heat[heat_start..heat_start + common_data.heat_room_idx().len()]
+                        .copy_from_slice(&outcomes.norfair_heat);
                 }
                 WorkerResponse::Done
             }
@@ -1765,6 +1847,8 @@ pub struct StepOutcomes {
     vanilla_area_valid: Py<PyArray2<i8>>,
     area_size_bucket: Py<PyArray2<i8>>,
     area_map_station_count_bucket: Py<PyArray2<i8>>,
+    maridia_water: Py<PyArray2<i8>>,
+    norfair_heat: Py<PyArray2<i8>>,
     door_match: Py<PyArray2<i16>>,
 }
 
@@ -1773,8 +1857,8 @@ pub struct EndOutcomes {
     toilet_crossed_room_idx: Py<PyArray1<i16>>,
     avg_frontiers: Py<PyArray1<f32>>,
     graph_diameter: Py<PyArray1<f32>>,
-    maridia_water: Py<PyArray2<i32>>,
-    norfair_heat: Py<PyArray2<i32>>,
+    maridia_water: Py<PyArray2<u8>>,
+    norfair_heat: Py<PyArray2<u8>>,
     active_room_part_mask: Py<PyArray2<u8>>,
     save_distance: Py<PyArray2<f32>>,
     save_distance_mask: Py<PyArray2<u8>>,
@@ -1858,6 +1942,8 @@ pub struct ProposalCandidateBuffers {
     pre_vanilla_area_valid: Py<PyArray2<i8>>,
     pre_area_size_bucket: Py<PyArray2<i8>>,
     pre_area_map_station_count_bucket: Py<PyArray2<i8>>,
+    pre_maridia_water: Py<PyArray2<i8>>,
+    pre_norfair_heat: Py<PyArray2<i8>>,
     door_valid: Py<PyArray3<i8>>,
     connections_valid: Py<PyArray3<i8>>,
     toilet_valid: Py<PyArray2<i8>>,
@@ -1866,6 +1952,8 @@ pub struct ProposalCandidateBuffers {
     vanilla_area_valid: Py<PyArray3<i8>>,
     area_size_bucket: Py<PyArray3<i8>>,
     area_map_station_count_bucket: Py<PyArray3<i8>>,
+    maridia_water: Py<PyArray3<i8>>,
+    norfair_heat: Py<PyArray3<i8>>,
     door_match: Py<PyArray3<i16>>,
     clean_counts: Py<PyArray1<i64>>,
     evaluated_counts: Py<PyArray1<i64>>,
@@ -1915,7 +2003,6 @@ pub struct FeatureBuffers {
     area_min_y: Py<PyArray2<Coord>>,
     area_max_y: Py<PyArray2<Coord>>,
     area_crossings: Py<PyArray2<u16>>,
-    heat_water_count: Py<PyArray2<u16>>,
     area_size: Py<PyArray2<u16>>,
     area_map_station_count: Py<PyArray2<u8>>,
     frontier: Py<PyArray2<i8>>,
@@ -1996,6 +2083,8 @@ impl ProposalCandidateBuffers {
                 fields,
                 "pre_area_map_station_count_bucket"
             ),
+            pre_maridia_water: required_py_field!(fields, "pre_maridia_water"),
+            pre_norfair_heat: required_py_field!(fields, "pre_norfair_heat"),
             door_valid: required_py_field!(fields, "door_valid"),
             connections_valid: required_py_field!(fields, "connections_valid"),
             toilet_valid: required_py_field!(fields, "toilet_valid"),
@@ -2007,6 +2096,8 @@ impl ProposalCandidateBuffers {
                 fields,
                 "area_map_station_count_bucket"
             ),
+            maridia_water: required_py_field!(fields, "maridia_water"),
+            norfair_heat: required_py_field!(fields, "norfair_heat"),
             door_match: required_py_field!(fields, "door_match"),
             clean_counts: required_py_field!(fields, "clean_counts"),
             evaluated_counts: required_py_field!(fields, "evaluated_counts"),
@@ -2094,7 +2185,6 @@ impl FeatureBuffers {
             area_min_y: required_py_field!(fields, "area_min_y"),
             area_max_y: required_py_field!(fields, "area_max_y"),
             area_crossings: required_py_field!(fields, "area_crossings"),
-            heat_water_count: required_py_field!(fields, "heat_water_count"),
             area_size: required_py_field!(fields, "area_size"),
             area_map_station_count: required_py_field!(fields, "area_map_station_count"),
             frontier: required_py_field!(fields, "frontier"),
@@ -2223,6 +2313,16 @@ impl StepOutcomes {
     }
 
     #[getter]
+    fn maridia_water(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
+        self.maridia_water.clone_ref(py)
+    }
+
+    #[getter]
+    fn norfair_heat(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
+        self.norfair_heat.clone_ref(py)
+    }
+
+    #[getter]
     fn door_match(&self, py: Python<'_>) -> Py<PyArray2<i16>> {
         self.door_match.clone_ref(py)
     }
@@ -2246,12 +2346,12 @@ impl EndOutcomes {
     }
 
     #[getter]
-    fn maridia_water(&self, py: Python<'_>) -> Py<PyArray2<i32>> {
+    fn maridia_water(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.maridia_water.clone_ref(py)
     }
 
     #[getter]
-    fn norfair_heat(&self, py: Python<'_>) -> Py<PyArray2<i32>> {
+    fn norfair_heat(&self, py: Python<'_>) -> Py<PyArray2<u8>> {
         self.norfair_heat.clone_ref(py)
     }
 
@@ -2390,6 +2490,8 @@ impl EpisodeOutcomes {
                 .step_outcomes
                 .area_map_station_count_bucket
                 .clone_ref(py),
+            maridia_water: self.step_outcomes.maridia_water.clone_ref(py),
+            norfair_heat: self.step_outcomes.norfair_heat.clone_ref(py),
             door_match: self.step_outcomes.door_match.clone_ref(py),
         }
     }
@@ -2454,6 +2556,10 @@ fn outcome_to_i8(outcome: DoorValidOutcome) -> i8 {
         DoorValidOutcome::Valid => 0,
         DoorValidOutcome::Invalid => 1,
     }
+}
+
+fn outcomes_to_step_values(outcomes: &[u8]) -> Vec<i8> {
+    outcomes.iter().map(|&value| value as i8).collect()
 }
 
 fn feature_info(plans: &[FeaturePlan]) -> FeatureInfo {
@@ -2611,7 +2717,6 @@ struct GlobalFeatureOutputShards {
     area_min_y: OutputShard<Coord>,
     area_max_y: OutputShard<Coord>,
     area_crossings: OutputShard<u16>,
-    heat_water_count: OutputShard<u16>,
     area_size: OutputShard<u16>,
     area_map_station_count: OutputShard<u8>,
     connection_reachability: OutputShard<u8>,
@@ -2625,7 +2730,6 @@ struct GlobalFeatureOutputShards {
     known_distance_count: usize,
     area_count: usize,
     area_crossings_count: usize,
-    heat_water_count_width: usize,
     connection_count: usize,
     toilet_crossed_room_count: usize,
 }
@@ -2666,7 +2770,6 @@ struct GlobalFeatureOutputSlices<'a> {
     area_min_y: &'a mut [Coord],
     area_max_y: &'a mut [Coord],
     area_crossings: &'a mut [u16],
-    heat_water_count: &'a mut [u16],
     area_size: &'a mut [u16],
     area_map_station_count: &'a mut [u8],
     connection_reachability: &'a mut [u8],
@@ -2680,7 +2783,6 @@ struct GlobalFeatureOutputSlices<'a> {
     known_distance_count: usize,
     area_count: usize,
     area_crossings_count: usize,
-    heat_water_count_width: usize,
     connection_count: usize,
     toilet_crossed_room_count: usize,
 }
@@ -2745,7 +2847,6 @@ impl GlobalFeatureOutputShards {
             area_min_y: unsafe { self.area_min_y.into_mut_slice() },
             area_max_y: unsafe { self.area_max_y.into_mut_slice() },
             area_crossings: unsafe { self.area_crossings.into_mut_slice() },
-            heat_water_count: unsafe { self.heat_water_count.into_mut_slice() },
             area_size: unsafe { self.area_size.into_mut_slice() },
             area_map_station_count: unsafe { self.area_map_station_count.into_mut_slice() },
             connection_reachability: unsafe { self.connection_reachability.into_mut_slice() },
@@ -2759,7 +2860,6 @@ impl GlobalFeatureOutputShards {
             known_distance_count: self.known_distance_count,
             area_count: self.area_count,
             area_crossings_count: self.area_crossings_count,
-            heat_water_count_width: self.heat_water_count_width,
             connection_count: self.connection_count,
             toilet_crossed_room_count: self.toilet_crossed_room_count,
         }
@@ -2876,12 +2976,6 @@ impl GlobalFeatureOutputSlices<'_> {
             fill_output_row(&mut self.area_min_y, idx, self.area_count, 0);
             fill_output_row(&mut self.area_max_y, idx, self.area_count, 0);
             fill_output_row(&mut self.area_crossings, idx, self.area_crossings_count, 0);
-            fill_output_row(
-                &mut self.heat_water_count,
-                idx,
-                self.heat_water_count_width,
-                0,
-            );
             fill_output_row(&mut self.area_size, idx, self.area_count, 0);
             fill_output_row(&mut self.area_map_station_count, idx, self.area_count, 0);
             fill_output_row(
@@ -3013,12 +3107,6 @@ impl GlobalFeatureOutputSlices<'_> {
             &plan.area_crossings,
             idx,
             self.area_crossings_count,
-        );
-        copy_output_row(
-            &mut self.heat_water_count,
-            &plan.heat_water_count,
-            idx,
-            self.heat_water_count_width,
         );
         copy_output_row(&mut self.area_size, &plan.area_size, idx, self.area_count);
         copy_output_row(
@@ -3164,12 +3252,6 @@ impl GlobalFeatureOutputSlices<'_> {
             &features.area_crossings,
             idx,
             self.area_crossings_count,
-        );
-        copy_output_row(
-            &mut self.heat_water_count,
-            &features.heat_water_count,
-            idx,
-            self.heat_water_count_width,
         );
         copy_output_row(
             &mut self.area_size,
@@ -4074,7 +4156,6 @@ mod tests {
             area_min_y: OutputShard::empty(),
             area_max_y: OutputShard::empty(),
             area_crossings: OutputShard::empty(),
-            heat_water_count: OutputShard::empty(),
             area_size: OutputShard::empty(),
             area_map_station_count: OutputShard::empty(),
             connection_reachability: OutputShard::empty(),
@@ -4088,7 +4169,6 @@ mod tests {
             known_distance_count: 0,
             area_count: 0,
             area_crossings_count: 0,
-            heat_water_count_width: 0,
             connection_count: 0,
             toilet_crossed_room_count: 0,
         }
@@ -4437,6 +4517,8 @@ impl EnvironmentGroup {
             .pre_area_map_station_count_bucket
             .bind(py)
             .readwrite();
+        let mut pre_maridia_water = buffers.pre_maridia_water.bind(py).readwrite();
+        let mut pre_norfair_heat = buffers.pre_norfair_heat.bind(py).readwrite();
         let mut door_valid = buffers.door_valid.bind(py).readwrite();
         let mut connections_valid = buffers.connections_valid.bind(py).readwrite();
         let mut toilet_valid = buffers.toilet_valid.bind(py).readwrite();
@@ -4446,6 +4528,8 @@ impl EnvironmentGroup {
         let mut area_size_bucket = buffers.area_size_bucket.bind(py).readwrite();
         let mut area_map_station_count_bucket =
             buffers.area_map_station_count_bucket.bind(py).readwrite();
+        let mut maridia_water = buffers.maridia_water.bind(py).readwrite();
+        let mut norfair_heat = buffers.norfair_heat.bind(py).readwrite();
         let mut door_match = buffers.door_match.bind(py).readwrite();
         let mut clean_counts = buffers.clean_counts.bind(py).readwrite();
         let mut evaluated_counts = buffers.evaluated_counts.bind(py).readwrite();
@@ -4594,6 +4678,22 @@ impl EnvironmentGroup {
             &[self.num_environments, AREA_COUNT],
         )?;
         check_shape(
+            "pre_maridia_water",
+            pre_maridia_water.as_array().shape(),
+            &[
+                self.num_environments,
+                self.common_data.water_room_idx().len(),
+            ],
+        )?;
+        check_shape(
+            "pre_norfair_heat",
+            pre_norfair_heat.as_array().shape(),
+            &[
+                self.num_environments,
+                self.common_data.heat_room_idx().len(),
+            ],
+        )?;
+        check_shape(
             "door_valid",
             door_valid.as_array().shape(),
             &[
@@ -4644,6 +4744,24 @@ impl EnvironmentGroup {
             "area_map_station_count_bucket",
             area_map_station_count_bucket.as_array().shape(),
             &[self.num_environments, recommended_candidates, AREA_COUNT],
+        )?;
+        check_shape(
+            "maridia_water",
+            maridia_water.as_array().shape(),
+            &[
+                self.num_environments,
+                recommended_candidates,
+                self.common_data.water_room_idx().len(),
+            ],
+        )?;
+        check_shape(
+            "norfair_heat",
+            norfair_heat.as_array().shape(),
+            &[
+                self.num_environments,
+                recommended_candidates,
+                self.common_data.heat_room_idx().len(),
+            ],
         )?;
         check_shape(
             "door_match",
@@ -4727,6 +4845,12 @@ impl EnvironmentGroup {
             .map_err(|_| {
                 PyValueError::new_err("pre_area_map_station_count_bucket must be contiguous")
             })?;
+        let pre_maridia_water = pre_maridia_water
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_maridia_water must be contiguous"))?;
+        let pre_norfair_heat = pre_norfair_heat
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_norfair_heat must be contiguous"))?;
         let door_valid = door_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("door_valid must be contiguous"))?;
@@ -4752,6 +4876,12 @@ impl EnvironmentGroup {
             area_map_station_count_bucket.as_slice_mut().map_err(|_| {
                 PyValueError::new_err("area_map_station_count_bucket must be contiguous")
             })?;
+        let maridia_water = maridia_water
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("maridia_water must be contiguous"))?;
+        let norfair_heat = norfair_heat
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("norfair_heat must be contiguous"))?;
         let door_match = door_match
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("door_match must be contiguous"))?;
@@ -4784,6 +4914,8 @@ impl EnvironmentGroup {
         pre_vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         pre_area_map_station_count_bucket.fill(AreaBucketOutcome::Unknown as i8);
+        pre_maridia_water.fill(-1);
+        pre_norfair_heat.fill(-1);
         door_valid.fill(DoorValidOutcome::Unknown as i8);
         connections_valid.fill(DoorValidOutcome::Unknown as i8);
         toilet_valid.fill(DoorValidOutcome::Unknown as i8);
@@ -4792,6 +4924,8 @@ impl EnvironmentGroup {
         vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         area_map_station_count_bucket.fill(AreaBucketOutcome::Unknown as i8);
+        maridia_water.fill(-1);
+        norfair_heat.fill(-1);
         door_match.fill(-1);
         let mut worker_clean_counts = vec![0; self.num_environments];
         let mut worker_evaluated_counts = vec![0; self.num_environments];
@@ -4823,6 +4957,14 @@ impl EnvironmentGroup {
                 let connection_output_end = output_end * connection_outcome_count;
                 let area_output_start = output_start * AREA_COUNT;
                 let area_output_end = output_end * AREA_COUNT;
+                let pre_water_start = worker.start * self.common_data.water_room_idx().len();
+                let pre_water_end = worker.end() * self.common_data.water_room_idx().len();
+                let pre_heat_start = worker.start * self.common_data.heat_room_idx().len();
+                let pre_heat_end = worker.end() * self.common_data.heat_room_idx().len();
+                let water_start = output_start * self.common_data.water_room_idx().len();
+                let water_end = output_end * self.common_data.water_room_idx().len();
+                let heat_start = output_start * self.common_data.heat_room_idx().len();
+                let heat_end = output_end * self.common_data.heat_room_idx().len();
                 let door_match_output_start = output_start * door_outcome_count;
                 let door_match_output_end =
                     door_match_output_start + (output_end - output_start) * door_outcome_count;
@@ -4893,6 +5035,12 @@ impl EnvironmentGroup {
                         &mut pre_area_map_station_count_bucket
                             [pre_area_output_start..pre_area_output_end],
                     ),
+                    pre_maridia_water: OutputShard::from_slice(
+                        &mut pre_maridia_water[pre_water_start..pre_water_end],
+                    ),
+                    pre_norfair_heat: OutputShard::from_slice(
+                        &mut pre_norfair_heat[pre_heat_start..pre_heat_end],
+                    ),
                     door_valid: OutputShard::from_slice(
                         &mut door_valid[door_output_start..door_output_end],
                     ),
@@ -4918,6 +5066,10 @@ impl EnvironmentGroup {
                     area_map_station_count_bucket: OutputShard::from_slice(
                         &mut area_map_station_count_bucket[area_output_start..area_output_end],
                     ),
+                    maridia_water: OutputShard::from_slice(
+                        &mut maridia_water[water_start..water_end],
+                    ),
+                    norfair_heat: OutputShard::from_slice(&mut norfair_heat[heat_start..heat_end]),
                     door_match: OutputShard::from_slice(
                         &mut door_match[door_match_output_start..door_match_output_end],
                     ),
@@ -5030,8 +5182,10 @@ impl EnvironmentGroup {
         let mut toilet_crossed_room_idx = vec![-1i16; self.num_environments];
         let mut avg_frontiers = vec![0.0; self.num_environments];
         let mut graph_diameter = vec![0.0; self.num_environments];
-        let mut maridia_water = vec![0i32; self.num_environments * 3];
-        let mut norfair_heat = vec![0i32; self.num_environments * 3];
+        let water_room_count = self.common_data.water_room_idx().len();
+        let heat_room_count = self.common_data.heat_room_idx().len();
+        let mut maridia_water = vec![0u8; self.num_environments * water_room_count];
+        let mut norfair_heat = vec![0u8; self.num_environments * heat_room_count];
         let room_part_count = self.common_data.room_part.len();
         let mut active_room_part_mask = vec![0; self.num_environments * room_part_count];
         let mut save_distance = vec![0.0; self.num_environments * room_part_count];
@@ -5113,10 +5267,12 @@ impl EnvironmentGroup {
                         &mut graph_diameter[graph_diameter_start..graph_diameter_end],
                     ),
                     maridia_water: OutputShard::from_slice(
-                        &mut maridia_water[worker.start * 3..worker.end() * 3],
+                        &mut maridia_water
+                            [worker.start * water_room_count..worker.end() * water_room_count],
                     ),
                     norfair_heat: OutputShard::from_slice(
-                        &mut norfair_heat[worker.start * 3..worker.end() * 3],
+                        &mut norfair_heat
+                            [worker.start * heat_room_count..worker.end() * heat_room_count],
                     ),
                     active_room_part_mask: OutputShard::from_slice(
                         &mut active_room_part_mask[save_distance_start..save_distance_end],
@@ -5224,6 +5380,20 @@ impl EnvironmentGroup {
                     AREA_COUNT,
                 )?
                 .unbind(),
+                maridia_water: pyarray2_from_flat_vec(
+                    py,
+                    outcomes_to_step_values(&maridia_water),
+                    self.num_environments,
+                    water_room_count,
+                )?
+                .unbind(),
+                norfair_heat: pyarray2_from_flat_vec(
+                    py,
+                    outcomes_to_step_values(&norfair_heat),
+                    self.num_environments,
+                    heat_room_count,
+                )?
+                .unbind(),
                 door_match: pyarray2_from_flat_vec(
                     py,
                     Vec::<i16>::new(),
@@ -5236,10 +5406,20 @@ impl EnvironmentGroup {
                 toilet_crossed_room_idx: toilet_crossed_room_idx.into_pyarray(py).unbind(),
                 avg_frontiers: avg_frontiers.into_pyarray(py).unbind(),
                 graph_diameter: graph_diameter.into_pyarray(py).unbind(),
-                maridia_water: pyarray2_from_flat_vec(py, maridia_water, self.num_environments, 3)?
-                    .unbind(),
-                norfair_heat: pyarray2_from_flat_vec(py, norfair_heat, self.num_environments, 3)?
-                    .unbind(),
+                maridia_water: pyarray2_from_flat_vec(
+                    py,
+                    maridia_water,
+                    self.num_environments,
+                    water_room_count,
+                )?
+                .unbind(),
+                norfair_heat: pyarray2_from_flat_vec(
+                    py,
+                    norfair_heat,
+                    self.num_environments,
+                    heat_room_count,
+                )?
+                .unbind(),
                 active_room_part_mask: pyarray2_from_flat_vec(
                     py,
                     active_room_part_mask,
@@ -5395,6 +5575,10 @@ impl EnvironmentGroup {
         let mut area_size_bucket = vec![AreaBucketOutcome::Unknown as i8; area_output_len];
         let mut area_map_station_count_bucket =
             vec![AreaBucketOutcome::Unknown as i8; area_output_len];
+        let water_room_count = self.common_data.water_room_idx().len();
+        let heat_room_count = self.common_data.heat_room_idx().len();
+        let mut maridia_water = vec![-1; environment_count * water_room_count];
+        let mut norfair_heat = vec![-1; environment_count * heat_room_count];
         let mut door_match = vec![-1; door_output_len];
 
         py.detach(|| {
@@ -5418,6 +5602,10 @@ impl EnvironmentGroup {
                     door_match_output_start + environment_count * door_outcome_count;
                 let area_output_start = input_start * AREA_COUNT;
                 let area_output_end = area_output_start + environment_count * AREA_COUNT;
+                let water_output_start = input_start * water_room_count;
+                let water_output_end = (input_start + environment_count) * water_room_count;
+                let heat_output_start = input_start * heat_room_count;
+                let heat_output_end = (input_start + environment_count) * heat_room_count;
                 if let Err(err) = worker.send(WorkerCommand::GetCurrentFeatureOutcomes {
                     environment_start: start - worker.start,
                     environment_count,
@@ -5447,6 +5635,12 @@ impl EnvironmentGroup {
                     ),
                     area_map_station_count_bucket: OutputShard::from_slice(
                         &mut area_map_station_count_bucket[area_output_start..area_output_end],
+                    ),
+                    maridia_water: OutputShard::from_slice(
+                        &mut maridia_water[water_output_start..water_output_end],
+                    ),
+                    norfair_heat: OutputShard::from_slice(
+                        &mut norfair_heat[heat_output_start..heat_output_end],
                     ),
                     door_match: OutputShard::from_slice(
                         &mut door_match[door_match_output_start..door_match_output_end],
@@ -5498,6 +5692,20 @@ impl EnvironmentGroup {
                 area_map_station_count_bucket,
                 environment_count,
                 AREA_COUNT,
+            )?
+            .unbind(),
+            maridia_water: pyarray2_from_flat_vec(
+                py,
+                maridia_water,
+                environment_count,
+                water_room_count,
+            )?
+            .unbind(),
+            norfair_heat: pyarray2_from_flat_vec(
+                py,
+                norfair_heat,
+                environment_count,
+                heat_room_count,
             )?
             .unbind(),
             door_match: pyarray2_from_flat_vec(
@@ -5859,7 +6067,6 @@ impl EnvironmentGroup {
         let mut area_min_y = buffers.area_min_y.bind(py).readwrite();
         let mut area_max_y = buffers.area_max_y.bind(py).readwrite();
         let mut area_crossings = buffers.area_crossings.bind(py).readwrite();
-        let mut heat_water_count = buffers.heat_water_count.bind(py).readwrite();
         let mut area_size = buffers.area_size.bind(py).readwrite();
         let mut area_map_station_count = buffers.area_map_station_count.bind(py).readwrite();
         let mut frontier = buffers.frontier.bind(py).readwrite();
@@ -5965,7 +6172,6 @@ impl EnvironmentGroup {
         let known_distance_width = room_part_count;
         let area_width = AREA_COUNT * usize::from(self.features.area_state);
         let area_crossings_width = usize::from(self.features.area_state);
-        let heat_water_count_width = 6 * usize::from(self.features.area_state);
         let frontier_occupancy_width = (self.frontier_window_size * self.frontier_window_size)
             .div_ceil(8)
             * usize::from(self.features.frontier_occupancy);
@@ -6024,7 +6230,6 @@ impl EnvironmentGroup {
         let area_min_y_shape = area_min_y.as_array().shape().to_vec();
         let area_max_y_shape = area_max_y.as_array().shape().to_vec();
         let area_crossings_shape = area_crossings.as_array().shape().to_vec();
-        let heat_water_count_shape = heat_water_count.as_array().shape().to_vec();
         let area_size_shape = area_size.as_array().shape().to_vec();
         let area_map_station_count_shape = area_map_station_count.as_array().shape().to_vec();
         let frontier_shape = frontier.as_array().shape().to_vec();
@@ -6131,7 +6336,6 @@ impl EnvironmentGroup {
             || area_min_y_shape[0] < snapshot_count
             || area_max_y_shape[0] < snapshot_count
             || area_crossings_shape[0] < snapshot_count
-            || heat_water_count_shape[0] < snapshot_count
             || area_size_shape[0] < snapshot_count
             || area_map_station_count_shape[0] < snapshot_count
             || connection_reachability_shape[0] < snapshot_count
@@ -6246,11 +6450,6 @@ impl EnvironmentGroup {
             "area_crossings",
             area_crossings_shape[1],
             area_crossings_width,
-        )?;
-        check_dim(
-            "heat_water_count",
-            heat_water_count_shape[1],
-            heat_water_count_width,
         )?;
         check_dim("area_size", area_size_shape[1], area_width)?;
         check_dim(
@@ -6393,9 +6592,6 @@ impl EnvironmentGroup {
         let area_crossings = area_crossings
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("area_crossings must be contiguous"))?;
-        let heat_water_count = heat_water_count
-            .as_slice_mut()
-            .map_err(|_| PyValueError::new_err("heat_water_count must be contiguous"))?;
         let area_size = area_size
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("area_size must be contiguous"))?;
@@ -6675,10 +6871,6 @@ impl EnvironmentGroup {
                             &mut area_crossings[snapshot_start * area_crossings_width
                                 ..(snapshot_start + snapshot_count) * area_crossings_width],
                         ),
-                        heat_water_count: OutputShard::from_slice(
-                            &mut heat_water_count[snapshot_start * heat_water_count_width
-                                ..(snapshot_start + snapshot_count) * heat_water_count_width],
-                        ),
                         area_size: OutputShard::from_slice(
                             &mut area_size[snapshot_start * area_width
                                 ..(snapshot_start + snapshot_count) * area_width],
@@ -6706,7 +6898,6 @@ impl EnvironmentGroup {
                         known_distance_count: known_distance_width,
                         area_count: area_width,
                         area_crossings_count: area_crossings_width,
-                        heat_water_count_width,
                         connection_count: connection_reachability_width,
                         toilet_crossed_room_count: toilet_crossed_room_width,
                     },

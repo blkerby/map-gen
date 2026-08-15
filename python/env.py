@@ -194,6 +194,9 @@ class StepOutcomes:
     area_size_bucket: torch.Tensor
     # -1 = unknown; 0 = zero, 1 = one, 2 = two-or-more.
     area_map_station_count_bucket: torch.Tensor
+    # -1 = unknown, 0 = outside preferred area, 1 = inside preferred area.
+    maridia_water: torch.Tensor
+    norfair_heat: torch.Tensor
     # -1 = unknown; for a valid door this is its matched partner's index within
     # the opposite direction; for an invalid door this is the opposite direction
     # door count sentinel.
@@ -217,6 +220,8 @@ class StepOutcomes:
             area_map_station_count_bucket=self.area_map_station_count_bucket.to(
                 device, non_blocking=non_blocking
             ),
+            maridia_water=self.maridia_water.to(device, non_blocking=non_blocking),
+            norfair_heat=self.norfair_heat.to(device, non_blocking=non_blocking),
             door_match=self.door_match.to(device, non_blocking=non_blocking),
         )
 
@@ -230,6 +235,8 @@ class StepOutcomes:
             vanilla_area_invalid=self.vanilla_area_invalid[start:end],
             area_size_bucket=self.area_size_bucket[start:end],
             area_map_station_count_bucket=self.area_map_station_count_bucket[start:end],
+            maridia_water=self.maridia_water[start:end],
+            norfair_heat=self.norfair_heat[start:end],
             door_match=self.door_match[start:end],
         )
 
@@ -380,6 +387,8 @@ class CandidateSlot:
         self.invalid_capacity = 0
         self.door_count = door_count
         self.connection_count = connection_count
+        self.water_room_count = len(env.engine.output_metadata.maridia_water_room_idx)
+        self.heat_room_count = len(env.engine.output_metadata.norfair_heat_room_idx)
         self.pin_memory = pin_memory
         self.room_idx = None
         self.room_x = None
@@ -397,6 +406,8 @@ class CandidateSlot:
         self.pre_vanilla_area_invalid = None
         self.pre_area_size_bucket = None
         self.pre_area_map_station_count_bucket = None
+        self.pre_maridia_water = None
+        self.pre_norfair_heat = None
         self.door_invalid = None
         self.connection_invalid = None
         self.toilet_invalid = None
@@ -405,6 +416,8 @@ class CandidateSlot:
         self.vanilla_area_invalid = None
         self.area_size_bucket = None
         self.area_map_station_count_bucket = None
+        self.maridia_water = None
+        self.norfair_heat = None
         self.door_match = None
         self.clean_counts = None
         self.evaluated_counts = None
@@ -463,6 +476,12 @@ class CandidateSlot:
         self.pre_area_map_station_count_bucket = self._empty(
             (self.environment_capacity, AREA_COUNT), torch.int8
         )
+        self.pre_maridia_water = self._empty(
+            (self.environment_capacity, self.water_room_count), torch.int8
+        )
+        self.pre_norfair_heat = self._empty(
+            (self.environment_capacity, self.heat_room_count), torch.int8
+        )
         self.door_invalid = self._empty(
             (*candidate_shape, self.door_count),
             torch.int8,
@@ -480,6 +499,12 @@ class CandidateSlot:
         self.area_size_bucket = self._empty((*candidate_shape, AREA_COUNT), torch.int8)
         self.area_map_station_count_bucket = self._empty(
             (*candidate_shape, AREA_COUNT), torch.int8
+        )
+        self.maridia_water = self._empty(
+            (*candidate_shape, self.water_room_count), torch.int8
+        )
+        self.norfair_heat = self._empty(
+            (*candidate_shape, self.heat_room_count), torch.int8
         )
         self.door_match = self._empty((*candidate_shape, self.door_count), torch.int16)
         self.clean_counts = self._empty((self.environment_capacity,), torch.int64)
@@ -521,6 +546,8 @@ class CandidateSlot:
             area_map_station_count_bucket=self.pre_area_map_station_count_bucket[
                 :environment_count
             ],
+            maridia_water=self.pre_maridia_water[:environment_count],
+            norfair_heat=self.pre_norfair_heat[:environment_count],
             door_match=self.door_match.new_empty((environment_count, 0)),
         )
 
@@ -546,6 +573,8 @@ class CandidateSlot:
             area_map_station_count_bucket=self.area_map_station_count_bucket[
                 :environment_count, :candidate_count
             ],
+            maridia_water=self.maridia_water[:environment_count, :candidate_count],
+            norfair_heat=self.norfair_heat[:environment_count, :candidate_count],
             door_match=self.door_match[:environment_count, :candidate_count],
         )
 
@@ -618,7 +647,6 @@ class GlobalFeatures:
     area_min_y: torch.Tensor
     area_max_y: torch.Tensor
     area_crossings: torch.Tensor
-    heat_water_count: torch.Tensor
     area_size: torch.Tensor
     area_map_station_count: torch.Tensor
     log_temperature: torch.Tensor
@@ -633,6 +661,8 @@ class GlobalFeatures:
     lookahead_vanilla_area_invalid: torch.Tensor
     lookahead_area_size_bucket: torch.Tensor
     lookahead_area_map_station_count_bucket: torch.Tensor
+    lookahead_maridia_water: torch.Tensor
+    lookahead_norfair_heat: torch.Tensor
     connection_reachability: torch.Tensor
     toilet_crossed_room_idx: torch.Tensor
 
@@ -684,7 +714,6 @@ class GlobalFeatures:
             area_min_y=self.area_min_y.to(device, non_blocking=non_blocking),
             area_max_y=self.area_max_y.to(device, non_blocking=non_blocking),
             area_crossings=self.area_crossings.to(device, non_blocking=non_blocking),
-            heat_water_count=self.heat_water_count.to(device, non_blocking=non_blocking),
             area_size=self.area_size.to(device, non_blocking=non_blocking),
             area_map_station_count=self.area_map_station_count.to(
                 device, non_blocking=non_blocking
@@ -722,6 +751,12 @@ class GlobalFeatures:
                 self.lookahead_area_map_station_count_bucket.to(
                     device, non_blocking=non_blocking
                 )
+            ),
+            lookahead_maridia_water=self.lookahead_maridia_water.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_norfair_heat=self.lookahead_norfair_heat.to(
+                device, non_blocking=non_blocking
             ),
             connection_reachability=self.connection_reachability.to(
                 device, non_blocking=non_blocking
@@ -761,7 +796,6 @@ class GlobalFeatures:
             area_min_y=self.area_min_y.flatten(0, 1),
             area_max_y=self.area_max_y.flatten(0, 1),
             area_crossings=self.area_crossings.flatten(0, 1),
-            heat_water_count=self.heat_water_count.flatten(0, 1),
             area_size=self.area_size.flatten(0, 1),
             area_map_station_count=self.area_map_station_count.flatten(0, 1),
             log_temperature=self.log_temperature.flatten(0, 1),
@@ -778,6 +812,8 @@ class GlobalFeatures:
             lookahead_area_map_station_count_bucket=(
                 self.lookahead_area_map_station_count_bucket.flatten(0, 1)
             ),
+            lookahead_maridia_water=self.lookahead_maridia_water.flatten(0, 1),
+            lookahead_norfair_heat=self.lookahead_norfair_heat.flatten(0, 1),
             connection_reachability=self.connection_reachability.flatten(0, 1),
             toilet_crossed_room_idx=self.toilet_crossed_room_idx.flatten(0, 1),
         )
@@ -1092,6 +1128,10 @@ class OutputMetadata:
     num_room_parts: int
     door_variant_compatibility: torch.Tensor
     door_variant_connection_variant_idx: torch.Tensor
+    maridia_water_room_idx: list[int]
+    maridia_water_tier: list[int]
+    norfair_heat_room_idx: list[int]
+    norfair_heat_tier: list[int]
 
     def get_output_sizes(self) -> tuple[int, int]:
         return len(self.door), len(self.connection)
@@ -1204,6 +1244,18 @@ class Engine:
                 self.engine.get_door_variant_compatibility(), dtype=torch.bool
             ),
             door_variant_connection_variant_idx=door_variant_connection_variant_idx,
+            maridia_water_room_idx=[
+                i for i, room in enumerate(self.rooms) if room.get("water", 0) > 0
+            ],
+            maridia_water_tier=[
+                room.get("water", 0) for room in self.rooms if room.get("water", 0) > 0
+            ],
+            norfair_heat_room_idx=[
+                i for i, room in enumerate(self.rooms) if room.get("heat", 0) > 0
+            ],
+            norfair_heat_tier=[
+                room.get("heat", 0) for room in self.rooms if room.get("heat", 0) > 0
+            ],
         )
 
     def get_feature_sizes(self) -> tuple[int, int, int]:
@@ -1354,6 +1406,8 @@ class EnvironmentGroup:
                     "pre_area_map_station_count_bucket": (
                         candidate_slot.pre_area_map_station_count_bucket[: self.num_envs].numpy()
                     ),
+                    "pre_maridia_water": candidate_slot.pre_maridia_water[: self.num_envs].numpy(),
+                    "pre_norfair_heat": candidate_slot.pre_norfair_heat[: self.num_envs].numpy(),
                     "door_valid": candidate_slot.door_invalid[
                         : self.num_envs, :candidate_count
                     ].numpy(),
@@ -1380,6 +1434,12 @@ class EnvironmentGroup:
                             : self.num_envs, :candidate_count
                         ].numpy()
                     ),
+                    "maridia_water": candidate_slot.maridia_water[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "norfair_heat": candidate_slot.norfair_heat[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
                     "door_match": candidate_slot.door_match[
                         : self.num_envs, :candidate_count
                     ].numpy(),
@@ -1469,6 +1529,8 @@ class EnvironmentGroup:
                 area_map_station_count_bucket=torch.from_numpy(
                     result.step_outcomes.area_map_station_count_bucket
                 ).to(device),
+                maridia_water=torch.from_numpy(result.step_outcomes.maridia_water).to(device),
+                norfair_heat=torch.from_numpy(result.step_outcomes.norfair_heat).to(device),
                 door_match=torch.from_numpy(result.step_outcomes.door_match).to(device),
             ),
             end_outcomes=EndOutcomes(
@@ -1574,6 +1636,8 @@ class EnvironmentGroup:
             area_map_station_count_bucket=torch.from_numpy(
                 result.area_map_station_count_bucket
             ).to(device),
+            maridia_water=torch.from_numpy(result.maridia_water).to(device),
+            norfair_heat=torch.from_numpy(result.norfair_heat).to(device),
             door_match=torch.from_numpy(result.door_match).to(device),
         )
 
@@ -1727,7 +1791,6 @@ class EnvironmentGroup:
                     "area_min_y": feature_slot.area_min_y.numpy(),
                     "area_max_y": feature_slot.area_max_y.numpy(),
                     "area_crossings": feature_slot.area_crossings.numpy(),
-                    "heat_water_count": feature_slot.heat_water_count.numpy(),
                     "area_size": feature_slot.area_size.numpy(),
                     "area_map_station_count": feature_slot.area_map_station_count.numpy(),
                     "frontier": feature_slot.frontier.numpy(),
@@ -1835,7 +1898,6 @@ class FeatureSlot:
         self.known_distance_width = room_part_count
         self.area_width = AREA_COUNT * int(features.area_state)
         self.area_crossings_width = int(features.area_state)
-        self.heat_water_count_width = 6 * int(features.area_state)
         self.frontier_occupancy_width = (
             (env.frontier_window_size * env.frontier_window_size + 7) // 8
         ) * int(features.frontier_occupancy)
@@ -1880,7 +1942,6 @@ class FeatureSlot:
         self.area_min_y = None
         self.area_max_y = None
         self.area_crossings = None
-        self.heat_water_count = None
         self.area_size = None
         self.area_map_station_count = None
         self.frontier = None
@@ -1987,10 +2048,6 @@ class FeatureSlot:
         self.area_max_y = self._empty((self.snapshot_capacity, self.area_width), torch.int8)
         self.area_crossings = self._empty(
             (self.snapshot_capacity, self.area_crossings_width),
-            torch.uint16,
-        )
-        self.heat_water_count = self._empty(
-            (self.snapshot_capacity, self.heat_water_count_width),
             torch.uint16,
         )
         self.area_size = self._empty((self.snapshot_capacity, self.area_width), torch.uint16)
@@ -2140,6 +2197,8 @@ class FeatureSlot:
         lookahead_area_map_station_count_bucket = (
             lookahead_outcomes.area_map_station_count_bucket
         )
+        lookahead_maridia_water = lookahead_outcomes.maridia_water
+        lookahead_norfair_heat = lookahead_outcomes.norfair_heat
         if not include_lookahead_outcomes:
             lookahead_door_invalid = lookahead_door_invalid.new_empty(
                 [
@@ -2188,6 +2247,12 @@ class FeatureSlot:
                     [*lookahead_area_map_station_count_bucket.shape[:-1], 0]
                 )
             )
+            lookahead_maridia_water = lookahead_maridia_water.new_empty(
+                [*lookahead_maridia_water.shape[:-1], 0]
+            )
+            lookahead_norfair_heat = lookahead_norfair_heat.new_empty(
+                [*lookahead_norfair_heat.shape[:-1], 0]
+            )
         return Features(
             global_features=GlobalFeatures(
                 inventory=self.inventory[:environment_count],
@@ -2232,7 +2297,6 @@ class FeatureSlot:
                 area_min_y=self.area_min_y[:environment_count],
                 area_max_y=self.area_max_y[:environment_count],
                 area_crossings=self.area_crossings[:environment_count],
-                heat_water_count=self.heat_water_count[:environment_count],
                 area_size=self.area_size[:environment_count],
                 area_map_station_count=self.area_map_station_count[:environment_count],
                 log_temperature=log_temperature,
@@ -2249,6 +2313,8 @@ class FeatureSlot:
                 lookahead_area_map_station_count_bucket=(
                     lookahead_area_map_station_count_bucket
                 ),
+                lookahead_maridia_water=lookahead_maridia_water,
+                lookahead_norfair_heat=lookahead_norfair_heat,
                 connection_reachability=self.connection_reachability[:environment_count],
                 toilet_crossed_room_idx=self.toilet_crossed_room_idx[:environment_count],
             ),
@@ -2358,6 +2424,8 @@ class FeatureSlot:
         lookahead_area_map_station_count_bucket = (
             lookahead_outcomes.area_map_station_count_bucket
         )
+        lookahead_maridia_water = lookahead_outcomes.maridia_water
+        lookahead_norfair_heat = lookahead_outcomes.norfair_heat
         if not include_lookahead_outcomes:
             lookahead_door_invalid = lookahead_door_invalid.new_empty(
                 [environment_count, candidate_count, 0]
@@ -2387,6 +2455,12 @@ class FeatureSlot:
                 lookahead_area_map_station_count_bucket.new_empty(
                     [environment_count, candidate_count, 0]
                 )
+            )
+            lookahead_maridia_water = lookahead_maridia_water.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_norfair_heat = lookahead_norfair_heat.new_empty(
+                [environment_count, candidate_count, 0]
             )
         return Features(
             global_features=GlobalFeatures(
@@ -2457,9 +2531,6 @@ class FeatureSlot:
                 area_crossings=self.area_crossings[:snapshot_count].view(
                     environment_count, candidate_count, self.area_crossings_width
                 ),
-                heat_water_count=self.heat_water_count[:snapshot_count].view(
-                    environment_count, candidate_count, self.heat_water_count_width
-                ),
                 area_size=self.area_size[:snapshot_count].view(
                     environment_count, candidate_count, self.area_width
                 ),
@@ -2480,6 +2551,8 @@ class FeatureSlot:
                 lookahead_area_map_station_count_bucket=(
                     lookahead_area_map_station_count_bucket
                 ),
+                lookahead_maridia_water=lookahead_maridia_water,
+                lookahead_norfair_heat=lookahead_norfair_heat,
                 connection_reachability=self.connection_reachability[:snapshot_count].view(
                     environment_count, candidate_count, self.connection_reachability_width
                 ),
@@ -2642,7 +2715,6 @@ def extract_candidate_features(
                 "area_min_y": feature_slot.area_min_y.numpy(),
                 "area_max_y": feature_slot.area_max_y.numpy(),
                 "area_crossings": feature_slot.area_crossings.numpy(),
-                "heat_water_count": feature_slot.heat_water_count.numpy(),
                 "area_size": feature_slot.area_size.numpy(),
                 "area_map_station_count": feature_slot.area_map_station_count.numpy(),
                 "frontier": feature_slot.frontier.numpy(),

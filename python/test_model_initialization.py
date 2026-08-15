@@ -50,6 +50,10 @@ def output_metadata() -> OutputMetadata:
         num_room_parts=2,
         door_variant_compatibility=torch.ones([2, 2], dtype=torch.bool),
         door_variant_connection_variant_idx=torch.zeros([2], dtype=torch.int64),
+        maridia_water_room_idx=[0],
+        maridia_water_tier=[2],
+        norfair_heat_room_idx=[1],
+        norfair_heat_tier=[3],
     )
 
 
@@ -93,7 +97,8 @@ def test_frontier_model_output_heads_are_zero_initialized() -> None:
         model.toilet_balance_score_output,
         model.avg_frontiers_output,
         model.graph_diameter_output,
-        model.heat_water_output,
+        model.maridia_water_output,
+        model.norfair_heat_output,
         model.save_to_room_utility_output,
         model.save_from_room_utility_output,
         model.refill_to_room_utility_output,

@@ -179,7 +179,7 @@
     "toilet_balance_weight": 2.0,
     "avg_frontiers_weight": 0.0,
     "graph_diameter_weight": 0.05,
-    "heat_water_weight": 0.05,
+    "heat_water_weight": 0.5,
     "save_distance_weight": 0.5,
     "refill_distance_weight": 0.5,
     "missing_connect_utility_weight": 1.0,

@@ -215,6 +215,8 @@ class LookaheadFeature(GlobalFeature):
             + 6
             + 2 * VANILLA_AREA_CONSTRAINT_COUNT
             + 2 * AREA_COUNT * 3
+            + 2 * len(context.output_metadata.maridia_water_room_idx)
+            + 2 * len(context.output_metadata.norfair_heat_room_idx)
         )
 
     @classmethod
@@ -289,6 +291,20 @@ class LookaheadFeature(GlobalFeature):
             ],
             dim=-1,
         ).to(dtype).flatten(1)
+        maridia_water_features = torch.stack(
+            [
+                (features.global_features.lookahead_maridia_water == 0).to(dtype),
+                (features.global_features.lookahead_maridia_water == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        norfair_heat_features = torch.stack(
+            [
+                (features.global_features.lookahead_norfair_heat == 0).to(dtype),
+                (features.global_features.lookahead_norfair_heat == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
         return torch.cat(
             [
                 door_match_features,
@@ -299,6 +315,8 @@ class LookaheadFeature(GlobalFeature):
                 vanilla_area_features,
                 area_size_features,
                 area_map_station_count_features,
+                maridia_water_features,
+                norfair_heat_features,
             ],
             dim=-1,
         )
@@ -615,7 +633,7 @@ class AreaStateFeature(GlobalFeature):
 
     @classmethod
     def tensor_width(cls, context: FeatureContext) -> int:
-        return AREA_COUNT * 7 + 7
+        return AREA_COUNT * 7 + 1
 
     @classmethod
     def build(cls, context: FeatureContext) -> AreaStateFeature:
@@ -639,7 +657,6 @@ class AreaStateFeature(GlobalFeature):
             area.area_size.to(dtype) / max_area_size,
             area.area_map_station_count.to(dtype),
             area.area_crossings.to(dtype) / AREA_COUNT,
-            area.heat_water_count.to(dtype),
         ]
         return torch.cat(values, dim=-1)
 

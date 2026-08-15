@@ -108,8 +108,10 @@ def test_environment_group_round_trips_room_area() -> None:
 
 
 def test_initial_candidate_batch_scores_every_area() -> None:
+    room = one_tile_room("Room", "right")
+    room["water"] = 1
     engine = Engine(
-        [one_tile_room("Room", "right")],
+        [room],
         disabled_features(),
         1,
         100,
@@ -133,12 +135,17 @@ def test_initial_candidate_batch_scores_every_area() -> None:
         candidate_slot=CandidateSlot(env, pin_memory=False),
     )
 
-    candidates = get_initial_candidate_batch(group).candidates
+    batch = get_initial_candidate_batch(group)
+    candidates = batch.candidates
     assert candidates.room_idx.shape == (1, AREA_COUNT)
     assert torch.all(candidates.room_idx == candidates.room_idx[:, :1])
     assert torch.all(candidates.room_x == candidates.room_x[:, :1])
     assert torch.all(candidates.room_y == candidates.room_y[:, :1])
     assert candidates.room_area.tolist() == [list(range(AREA_COUNT))]
+    assert batch.reward_outcomes.maridia_water.tolist() == [[-1]]
+    assert batch.post_candidate_outcomes.maridia_water.tolist() == [
+        [[0], [0], [0], [0], [1], [0]]
+    ]
 
 
 def test_initial_candidate_batch_enforces_enabled_ship_area() -> None:
@@ -221,8 +228,10 @@ def test_environment_group_reports_area_outcome_state() -> None:
     env.finish()
     outcomes = env.get_outcomes(device, verify_consistency=True)
     assert outcomes.end_outcomes.area_crossings.tolist() == state.area_crossings.tolist()
-    assert outcomes.end_outcomes.maridia_water.tolist() == [[0, 0, 1]]
-    assert outcomes.end_outcomes.norfair_heat.tolist() == [[0, 1, 0]]
+    assert outcomes.end_outcomes.maridia_water.tolist() == [[1]]
+    assert outcomes.end_outcomes.norfair_heat.tolist() == [[1]]
+    assert outcomes.step_outcomes.maridia_water.tolist() == [[1]]
+    assert outcomes.step_outcomes.norfair_heat.tolist() == [[1]]
     assert outcomes.end_outcomes.area_size.tolist() == state.area_size.tolist()
     assert outcomes.end_outcomes.area_x.tolist() == [[0.0, 0.0, 1.0, 0.0, 1.0, 0.0]]
     assert outcomes.end_outcomes.area_y.tolist() == [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]

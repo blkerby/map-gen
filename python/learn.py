@@ -750,6 +750,8 @@ def prepare_feature_batches(
                         area_map_station_count_bucket=(
                             next_lookahead_outcomes.area_map_station_count_bucket.unsqueeze(1)
                         ),
+                        maridia_water=next_lookahead_outcomes.maridia_water.unsqueeze(1),
+                        norfair_heat=next_lookahead_outcomes.norfair_heat.unsqueeze(1),
                         door_match=next_lookahead_outcomes.door_match.unsqueeze(1),
                     ),
                     config.features.lookahead_outcomes,
@@ -1092,6 +1094,8 @@ def train_feature_batch_backward(
         vanilla_area_invalid=step_outcomes.vanilla_area_invalid.unsqueeze(1),
         area_size_bucket=step_outcomes.area_size_bucket.unsqueeze(1),
         area_map_station_count_bucket=step_outcomes.area_map_station_count_bucket.unsqueeze(1),
+        maridia_water=step_outcomes.maridia_water.unsqueeze(1),
+        norfair_heat=step_outcomes.norfair_heat.unsqueeze(1),
         door_match=step_outcomes.door_match.unsqueeze(1),
     )
     with torch.no_grad():
@@ -1132,7 +1136,7 @@ def train_feature_batch_backward(
     )
     heat_water_target = torch.cat(
         [end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1
-    ).to(device=context.device, dtype=torch.float32).unsqueeze(1)
+    ).to(device=context.device, dtype=torch.int8).unsqueeze(1)
     heat_water_mask = torch.ones_like(heat_water_target, dtype=torch.bool)
     active_room_part_mask = end_outcomes.active_room_part_mask.to(
         device=context.device,
@@ -1232,6 +1236,15 @@ def train_feature_batch_backward(
             prefix_balance_score_mask = balance_score_mask & (
                 features.global_features.lookahead_door_match < 0
             )
+        prefix_heat_water_mask = heat_water_mask
+        if features.global_features.lookahead_maridia_water.shape[-1] > 0:
+            prefix_heat_water_mask = torch.cat(
+                [
+                    features.global_features.lookahead_maridia_water < 0,
+                    features.global_features.lookahead_norfair_heat < 0,
+                ],
+                dim=-1,
+            ).unsqueeze(1)
         prefix_loss = compute_loss_breakdown(
             preds,
             repeated_outcomes,
@@ -1247,7 +1260,7 @@ def train_feature_batch_backward(
             graph_diameter_target,
             graph_diameter_mask,
             heat_water_target,
-            heat_water_mask,
+            prefix_heat_water_mask,
             save_to_room_utility_target,
             save_from_room_utility_target,
             active_room_part_mask,

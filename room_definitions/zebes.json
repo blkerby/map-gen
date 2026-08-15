@@ -2077,7 +2077,7 @@
         "connections": [],
         "missing_connections": [],
         "toilet_crossing_x": [],
-        "water": 0
+        "water": 1
     },
     {
         "room_id": 194,
@@ -2821,7 +2821,7 @@
         "connections": [],
         "missing_connections": [],
         "toilet_crossing_x": [],
-        "heat": 0
+        "heat": 1
     },
     {
         "room_id": 143,

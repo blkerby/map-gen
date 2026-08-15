@@ -342,6 +342,9 @@ pub struct StepOutcomes {
     pub area_size_bucket: [AreaBucketOutcome; AREA_COUNT],
     // Final map-station-count bucket: zero, one, or two-or-more.
     pub area_map_station_count_bucket: [AreaBucketOutcome; AREA_COUNT],
+    // -1 = unknown, 0 = outside the preferred area, 1 = inside it.
+    pub maridia_water: Vec<i8>,
+    pub norfair_heat: Vec<i8>,
     // Concrete room crossed by the Toilet when exactly one non-Toilet room crosses it.
     pub toilet_crossed_room_idx: i16,
 }
@@ -358,8 +361,6 @@ pub struct AreaOutcomeState {
     pub size: [usize; AREA_COUNT],
     pub map_station_count: [usize; AREA_COUNT],
 }
-
-pub const HEAT_WATER_COUNT: usize = 6;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -545,7 +546,6 @@ pub struct Features {
     pub area_min_y: Vec<Coord>,
     pub area_max_y: Vec<Coord>,
     pub area_crossings: Vec<u16>,
-    pub heat_water_count: Vec<u16>,
     pub area_size: Vec<u16>,
     pub area_map_station_count: Vec<u8>,
     // mask, x, y, vertical, kind
@@ -638,7 +638,6 @@ pub struct FeaturePlan {
     pub area_min_y: Vec<Coord>,
     pub area_max_y: Vec<Coord>,
     pub area_crossings: Vec<u16>,
-    pub heat_water_count: Vec<u16>,
     pub area_size: Vec<u16>,
     pub area_map_station_count: Vec<u8>,
     pub frontiers: Vec<FeatureFrontierPlanRow>,
@@ -729,7 +728,6 @@ impl Features {
         self.area_min_y.clear();
         self.area_max_y.clear();
         self.area_crossings.clear();
-        self.heat_water_count.clear();
         self.area_size.clear();
         self.area_map_station_count.clear();
         self.frontier.clear();
@@ -1197,7 +1195,6 @@ pub struct Environment {
     area_max_y: [Coord; AREA_COUNT],
     area_map_station_count: [usize; AREA_COUNT],
     area_crossings: usize,
-    heat_water_count: [usize; HEAT_WATER_COUNT],
     area_size: [usize; AREA_COUNT],
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
@@ -1239,7 +1236,6 @@ struct FeatureSnapshot {
     area_map_station_count: usize,
     area_size: usize,
     area_crossings: usize,
-    heat_water_count: [usize; HEAT_WATER_COUNT],
     connection_variant_idx: Option<ConnectionVariantIdx>,
     connection_variant_unused_count: usize,
     room_part_component: Vec<usize>,
@@ -1269,7 +1265,6 @@ struct LookaheadSnapshot {
     area_map_station_count: usize,
     area_size: usize,
     area_crossings: usize,
-    heat_water_count: [usize; HEAT_WATER_COUNT],
     geometry_idx: Option<GeometryIdx>,
     geometry_unused_count: usize,
     connection_variant_idx: Option<ConnectionVariantIdx>,
@@ -1852,7 +1847,6 @@ impl Environment {
             area_max_y: [0; AREA_COUNT],
             area_map_station_count: [0; AREA_COUNT],
             area_crossings: 0,
-            heat_water_count: [0; HEAT_WATER_COUNT],
             area_size: [0; AREA_COUNT],
             geometry_unused_count: common
                 .geometry_rooms
@@ -1908,7 +1902,6 @@ impl Environment {
         self.area_max_y = [0; AREA_COUNT];
         self.area_map_station_count = [0; AREA_COUNT];
         self.area_crossings = 0;
-        self.heat_water_count = [0; HEAT_WATER_COUNT];
         self.area_size = [0; AREA_COUNT];
         self.geometry_unused_count.clear();
         self.geometry_unused_count
@@ -2061,12 +2054,6 @@ impl Environment {
         if common.room[action.room_idx as usize].map_station {
             self.area_map_station_count[area] += 1;
         }
-        if area == 4 && (1..=3).contains(&common.room[room_idx].water) {
-            self.heat_water_count[(common.room[room_idx].water - 1) as usize] += 1;
-        }
-        if area == 2 && (1..=3).contains(&common.room[room_idx].heat) {
-            self.heat_water_count[3 + (common.room[room_idx].heat - 1) as usize] += 1;
-        }
         let geometry_idx = common.room[room_idx].geometry_idx as usize;
         self.area_size[area] += common.geometry[geometry_idx].occupied_tiles.len();
     }
@@ -2093,10 +2080,6 @@ impl Environment {
             size: self.area_size,
             map_station_count: self.area_map_station_count,
         }
-    }
-
-    pub fn heat_water_count(&self) -> [usize; HEAT_WATER_COUNT] {
-        self.heat_water_count
     }
 
     pub fn area_mean_coordinates(
@@ -2205,7 +2188,6 @@ impl Environment {
         area_min_y: &mut Vec<Coord>,
         area_max_y: &mut Vec<Coord>,
         area_crossings: &mut Vec<u16>,
-        heat_water_count: &mut Vec<u16>,
         area_size: &mut Vec<u16>,
         area_map_station_count: &mut Vec<u8>,
     ) {
@@ -2215,7 +2197,6 @@ impl Environment {
         area_min_y.extend(self.area_min_y);
         area_max_y.extend(self.area_max_y);
         area_crossings.push(self.area_crossings as u16);
-        heat_water_count.extend(self.heat_water_count.iter().map(|&value| value as u16));
         area_size.extend(self.area_size.iter().copied().map(|value| value as u16));
         area_map_station_count.extend(
             self.area_map_station_count
@@ -4129,6 +4110,16 @@ impl Environment {
             vanilla_area_valid,
             area_size_bucket,
             area_map_station_count_bucket,
+            maridia_water: self.preferred_area_room_outcomes(
+                common.water_room_idx(),
+                4,
+                &has_usable_area_frontier,
+            ),
+            norfair_heat: self.preferred_area_room_outcomes(
+                common.heat_room_idx(),
+                2,
+                &has_usable_area_frontier,
+            ),
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
         };
         let profile = profile_start();
@@ -4309,7 +4300,6 @@ impl Environment {
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
-            heat_water_count: self.heat_water_count,
             geometry_idx,
             geometry_unused_count: geometry_idx
                 .map_or(0, |idx| self.geometry_unused_count[idx as usize]),
@@ -4353,7 +4343,6 @@ impl Environment {
             self.area_size[area] = snapshot.area_size;
         }
         self.area_crossings = snapshot.area_crossings;
-        self.heat_water_count = snapshot.heat_water_count;
         if let Some(geometry_idx) = snapshot.geometry_idx {
             self.geometry_unused_count[geometry_idx as usize] = snapshot.geometry_unused_count;
         }
@@ -4426,7 +4415,6 @@ impl Environment {
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
-            heat_water_count: self.heat_water_count,
             connection_variant_idx,
             connection_variant_unused_count: connection_variant_idx
                 .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
@@ -4467,7 +4455,6 @@ impl Environment {
             self.area_size[area] = snapshot.area_size;
         }
         self.area_crossings = snapshot.area_crossings;
-        self.heat_water_count = snapshot.heat_water_count;
         if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
             self.connection_variant_unused_count[connection_variant_idx as usize] =
                 snapshot.connection_variant_unused_count;
@@ -4658,7 +4645,6 @@ impl Environment {
                 &mut plan.area_min_y,
                 &mut plan.area_max_y,
                 &mut plan.area_crossings,
-                &mut plan.heat_water_count,
                 &mut plan.area_size,
                 &mut plan.area_map_station_count,
             );
@@ -5071,7 +5057,6 @@ impl Environment {
         let mut area_min_y = std::mem::take(&mut output.area_min_y);
         let mut area_max_y = std::mem::take(&mut output.area_max_y);
         let mut area_crossings = std::mem::take(&mut output.area_crossings);
-        let mut heat_water_count = std::mem::take(&mut output.heat_water_count);
         let mut area_size = std::mem::take(&mut output.area_size);
         let mut area_map_station_count = std::mem::take(&mut output.area_map_station_count);
         if config.area_state {
@@ -5082,7 +5067,6 @@ impl Environment {
                 &mut area_min_y,
                 &mut area_max_y,
                 &mut area_crossings,
-                &mut heat_water_count,
                 &mut area_size,
                 &mut area_map_station_count,
             );
@@ -5655,7 +5639,6 @@ impl Environment {
             area_min_y,
             area_max_y,
             area_crossings,
-            heat_water_count,
             area_size,
             area_map_station_count,
             frontier,
@@ -5851,8 +5834,40 @@ impl Environment {
             vanilla_area_valid: self.vanilla_area_outcomes(common, &has_usable_area_frontier),
             area_size_bucket,
             area_map_station_count_bucket,
+            maridia_water: self.preferred_area_room_outcomes(
+                common.water_room_idx(),
+                4,
+                &has_usable_area_frontier,
+            ),
+            norfair_heat: self.preferred_area_room_outcomes(
+                common.heat_room_idx(),
+                2,
+                &has_usable_area_frontier,
+            ),
             toilet_crossed_room_idx: self.toilet_crossed_room_idx(common),
         }
+    }
+
+    fn preferred_area_room_outcomes(
+        &self,
+        room_indices: &[RoomIdx],
+        area: usize,
+        has_usable_area_frontier: &[bool; AREA_COUNT],
+    ) -> Vec<i8> {
+        let area_finalized =
+            self.finished || (self.area_used[area] && !has_usable_area_frontier[area]);
+        room_indices
+            .iter()
+            .map(|&room_idx| {
+                if self.room_used[room_idx as usize] {
+                    i8::from(self.room_area[room_idx as usize] as usize == area)
+                } else if area_finalized {
+                    0
+                } else {
+                    -1
+                }
+            })
+            .collect()
     }
 
     fn vanilla_area_outcomes(
@@ -6173,6 +6188,18 @@ impl Environment {
                 "area size",
                 stage,
             )?;
+            check_binary_transition_consistency(
+                &known_outcomes.maridia_water,
+                &outcomes.maridia_water,
+                "Maridia water",
+                stage,
+            )?;
+            check_binary_transition_consistency(
+                &known_outcomes.norfair_heat,
+                &outcomes.norfair_heat,
+                "Norfair heat",
+                stage,
+            )?;
             check_area_bucket_transition_consistency(
                 &known_outcomes.area_map_station_count_bucket,
                 &outcomes.area_map_station_count_bucket,
@@ -6186,6 +6213,22 @@ impl Environment {
         ));
         Ok(outcomes)
     }
+}
+
+fn check_binary_transition_consistency(
+    known: &[i8],
+    current: &[i8],
+    name: &str,
+    stage: &str,
+) -> Result<(), String> {
+    for (idx, (&known, &current)) in known.iter().zip(current).enumerate() {
+        if known >= 0 && known != current {
+            return Err(format!(
+                "{name} outcome {idx} changed from {known} to {current} during {stage}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) -> StepOutcomes {
@@ -6213,6 +6256,8 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
                 current.vanilla_area_valid[idx],
             )
         }),
+        maridia_water: merge_known_binary_values(&known.maridia_water, &current.maridia_water),
+        norfair_heat: merge_known_binary_values(&known.norfair_heat, &current.norfair_heat),
         area_size_bucket: std::array::from_fn(|area| {
             merge_known_area_bucket(known.area_size_bucket[area], current.area_size_bucket[area])
         }),
@@ -6224,6 +6269,14 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
         }),
         toilet_crossed_room_idx: current.toilet_crossed_room_idx,
     }
+}
+
+fn merge_known_binary_values(known: &[i8], current: &[i8]) -> Vec<i8> {
+    known
+        .iter()
+        .zip(current)
+        .map(|(&known, &current)| if known < 0 { current } else { known })
+        .collect()
 }
 
 fn merge_known_area_bucket(
@@ -6609,6 +6662,7 @@ mod tests {
             {
                 "map": [[1]],
                 "special_type": "ship",
+                "water": 1,
                 "toilet_crossing_x": [],
                 "doors": [
                     [{"id": 0, "direction": "left", "x": 0, "y": 0, "kind": 0}]
@@ -6634,6 +6688,7 @@ mod tests {
             env.outcomes(&common).vanilla_area_valid[0],
             DoorValidOutcome::Unknown
         );
+        assert_eq!(env.outcomes(&common).maridia_water, [-1]);
 
         for frontier in env.frontier.values_mut() {
             frontier.candidates.clear();
@@ -6642,6 +6697,9 @@ mod tests {
             env.outcomes(&common).vanilla_area_valid[0],
             DoorValidOutcome::Invalid
         );
+        assert_eq!(env.outcomes(&common).maridia_water, [-1]);
+        env.area_used[4] = true;
+        assert_eq!(env.outcomes(&common).maridia_water, [0]);
     }
 
     #[test]
@@ -6863,7 +6921,6 @@ mod tests {
         assert_eq!(env.area_min_y[2], 3);
         assert_eq!(env.area_max_y[2], 3);
         assert_eq!(env.area_map_station_count[2], 1);
-        assert_eq!(env.heat_water_count, [0, 0, 0, 0, 1, 0]);
 
         let snapshot = env.apply_lookahead_candidate(
             Action {
@@ -6876,16 +6933,13 @@ mod tests {
         );
         assert_eq!(env.area_max_x[2], 5);
         assert_eq!(env.area_max_y[2], 4);
-        assert_eq!(env.heat_water_count, [0, 0, 0, 0, 1, 1]);
         env.restore_lookahead_candidate(&common, snapshot);
 
         assert_eq!(env.area_max_x[2], 3);
         assert_eq!(env.area_max_y[2], 3);
-        assert_eq!(env.heat_water_count, [0, 0, 0, 0, 1, 0]);
         env.clear(&common);
         assert_eq!(env.area_used, [false; AREA_COUNT]);
         assert_eq!(env.area_map_station_count, [0; AREA_COUNT]);
-        assert_eq!(env.heat_water_count, [0; HEAT_WATER_COUNT]);
     }
 
     #[test]
@@ -8222,6 +8276,8 @@ mod tests {
                 vanilla_area_valid: [Valid; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
+                maridia_water: vec![],
+                norfair_heat: vec![],
                 toilet_crossed_room_idx: -1,
             },
             &StepOutcomes {
@@ -8233,6 +8289,8 @@ mod tests {
                 vanilla_area_valid: [Valid; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
+                maridia_water: vec![],
+                norfair_heat: vec![],
                 toilet_crossed_room_idx: -1,
             },
         ));
@@ -8246,6 +8304,8 @@ mod tests {
                 vanilla_area_valid: [Unknown; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
+                maridia_water: vec![],
+                norfair_heat: vec![],
                 toilet_crossed_room_idx: -1,
             },
             &StepOutcomes {
@@ -8257,6 +8317,8 @@ mod tests {
                 vanilla_area_valid: [Unknown; VANILLA_AREA_CONSTRAINT_COUNT],
                 area_size_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
                 area_map_station_count_bucket: [AreaBucketOutcome::Unknown; AREA_COUNT],
+                maridia_water: vec![],
+                norfair_heat: vec![],
                 toilet_crossed_room_idx: -1,
             },
         ));
