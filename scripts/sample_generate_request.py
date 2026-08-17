@@ -31,6 +31,7 @@ def main() -> int:
         "reward_phantoon_pair": 1.0,
         "reward_phantoon_area": 1.0,
         "reward_balance": 0.1,
+        "reward_area_balance": 0.1,
         "reward_toilet_balance": 0.1,
         "reward_frontier": 0.0,
         "reward_graph_diameter": 0.1,

@@ -14,7 +14,7 @@ from serve import (
     validate_serving_config,
     warmup_generate_request,
 )
-from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, VANILLA_AREA_REWARD_FIELDS
 
 
 def base_payload() -> dict:
@@ -45,6 +45,7 @@ def base_payload() -> dict:
         "force_draygon_in_maridia": False,
         "force_mother_brain_in_tourian": False,
         "reward_balance": 1.0,
+        "reward_area_balance": 1.0,
         "reward_toilet_balance": 1.0,
         "reward_frontier": 1.0,
         "reward_graph_diameter": 1.0,
@@ -155,6 +156,14 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         config.generation_variable_floats[:, target_x_index],
         torch.full([2], 0.5),
     )
+    vanilla_reward_indices = [
+        GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_REWARD_FIELDS
+    ]
+    assert torch.equal(
+        config.generation_variable_floats[:, vanilla_reward_indices],
+        torch.zeros([2, len(VANILLA_AREA_REWARD_FIELDS)]),
+    )
+    assert torch.equal(config.reward_vanilla_area, torch.ones([2, 6]))
 
 
 def base_serving_config_payload() -> dict:
@@ -655,6 +664,7 @@ def main() -> None:
     assert warmup_request.temperature == 0.03
     assert warmup_request.proposal_temperature == 0.3
     assert warmup_request.reward_balance == 0.1
+    assert warmup_request.reward_area_balance == 0.1
     assert warmup_request.reward_toilet_balance == 0.1
     assert warmup_request.reward_missing_connect_utility == 0.5
     assert warmup_request.target_area_tiles == [1.0] * 6

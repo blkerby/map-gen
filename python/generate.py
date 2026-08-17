@@ -144,6 +144,29 @@ def toilet_balance_reward(
     return -toilet_balance_score * valid_probability
 
 
+def area_balance_reward(area_balance_score: torch.Tensor) -> torch.Tensor:
+    return -torch.sum(area_balance_score.to(torch.float32), dim=2)
+
+
+def apply_candidate_area_balance_scores(
+    predicted_score: torch.Tensor,
+    room_placed: torch.Tensor,
+    candidates: Actions,
+    score_table: torch.Tensor,
+) -> torch.Tensor:
+    scores = torch.where(room_placed.to(torch.bool), 0.0, predicted_score.to(torch.float32))
+    valid = candidates.room_idx < score_table.shape[1]
+    environment_idx, candidate_idx = torch.nonzero(valid, as_tuple=True)
+    room_idx = candidates.room_idx[valid].to(torch.int64)
+    area_idx = candidates.room_area[valid].to(torch.int64)
+    scores[environment_idx, candidate_idx, room_idx] = score_table[
+        environment_idx,
+        room_idx,
+        area_idx,
+    ]
+    return scores
+
+
 def total_proximity_utility(utility: torch.Tensor) -> torch.Tensor:
     utility = utility.to(torch.float32)
     return torch.sum(utility, dim=2)
@@ -225,6 +248,9 @@ def compute_expected_reward(
             dim=2,
         )
         + batch_weight(config.reward_balance) * torch.sum(balance_scores, dim=2)
+        + batch_weight(config.reward_area_balance) * area_balance_reward(
+            preds.area_balance_score
+        )
         + batch_weight(config.reward_toilet_balance) * toilet_balance_scores
         - batch_weight(config.reward_frontier) * preds.avg_frontiers.to(torch.float32)
         - batch_weight(config.reward_graph_diameter) * preds.graph_diameter.to(torch.float32)
@@ -949,6 +975,12 @@ def select_candidate_actions(
         actual_balance_score,
         balance_score,
     )
+    area_balance_score = apply_candidate_area_balance_scores(
+        preds.area_balance_score.view(environment_count, candidate_count, -1),
+        features.global_features.room_placed.view(environment_count, candidate_count, -1),
+        candidates,
+        group.balance_score_tables.room_area,
+    )
     expected_reward = compute_expected_reward(
         Predictions(
             door_invalid=preds.door_invalid.view(environment_count, candidate_count, -1),
@@ -970,6 +1002,7 @@ def select_candidate_actions(
                 VANILLA_AREA_CONSTRAINT_COUNT,
             ),
             balance_score=balance_score,
+            area_balance_score=area_balance_score,
             toilet_balance_score=preds.toilet_balance_score.view(
                 environment_count,
                 candidate_count,

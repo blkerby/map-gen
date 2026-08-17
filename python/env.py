@@ -55,6 +55,7 @@ class GenerateConfig:
     reward_phantoon_area: float | torch.Tensor
     reward_vanilla_area: torch.Tensor
     reward_balance: float | torch.Tensor
+    reward_area_balance: float | torch.Tensor
     reward_toilet_balance: float | torch.Tensor
     reward_frontier: float | torch.Tensor
     reward_graph_diameter: float | torch.Tensor

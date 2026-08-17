@@ -8,6 +8,7 @@ from loss import (
     compute_balance_loss,
     compute_balance_score_tables,
     compute_balance_score_target_logits,
+    compute_room_area_balance_score_target_logits,
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
     compute_step_balance_score_target_logits,
@@ -45,6 +46,7 @@ def example_predictions() -> BalancePredictions:
         up=torch.zeros((1, 1, 1)),
         down=torch.zeros((1, 1, 1)),
         toilet_crossed_room=torch.zeros((1, 2)),
+        room_area=torch.zeros((1, 2, AREA_COUNT)),
         left_door_variant_idx=torch.tensor([0, 0, 1]),
         right_door_variant_idx=torch.tensor([0, 1, 1]),
         up_door_variant_idx=torch.tensor([0]),
@@ -84,10 +86,28 @@ def test_balance_model_outputs_direction_local_variant_pairs() -> None:
     assert preds.right.shape == (1, 2, 2)
     assert preds.up.shape == (1, 1, 1)
     assert preds.down.shape == (1, 1, 1)
+    assert preds.room_area.shape == (1, 2, AREA_COUNT)
     assert preds.left_door_variant_idx.tolist() == [0, 0, 1]
     assert preds.right_door_variant_idx.tolist() == [0, 1, 1]
     assert preds.left_global_door_variant_idx.tolist() == [10, 11]
     assert preds.right_global_door_variant_idx.tolist() == [20, 21]
+
+
+def test_room_area_balance_scores_are_centered_and_gathered() -> None:
+    preds = example_predictions()
+    preds.room_area[0, 0] = torch.tensor([2.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    tables = compute_balance_score_tables(preds)
+    assert tables.room_area[0, 0, 0] > 0
+    assert tables.room_area[0, 0, 1] < 0
+    assert torch.allclose(tables.room_area[0, 1], torch.zeros(AREA_COUNT))
+
+    target, uniform_log_odds, mask = compute_room_area_balance_score_target_logits(
+        tables,
+        torch.tensor([[0, -1]]),
+    )
+    assert target[0, 0] == tables.room_area[0, 0, 0]
+    assert torch.all(uniform_log_odds == tables.room_area_uniform_log_odds)
+    assert mask.tolist() == [[True, False]]
 
 
 def test_balance_loss_maps_concrete_matches_to_variant_pairs() -> None:
@@ -96,6 +116,7 @@ def test_balance_loss_maps_concrete_matches_to_variant_pairs() -> None:
         preds,
         example_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
+        room_area=torch.full((1, 2), -1),
     )
     concrete_logits = materialize_direction_balance_logits(
         preds.left,
@@ -341,6 +362,7 @@ def test_balance_ss_materializes_concrete_pair_probabilities() -> None:
 
 def main() -> None:
     test_balance_model_outputs_direction_local_variant_pairs()
+    test_room_area_balance_scores_are_centered_and_gathered()
     test_balance_loss_maps_concrete_matches_to_variant_pairs()
     test_balance_target_scores_expand_variant_probabilities_to_concrete_matches()
     test_main_balance_kl_restores_uniform_log_odds_offset()

@@ -39,6 +39,8 @@ class Predictions:
     vanilla_area_invalid: torch.Tensor
     # Predicted balance-model log-odds for the matched target door:
     balance_score: torch.Tensor
+    # Predicted centered balance-model log-odds for each room's final area:
+    area_balance_score: torch.Tensor
     # Predicted balance-model log-odds for the room crossed by the Toilet:
     toilet_balance_score: torch.Tensor
     # Predicted average live frontier count across the full episode:
@@ -78,6 +80,7 @@ class BalancePredictions:
     up: torch.Tensor
     down: torch.Tensor
     toilet_crossed_room: torch.Tensor
+    room_area: torch.Tensor
     left_door_variant_idx: torch.Tensor
     right_door_variant_idx: torch.Tensor
     up_door_variant_idx: torch.Tensor
@@ -104,7 +107,8 @@ def get_predictions(raw_preds, output_sizes):
         phantoon_area_invalid=preds[4].squeeze(-1),
         vanilla_area_invalid=preds[5],
         balance_score=preds[6],
-        toilet_balance_score=preds[7].squeeze(-1),
+        area_balance_score=preds[7],
+        toilet_balance_score=preds[8].squeeze(-1),
         avg_frontiers=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         graph_diameter=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         maridia_water=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 3]),
@@ -600,6 +604,7 @@ class FrontierModel(torch.nn.Module):
             1,
             VANILLA_AREA_CONSTRAINT_COUNT,
             door_output_size,
+            num_rooms,
             1,
         )
         if sum(door_counts) != door_output_size:
@@ -758,6 +763,7 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             output_metadata.num_door_variants,
         )
+        self.area_balance_score_output = torch.nn.Linear(embedding_width, self.num_rooms)
         self.toilet_balance_score_output = torch.nn.Linear(embedding_width, 1)
         self.avg_frontiers_output = torch.nn.Linear(embedding_width, 1)
         self.graph_diameter_output = torch.nn.Linear(embedding_width, 1)
@@ -820,6 +826,7 @@ class FrontierModel(torch.nn.Module):
             self.phantoon_area_output,
             self.vanilla_area_output,
             self.balance_score_output,
+            self.area_balance_score_output,
             self.toilet_balance_score_output,
             self.avg_frontiers_output,
             self.graph_diameter_output,
@@ -977,6 +984,7 @@ class FrontierModel(torch.nn.Module):
         vanilla_area = self.vanilla_area_output(X)
         balance_score_variant = self.balance_score_output(X)
         balance_score = balance_score_variant[..., self.door_variant_outcome_idx]
+        area_balance_score = self.area_balance_score_output(X).to(torch.float32)
         toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
         graph_diameter = self.graph_diameter_output(X).squeeze(-1).to(torch.float32)
@@ -1021,6 +1029,7 @@ class FrontierModel(torch.nn.Module):
                     phantoon_area,
                     vanilla_area,
                     balance_score,
+                    area_balance_score,
                     toilet_balance_score,
                 ],
                 dim=-1,
@@ -1149,6 +1158,7 @@ class FrontierModel(torch.nn.Module):
             phantoon_area_invalid=preds.phantoon_area_invalid,
             vanilla_area_invalid=preds.vanilla_area_invalid,
             balance_score=balance_score,
+            area_balance_score=preds.area_balance_score,
             toilet_balance_score=preds.toilet_balance_score,
             avg_frontiers=avg_frontiers,
             graph_diameter=graph_diameter,
@@ -1268,6 +1278,7 @@ class BalanceModel(torch.nn.Module):
             + self.up_variant_count * self.down_variant_count
             + self.down_variant_count * self.up_variant_count
             + num_rooms
+            + num_rooms * AREA_COUNT
         )
 
         layers: list[torch.nn.Module] = []
@@ -1323,12 +1334,19 @@ class BalanceModel(torch.nn.Module):
         )
         offset += down_size
         toilet_crossed_room = raw[:, offset : offset + self.num_rooms]
+        offset += self.num_rooms
+        room_area = raw[:, offset:].reshape(
+            generation_variable_floats.shape[0],
+            self.num_rooms,
+            AREA_COUNT,
+        )
         return BalancePredictions(
             left=left,
             right=right,
             up=up,
             down=down,
             toilet_crossed_room=toilet_crossed_room,
+            room_area=room_area,
             left_door_variant_idx=self.left_door_variant_idx,
             right_door_variant_idx=self.right_door_variant_idx,
             up_door_variant_idx=self.up_door_variant_idx,

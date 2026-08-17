@@ -67,6 +67,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_phantoon_area",
     *VANILLA_AREA_REWARD_FIELDS,
     "reward_balance",
+    "reward_area_balance",
     "reward_toilet_balance",
     "reward_frontier",
     "reward_graph_diameter",
@@ -162,6 +163,7 @@ class GenerationConfig(StrictBaseModel):
     reward_draygon_in_maridia: VariableFloat
     reward_mother_brain_in_tourian: VariableFloat
     reward_balance: VariableFloat
+    reward_area_balance: VariableFloat
     reward_toilet_balance: VariableFloat
     reward_frontier: VariableFloat
     reward_graph_diameter: VariableFloat
@@ -309,6 +311,7 @@ class TrainConfig(StrictBaseModel):
     phantoon_area_weight: float
     vanilla_area_weight: float
     balance_weight: float
+    area_balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
@@ -486,6 +489,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("model.utility_query_frontier_width must be greater than zero")
     validate_feature_width("lookahead_outcomes", config.features.lookahead_outcomes)
     validate_feature_width("global_room_position", config.features.global_room_position)
+    if not config.features.room_position:
+        raise ValueError("features.room_position must be enabled for area balance scores")
     validate_feature_width(
         "room_part_furthest_distance",
         config.features.room_part_furthest_distance,
@@ -603,6 +608,10 @@ def validate_config(config: Config) -> None:
         if not 0.0 <= probability <= 1.0:
             raise ValueError(f"generation.{field_name} must be between zero and one")
     validate_nonnegative_variable_float(
+        config.generation.reward_area_balance,
+        "generation.reward_area_balance",
+    )
+    validate_nonnegative_variable_float(
         config.generation.reward_toilet_balance,
         "generation.reward_toilet_balance",
     )
@@ -676,6 +685,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.vanilla_area_weight must be greater than or equal to zero")
     if config.train.toilet_balance_weight < 0:
         raise ValueError("train.toilet_balance_weight must be greater than or equal to zero")
+    if config.train.area_balance_weight < 0:
+        raise ValueError("train.area_balance_weight must be greater than or equal to zero")
     if config.train.avg_frontiers_weight < 0:
         raise ValueError("train.avg_frontiers_weight must be greater than or equal to zero")
     if config.train.graph_diameter_weight < 0:

@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import safetensors.torch
 import torch
 
 from env import Actions, AREA_COUNT, CandidateSlot, DUMMY_AREA, Engine, EpisodeData
@@ -287,12 +288,31 @@ def test_experience_storage_round_trips_room_area() -> None:
     )
 
 
+def test_experience_storage_rejects_unversioned_files() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        safetensors.torch.save_file(
+            {"room_idx": torch.zeros([1, 1], dtype=torch.uint8)},
+            str(Path(temp_dir) / "0.safetensors"),
+        )
+        storage = ExperienceStorage(
+            num_rooms=1,
+            data_path=Path(temp_dir),
+            episodes_per_file=1,
+        )
+        try:
+            storage.read_files([0], episodes_per_file=1)
+        except ValueError:
+            return
+    raise AssertionError("Unversioned experience file was accepted")
+
+
 def main() -> None:
     test_environment_group_round_trips_room_area()
     test_initial_candidate_batch_scores_every_area()
     test_initial_candidate_batch_enforces_enabled_ship_area()
     test_environment_group_reports_area_outcome_state()
     test_experience_storage_round_trips_room_area()
+    test_experience_storage_rejects_unversioned_files()
 
 
 if __name__ == "__main__":

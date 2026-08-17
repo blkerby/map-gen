@@ -91,7 +91,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v7"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v8"
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -504,6 +504,10 @@ def create_generate_config(
             config.generation.reward_balance,
             "generation.reward_balance",
         ),
+        "reward_area_balance": variable_float_tensor(
+            config.generation.reward_area_balance,
+            "generation.reward_area_balance",
+        ),
         "reward_toilet_balance": variable_float_tensor(
             config.generation.reward_toilet_balance,
             "generation.reward_toilet_balance",
@@ -593,6 +597,17 @@ def create_generate_config(
             for idx, field_name in enumerate(VANILLA_AREA_CONDITION_FIELDS)
         }
     )
+    raw_vanilla_area_rewards = torch.stack(
+        [generation_variable_floats_by_name[name] for name in VANILLA_AREA_REWARD_FIELDS],
+        dim=1,
+    )
+    generation_variable_floats_by_name.update(
+        {
+            name: raw_vanilla_area_rewards[:, idx]
+            * vanilla_area_constraint_mask[:, idx].to(torch.float32)
+            for idx, name in enumerate(VANILLA_AREA_REWARD_FIELDS)
+        }
+    )
     target_scales = {
         "target_area_x": config.map_size[0],
         "target_area_y": config.map_size[1],
@@ -665,11 +680,9 @@ def create_generate_config(
         reward_toilet=generation_variable_floats_by_name["reward_toilet"],
         reward_phantoon_pair=generation_variable_floats_by_name["reward_phantoon_pair"],
         reward_phantoon_area=generation_variable_floats_by_name["reward_phantoon_area"],
-        reward_vanilla_area=torch.stack(
-            [generation_variable_floats_by_name[name] for name in VANILLA_AREA_REWARD_FIELDS],
-            dim=1,
-        ),
+        reward_vanilla_area=raw_vanilla_area_rewards,
         reward_balance=generation_variable_floats_by_name["reward_balance"],
+        reward_area_balance=generation_variable_floats_by_name["reward_area_balance"],
         reward_toilet_balance=generation_variable_floats_by_name["reward_toilet_balance"],
         reward_frontier=generation_variable_floats_by_name["reward_frontier"],
         reward_graph_diameter=generation_variable_floats_by_name["reward_graph_diameter"],
@@ -1667,6 +1680,7 @@ class TrainingSession:
         phantoon_area_loss_pct = 100.0 * loss.phantoon_area_contribution / loss_denominator
         vanilla_area_loss_pct = 100.0 * loss.vanilla_area_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
+        main_area_balance_loss_pct = 100.0 * loss.area_balance_contribution / loss_denominator
         main_toilet_balance_loss_pct = 100.0 * loss.toilet_balance_contribution / loss_denominator
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
         graph_diameter_loss_pct = 100.0 * loss.graph_diameter_contribution / loss_denominator
@@ -1700,6 +1714,8 @@ class TrainingSession:
             "vanilla_area_loss_pct": vanilla_area_loss_pct,
             "main_balance_loss": loss.balance,
             "main_balance_loss_pct": main_balance_loss_pct,
+            "main_area_balance_loss": loss.area_balance,
+            "main_area_balance_loss_pct": main_area_balance_loss_pct,
             "main_toilet_balance_loss": loss.toilet_balance,
             "main_toilet_balance_loss_pct": main_toilet_balance_loss_pct,
             "avg_frontiers_loss": loss.avg_frontiers,
@@ -1832,6 +1848,10 @@ class TrainingSession:
                 step_config.generation.reward_balance,
                 "generation.reward_balance",
             ),
+            "reward_area_balance": variable_float_metric_value(
+                step_config.generation.reward_area_balance,
+                "generation.reward_area_balance",
+            ),
             "reward_toilet_balance": variable_float_metric_value(
                 step_config.generation.reward_toilet_balance,
                 "generation.reward_toilet_balance",
@@ -1892,6 +1912,7 @@ class TrainingSession:
             "phantoon_pair_weight": step_config.train.phantoon_pair_weight,
             "phantoon_area_weight": step_config.train.phantoon_area_weight,
             "toilet_balance_weight": step_config.train.toilet_balance_weight,
+            "area_balance_weight": step_config.train.area_balance_weight,
             "avg_frontiers_weight": step_config.train.avg_frontiers_weight,
             "graph_diameter_weight": step_config.train.graph_diameter_weight,
             "save_distance_weight": step_config.train.save_distance_weight,
@@ -2421,6 +2442,7 @@ def build_session(args: Args) -> TrainingSession:
             phantoon_area_weight=config.train.phantoon_area_weight,
             vanilla_area_weight=config.train.vanilla_area_weight,
             balance_weight=config.train.balance_weight,
+            area_balance_weight=config.train.area_balance_weight,
             toilet_balance_weight=config.train.toilet_balance_weight,
             avg_frontiers_weight=config.train.avg_frontiers_weight,
             graph_diameter_weight=config.train.graph_diameter_weight,

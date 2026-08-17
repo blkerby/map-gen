@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 
 import torch
 
@@ -17,6 +18,7 @@ class LossConfig:
     phantoon_area_weight: float
     vanilla_area_weight: float
     balance_weight: float
+    area_balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
@@ -46,6 +48,7 @@ class LossBreakdown:
     phantoon_area: torch.Tensor
     vanilla_area: torch.Tensor
     balance: torch.Tensor
+    area_balance: torch.Tensor
     toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
@@ -66,6 +69,7 @@ class LossBreakdown:
     phantoon_area_contribution: torch.Tensor
     vanilla_area_contribution: torch.Tensor
     balance_contribution: torch.Tensor
+    area_balance_contribution: torch.Tensor
     toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
     graph_diameter_contribution: torch.Tensor
@@ -87,10 +91,12 @@ class BalanceScoreTables:
     right: torch.Tensor
     up: torch.Tensor
     down: torch.Tensor
+    room_area: torch.Tensor
     left_uniform_log_odds: torch.Tensor
     right_uniform_log_odds: torch.Tensor
     up_uniform_log_odds: torch.Tensor
     down_uniform_log_odds: torch.Tensor
+    room_area_uniform_log_odds: torch.Tensor
 
 
 def masked_binary_cross_entropy_loss(
@@ -179,6 +185,9 @@ def compute_loss_breakdown(
     balance_score_target_logits: torch.Tensor,
     balance_score_uniform_log_odds: torch.Tensor,
     balance_score_mask: torch.Tensor,
+    area_balance_score_target_logits: torch.Tensor,
+    area_balance_score_uniform_log_odds: torch.Tensor,
+    area_balance_score_mask: torch.Tensor,
     toilet_balance_score_target_logits: torch.Tensor,
     toilet_balance_score_mask: torch.Tensor,
     avg_frontiers_target: torch.Tensor,
@@ -239,6 +248,13 @@ def compute_loss_breakdown(
         balance_score_uniform_log_odds,
         mask & balance_score_mask,
         config.balance_weight,
+    )
+    area_balance_loss, area_balance_wt = masked_offset_bernoulli_kl_loss(
+        preds.area_balance_score,
+        area_balance_score_target_logits,
+        area_balance_score_uniform_log_odds,
+        mask & area_balance_score_mask,
+        config.area_balance_weight,
     )
     toilet_balance_loss, toilet_balance_wt = masked_bernoulli_kl_loss(
         preds.toilet_balance_score,
@@ -344,6 +360,7 @@ def compute_loss_breakdown(
         + phantoon_area_wt
         + vanilla_area_wt
         + balance_wt
+        + area_balance_wt
         + toilet_balance_wt
         + avg_frontiers_wt
         + graph_diameter_wt
@@ -366,6 +383,7 @@ def compute_loss_breakdown(
     phantoon_area_contribution = phantoon_area_loss / total_weight
     vanilla_area_contribution = vanilla_area_loss / total_weight
     balance_contribution = balance_loss / total_weight
+    area_balance_contribution = area_balance_loss / total_weight
     toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
     graph_diameter_contribution = graph_diameter_loss / total_weight
@@ -387,6 +405,7 @@ def compute_loss_breakdown(
         + phantoon_area_contribution
         + vanilla_area_contribution
         + balance_contribution
+        + area_balance_contribution
         + toilet_balance_contribution
         + avg_frontiers_contribution
         + graph_diameter_contribution
@@ -410,6 +429,7 @@ def compute_loss_breakdown(
         phantoon_area=phantoon_area_loss / (phantoon_area_wt + 1e-15),
         vanilla_area=vanilla_area_loss / (vanilla_area_wt + 1e-15),
         balance=balance_loss / (balance_wt + 1e-15),
+        area_balance=area_balance_loss / (area_balance_wt + 1e-15),
         toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
         graph_diameter=graph_diameter_loss / (graph_diameter_wt + 1e-15),
@@ -432,6 +452,7 @@ def compute_loss_breakdown(
         phantoon_area_contribution=phantoon_area_contribution,
         vanilla_area_contribution=vanilla_area_contribution,
         balance_contribution=balance_contribution,
+        area_balance_contribution=area_balance_contribution,
         toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,
         graph_diameter_contribution=graph_diameter_contribution,
@@ -522,6 +543,7 @@ def compute_balance_loss(
     preds: BalancePredictions,
     door_matches: DoorMatches,
     toilet_crossed_room_idx: torch.Tensor,
+    room_area: torch.Tensor,
 ) -> torch.Tensor:
     left_loss, left_weight = direction_variant_balance_loss(
         preds.left,
@@ -563,8 +585,16 @@ def compute_balance_loss(
         preds.toilet_crossed_room,
         toilet_crossed_room_idx,
     )
-    total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss
-    total_weight = left_weight + right_weight + up_weight + down_weight + toilet_weight
+    room_area_loss, room_area_weight = categorical_balance_loss(preds.room_area, room_area)
+    total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss + room_area_loss
+    total_weight = (
+        left_weight
+        + right_weight
+        + up_weight
+        + down_weight
+        + toilet_weight
+        + room_area_weight
+    )
     return total_loss / (total_weight + 1e-15)
 
 
@@ -713,6 +743,13 @@ def categorical_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
     )
 
 
+def centered_categorical_balance_score_logit_table(
+    logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    uniform_log_odds = logits.new_tensor(-math.log(logits.shape[-1] - 1), dtype=torch.float32)
+    return categorical_balance_score_logit_table(logits) - uniform_log_odds, uniform_log_odds
+
+
 def compatibility_uniform_log_odds(compatibility: torch.Tensor) -> torch.Tensor:
     if compatibility.shape[-1] == 0:
         return torch.zeros(
@@ -810,15 +847,38 @@ def compute_balance_score_tables(preds: BalancePredictions) -> BalanceScoreTable
         preds.up_global_door_variant_idx,
         preds.door_variant_compatibility,
     )
+    room_area, room_area_uniform_log_odds = centered_categorical_balance_score_logit_table(
+        preds.room_area
+    )
     return BalanceScoreTables(
         left=left.detach(),
         right=right.detach(),
         up=up.detach(),
         down=down.detach(),
+        room_area=room_area.detach(),
         left_uniform_log_odds=left_uniform_log_odds,
         right_uniform_log_odds=right_uniform_log_odds,
         up_uniform_log_odds=up_uniform_log_odds,
         down_uniform_log_odds=down_uniform_log_odds,
+        room_area_uniform_log_odds=room_area_uniform_log_odds,
+    )
+
+
+def compute_room_area_balance_score_target_logits(
+    tables: BalanceScoreTables,
+    room_area: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    mask = room_area >= 0
+    safe_room_area = room_area.clamp_min(0).to(torch.int64)
+    target_logits = torch.gather(
+        tables.room_area,
+        -1,
+        safe_room_area.unsqueeze(-1),
+    ).squeeze(-1)
+    return (
+        target_logits.detach(),
+        tables.room_area_uniform_log_odds.expand_as(target_logits),
+        mask,
     )
 
 

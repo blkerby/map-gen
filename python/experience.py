@@ -2,7 +2,11 @@ import torch
 
 import os
 import safetensors.torch
+from safetensors import safe_open
 from env import Actions, EpisodeData
+
+
+EXPERIENCE_FORMAT = "map-gen-experience-v2"
 
 
 class ExperienceStorage:
@@ -31,6 +35,7 @@ class ExperienceStorage:
                 "generation_variable_floats": episode_data.generation_variable_floats,
             },
             file_path,
+            metadata={"format": EXPERIENCE_FORMAT},
         )
         self.num_files += 1
 
@@ -38,7 +43,11 @@ class ExperienceStorage:
         data_list = []
         for file_num in file_num_list:
             file_path = os.path.join(self.data_path, "{}.safetensors".format(file_num))
-            tensors = safetensors.torch.load_file(file_path)
+            with safe_open(file_path, framework="pt") as file:
+                metadata = file.metadata()
+                if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
+                    raise ValueError(f"Unsupported experience format in {file_path}")
+                tensors = {name: file.get_tensor(name) for name in file.keys()}
             data = EpisodeData(
                 actions=Actions(
                     room_idx=tensors["room_idx"],

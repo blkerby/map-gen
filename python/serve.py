@@ -60,8 +60,8 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v3"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v7"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v4"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v8"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -133,6 +133,7 @@ class GenerateRequest(StrictBaseModel):
     force_draygon_in_maridia: bool
     force_mother_brain_in_tourian: bool
     reward_balance: float
+    reward_area_balance: float
     reward_toilet_balance: float
     reward_frontier: float
     reward_graph_diameter: float
@@ -477,6 +478,7 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
     if generate_request.proposal_temperature <= 0:
         raise ValueError("proposal_temperature must be greater than zero")
     for name in (
+        "reward_area_balance",
         "reward_area_crossing",
         "reward_area_size_valid",
         "reward_area_map_station",
@@ -546,6 +548,7 @@ def create_generate_configs(
         "reward_phantoon_pair": generate_request.reward_phantoon_pair,
         "reward_phantoon_area": generate_request.reward_phantoon_area,
         "reward_balance": generate_request.reward_balance,
+        "reward_area_balance": generate_request.reward_area_balance,
         "reward_toilet_balance": generate_request.reward_toilet_balance,
         "reward_frontier": generate_request.reward_frontier,
         "reward_graph_diameter": generate_request.reward_graph_diameter,
@@ -568,8 +571,12 @@ def create_generate_configs(
     }
     generation_variable_float_values.update(
         {
-            field_name: getattr(generate_request, field_name)
-            for field_name in VANILLA_AREA_REWARD_FIELDS
+            reward_field: getattr(generate_request, reward_field)
+            * float(getattr(generate_request, condition_field))
+            for reward_field, condition_field in zip(
+                VANILLA_AREA_REWARD_FIELDS,
+                VANILLA_AREA_CONDITION_FIELDS,
+            )
         }
     )
     generation_variable_float_values.update(
@@ -668,6 +675,7 @@ def create_generate_configs(
                     device=device,
                 ).expand(env.num_envs, 6),
                 reward_balance=generate_request.reward_balance,
+                reward_area_balance=generate_request.reward_area_balance,
                 reward_toilet_balance=generate_request.reward_toilet_balance,
                 reward_frontier=generate_request.reward_frontier,
                 reward_graph_diameter=generate_request.reward_graph_diameter,
@@ -949,6 +957,7 @@ def warmup_generate_request() -> GenerateRequest:
         force_draygon_in_maridia=False,
         force_mother_brain_in_tourian=False,
         reward_balance=0.1,
+        reward_area_balance=0.1,
         reward_toilet_balance=0.1,
         reward_frontier=0.0,
         reward_graph_diameter=0.1,

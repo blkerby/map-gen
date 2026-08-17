@@ -1,17 +1,23 @@
 import torch
 from pathlib import Path
 
-from env import GenerateConfig, StepOutcomes
-from generate import compute_expected_reward
+from env import Actions, GenerateConfig, StepOutcomes
+from generate import apply_candidate_area_balance_scores, compute_expected_reward
 from train import create_generate_config
 from model import Predictions
-from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS, instantiate_scheduleable_config
+from train_config import (
+    Config,
+    GENERATION_VARIABLE_FLOAT_FIELDS,
+    VANILLA_AREA_REWARD_FIELDS,
+    instantiate_scheduleable_config,
+)
 
 
 def zero_generate_config(**rewards) -> GenerateConfig:
     values = {
         "reward_phantoon_pair": 0.0,
         "reward_phantoon_area": 0.0,
+        "reward_area_balance": 0.0,
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 0.0,
         "reward_area_map_station": 0.0,
@@ -41,6 +47,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         reward_vanilla_area=torch.zeros([1, 6]),
         vanilla_area_constraint_mask=torch.zeros([1, 6], dtype=torch.bool),
         reward_balance=0.0,
+        reward_area_balance=values["reward_area_balance"],
         reward_toilet_balance=0.0,
         reward_frontier=0.0,
         reward_graph_diameter=0.0,
@@ -87,6 +94,7 @@ def area_predictions() -> Predictions:
         phantoon_area_invalid=torch.zeros([batch, candidate]),
         vanilla_area_invalid=torch.zeros([batch, candidate, 6]),
         balance_score=torch.zeros([batch, candidate, door]),
+        area_balance_score=torch.zeros([batch, candidate, room_part]),
         toilet_balance_score=torch.zeros([batch, candidate]),
         avg_frontiers=torch.zeros([batch, candidate]),
         graph_diameter=torch.zeros([batch, candidate]),
@@ -230,6 +238,35 @@ def test_heat_water_rewards_use_final_tier_coefficients() -> None:
     assert torch.allclose(reward, torch.tensor([[9.1, 1.6]]))
 
 
+def test_area_balance_reward_penalizes_common_area_scores() -> None:
+    predictions = area_predictions()
+    predictions.area_balance_score = torch.tensor(
+        [[[1.0, -0.5], [0.25, 0.25]]]
+    )
+    reward = compute_expected_reward(
+        predictions,
+        unknown_outcomes(),
+        zero_generate_config(reward_area_balance=2.0),
+    )
+    assert torch.equal(reward, torch.tensor([[-1.0, -1.0]]))
+
+
+def test_candidate_area_balance_uses_exact_placed_room_score() -> None:
+    score_table = torch.arange(12, dtype=torch.float32).reshape(1, 2, 6)
+    scores = apply_candidate_area_balance_scores(
+        torch.tensor([[[100.0, 2.0], [3.0, 100.0]]]),
+        torch.tensor([[[True, False], [False, True]]]),
+        Actions(
+            room_idx=torch.tensor([[0, 1]]),
+            room_x=torch.zeros([1, 2], dtype=torch.int8),
+            room_y=torch.zeros([1, 2], dtype=torch.int8),
+            room_area=torch.tensor([[4, 2]]),
+        ),
+        score_table,
+    )
+    assert torch.equal(scores, torch.tensor([[[4.0, 2.0], [3.0, 8.0]]]))
+
+
 def test_training_samples_store_monotone_final_coefficients() -> None:
     config = instantiate_scheduleable_config(
         Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
@@ -252,6 +289,14 @@ def test_training_samples_store_monotone_final_coefficients() -> None:
             for tier in range(1, 4)
         ]
         assert torch.equal(generate_config.generation_variable_floats[:, indices], coefficients)
+    vanilla_reward_indices = [
+        GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_REWARD_FIELDS
+    ]
+    assert torch.equal(
+        generate_config.generation_variable_floats[:, vanilla_reward_indices],
+        generate_config.reward_vanilla_area
+        * generate_config.vanilla_area_constraint_mask.to(torch.float32),
+    )
 
 
 def main() -> None:
@@ -261,6 +306,8 @@ def main() -> None:
     test_area_rewards_use_valid_bucket_logprobs()
     test_numeric_area_rewards_use_negative_mean_squared_error()
     test_heat_water_rewards_use_final_tier_coefficients()
+    test_area_balance_reward_penalizes_common_area_scores()
+    test_candidate_area_balance_uses_exact_placed_room_score()
     test_training_samples_store_monotone_final_coefficients()
 
 
