@@ -78,7 +78,7 @@
     "force_draygon_in_maridia_probability": 0.5,
     "force_mother_brain_in_tourian_probability": 0.5,
     "reward_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
-    "reward_area_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
+    "reward_area_balance": {"log": [0.6, 0.2, 0.06, 0.04, 0.02]},
     "reward_toilet_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
