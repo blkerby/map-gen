@@ -16,6 +16,30 @@ if TYPE_CHECKING:
 AREA_COUNT = 6
 DUMMY_AREA = AREA_COUNT
 VANILLA_AREA_CONSTRAINT_COUNT = 6
+SPECIAL_ROOM_AREA_CONSTRAINT_IDX = {
+    "ship": 0,
+    "kraid_boss": 1,
+    "ridley_boss": 2,
+    "phantoon_boss": 3,
+    "phantoon_map": 3,
+    "phantoon_save": 3,
+    "draygon_boss": 4,
+    "mother_brain": 5,
+}
+
+
+def forced_special_room_mask(
+    rooms: list[dict],
+    vanilla_area_constraint_mask: torch.Tensor,
+) -> torch.Tensor:
+    constraint_idx = torch.tensor(
+        [SPECIAL_ROOM_AREA_CONSTRAINT_IDX.get(room.get("special_type"), -1) for room in rooms],
+        dtype=torch.int64,
+        device=vanilla_area_constraint_mask.device,
+    )
+    return (constraint_idx >= 0).unsqueeze(0) & vanilla_area_constraint_mask[
+        :, constraint_idx.clamp_min(0)
+    ]
 
 
 def average_area_tile_count(rooms: list[dict]) -> float:

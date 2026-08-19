@@ -18,6 +18,7 @@ from env import (
     ProposalData,
     GeneratedFeatureData,
     extract_candidate_features,
+    forced_special_room_mask,
     slice_features,
 )
 from experience import ExperienceStorage
@@ -1246,6 +1247,10 @@ def train_feature_batch_backward(
         :,
         VANILLA_AREA_CONDITION_INDICES,
     ].to(device=context.device, dtype=torch.bool)
+    area_balance_exempt_room = forced_special_room_mask(
+        context.train_batch_envs[0].engine.rooms,
+        vanilla_area_constraint_mask,
+    )
     total_loss = empty_main_loss_breakdown()
     prefix_weight = 1.0 / len(prepared_batch.feature_batches)
 
@@ -1274,9 +1279,13 @@ def train_feature_batch_backward(
             prefix_balance_score_mask = balance_score_mask & (
                 features.global_features.lookahead_door_match < 0
             )
-        prefix_area_balance_score_mask = area_balance_score_mask & ~features.global_features.room_placed.to(
-            device=context.device,
-            dtype=torch.bool,
+        prefix_area_balance_score_mask = (
+            area_balance_score_mask
+            & ~features.global_features.room_placed.to(
+                device=context.device,
+                dtype=torch.bool,
+            )
+            & ~area_balance_exempt_room
         )
         prefix_heat_water_mask = heat_water_mask
         if features.global_features.lookahead_maridia_water.shape[-1] > 0:

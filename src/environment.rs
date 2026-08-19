@@ -22,6 +22,7 @@ const NO_COMPONENT: usize = usize::MAX;
 const UNREACHABLE_DISTANCE: GraphDistance = GraphDistance::MAX;
 const KNOWN_DISTANCE_UNKNOWN: u8 = 0;
 const KNOWN_DISTANCE_UNREACHABLE: u8 = 1;
+const PHANTOON_AREA_CONSTRAINT_IDX: usize = 3;
 pub const FEATURE_FRONTIER_WIDTH: usize = 5;
 
 #[repr(i8)]
@@ -5879,12 +5880,22 @@ impl Environment {
             let Some(room_idx) = common.vanilla_area_room_idx()[constraint_idx] else {
                 return DoorValidOutcome::Valid;
             };
-            if self.room_used[room_idx as usize] {
-                if self.room_area[room_idx as usize] as usize == constraint_idx {
-                    DoorValidOutcome::Valid
-                } else {
-                    DoorValidOutcome::Invalid
-                }
+            let mut room_indices = [Some(room_idx), None, None];
+            if constraint_idx == PHANTOON_AREA_CONSTRAINT_IDX {
+                room_indices[1] = common.phantoon_map_room_idx();
+                room_indices[2] = common.phantoon_save_room_idx();
+            }
+            if room_indices.into_iter().flatten().any(|room_idx| {
+                self.room_used[room_idx as usize]
+                    && self.room_area[room_idx as usize] as usize != constraint_idx
+            }) {
+                DoorValidOutcome::Invalid
+            } else if room_indices
+                .into_iter()
+                .flatten()
+                .all(|room_idx| self.room_used[room_idx as usize])
+            {
+                DoorValidOutcome::Valid
             } else if self.finished
                 || (self.area_used[constraint_idx] && !has_usable_area_frontier[constraint_idx])
             {
@@ -11223,6 +11234,41 @@ mod tests {
 
         assert_eq!(outcomes.phantoon_pair_valid, DoorValidOutcome::Valid);
         assert_eq!(outcomes.phantoon_area_valid, DoorValidOutcome::Invalid);
+    }
+
+    #[test]
+    fn forced_phantoon_area_rejects_each_special_room_outside_wrecked_ship() {
+        let common = phantoon_outcome_test_common();
+        let mut constraint_mask = NO_VANILLA_AREA_CONSTRAINTS;
+        constraint_mask[PHANTOON_AREA_CONSTRAINT_IDX] = true;
+        for room_idx in [2, 3, 4] {
+            let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+            let pre_candidate_outcomes = env.outcomes(&common);
+            let outcome = env
+                .evaluate_candidate_outcome(
+                    &common,
+                    &pre_candidate_outcomes,
+                    &constraint_mask,
+                    Action {
+                        room_idx,
+                        x: 1,
+                        y: 1,
+                        area: 2,
+                    },
+                    &FeatureConfig::all_disabled(),
+                    FrontierNeighborAlgorithm::Nearest,
+                    1,
+                    4,
+                    &mut FeatureScratch::default(),
+                )
+                .unwrap();
+            assert!(matches!(outcome, CandidateOutcome::Rejected));
+            assert_eq!(
+                env.vanilla_area_outcomes(&common, &env.usable_area_frontiers(&common))
+                    [PHANTOON_AREA_CONSTRAINT_IDX],
+                DoorValidOutcome::Unknown,
+            );
+        }
     }
 
     #[test]

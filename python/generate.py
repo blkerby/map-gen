@@ -21,6 +21,7 @@ from env import (
     GeneratedFeatureData,
     concatenate_features,
     extract_candidate_features,
+    forced_special_room_mask,
     select_generated_features,
 )
 from loss import (
@@ -151,19 +152,25 @@ def area_balance_reward(area_balance_score: torch.Tensor) -> torch.Tensor:
 def apply_candidate_area_balance_scores(
     predicted_score: torch.Tensor,
     room_placed: torch.Tensor,
+    exempt_room: torch.Tensor,
     candidates: Actions,
     score_table: torch.Tensor,
 ) -> torch.Tensor:
-    scores = torch.where(room_placed.to(torch.bool), 0.0, predicted_score.to(torch.float32))
+    scores = torch.where(
+        room_placed.to(torch.bool) | exempt_room.unsqueeze(1),
+        0.0,
+        predicted_score.to(torch.float32),
+    )
     valid = candidates.room_idx < score_table.shape[1]
     environment_idx, candidate_idx = torch.nonzero(valid, as_tuple=True)
     room_idx = candidates.room_idx[valid].to(torch.int64)
     area_idx = candidates.room_area[valid].to(torch.int64)
-    scores[environment_idx, candidate_idx, room_idx] = score_table[
-        environment_idx,
-        room_idx,
-        area_idx,
-    ]
+    candidate_exempt = exempt_room[environment_idx, room_idx]
+    scores[environment_idx, candidate_idx, room_idx] = torch.where(
+        candidate_exempt,
+        0.0,
+        score_table[environment_idx, room_idx, area_idx],
+    )
     return scores
 
 
@@ -382,6 +389,7 @@ class GenerationGroup:
     candidate_slot: CandidateSlot
     balance_preds: BalancePredictions
     balance_score_tables: BalanceScoreTables
+    area_balance_exempt_room: torch.Tensor
     proposal_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
     previous_proposal_scores: ProposalCache | None
@@ -978,6 +986,7 @@ def select_candidate_actions(
     area_balance_score = apply_candidate_area_balance_scores(
         preds.area_balance_score.view(environment_count, candidate_count, -1),
         features.global_features.room_placed.view(environment_count, candidate_count, -1),
+        group.area_balance_exempt_room,
         candidates,
         group.balance_score_tables.room_area,
     )
@@ -2207,6 +2216,10 @@ def run_generation_groups(
             candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
             balance_preds=balance_preds,
             balance_score_tables=score_tables,
+            area_balance_exempt_room=forced_special_room_mask(
+                env.engine.rooms,
+                config.vanilla_area_constraint_mask,
+            ),
             proposal_balance_score_table=proposal_score_table,
             previous_lookahead_outcomes=None,
             previous_proposal_scores=None,

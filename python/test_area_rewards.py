@@ -1,7 +1,7 @@
 import torch
 from pathlib import Path
 
-from env import Actions, GenerateConfig, StepOutcomes
+from env import Actions, GenerateConfig, StepOutcomes, forced_special_room_mask
 from generate import apply_candidate_area_balance_scores, compute_expected_reward
 from train import create_generate_config
 from model import Predictions
@@ -256,6 +256,7 @@ def test_candidate_area_balance_uses_exact_placed_room_score() -> None:
     scores = apply_candidate_area_balance_scores(
         torch.tensor([[[100.0, 2.0], [3.0, 100.0]]]),
         torch.tensor([[[True, False], [False, True]]]),
+        torch.zeros([1, 2], dtype=torch.bool),
         Actions(
             room_idx=torch.tensor([[0, 1]]),
             room_x=torch.zeros([1, 2], dtype=torch.int8),
@@ -265,6 +266,35 @@ def test_candidate_area_balance_uses_exact_placed_room_score() -> None:
         score_table,
     )
     assert torch.equal(scores, torch.tensor([[[4.0, 2.0], [3.0, 8.0]]]))
+
+
+def test_forced_special_rooms_are_exempt_from_area_balance() -> None:
+    rooms = [
+        {"special_type": "ship"},
+        {"special_type": "phantoon_boss"},
+        {"special_type": "phantoon_map"},
+        {"special_type": "phantoon_save"},
+        {},
+    ]
+    exempt = forced_special_room_mask(
+        rooms,
+        torch.tensor([[True, False, False, True, False, False]]),
+    )
+    assert exempt.tolist() == [[True, True, True, True, False]]
+
+    scores = apply_candidate_area_balance_scores(
+        torch.ones([1, 1, len(rooms)]),
+        torch.zeros([1, 1, len(rooms)], dtype=torch.bool),
+        exempt,
+        Actions(
+            room_idx=torch.tensor([[2]]),
+            room_x=torch.zeros([1, 1], dtype=torch.int8),
+            room_y=torch.zeros([1, 1], dtype=torch.int8),
+            room_area=torch.tensor([[3]]),
+        ),
+        torch.ones([1, len(rooms), 6]),
+    )
+    assert scores.tolist() == [[[0.0, 0.0, 0.0, 0.0, 1.0]]]
 
 
 def test_training_samples_store_monotone_final_coefficients() -> None:
@@ -308,6 +338,7 @@ def main() -> None:
     test_heat_water_rewards_use_final_tier_coefficients()
     test_area_balance_reward_penalizes_common_area_scores()
     test_candidate_area_balance_uses_exact_placed_room_score()
+    test_forced_special_rooms_are_exempt_from_area_balance()
     test_training_samples_store_monotone_final_coefficients()
 
 
