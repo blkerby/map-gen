@@ -2075,7 +2075,7 @@
         "connections": [],
         "missing_connections": [],
         "toilet_crossing_x": [],
-        "water": 1,
+        "water": 0,
         "special_type": "draygon_boss"        
     },
     {
@@ -2820,7 +2820,7 @@
         "connections": [],
         "missing_connections": [],
         "toilet_crossing_x": [],
-        "heat": 1,
+        "heat": 0,
         "special_type": "ridley_boss"        
     },
     {

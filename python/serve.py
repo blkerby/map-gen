@@ -61,7 +61,7 @@ from train_config import (
 
 
 MODEL_EXPORT_FORMAT = "map-gen-model-export-v4"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v8"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v9"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
