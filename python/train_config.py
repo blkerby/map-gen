@@ -48,6 +48,7 @@ VANILLA_AREA_PROBABILITY_FIELDS = tuple(
 VANILLA_AREA_REWARD_FIELDS = tuple(f"reward_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
 VANILLA_AREA_CONDITION_FIELDS = tuple(f"force_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
 HEAT_WATER_FAMILIES = ("maridia_water", "norfair_heat")
+HEAT_WATER_TARGET_AREAS = (4, 2)
 HEAT_WATER_REWARD_FIELDS = tuple(
     f"reward_{family}_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 4)
 )
@@ -173,6 +174,8 @@ class GenerationConfig(StrictBaseModel):
     reward_norfair_heat_max_1: ScheduleableFloat
     reward_norfair_heat_max_2: ScheduleableFloat
     reward_norfair_heat_max_3: ScheduleableFloat
+    maridia_water_floor_scale: ScheduleableFloat
+    norfair_heat_floor_scale: ScheduleableFloat
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
@@ -620,6 +623,12 @@ def validate_config(config: Config) -> None:
         "generation.reward_graph_diameter",
     )
     for field_name in HEAT_WATER_MAX_FIELDS:
+        validate_nonnegative_scheduleable_float(
+            getattr(config.generation, field_name),
+            f"generation.{field_name}",
+        )
+    for family in HEAT_WATER_FAMILIES:
+        field_name = f"{family}_floor_scale"
         validate_nonnegative_scheduleable_float(
             getattr(config.generation, field_name),
             f"generation.{field_name}",

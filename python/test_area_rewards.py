@@ -1,10 +1,13 @@
-import torch
+import json
 from pathlib import Path
+
+import torch
 
 from env import Actions, GenerateConfig, StepOutcomes, forced_special_room_mask
 from generate import apply_candidate_area_balance_scores, compute_expected_reward
 from train import (
     VANILLA_AREA_SPECIAL_ROOM_TYPES,
+    compute_heat_water_tier_tile_counts,
     compute_unforced_special_room_area_ss,
     create_generate_config,
 )
@@ -314,15 +317,18 @@ def test_training_samples_use_top_down_heat_water_coefficients() -> None:
         device=torch.device("cpu"),
         ignore_scores=False,
         area_tile_scale=1.0,
+        heat_water_tier_tile_counts=compute_heat_water_tier_tile_counts(
+            json.loads(Path("room_definitions/zebes.json").read_text())
+        ),
     )
     for family, coefficients in (
         ("maridia_water", generate_config.reward_maridia_water),
         ("norfair_heat", generate_config.reward_norfair_heat),
     ):
         assert torch.all(coefficients[:, 1:] >= coefficients[:, :-1])
-        assert torch.all(coefficients <= torch.tensor([0.2, 0.4, 0.6]))
+        assert torch.all(coefficients <= torch.tensor([0.3, 0.7, 1.0]))
         tier_3_low_fraction = (coefficients[:, 2] < 0.1).to(torch.float32).mean()
-        assert 0.14 < tier_3_low_fraction < 0.19
+        assert 0.08 < tier_3_low_fraction < 0.12
         indices = [
             GENERATION_VARIABLE_FLOAT_FIELDS.index(f"reward_{family}_{tier}")
             for tier in range(1, 4)
@@ -336,6 +342,35 @@ def test_training_samples_use_top_down_heat_water_coefficients() -> None:
         generate_config.reward_vanilla_area
         * generate_config.vanilla_area_constraint_mask.to(torch.float32),
     )
+
+
+def test_heat_water_rewards_floor_area_tile_targets_before_normalization() -> None:
+    config = instantiate_scheduleable_config(
+        Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
+    )
+    config.generation.target_area_tiles = [100.0] * 6
+    tier_tile_counts = {
+        "maridia_water": (116, 184, 57),
+        "norfair_heat": (34, 138, 74),
+    }
+    generate_config = create_generate_config(
+        config,
+        episode_length=4,
+        num_envs=1024,
+        device=torch.device("cpu"),
+        ignore_scores=False,
+        area_tile_scale=1.0,
+        heat_water_tier_tile_counts=tier_tile_counts,
+    )
+    raw_targets = torch.full([1024, 6], 100.0)
+    for family, area, rewards in (
+        ("maridia_water", 4, generate_config.reward_maridia_water),
+        ("norfair_heat", 2, generate_config.reward_norfair_heat),
+    ):
+        floor = 1.5 * (rewards @ rewards.new_tensor(tier_tile_counts[family]))
+        raw_targets[:, area] = torch.maximum(raw_targets[:, area], floor)
+    expected = raw_targets * 6 / raw_targets.sum(dim=1, keepdim=True)
+    torch.testing.assert_close(generate_config.target_area_tiles, expected)
 
 
 def test_unforced_special_room_area_ss_excludes_forced_episodes() -> None:
@@ -370,6 +405,7 @@ def main() -> None:
     test_candidate_area_balance_uses_exact_placed_room_score()
     test_forced_special_rooms_are_exempt_from_area_balance()
     test_training_samples_use_top_down_heat_water_coefficients()
+    test_heat_water_rewards_floor_area_tile_targets_before_normalization()
     test_unforced_special_room_area_ss_excludes_forced_episodes()
 
 

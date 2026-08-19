@@ -88,6 +88,8 @@
     "reward_norfair_heat_max_1": 0.0,
     "reward_norfair_heat_max_2": 0.0,
     "reward_norfair_heat_max_3": 0.0,
+    "maridia_water_floor_scale": 1.5,
+    "norfair_heat_floor_scale": 1.5,
     "reward_save_distance": 20.0,
     "reward_refill_distance": 20.0,
     "reward_missing_connect_utility": 0.0,

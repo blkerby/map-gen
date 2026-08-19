@@ -61,6 +61,7 @@ from train_config import (
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_FAMILIES,
     HEAT_WATER_REWARD_FIELDS,
+    HEAT_WATER_TARGET_AREAS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_PROBABILITY_FIELDS,
     VANILLA_AREA_REWARD_FIELDS,
@@ -133,6 +134,24 @@ def compute_unforced_special_room_area_ss(
         area_proportions = area_counts / torch.sum(area_counts)
         room_area_ss.append(torch.sum(area_proportions.square()))
     return torch.mean(torch.stack(room_area_ss))
+
+
+def compute_heat_water_tier_tile_counts(rooms: list[dict]) -> dict[str, tuple[int, int, int]]:
+    return {
+        family: tuple(
+            sum(
+                sum(bool(tile) for row in room["map"] for tile in row)
+                for room in rooms
+                if room.get(room_field, 0) == tier
+            )
+            for tier in range(1, 4)
+        )
+        for family, room_field in zip(
+            HEAT_WATER_FAMILIES,
+            ("water", "heat"),
+            strict=True,
+        )
+    }
 
 
 class Prefetcher:
@@ -476,6 +495,7 @@ def create_generate_config(
     device: torch.device,
     ignore_scores: bool,
     area_tile_scale: float,
+    heat_water_tier_tile_counts: dict[str, tuple[int, int, int]],
 ) -> GenerateConfig:
     def variable_float_tensor(value: VariableFloat, path: str) -> torch.Tensor:
         if isinstance(value, VariableSchedule):
@@ -655,6 +675,22 @@ def create_generate_config(
             dim=1,
         )
         if field_name == "target_area_tiles":
+            for family, area in zip(
+                HEAT_WATER_FAMILIES,
+                HEAT_WATER_TARGET_AREAS,
+                strict=True,
+            ):
+                rewards = torch.stack(
+                    [
+                        generation_variable_floats_by_name[f"reward_{family}_{tier}"]
+                        for tier in range(1, 4)
+                    ],
+                    dim=1,
+                )
+                floor = getattr(config.generation, f"{family}_floor_scale") * (
+                    rewards @ rewards.new_tensor(heat_water_tier_tile_counts[family])
+                )
+                values[:, area] = torch.maximum(values[:, area], floor)
             value_sums = values.sum(dim=1, keepdim=True)
             if torch.any(value_sums <= 0.0):
                 raise ValueError("generation.target_area_tiles must have a positive sum")
@@ -771,6 +807,7 @@ class GenerationProcessState:
     profile: bool
     ignore_scores: bool
     area_tile_scale: float
+    heat_water_tier_tile_counts: dict[str, tuple[int, int, int]]
     cleared_cuda_cache_after_first_task: bool
 
 
@@ -822,6 +859,7 @@ def initialize_generation_process(
         profile=profile,
         ignore_scores=ignore_scores,
         area_tile_scale=average_area_tile_count(rooms),
+        heat_water_tier_tile_counts=compute_heat_water_tier_tile_counts(rooms),
         cleared_cuda_cache_after_first_task=False,
     )
 
@@ -852,6 +890,7 @@ def run_generation_process_task(
             state.device,
             state.ignore_scores,
             state.area_tile_scale,
+            state.heat_water_tier_tile_counts,
         )
         for env in state.envs
     ]
@@ -909,6 +948,7 @@ class TrainingSession:
     run_path: str
     rooms: list[dict]
     area_tile_scale: float
+    heat_water_tier_tile_counts: dict[str, tuple[int, int, int]]
     device: torch.device
     generation_devices: list[torch.device]
     engine: Engine
@@ -1679,6 +1719,7 @@ class TrainingSession:
                 self.device,
                 False,
                 self.area_tile_scale,
+                self.heat_water_tier_tile_counts,
             )
             balance_preds = self.balance_model(generate_config.generation_variable_floats)
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
@@ -2448,6 +2489,7 @@ def build_session(args: Args) -> TrainingSession:
     )
     initial_config = instantiate_scheduleable_config(config, 0)
     area_tile_scale = average_area_tile_count(rooms)
+    heat_water_tier_tile_counts = compute_heat_water_tier_tile_counts(rooms)
     main_optimizer = create_main_optimizer(
         main_model,
         config.optimizer,
@@ -2464,6 +2506,7 @@ def build_session(args: Args) -> TrainingSession:
         run_path=run_path,
         rooms=rooms,
         area_tile_scale=area_tile_scale,
+        heat_water_tier_tile_counts=heat_water_tier_tile_counts,
         device=device,
         generation_devices=generation_devices,
         engine=engine,
