@@ -3,11 +3,16 @@ from pathlib import Path
 
 from env import Actions, GenerateConfig, StepOutcomes, forced_special_room_mask
 from generate import apply_candidate_area_balance_scores, compute_expected_reward
-from train import create_generate_config
+from train import (
+    VANILLA_AREA_SPECIAL_ROOM_TYPES,
+    compute_unforced_special_room_area_ss,
+    create_generate_config,
+)
 from model import Predictions
 from train_config import (
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
+    VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_REWARD_FIELDS,
     instantiate_scheduleable_config,
 )
@@ -297,14 +302,15 @@ def test_forced_special_rooms_are_exempt_from_area_balance() -> None:
     assert scores.tolist() == [[[0.0, 0.0, 0.0, 0.0, 1.0]]]
 
 
-def test_training_samples_store_monotone_final_coefficients() -> None:
+def test_training_samples_use_top_down_heat_water_coefficients() -> None:
+    torch.manual_seed(0)
     config = instantiate_scheduleable_config(
         Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
     )
     generate_config = create_generate_config(
         config,
         episode_length=4,
-        num_envs=32,
+        num_envs=4096,
         device=torch.device("cpu"),
         ignore_scores=False,
         area_tile_scale=1.0,
@@ -314,6 +320,9 @@ def test_training_samples_store_monotone_final_coefficients() -> None:
         ("norfair_heat", generate_config.reward_norfair_heat),
     ):
         assert torch.all(coefficients[:, 1:] >= coefficients[:, :-1])
+        assert torch.all(coefficients <= torch.tensor([0.2, 0.4, 0.6]))
+        tier_3_low_fraction = (coefficients[:, 2] < 0.1).to(torch.float32).mean()
+        assert 0.14 < tier_3_low_fraction < 0.19
         indices = [
             GENERATION_VARIABLE_FLOAT_FIELDS.index(f"reward_{family}_{tier}")
             for tier in range(1, 4)
@@ -329,6 +338,27 @@ def test_training_samples_store_monotone_final_coefficients() -> None:
     )
 
 
+def test_unforced_special_room_area_ss_excludes_forced_episodes() -> None:
+    episode_count = 6
+    room_count = 6
+    actions = Actions(
+        room_idx=torch.arange(room_count).repeat(episode_count, 1),
+        room_x=torch.zeros([episode_count, room_count], dtype=torch.int8),
+        room_y=torch.zeros([episode_count, room_count], dtype=torch.int8),
+        room_area=torch.arange(episode_count, dtype=torch.int8)
+        .unsqueeze(1)
+        .repeat(1, room_count),
+    )
+    generation_variables = torch.zeros(
+        [episode_count, len(GENERATION_VARIABLE_FLOAT_FIELDS)],
+    )
+    ship_force_idx = GENERATION_VARIABLE_FLOAT_FIELDS.index(VANILLA_AREA_CONDITION_FIELDS[0])
+    generation_variables[1:, ship_force_idx] = 1.0
+    rooms = [{"special_type": special_type} for special_type in VANILLA_AREA_SPECIAL_ROOM_TYPES]
+    actual = compute_unforced_special_room_area_ss(actions, generation_variables, rooms)
+    torch.testing.assert_close(actual, torch.tensor(11.0 / 36.0))
+
+
 def main() -> None:
     test_zero_area_rewards_leave_reward_unchanged()
     test_phantoon_rewards_use_independent_coefficients()
@@ -339,7 +369,8 @@ def main() -> None:
     test_area_balance_reward_penalizes_common_area_scores()
     test_candidate_area_balance_uses_exact_placed_room_score()
     test_forced_special_rooms_are_exempt_from_area_balance()
-    test_training_samples_store_monotone_final_coefficients()
+    test_training_samples_use_top_down_heat_water_coefficients()
+    test_unforced_special_room_area_ss_excludes_forced_episodes()
 
 
 if __name__ == "__main__":

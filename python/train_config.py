@@ -51,8 +51,8 @@ HEAT_WATER_FAMILIES = ("maridia_water", "norfair_heat")
 HEAT_WATER_REWARD_FIELDS = tuple(
     f"reward_{family}_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 4)
 )
-HEAT_WATER_INCREMENT_FIELDS = tuple(
-    f"reward_{family}_increment_{tier}"
+HEAT_WATER_MAX_FIELDS = tuple(
+    f"reward_{family}_max_{tier}"
     for family in HEAT_WATER_FAMILIES
     for tier in range(1, 4)
 )
@@ -167,12 +167,12 @@ class GenerationConfig(StrictBaseModel):
     reward_toilet_balance: VariableFloat
     reward_frontier: VariableFloat
     reward_graph_diameter: VariableFloat
-    reward_maridia_water_increment_1: VariableFloat
-    reward_maridia_water_increment_2: VariableFloat
-    reward_maridia_water_increment_3: VariableFloat
-    reward_norfair_heat_increment_1: VariableFloat
-    reward_norfair_heat_increment_2: VariableFloat
-    reward_norfair_heat_increment_3: VariableFloat
+    reward_maridia_water_max_1: ScheduleableFloat
+    reward_maridia_water_max_2: ScheduleableFloat
+    reward_maridia_water_max_3: ScheduleableFloat
+    reward_norfair_heat_max_1: ScheduleableFloat
+    reward_norfair_heat_max_2: ScheduleableFloat
+    reward_norfair_heat_max_3: ScheduleableFloat
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
@@ -619,8 +619,8 @@ def validate_config(config: Config) -> None:
         config.generation.reward_graph_diameter,
         "generation.reward_graph_diameter",
     )
-    for field_name in HEAT_WATER_INCREMENT_FIELDS:
-        validate_nonnegative_variable_float(
+    for field_name in HEAT_WATER_MAX_FIELDS:
+        validate_nonnegative_scheduleable_float(
             getattr(config.generation, field_name),
             f"generation.{field_name}",
         )

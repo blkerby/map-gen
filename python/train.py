@@ -92,6 +92,14 @@ type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
 TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v9"
+VANILLA_AREA_SPECIAL_ROOM_TYPES = (
+    "ship",
+    "kraid_boss",
+    "ridley_boss",
+    "phantoon_boss",
+    "draygon_boss",
+    "mother_brain",
+)
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -99,6 +107,32 @@ def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
     if torch.any(totals <= 1):
         return counts.new_full((), torch.nan)
     return torch.sum(counts * (counts - 1) / (totals * (totals - 1)))
+
+
+def compute_unforced_special_room_area_ss(
+    actions: Actions,
+    generation_variable_floats: torch.Tensor,
+    rooms: list[dict],
+) -> torch.Tensor:
+    room_area_ss = []
+    for constraint_idx, special_type in enumerate(VANILLA_AREA_SPECIAL_ROOM_TYPES):
+        room_idx = next(
+            (idx for idx, room in enumerate(rooms) if room.get("special_type") == special_type),
+            None,
+        )
+        if room_idx is None:
+            return actions.room_area.new_full((), torch.nan, dtype=torch.float32)
+        force_idx = GENERATION_VARIABLE_FLOAT_FIELDS.index(
+            VANILLA_AREA_CONDITION_FIELDS[constraint_idx]
+        )
+        unforced = ~generation_variable_floats[:, force_idx].to(torch.bool)
+        placed_areas = actions.room_area[(actions.room_idx == room_idx) & unforced.unsqueeze(1)]
+        area_counts = torch.bincount(placed_areas.to(torch.int64), minlength=AREA_COUNT).to(
+            torch.float32
+        )
+        area_proportions = area_counts / torch.sum(area_counts)
+        room_area_ss.append(torch.sum(area_proportions.square()))
+    return torch.mean(torch.stack(room_area_ss))
 
 
 class Prefetcher:
@@ -566,17 +600,16 @@ def create_generate_config(
         }
     )
     for family in HEAT_WATER_FAMILIES:
-        increments = torch.stack(
-            [
-                variable_float_tensor(
-                    getattr(config.generation, f"reward_{family}_increment_{tier}"),
-                    f"generation.reward_{family}_increment_{tier}",
-                )
-                for tier in range(1, 4)
-            ],
-            dim=1,
-        )
-        coefficients = torch.cumsum(increments, dim=1)
+        maxima = [
+            float(getattr(config.generation, f"reward_{family}_max_{tier}"))
+            for tier in range(1, 4)
+        ]
+        if maxima != sorted(maxima):
+            raise ValueError(f"generation.reward_{family}_max values must be nondecreasing")
+        tier_3 = torch.rand([num_envs], device=device) * maxima[2]
+        tier_2 = torch.rand([num_envs], device=device) * torch.clamp(tier_3, max=maxima[1])
+        tier_1 = torch.rand([num_envs], device=device) * torch.clamp(tier_2, max=maxima[0])
+        coefficients = torch.stack([tier_1, tier_2, tier_3], dim=1)
         generation_variable_floats_by_name.update(
             {
                 f"reward_{family}_{tier}": coefficients[:, tier - 1]
@@ -1633,6 +1666,11 @@ class TrainingSession:
         )
         toilet_crossed_room_topk = topk_or_zeros(toilet_crossed_room_p, 4)
         toilet_crossed_room_ss = torch.sum(toilet_crossed_room_p.square())
+        unforced_special_room_area_ss = compute_unforced_special_room_area_ss(
+            episode_data.actions,
+            episode_data.generation_variable_floats,
+            self.rooms,
+        )
         with torch.no_grad():
             generate_config = create_generate_config(
                 step_config,
@@ -1944,6 +1982,7 @@ class TrainingSession:
             "toilet_crossed_room_top3": toilet_crossed_room_topk[2],
             "toilet_crossed_room_top4": toilet_crossed_room_topk[3],
             "toilet_crossed_room_ss": toilet_crossed_room_ss,
+            "unforced_special_room_area_ss": unforced_special_room_area_ss,
             "balance_toilet_crossed_room_top1": balance_toilet_crossed_room_topk[0],
             "balance_toilet_crossed_room_top2": balance_toilet_crossed_room_topk[1],
             "balance_toilet_crossed_room_top3": balance_toilet_crossed_room_topk[2],
