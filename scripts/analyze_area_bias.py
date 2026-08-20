@@ -153,15 +153,23 @@ def print_heat_water(assignments: np.ndarray, variables: np.ndarray, rooms: list
     print_table(rows, 1)
 
 
-def print_unforced_special(assignments: np.ndarray, variables: np.ndarray, rooms: list[dict]) -> None:
-    print("\nunforced_special_room_preferences")
+def print_unforced_special(
+    assignments: np.ndarray,
+    variables: np.ndarray,
+    rooms: list[dict],
+    episode_filter: np.ndarray,
+    title: str,
+) -> None:
+    print(f"\n{title}")
     rows = [("room", "episodes", *(f"{name}_pct" for name in AREA_NAMES))]
     for constraint_idx, (label, special_type) in enumerate(SPECIAL_ROOMS):
         room_idx = next(
             i for i, room in enumerate(rooms) if room.get("special_type") == special_type
         )
         force_field = VANILLA_AREA_CONDITION_FIELDS[constraint_idx]
-        unforced = ~variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(force_field)].astype(bool)
+        unforced = episode_filter & ~variables[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index(force_field)
+        ].astype(bool)
         selected = assignments[unforced, room_idx]
         area_counts = [(selected == area).sum() for area in range(AREA_COUNT)]
         assert sum(area_counts) <= unforced.sum()
@@ -187,7 +195,23 @@ def main() -> None:
     )
     print()
     print_heat_water(assignments, variables, rooms)
-    print_unforced_special(assignments, variables, rooms)
+    print_unforced_special(
+        assignments,
+        variables,
+        rooms,
+        np.ones(len(assignments), dtype=bool),
+        "unforced_special_room_preferences",
+    )
+    heat_water_rewards = variables[
+        :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(field) for field in HEAT_WATER_REWARD_FIELDS]
+    ]
+    print_unforced_special(
+        assignments,
+        variables,
+        rooms,
+        (heat_water_rewards == 0).all(axis=1),
+        "unforced_special_room_preferences_zero_heat_water_rewards",
+    )
 
 
 if __name__ == "__main__":
