@@ -93,6 +93,19 @@ def equal_count_bins(values: np.ndarray, count: int) -> list[np.ndarray]:
     return bins
 
 
+def reward_bins(values: np.ndarray, count: int) -> list[tuple[int, np.ndarray]]:
+    assert (values >= 0).all()
+    zero = np.flatnonzero(values == 0)
+    positive = np.flatnonzero(values > 0)
+    bins = [(0, zero)] if len(zero) else []
+    bins.extend(
+        (bin_idx, positive[indices])
+        for bin_idx, indices in enumerate(equal_count_bins(values[positive], count), 1)
+    )
+    assert sum(len(indices) for _, indices in bins) == len(values)
+    return bins
+
+
 def percent(numerator: int, denominator: int) -> float:
     return 100 * numerator / denominator if denominator else float("nan")
 
@@ -133,7 +146,7 @@ def print_heat_water(assignments: np.ndarray, variables: np.ndarray, rooms: list
             reward_name = f"reward_{reward_family}_{tier}"
             assert reward_name in HEAT_WATER_REWARD_FIELDS
             rewards = variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(reward_name)]
-            for bin_idx, episodes in enumerate(equal_count_bins(rewards, REWARD_BIN_COUNT), 1):
+            for bin_idx, episodes in reward_bins(rewards, REWARD_BIN_COUNT):
                 selected = assignments[episodes][:, room_idx]
                 preferred = selected == preferred_area
                 total = selected.size
