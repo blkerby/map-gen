@@ -3,7 +3,14 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from train_config import Config, VariableRange, VariableSchedule, instantiate_scheduleable_config, validate_config
+from train_config import (
+    Config,
+    VariableMixture,
+    VariableRange,
+    VariableSchedule,
+    instantiate_scheduleable_config,
+    validate_config,
+)
 
 
 def load_debug_config() -> dict:
@@ -182,6 +189,38 @@ def test_area_targets_require_six_finite_values_and_instantiate_schedules() -> N
         raise AssertionError("target_area_tiles should reject negative values")
 
 
+def test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values() -> None:
+    config_data = load_debug_config()
+    config_data["generation"]["reward_area_tiles"] = {
+        "mixture": [
+            {"weight": {"linear": [0.25, 0.75]}, "value": 0.0},
+            {
+                "weight": 1.0,
+                "value": {"linear": {"min": [1.0, 2.0], "max": [3.0, 4.0]}},
+            },
+        ]
+    }
+    config = Config.model_validate(config_data)
+    validate_config(config)
+    instantiated = instantiate_scheduleable_config(config, 320)
+    mixture = instantiated.generation.reward_area_tiles
+    assert isinstance(mixture, VariableMixture)
+    assert mixture.mixture[0].weight == 0.5
+    value = mixture.mixture[1].value
+    assert isinstance(value, VariableSchedule)
+    assert isinstance(value.linear, VariableRange)
+    assert value.linear.min == 1.5
+    assert value.linear.max == 3.5
+
+    config_data["generation"]["reward_area_tiles"]["mixture"][0]["weight"] = -1.0
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "reward_area_tiles.mixture[0].weight" in str(err)
+    else:
+        raise AssertionError("mixture weights should reject negative values")
+
+
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
     test_vanilla_area_probability_is_required_and_bounded()
@@ -192,6 +231,7 @@ def main() -> None:
     test_max_candidate_areas_per_placement_must_be_in_range()
     test_num_scored_invalid_candidates_must_fit_shortlist()
     test_area_targets_require_six_finite_values_and_instantiate_schedules()
+    test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values()
 
 
 if __name__ == "__main__":

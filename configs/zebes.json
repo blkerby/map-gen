@@ -84,10 +84,16 @@
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_maridia_water_max_1": 0.25,
     "reward_maridia_water_max_2": 0.5,
-    "reward_maridia_water_max_3": 0.75,
+    "reward_maridia_water_3": {"mixture": [
+      {"weight": 0.5, "value": 0.0},
+      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 0.75}}}
+    ]},
     "reward_norfair_heat_max_1": 0.25,
     "reward_norfair_heat_max_2": 0.5,
-    "reward_norfair_heat_max_3": 0.75,
+    "reward_norfair_heat_3": {"mixture": [
+      {"weight": 0.5, "value": 0.0},
+      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 0.75}}}
+    ]},
     "maridia_water_floor_scale": 3.0,
     "norfair_heat_floor_scale": 3.0,
     "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},

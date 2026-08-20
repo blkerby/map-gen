@@ -30,7 +30,19 @@ class VariableSchedule(StrictBaseModel):
 
 type ScheduleableFloat = float | Schedule
 type ScheduleableInt = int | Schedule
-type VariableFloat = float | VariableSchedule
+type VariableFloatValue = float | VariableSchedule
+
+
+class VariableMixtureComponent(StrictBaseModel):
+    weight: ScheduleableFloat
+    value: VariableFloatValue
+
+
+class VariableMixture(StrictBaseModel):
+    mixture: Annotated[list[VariableMixtureComponent], Field(min_length=1)]
+
+
+type VariableFloat = VariableFloatValue | VariableMixture
 type AreaVariableFloats = Annotated[list[VariableFloat], Field(min_length=6, max_length=6)]
 
 AREA_TARGET_FIELDS = ("target_area_tiles", "target_area_x", "target_area_y")
@@ -55,7 +67,10 @@ HEAT_WATER_REWARD_FIELDS = tuple(
 HEAT_WATER_MAX_FIELDS = tuple(
     f"reward_{family}_max_{tier}"
     for family in HEAT_WATER_FAMILIES
-    for tier in range(1, 4)
+    for tier in range(1, 3)
+)
+HEAT_WATER_TIER_3_FIELDS = tuple(
+    f"reward_{family}_3" for family in HEAT_WATER_FAMILIES
 )
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
@@ -170,10 +185,10 @@ class GenerationConfig(StrictBaseModel):
     reward_graph_diameter: VariableFloat
     reward_maridia_water_max_1: ScheduleableFloat
     reward_maridia_water_max_2: ScheduleableFloat
-    reward_maridia_water_max_3: ScheduleableFloat
+    reward_maridia_water_3: VariableFloat
     reward_norfair_heat_max_1: ScheduleableFloat
     reward_norfair_heat_max_2: ScheduleableFloat
-    reward_norfair_heat_max_3: ScheduleableFloat
+    reward_norfair_heat_3: VariableFloat
     maridia_water_floor_scale: ScheduleableFloat
     norfair_heat_floor_scale: ScheduleableFloat
     reward_save_distance: VariableFloat
@@ -421,6 +436,26 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
         return float(value)
 
     def instantiate_variable_float(value: VariableFloat, path: str) -> VariableFloat:
+        if isinstance(value, VariableMixture):
+            return value.model_copy(
+                update={
+                    "mixture": [
+                        component.model_copy(
+                            update={
+                                "weight": instantiate_float(
+                                    component.weight,
+                                    f"{path}.mixture[{index}].weight",
+                                ),
+                                "value": instantiate_variable_float(
+                                    component.value,
+                                    f"{path}.mixture[{index}].value",
+                                ),
+                            }
+                        )
+                        for index, component in enumerate(value.mixture)
+                    ]
+                }
+            )
         if isinstance(value, VariableSchedule):
             if (value.linear is None) == (value.log is None):
                 raise ValueError(f"{path} must have exactly one schedule value: 'linear' or 'log'")
@@ -627,6 +662,11 @@ def validate_config(config: Config) -> None:
             getattr(config.generation, field_name),
             f"generation.{field_name}",
         )
+    for field_name in HEAT_WATER_TIER_3_FIELDS:
+        validate_nonnegative_variable_float(
+            getattr(config.generation, field_name),
+            f"generation.{field_name}",
+        )
     for family in HEAT_WATER_FAMILIES:
         field_name = f"{family}_floor_scale"
         validate_nonnegative_scheduleable_float(
@@ -802,6 +842,35 @@ def validate_nonnegative_scheduleable_float(value: ScheduleableFloat, path: str)
         raise ValueError(f"{path} must be greater than or equal to zero")
 
 
+def validate_variable_mixture_weights(value: VariableMixture, path: str) -> None:
+    for index, component in enumerate(value.mixture):
+        weight_path = f"{path}.mixture[{index}].weight"
+        validate_nonnegative_scheduleable_float(component.weight, weight_path)
+        if isinstance(component.weight, Schedule):
+            weights = (
+                component.weight.linear
+                if component.weight.linear is not None
+                else component.weight.log
+            )
+        else:
+            weights = [component.weight]
+        if weights is not None:
+            for weight_index, weight in enumerate(weights):
+                if not math.isfinite(weight):
+                    suffix = f"[{weight_index}]" if isinstance(component.weight, Schedule) else ""
+                    raise ValueError(f"{weight_path}{suffix} must be finite")
+                if isinstance(component.weight, Schedule) and component.weight.log is not None:
+                    if weight <= 0.0:
+                        raise ValueError(
+                            f"{weight_path}[{weight_index}] must be greater than zero "
+                            "for a log schedule"
+                        )
+    if all(not isinstance(component.weight, Schedule) for component in value.mixture) and not any(
+        float(component.weight) > 0.0 for component in value.mixture
+    ):
+        raise ValueError(f"{path}.mixture must have a positive total weight")
+
+
 def validate_nonnegative_variable_float(value: VariableFloat, path: str) -> None:
     def validate_endpoint(endpoint: VariableEndpoint, endpoint_path: str) -> None:
         if isinstance(endpoint, list):
@@ -814,6 +883,14 @@ def validate_nonnegative_variable_float(value: VariableFloat, path: str) -> None
         if endpoint < 0:
             raise ValueError(f"{endpoint_path} must be greater than or equal to zero")
 
+    if isinstance(value, VariableMixture):
+        validate_variable_mixture_weights(value, path)
+        for index, component in enumerate(value.mixture):
+            validate_nonnegative_variable_float(
+                component.value,
+                f"{path}.mixture[{index}].value",
+            )
+        return
     if isinstance(value, VariableSchedule):
         values = value.linear if value.linear is not None else value.log
         if values is None:
@@ -839,6 +916,14 @@ def validate_finite_endpoint(value: VariableEndpoint, path: str) -> None:
 
 
 def validate_finite_variable_float(value: VariableFloat, path: str) -> None:
+    if isinstance(value, VariableMixture):
+        validate_variable_mixture_weights(value, path)
+        for index, component in enumerate(value.mixture):
+            validate_finite_variable_float(
+                component.value,
+                f"{path}.mixture[{index}].value",
+            )
+        return
     if isinstance(value, VariableSchedule):
         values = value.linear if value.linear is not None else value.log
         if values is None:
@@ -862,6 +947,14 @@ def validate_positive_variable_float(value: VariableFloat, path: str) -> None:
         if endpoint <= 0.0:
             raise ValueError(f"{endpoint_path} must be greater than zero")
 
+    if isinstance(value, VariableMixture):
+        validate_variable_mixture_weights(value, path)
+        for index, component in enumerate(value.mixture):
+            validate_positive_variable_float(
+                component.value,
+                f"{path}.mixture[{index}].value",
+            )
+        return
     if isinstance(value, VariableSchedule):
         values = value.linear if value.linear is not None else value.log
         if values is None:

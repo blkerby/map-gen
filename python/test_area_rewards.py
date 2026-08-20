@@ -10,6 +10,7 @@ from train import (
     compute_heat_water_tier_tile_counts,
     compute_unforced_special_room_area_ss,
     create_generate_config,
+    variable_float_metric_value,
 )
 from model import Predictions
 from train_config import (
@@ -310,6 +311,10 @@ def test_training_samples_use_top_down_heat_water_coefficients() -> None:
     config = instantiate_scheduleable_config(
         Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
     )
+    assert variable_float_metric_value(
+        config.generation.reward_maridia_water_3,
+        "generation.reward_maridia_water_3",
+    ) == 0.1875
     generate_config = create_generate_config(
         config,
         episode_length=4,
@@ -321,19 +326,25 @@ def test_training_samples_use_top_down_heat_water_coefficients() -> None:
             json.loads(Path("room_definitions/zebes.json").read_text())
         ),
     )
+    zero_masks = []
     for family, coefficients in (
         ("maridia_water", generate_config.reward_maridia_water),
         ("norfair_heat", generate_config.reward_norfair_heat),
     ):
         assert torch.all(coefficients[:, 1:] >= coefficients[:, :-1])
-        assert torch.all(coefficients <= torch.tensor([0.3, 0.7, 1.0]))
-        tier_3_low_fraction = (coefficients[:, 2] < 0.1).to(torch.float32).mean()
-        assert 0.08 < tier_3_low_fraction < 0.12
+        assert torch.all(coefficients <= torch.tensor([0.25, 0.5, 0.75]))
+        zero_mask = coefficients[:, 2] == 0.0
+        zero_fraction = zero_mask.to(torch.float32).mean()
+        assert 0.47 < zero_fraction < 0.53
+        assert torch.all(coefficients[zero_mask] == 0.0)
+        zero_masks.append(zero_mask)
         indices = [
             GENERATION_VARIABLE_FLOAT_FIELDS.index(f"reward_{family}_{tier}")
             for tier in range(1, 4)
         ]
         assert torch.equal(generate_config.generation_variable_floats[:, indices], coefficients)
+    joint_zero_fraction = (zero_masks[0] & zero_masks[1]).to(torch.float32).mean()
+    assert 0.23 < joint_zero_fraction < 0.27
     vanilla_reward_indices = [
         GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_REWARD_FIELDS
     ]
@@ -367,7 +378,8 @@ def test_heat_water_rewards_floor_area_tile_targets_before_normalization() -> No
         ("maridia_water", 4, generate_config.reward_maridia_water),
         ("norfair_heat", 2, generate_config.reward_norfair_heat),
     ):
-        floor = 1.5 * (rewards @ rewards.new_tensor(tier_tile_counts[family]))
+        floor_scale = getattr(config.generation, f"{family}_floor_scale")
+        floor = floor_scale * (rewards @ rewards.new_tensor(tier_tile_counts[family]))
         raw_targets[:, area] = torch.maximum(raw_targets[:, area], floor)
     expected = raw_targets * 6 / raw_targets.sum(dim=1, keepdim=True)
     torch.testing.assert_close(generate_config.target_area_tiles, expected)

@@ -68,6 +68,7 @@ from train_config import (
     MuonOptimizerConfig,
     OptimizerConfig,
     VariableFloat,
+    VariableMixture,
     VariableRange,
     VariableSchedule,
     episodes_per_round,
@@ -419,7 +420,26 @@ def optimizer_metric_values(config: OptimizerConfig) -> dict[str, float]:
     return {"lr": config.lr}
 
 
+def variable_mixture_weights(value: VariableMixture, path: str) -> list[float]:
+    weights = [float(component.weight) for component in value.mixture]
+    if any(not math.isfinite(weight) or weight < 0.0 for weight in weights):
+        raise ValueError(f"{path}.mixture weights must be finite and nonnegative")
+    if sum(weights) <= 0.0:
+        raise ValueError(f"{path}.mixture must have a positive total weight")
+    return weights
+
+
 def variable_float_metric_value(value: VariableFloat, path: str) -> float:
+    if isinstance(value, VariableMixture):
+        weights = variable_mixture_weights(value, path)
+        return sum(
+            weight
+            * variable_float_metric_value(
+                component.value,
+                f"{path}.mixture[{index}].value",
+            )
+            for index, (weight, component) in enumerate(zip(weights, value.mixture, strict=True))
+        ) / sum(weights)
     if isinstance(value, VariableSchedule):
         if (value.linear is None) == (value.log is None):
             raise ValueError(f"{path} must have exactly one value: 'linear' or 'log'")
@@ -498,6 +518,24 @@ def create_generate_config(
     heat_water_tier_tile_counts: dict[str, tuple[int, int, int]],
 ) -> GenerateConfig:
     def variable_float_tensor(value: VariableFloat, path: str) -> torch.Tensor:
+        if isinstance(value, VariableMixture):
+            weights = torch.tensor(
+                variable_mixture_weights(value, path),
+                dtype=torch.float32,
+                device=device,
+            )
+            component_idx = torch.multinomial(weights, num_envs, replacement=True)
+            component_values = torch.stack(
+                [
+                    variable_float_tensor(
+                        component.value,
+                        f"{path}.mixture[{index}].value",
+                    )
+                    for index, component in enumerate(value.mixture)
+                ],
+                dim=1,
+            )
+            return torch.gather(component_values, 1, component_idx.unsqueeze(1)).squeeze(1)
         if isinstance(value, VariableSchedule):
             if (value.linear is None) == (value.log is None):
                 raise ValueError(f"{path} must have exactly one value: 'linear' or 'log'")
@@ -622,11 +660,14 @@ def create_generate_config(
     for family in HEAT_WATER_FAMILIES:
         maxima = [
             float(getattr(config.generation, f"reward_{family}_max_{tier}"))
-            for tier in range(1, 4)
+            for tier in range(1, 3)
         ]
         if maxima != sorted(maxima):
             raise ValueError(f"generation.reward_{family}_max values must be nondecreasing")
-        tier_3 = torch.rand([num_envs], device=device) * maxima[2]
+        tier_3 = variable_float_tensor(
+            getattr(config.generation, f"reward_{family}_3"),
+            f"generation.reward_{family}_3",
+        )
         tier_2 = torch.rand([num_envs], device=device) * torch.clamp(tier_3, max=maxima[1])
         tier_1 = torch.rand([num_envs], device=device) * torch.clamp(tier_2, max=maxima[0])
         coefficients = torch.stack([tier_1, tier_2, tier_3], dim=1)
