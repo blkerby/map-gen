@@ -9,6 +9,8 @@ from loss import (
     compute_balance_score_tables,
     compute_balance_score_target_logits,
     compute_room_area_balance_score_target_logits,
+    compute_proposal_area_balance_score_residual,
+    compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
     compute_step_balance_score_target_logits,
@@ -288,6 +290,31 @@ def test_proposal_balance_residual_adds_both_door_directions() -> None:
     assert torch.count_nonzero(residual[1, [2, 3, 4, 5]]) == 0
 
 
+def test_proposal_area_balance_residual_uses_tied_room_score() -> None:
+    room_area_score_table = torch.arange(3 * AREA_COUNT, dtype=torch.float32).reshape(
+        1, 3, AREA_COUNT
+    )
+    room_area_score_table[:, 1] = room_area_score_table[:, 0]
+    proposal_score_table = compute_proposal_area_balance_score_table(
+        room_area_score_table,
+        exempt_room=torch.tensor([[True, True, False]]),
+        door_room_idx=torch.tensor([0, 1, 2]),
+        door_output_variant_idx=torch.tensor([0, 0, 1]),
+        num_door_variants=2,
+    )
+    residual = compute_proposal_area_balance_score_residual(
+        proposal_score_table,
+        row_snapshot_idx=torch.tensor([0, 0]),
+        reward_area_balance=torch.tensor([0.25]),
+    ).reshape(2, 2, AREA_COUNT)
+
+    assert torch.count_nonzero(residual[:, 0]) == 0
+    torch.testing.assert_close(
+        residual[:, 1],
+        -0.25 * room_area_score_table[:, 2].expand(2, -1),
+    )
+
+
 def test_balance_ss_materializes_concrete_pair_probabilities() -> None:
     preds = example_predictions()
     expanded_left = expand_direction_balance_probabilities(
@@ -372,6 +399,7 @@ def main() -> None:
     test_balance_target_scores_expand_variant_probabilities_to_concrete_matches()
     test_main_balance_kl_restores_uniform_log_odds_offset()
     test_proposal_balance_residual_adds_both_door_directions()
+    test_proposal_area_balance_residual_uses_tied_room_score()
     test_balance_ss_materializes_concrete_pair_probabilities()
 
 

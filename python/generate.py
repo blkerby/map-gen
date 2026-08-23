@@ -27,6 +27,8 @@ from env import (
 from loss import (
     BalanceScoreTables,
     compute_balance_score_tables,
+    compute_proposal_area_balance_score_residual,
+    compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
     compute_step_balance_score_target_logits,
@@ -391,6 +393,7 @@ class GenerationGroup:
     balance_score_tables: BalanceScoreTables
     area_balance_exempt_room: torch.Tensor
     proposal_balance_score_table: torch.Tensor
+    proposal_area_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
     previous_proposal_scores: ProposalCache | None
     score_result_queue: Queue[CandidateScoreResult]
@@ -1621,6 +1624,11 @@ def compute_group_proposal_shortlist(
             row_snapshot_idx,
             group.config.reward_balance,
         )
+        proposal_balance_residual += compute_proposal_area_balance_score_residual(
+            group.proposal_area_balance_score_table,
+            row_snapshot_idx,
+            group.config.reward_area_balance,
+        )
         proposal_scores = proposal_scores.to(torch.float32) + proposal_balance_residual
         shared.profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
         profile_time = profile_start(profile)
@@ -2192,6 +2200,7 @@ def run_generation_groups(
     profiler = GenerationProfiler(profile)
     transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
     num_rooms = len(envs[0].engine.rooms)
+    output_metadata = envs[0].engine.get_output_metadata()
     gpu_prefetch_batches = configs[0].gpu_prefetch_batches
     if any(config.gpu_prefetch_batches != gpu_prefetch_batches for config in configs):
         raise ValueError("generation groups require matching gpu_prefetch_batches")
@@ -2207,6 +2216,36 @@ def run_generation_groups(
         )
         for balance_preds, score_tables in zip(balance_predictions, balance_score_tables)
     ]
+    area_balance_exempt_rooms = [
+        forced_special_room_mask(
+            env.engine.rooms,
+            config.vanilla_area_constraint_mask,
+        )
+        for env, config in zip(envs, configs)
+    ]
+    door_room_idx = torch.tensor(
+        [room_idx for room_idx, _ in output_metadata.door],
+        dtype=torch.int64,
+        device=device,
+    )
+    door_output_variant_idx = torch.tensor(
+        [variant_idx for _, variant_idx in output_metadata.door],
+        dtype=torch.int64,
+        device=device,
+    )
+    proposal_area_balance_score_tables = [
+        compute_proposal_area_balance_score_table(
+            score_tables.room_area,
+            exempt_room,
+            door_room_idx,
+            door_output_variant_idx,
+            output_metadata.num_door_variants,
+        )
+        for score_tables, exempt_room in zip(
+            balance_score_tables,
+            area_balance_exempt_rooms,
+        )
+    ]
     groups = [
         GenerationGroup(
             env=env,
@@ -2216,21 +2255,29 @@ def run_generation_groups(
             candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
             balance_preds=balance_preds,
             balance_score_tables=score_tables,
-            area_balance_exempt_room=forced_special_room_mask(
-                env.engine.rooms,
-                config.vanilla_area_constraint_mask,
-            ),
+            area_balance_exempt_room=exempt_room,
             proposal_balance_score_table=proposal_score_table,
+            proposal_area_balance_score_table=proposal_area_score_table,
             previous_lookahead_outcomes=None,
             previous_proposal_scores=None,
             score_result_queue=Queue(maxsize=1),
         )
-        for env, config, balance_preds, score_tables, proposal_score_table in zip(
+        for (
+            env,
+            config,
+            balance_preds,
+            score_tables,
+            exempt_room,
+            proposal_score_table,
+            proposal_area_score_table,
+        ) in zip(
             envs,
             configs,
             balance_predictions,
             balance_score_tables,
+            area_balance_exempt_rooms,
             proposal_balance_score_tables,
+            proposal_area_balance_score_tables,
         )
     ]
     group_outputs = [
@@ -2258,7 +2305,6 @@ def run_generation_groups(
         "proposal_exhausted_rows": 0.0,
     }
     cancellation_event = threading.Event()
-    output_metadata = envs[0].engine.get_output_metadata()
     shared = PipelineSharedState(
         profiler=profiler,
         stat_totals=stat_totals,

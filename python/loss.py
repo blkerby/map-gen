@@ -1112,6 +1112,41 @@ def compute_proposal_balance_score_residual(
     )
 
 
+def compute_proposal_area_balance_score_table(
+    room_area_score_table: torch.Tensor,
+    exempt_room: torch.Tensor,
+    door_room_idx: torch.Tensor,
+    door_output_variant_idx: torch.Tensor,
+    num_door_variants: int,
+) -> torch.Tensor:
+    representative_door_idx = first_concrete_door_idx_by_variant(
+        door_output_variant_idx,
+        num_door_variants,
+    )
+    proposal_room_idx = door_room_idx[representative_door_idx]
+    scores = room_area_score_table[:, proposal_room_idx]
+    return torch.where(
+        exempt_room[:, proposal_room_idx].unsqueeze(-1),
+        0.0,
+        scores,
+    ).flatten(1)
+
+
+def compute_proposal_area_balance_score_residual(
+    proposal_score_table: torch.Tensor,
+    row_snapshot_idx: torch.Tensor,
+    reward_area_balance: float | torch.Tensor,
+) -> torch.Tensor:
+    device = proposal_score_table.device
+    row_snapshot_idx = row_snapshot_idx.to(device=device, dtype=torch.int64)
+    reward_tensor = torch.as_tensor(
+        reward_area_balance,
+        dtype=torch.float32,
+        device=device,
+    ).expand(proposal_score_table.shape[0])
+    return -reward_tensor[row_snapshot_idx].unsqueeze(1) * proposal_score_table[row_snapshot_idx]
+
+
 def compute_toilet_balance_score_target_logits(
     preds: BalancePredictions,
     toilet_crossed_room_idx: torch.Tensor,
