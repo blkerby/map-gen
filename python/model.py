@@ -1198,7 +1198,8 @@ class BalanceModel(torch.nn.Module):
         down_count: int,
         door_output_variant_idx: torch.Tensor,
         door_variant_compatibility: torch.Tensor,
-        num_rooms: int,
+        room_connection_variant_idx: torch.Tensor,
+        num_room_connection_variants: int,
         hidden_width: int,
         num_layers: int,
     ):
@@ -1211,7 +1212,20 @@ class BalanceModel(torch.nn.Module):
         self.right_count = right_count
         self.up_count = up_count
         self.down_count = down_count
-        self.num_rooms = num_rooms
+        if room_connection_variant_idx.ndim != 1:
+            raise ValueError("room_connection_variant_idx must contain one variant per room")
+        if num_room_connection_variants <= 0:
+            raise ValueError("num_room_connection_variants must be greater than zero")
+        if torch.any(room_connection_variant_idx < 0) or torch.any(
+            room_connection_variant_idx >= num_room_connection_variants
+        ):
+            raise ValueError("room_connection_variant_idx contains an out-of-range variant")
+        self.num_rooms = room_connection_variant_idx.numel()
+        self.num_room_connection_variants = num_room_connection_variants
+        self.register_buffer(
+            "room_connection_variant_idx",
+            room_connection_variant_idx.to(torch.int64),
+        )
         door_count = left_count + right_count + up_count + down_count
         if door_output_variant_idx.shape != (door_count,):
             raise ValueError(
@@ -1277,8 +1291,8 @@ class BalanceModel(torch.nn.Module):
             + self.right_variant_count * self.left_variant_count
             + self.up_variant_count * self.down_variant_count
             + self.down_variant_count * self.up_variant_count
-            + num_rooms
-            + num_rooms * AREA_COUNT
+            + self.num_rooms
+            + num_room_connection_variants * AREA_COUNT
         )
 
         layers: list[torch.nn.Module] = []
@@ -1335,11 +1349,12 @@ class BalanceModel(torch.nn.Module):
         offset += down_size
         toilet_crossed_room = raw[:, offset : offset + self.num_rooms]
         offset += self.num_rooms
-        room_area = raw[:, offset:].reshape(
+        room_area_by_variant = raw[:, offset:].reshape(
             generation_variable_floats.shape[0],
-            self.num_rooms,
+            self.num_room_connection_variants,
             AREA_COUNT,
         )
+        room_area = room_area_by_variant[:, self.room_connection_variant_idx]
         return BalancePredictions(
             left=left,
             right=right,

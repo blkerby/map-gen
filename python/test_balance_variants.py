@@ -76,17 +76,22 @@ def test_balance_model_outputs_direction_local_variant_pairs() -> None:
         down_count=1,
         door_output_variant_idx=torch.tensor([10, 10, 11, 20, 21, 21, 30, 40]),
         door_variant_compatibility=torch.ones((41, 41), dtype=torch.bool),
-        num_rooms=2,
+        room_connection_variant_idx=torch.tensor([0, 0, 1]),
+        num_room_connection_variants=2,
         hidden_width=4,
         num_layers=1,
     )
+    with torch.no_grad():
+        model.net[-1].bias[-2 * AREA_COUNT :] = torch.arange(2 * AREA_COUNT)
     preds = model(torch.zeros((1, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
 
     assert preds.left.shape == (1, 2, 2)
     assert preds.right.shape == (1, 2, 2)
     assert preds.up.shape == (1, 1, 1)
     assert preds.down.shape == (1, 1, 1)
-    assert preds.room_area.shape == (1, 2, AREA_COUNT)
+    assert preds.room_area.shape == (1, 3, AREA_COUNT)
+    assert torch.equal(preds.room_area[0, 0], preds.room_area[0, 1])
+    assert not torch.equal(preds.room_area[0, 0], preds.room_area[0, 2])
     assert preds.left_door_variant_idx.tolist() == [0, 0, 1]
     assert preds.right_door_variant_idx.tolist() == [0, 1, 1]
     assert preds.left_global_door_variant_idx.tolist() == [10, 11]

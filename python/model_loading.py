@@ -87,7 +87,11 @@ def create_balance_model(
             dtype=torch.int64,
         ),
         door_variant_compatibility=output_metadata.door_variant_compatibility,
-        num_rooms=len(rooms),
+        room_connection_variant_idx=torch.tensor(
+            output_metadata.room_connection_variant_idx,
+            dtype=torch.int64,
+        ),
+        num_room_connection_variants=output_metadata.num_room_connection_variants,
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,
     ).to(device)
