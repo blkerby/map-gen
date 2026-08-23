@@ -86,6 +86,17 @@ def test_proposal_target_temperature_must_be_positive() -> None:
         raise AssertionError("train.proposal_target_temperature should reject zero")
 
 
+def test_gradient_accumulation_steps_instantiates_schedule() -> None:
+    config_data = load_debug_config()
+    config_data["train"]["gradient_accumulation_steps"] = {"linear": [1, 3]}
+    config = Config.model_validate(config_data)
+    validate_config(config)
+
+    instantiated = instantiate_scheduleable_config(config, 320)
+
+    assert instantiated.train.gradient_accumulation_steps == 2
+
+
 def test_generation_area_bounding_box_fields_must_be_positive() -> None:
     config_data = load_debug_config()
     config_data["generation"]["area_bounding_box_height"] = 0
@@ -227,6 +238,7 @@ def main() -> None:
     test_recommended_candidates_same_frontier_is_required()
     test_proposal_target_temperature_is_required()
     test_proposal_target_temperature_must_be_positive()
+    test_gradient_accumulation_steps_instantiates_schedule()
     test_generation_area_bounding_box_fields_must_be_positive()
     test_max_candidate_areas_per_placement_must_be_in_range()
     test_num_scored_invalid_candidates_must_fit_shortlist()

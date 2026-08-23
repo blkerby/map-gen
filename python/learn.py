@@ -1584,7 +1584,7 @@ def train_round(
     remaining_batches = len(train_batch_tasks)
     while remaining_batches > 0:
         group_size = min(
-            context.config.train.gradient_accumulation_steps,
+            context.step_config.train.gradient_accumulation_steps,
             remaining_batches,
         )
         total_balance_loss, train_batch_count = add_completed_batch_group(

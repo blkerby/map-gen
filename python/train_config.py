@@ -347,7 +347,7 @@ class TrainConfig(StrictBaseModel):
     proposal_target_temperature: ScheduleableFloat
     ema_decay: ScheduleableFloat
     pipeline_groups: int
-    gradient_accumulation_steps: int
+    gradient_accumulation_steps: ScheduleableInt
     shuffle_buffer_batches: int
 
 
@@ -718,7 +718,10 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.sample_period must be greater than zero")
     if config.train.pipeline_groups <= 0:
         raise ValueError("train.pipeline_groups must be greater than zero")
-    if config.train.gradient_accumulation_steps <= 0:
+    if (
+        isinstance(config.train.gradient_accumulation_steps, int)
+        and config.train.gradient_accumulation_steps <= 0
+    ):
         raise ValueError("train.gradient_accumulation_steps must be greater than zero")
     if config.train.shuffle_buffer_batches <= 0:
         raise ValueError("train.shuffle_buffer_batches must be greater than zero")
