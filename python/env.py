@@ -1185,6 +1185,34 @@ class Engine:
         self.rooms = rooms
         self.output_metadata = self._load_output_metadata()
 
+    def compute_balance_targets(
+        self,
+        actions: Actions,
+        device: torch.device,
+    ) -> tuple[DoorMatches, torch.Tensor]:
+        result = self.engine.compute_balance_targets(
+            map_gen.BalanceTargetInputs(
+                {
+                    "room_idx": actions.room_idx.contiguous().cpu().numpy(),
+                    "room_x": actions.room_x.contiguous().cpu().numpy(),
+                    "room_y": actions.room_y.contiguous().cpu().numpy(),
+                    "room_area": actions.room_area.contiguous().cpu().numpy(),
+                }
+            )
+        )
+        return (
+            DoorMatches(
+                left=torch.from_numpy(result.left).to(device=device, dtype=torch.int64),
+                right=torch.from_numpy(result.right).to(device=device, dtype=torch.int64),
+                up=torch.from_numpy(result.up).to(device=device, dtype=torch.int64),
+                down=torch.from_numpy(result.down).to(device=device, dtype=torch.int64),
+            ),
+            torch.from_numpy(result.toilet_crossed_room_idx).to(
+                device=device,
+                dtype=torch.int64,
+            ),
+        )
+
     def create_environment_group(
         self,
         map_size: tuple[int, int],

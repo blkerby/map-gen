@@ -6301,7 +6301,87 @@ fn merge_known_area_bucket(
     }
 }
 
-fn room_crosses_toilet(
+pub(crate) fn compute_balance_target_row(
+    common: &CommonData,
+    actions: &[Action],
+    door_matches: [&mut [i16]; NUM_DIRS],
+) -> Result<i16, String> {
+    let mut unmatched_doors = HashMap::new();
+    let mut placed = vec![false; common.room.len()];
+    let mut placed_actions = Vec::with_capacity(actions.len());
+    let mut finished = false;
+
+    for &action in actions {
+        if action.room_idx as usize >= common.room.len() {
+            if action.area != DUMMY_AREA {
+                return Err(format!(
+                    "dummy action must use room area {DUMMY_AREA}, got {}",
+                    action.area
+                ));
+            }
+            finished = true;
+            continue;
+        }
+        if finished {
+            return Err("real action appears after a dummy action".to_string());
+        }
+        if action.area as usize >= AREA_COUNT {
+            return Err(format!(
+                "real action room area must be in 0..{AREA_COUNT}, got {}",
+                action.area
+            ));
+        }
+        let room_idx = action.room_idx as usize;
+        if placed[room_idx] {
+            return Err(format!("room {room_idx} is placed more than once"));
+        }
+        placed[room_idx] = true;
+        placed_actions.push(action);
+
+        for door in &common.room[room_idx].doors {
+            let location = DoorLocation::new(door, action.x, action.y);
+            if let Some((other_direction, other_idx)) = unmatched_doors.remove(&location) {
+                if other_direction != door.direction.opposite() {
+                    return Err(format!(
+                        "doors at {location:?} do not have opposite directions"
+                    ));
+                }
+                door_matches[door.direction as usize][door.dir_door_idx as usize] =
+                    i16::from(other_idx);
+                door_matches[other_direction as usize][other_idx as usize] =
+                    i16::from(door.dir_door_idx);
+            } else {
+                unmatched_doors.insert(location, (door.direction, door.dir_door_idx));
+            }
+        }
+    }
+
+    let Some(toilet_room_idx) = common.toilet_room_idx() else {
+        return Ok(-1);
+    };
+    if !placed[toilet_room_idx as usize] {
+        return Ok(-1);
+    }
+    let toilet_action = placed_actions
+        .iter()
+        .find(|action| action.room_idx == toilet_room_idx)
+        .expect("placed toilet room must have an action");
+    let mut crossed_room_idx = -1;
+    for &action in &placed_actions {
+        if action.room_idx == toilet_room_idx {
+            continue;
+        }
+        if room_crosses_toilet(common, action, toilet_action.x, toilet_action.y) {
+            if crossed_room_idx >= 0 {
+                return Ok(-1);
+            }
+            crossed_room_idx = i16::from(action.room_idx);
+        }
+    }
+    Ok(crossed_room_idx)
+}
+
+pub(crate) fn room_crosses_toilet(
     common: &CommonData,
     action: Action,
     toilet_x: Coord,

@@ -11,7 +11,7 @@ use crate::environment::Features;
 use crate::environment::{
     AreaBucketOutcome, AreaSizeLimits, Environment, FEATURE_FRONTIER_WIDTH, FeatureConfig,
     FeaturePlan, FeaturePlanKind, FeatureScratch, FrontierNeighborAlgorithm,
-    write_frontier_neighbors,
+    compute_balance_target_row, write_frontier_neighbors,
 };
 use crossbeam_channel as channel;
 use numpy::{Element, IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray1};
@@ -1838,6 +1838,23 @@ pub struct EnvironmentGroup {
 }
 
 #[pyclass(module = "map_gen")]
+pub struct BalanceTargetInputs {
+    room_idx: Py<PyArray2<RoomIdx>>,
+    room_x: Py<PyArray2<Coord>>,
+    room_y: Py<PyArray2<Coord>>,
+    room_area: Py<PyArray2<AreaIdx>>,
+}
+
+#[pyclass(module = "map_gen")]
+pub struct BalanceTargets {
+    left: Py<PyArray2<i16>>,
+    right: Py<PyArray2<i16>>,
+    up: Py<PyArray2<i16>>,
+    down: Py<PyArray2<i16>>,
+    toilet_crossed_room_idx: Py<PyArray1<i16>>,
+}
+
+#[pyclass(module = "map_gen")]
 pub struct StepOutcomes {
     door_valid: Py<PyArray2<i8>>,
     connections_valid: Py<PyArray2<i8>>,
@@ -2267,6 +2284,47 @@ impl FeatureBuffers {
             row_frontier_idx: required_py_field!(fields, "row_frontier_idx"),
             row_door_output_idx: required_py_field!(fields, "row_door_output_idx"),
         })
+    }
+}
+
+#[pymethods]
+impl BalanceTargetInputs {
+    #[new]
+    fn new(fields: &Bound<'_, PyDict>) -> PyResult<Self> {
+        Ok(Self {
+            room_idx: required_py_field!(fields, "room_idx"),
+            room_x: required_py_field!(fields, "room_x"),
+            room_y: required_py_field!(fields, "room_y"),
+            room_area: required_py_field!(fields, "room_area"),
+        })
+    }
+}
+
+#[pymethods]
+impl BalanceTargets {
+    #[getter]
+    fn left(&self, py: Python<'_>) -> Py<PyArray2<i16>> {
+        self.left.clone_ref(py)
+    }
+
+    #[getter]
+    fn right(&self, py: Python<'_>) -> Py<PyArray2<i16>> {
+        self.right.clone_ref(py)
+    }
+
+    #[getter]
+    fn up(&self, py: Python<'_>) -> Py<PyArray2<i16>> {
+        self.up.clone_ref(py)
+    }
+
+    #[getter]
+    fn down(&self, py: Python<'_>) -> Py<PyArray2<i16>> {
+        self.down.clone_ref(py)
+    }
+
+    #[getter]
+    fn toilet_crossed_room_idx(&self, py: Python<'_>) -> Py<PyArray1<i16>> {
+        self.toilet_crossed_room_idx.clone_ref(py)
     }
 }
 
@@ -3857,6 +3915,82 @@ impl Engine {
                 min: min_area_size,
                 max: max_area_size,
             },
+        })
+    }
+
+    fn compute_balance_targets(
+        &self,
+        py: Python<'_>,
+        inputs: PyRef<'_, BalanceTargetInputs>,
+    ) -> PyResult<BalanceTargets> {
+        let room_idx_array = inputs.room_idx.bind(py).readonly();
+        let room_x_array = inputs.room_x.bind(py).readonly();
+        let room_y_array = inputs.room_y.bind(py).readonly();
+        let room_area_array = inputs.room_area.bind(py).readonly();
+        let shape = room_idx_array.as_array().shape().to_vec();
+        check_shape("room_x", room_x_array.as_array().shape(), &shape)?;
+        check_shape("room_y", room_y_array.as_array().shape(), &shape)?;
+        check_shape("room_area", room_area_array.as_array().shape(), &shape)?;
+        let episode_count = shape[0];
+        let action_count = shape[1];
+        let room_idx = room_idx_array
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_idx must be contiguous"))?;
+        let room_x = room_x_array
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_x must be contiguous"))?;
+        let room_y = room_y_array
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_y must be contiguous"))?;
+        let room_area = room_area_array
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("room_area must be contiguous"))?;
+
+        let left_count = self.common_data.room_dir_door[Direction::Left as usize].len();
+        let right_count = self.common_data.room_dir_door[Direction::Right as usize].len();
+        let up_count = self.common_data.room_dir_door[Direction::Up as usize].len();
+        let down_count = self.common_data.room_dir_door[Direction::Down as usize].len();
+        let mut left = vec![-1; episode_count * left_count];
+        let mut right = vec![-1; episode_count * right_count];
+        let mut up = vec![-1; episode_count * up_count];
+        let mut down = vec![-1; episode_count * down_count];
+        let mut toilet_crossed_room_idx = vec![-1; episode_count];
+
+        py.detach(|| {
+            let mut actions = Vec::with_capacity(action_count);
+            for episode_idx in 0..episode_count {
+                actions.clear();
+                let start = episode_idx * action_count;
+                let end = start + action_count;
+                for action_idx in start..end {
+                    actions.push(Action {
+                        room_idx: room_idx[action_idx],
+                        x: room_x[action_idx],
+                        y: room_y[action_idx],
+                        area: room_area[action_idx],
+                    });
+                }
+                toilet_crossed_room_idx[episode_idx] = compute_balance_target_row(
+                    &self.common_data,
+                    &actions,
+                    [
+                        &mut left[episode_idx * left_count..(episode_idx + 1) * left_count],
+                        &mut right[episode_idx * right_count..(episode_idx + 1) * right_count],
+                        &mut up[episode_idx * up_count..(episode_idx + 1) * up_count],
+                        &mut down[episode_idx * down_count..(episode_idx + 1) * down_count],
+                    ],
+                )?;
+            }
+            Ok::<(), String>(())
+        })
+        .map_err(PyValueError::new_err)?;
+
+        Ok(BalanceTargets {
+            left: pyarray2_from_flat_vec(py, left, episode_count, left_count)?.unbind(),
+            right: pyarray2_from_flat_vec(py, right, episode_count, right_count)?.unbind(),
+            up: pyarray2_from_flat_vec(py, up, episode_count, up_count)?.unbind(),
+            down: pyarray2_from_flat_vec(py, down, episode_count, down_count)?.unbind(),
+            toilet_crossed_room_idx: toilet_crossed_room_idx.into_pyarray(py).unbind(),
         })
     }
 

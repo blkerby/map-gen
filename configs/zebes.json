@@ -38,12 +38,12 @@
     }
   },
   "balance_model": {
-    "hidden_width": 64,
-    "num_layers": 1
+    "hidden_width": 1024,
+    "num_layers": 2
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.001, 0.0003, 0.00005, 0.00001, 0.000005]},
+    "lr": {"log": [0.0005, 0.0003, 0.0002, 0.0001, 0.00005]},
     "beta1": 0.95,
     "beta2": 0.99
   },

@@ -56,6 +56,59 @@ def one_tile_room(name: str, direction: str) -> dict:
     }
 
 
+def test_direct_balance_targets_match_replay() -> None:
+    rooms = [
+        one_tile_room("Right", "right"),
+        one_tile_room("Left", "left"),
+        {
+            "name": "Toilet",
+            "map": [[1], [1], [0], [0], [0], [0], [0], [0], [1], [1]],
+            "toilet_crossing_x": [],
+            "special_type": "toilet",
+            "doors": [],
+            "connections": [],
+            "missing_connections": [],
+        },
+    ]
+    engine = Engine(rooms, disabled_features(), 1, 100)
+    actions = Actions(
+        room_idx=torch.tensor([[2, 0, 1]], dtype=torch.uint8),
+        room_x=torch.tensor([[0, 0, 1]], dtype=torch.int8),
+        room_y=torch.tensor([[0, 2, 2]], dtype=torch.int8),
+        room_area=torch.tensor([[0, 0, 0]], dtype=torch.uint8),
+    )
+    device = torch.device("cpu")
+
+    direct_doors, direct_toilet = engine.compute_balance_targets(actions, device)
+
+    env = engine.create_environment_group(
+        map_size=(4, 12),
+        num_envs=1,
+        candidate_spatial_cell_size=4,
+        area_bounding_box_width=4,
+        area_bounding_box_height=12,
+        seed=0,
+        num_threads=1,
+    )
+    for step in range(actions.room_idx.shape[1]):
+        env.step_known(
+            Actions(
+                room_idx=actions.room_idx[:, step],
+                room_x=actions.room_x[:, step],
+                room_y=actions.room_y[:, step],
+                room_area=actions.room_area[:, step],
+            )
+        )
+    replay_doors = env.get_door_matches(device)
+    env.finish()
+    replay_toilet = env.get_outcomes(device, verify_consistency=False).end_outcomes.toilet_crossed_room_idx
+
+    for direction in ("left", "right", "up", "down"):
+        assert torch.equal(getattr(direct_doors, direction), getattr(replay_doors, direction))
+    assert torch.equal(direct_toilet, replay_toilet)
+    assert direct_toilet.tolist() == [0]
+
+
 def test_environment_group_round_trips_room_area() -> None:
     engine = Engine(
         [
