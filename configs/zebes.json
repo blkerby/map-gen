@@ -43,7 +43,7 @@
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.001, 0.0003, 0.0001, 0.00002, 0.00001]},
+    "lr": {"log": [0.001, 0.0003, 0.00005, 0.00001, 0.000005]},
     "beta1": 0.95,
     "beta2": 0.99
   },
@@ -78,7 +78,7 @@
     "force_draygon_in_maridia_probability": 0.5,
     "force_mother_brain_in_tourian_probability": 0.5,
     "reward_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
-    "reward_area_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
+    "reward_area_balance": {"log": [3.0, 1.0, 0.5, 0.3, 0.2]},
     "reward_toilet_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
