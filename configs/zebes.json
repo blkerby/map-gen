@@ -38,12 +38,12 @@
     }
   },
   "balance_model": {
-    "hidden_width": 1024,
+    "hidden_width": 512,
     "num_layers": 2
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.0005, 0.0003, 0.0002, 0.0001, 0.00005]},
+    "lr": {"log": [0.0005, 0.0001, 0.00002, 0.00001, 0.000005]},
     "beta1": 0.95,
     "beta2": 0.99
   },
@@ -58,8 +58,8 @@
     "num_scored_invalid_candidates": 8,
     "max_candidate_areas_per_placement": 6,
     "recommended_candidates_same_frontier": false,
-    "temperature": {"log": [1000.0, 20.0, 0.03, 0.03, 0.03]},
-    "proposal_temperature": {"log": [333.3, 6.67, 0.01, 0.01, 0.01]},
+    "temperature": {"log": [300, 20.0, 0.03, 0.03, 0.03]},
+    "proposal_temperature": {"log": [100, 6.66, 0.01, 0.01, 0.01]},
     "reward_door": 1.0,
     "reward_connection": 1.0,
     "reward_toilet": 1.0,
@@ -77,9 +77,9 @@
     "force_phantoon_in_wrecked_ship_probability": 0.5,
     "force_draygon_in_maridia_probability": 0.5,
     "force_mother_brain_in_tourian_probability": 0.5,
-    "reward_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
-    "reward_area_balance": {"log": [3.0, 1.0, 0.5, 0.3, 0.2]},
-    "reward_toilet_balance": {"log": [3.0, 1.0, 0.3, 0.2, 0.1]},
+    "reward_balance": {"log": [1.5, 0.4, 0.2, 0.15, 0.1]},
+    "reward_area_balance": {"log": [1.5, 0.4, 0.2, 0.15, 0.1]},
+    "reward_toilet_balance": {"log": [1.5, 0.4, 0.2, 0.15, 0.1]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_maridia_water_max_1": 0.25,
