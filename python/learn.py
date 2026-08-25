@@ -973,14 +973,21 @@ def prepare_train_batch_task(
 def train_balance_batch_backward(
     balance_model: torch.nn.Module,
     prepared_batch: PreparedTrainBatch,
+    rooms: list[dict],
     loss_scale: float,
 ) -> torch.Tensor:
     preds = balance_model(prepared_batch.episode_data.generation_variable_floats)
+    vanilla_area_constraint_mask = prepared_batch.episode_data.generation_variable_floats[
+        :,
+        VANILLA_AREA_CONDITION_INDICES,
+    ].to(dtype=torch.bool)
+    room_area_mask = ~forced_special_room_mask(rooms, vanilla_area_constraint_mask)
     balance_loss = compute_balance_loss(
         preds,
         prepared_batch.door_matches,
         prepared_batch.outcomes.end_outcomes.toilet_crossed_room_idx,
         prepared_batch.room_area,
+        room_area_mask,
     )
     (balance_loss * loss_scale).backward()
     return balance_loss
@@ -1453,6 +1460,7 @@ def train_batch_backward(
     balance_loss = train_balance_batch_backward(
         context.balance_model,
         prepared_batch,
+        context.train_batch_envs[0].engine.rooms,
         loss_scale,
     )
 

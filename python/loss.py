@@ -544,6 +544,7 @@ def compute_balance_loss(
     door_matches: DoorMatches,
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
+    room_area_mask: torch.Tensor,
 ) -> torch.Tensor:
     left_loss, left_weight = direction_variant_balance_loss(
         preds.left,
@@ -585,7 +586,10 @@ def compute_balance_loss(
         preds.toilet_crossed_room,
         toilet_crossed_room_idx,
     )
-    room_area_loss, room_area_weight = categorical_balance_loss(preds.room_area, room_area)
+    room_area_loss, room_area_weight = categorical_balance_loss(
+        preds.room_area,
+        torch.where(room_area_mask, room_area, -1),
+    )
     total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss + room_area_loss
     total_weight = (
         left_weight

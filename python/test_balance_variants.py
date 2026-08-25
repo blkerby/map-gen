@@ -119,11 +119,13 @@ def test_room_area_balance_scores_are_centered_and_gathered() -> None:
 
 def test_balance_loss_maps_concrete_matches_to_variant_pairs() -> None:
     preds = example_predictions()
+    room_area = torch.full((1, 2), -1)
     loss = compute_balance_loss(
         preds,
         example_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
-        room_area=torch.full((1, 2), -1),
+        room_area=room_area,
+        room_area_mask=torch.ones_like(room_area, dtype=torch.bool),
     )
     concrete_logits = materialize_direction_balance_logits(
         preds.left,
@@ -140,6 +142,27 @@ def test_balance_loss_maps_concrete_matches_to_variant_pairs() -> None:
     expected = torch.nn.functional.cross_entropy(
         concrete_logits.masked_fill(~compatibility.unsqueeze(0), -torch.inf).flatten(0, 1),
         example_door_matches().left.flatten(),
+    )
+
+    torch.testing.assert_close(loss, expected)
+
+
+def test_balance_loss_masks_room_area_targets() -> None:
+    preds = example_predictions()
+    preds.room_area[0, 1] = torch.arange(AREA_COUNT, dtype=torch.float32)
+    door_matches = example_door_matches()
+    door_matches.left.fill_(-1)
+    room_area = torch.tensor([[0, 1]])
+    loss = compute_balance_loss(
+        preds,
+        door_matches,
+        toilet_crossed_room_idx=torch.tensor([-1]),
+        room_area=room_area,
+        room_area_mask=torch.tensor([[False, True]]),
+    )
+    expected = torch.nn.functional.cross_entropy(
+        preds.room_area[:, 1],
+        room_area[:, 1],
     )
 
     torch.testing.assert_close(loss, expected)
@@ -396,6 +419,7 @@ def main() -> None:
     test_balance_model_outputs_direction_local_variant_pairs()
     test_room_area_balance_scores_are_centered_and_gathered()
     test_balance_loss_maps_concrete_matches_to_variant_pairs()
+    test_balance_loss_masks_room_area_targets()
     test_balance_target_scores_expand_variant_probabilities_to_concrete_matches()
     test_main_balance_kl_restores_uniform_log_odds_offset()
     test_proposal_balance_residual_adds_both_door_directions()
