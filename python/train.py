@@ -1482,6 +1482,11 @@ class TrainingSession:
         generated_feature_data: GeneratedFeatureData,
         step_config: Config,
     ) -> tuple[MainLossBreakdown, float]:
+        if self.train_batch_envs[0].num_envs != step_config.train.batch_size:
+            self.train_batch_envs = create_train_batch_environment_groups(
+                step_config,
+                self.engine,
+            )
         return run_train_round(
             TrainRoundContext(
                 config=self.config,
@@ -1925,6 +1930,8 @@ class TrainingSession:
                 "generation.proposal_temperature",
             ),
             "proposal_target_temperature": step_config.train.proposal_target_temperature,
+            "batch_size": step_config.train.batch_size,
+            "balance_batch_size": step_config.balance_train.batch_size,
             "reward_door": variable_float_metric_value(
                 step_config.generation.reward_door,
                 "generation.reward_door",
@@ -2509,7 +2516,8 @@ def build_session(args: Args) -> TrainingSession:
         config.generation.min_area_size,
         config.generation.max_area_size,
     )
-    train_batch_envs = create_train_batch_environment_groups(config, engine)
+    initial_config = instantiate_scheduleable_config(config, 0)
+    train_batch_envs = create_train_batch_environment_groups(initial_config, engine)
     main_model, ema_model, balance_model, balance_ema_model = create_models(
         config,
         rooms,
@@ -2524,7 +2532,6 @@ def build_session(args: Args) -> TrainingSession:
         args.profile,
         args.ignore_scores,
     )
-    initial_config = instantiate_scheduleable_config(config, 0)
     area_tile_scale = average_area_tile_count(rooms)
     heat_water_tier_tile_counts = compute_heat_water_tier_tile_counts(rooms)
     main_optimizer = create_main_optimizer(

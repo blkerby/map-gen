@@ -1,3 +1,4 @@
+from bisect import bisect_right
 from pathlib import Path
 import math
 from typing import Annotated, Literal
@@ -10,9 +11,29 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+type ScheduleKind = Literal["linear", "log", "step"]
+
+
 class Schedule(StrictBaseModel):
     linear: list[float] | None = None
     log: list[float] | None = None
+    step: list[float] | None = None
+
+
+def schedule_kind_and_values(
+    value: Schedule,
+    path: str,
+) -> tuple[ScheduleKind, list[float]]:
+    schedules = [
+        (kind, values)
+        for kind in ("linear", "log", "step")
+        if (values := getattr(value, kind)) is not None
+    ]
+    if len(schedules) != 1:
+        raise ValueError(
+            f"{path} must have exactly one schedule value: 'linear', 'log', or 'step'"
+        )
+    return schedules[0]
 
 
 type VariableEndpoint = float | list[float]
@@ -26,6 +47,23 @@ class VariableRange(StrictBaseModel):
 class VariableSchedule(StrictBaseModel):
     linear: list[float] | VariableRange | None = None
     log: list[float] | VariableRange | None = None
+    step: list[float] | VariableRange | None = None
+
+
+def variable_schedule_kind_and_value(
+    value: VariableSchedule,
+    path: str,
+) -> tuple[ScheduleKind, list[float] | VariableRange]:
+    schedules = [
+        (kind, values)
+        for kind in ("linear", "log", "step")
+        if (values := getattr(value, kind)) is not None
+    ]
+    if len(schedules) != 1:
+        raise ValueError(
+            f"{path} must have exactly one schedule value: 'linear', 'log', or 'step'"
+        )
+    return schedules[0]
 
 
 type ScheduleableFloat = float | Schedule
@@ -151,7 +189,7 @@ class BalanceModelConfig(StrictBaseModel):
 
 
 class BalanceTrainConfig(StrictBaseModel):
-    batch_size: int
+    batch_size: ScheduleableInt
     ema_decay: ScheduleableFloat
 
 
@@ -317,7 +355,7 @@ class EngineFeatureConfig(StrictBaseModel):
 
 
 class TrainConfig(StrictBaseModel):
-    batch_size: int
+    batch_size: ScheduleableInt
     fresh_pass_factor: float
     replay_pass_factor: float
     sample_period: int
@@ -407,33 +445,35 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
 
     def instantiate_float(value: ScheduleableFloat, path: str) -> float:
         if isinstance(value, Schedule):
-            if (value.linear is None) == (value.log is None):
-                raise ValueError(f"{path} must have exactly one schedule value: 'linear' or 'log'")
-            x = value.linear if value.linear is not None else value.log
+            kind, x = schedule_kind_and_values(value, path)
             if len(x) != len(knot_episodes):
                 raise ValueError(
                     f"{path} has {len(x)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
                 )
-            if value.linear is not None:
+            if kind == "linear":
                 return float(np.interp(num_episodes, knot_episodes, x))
-            return float(np.exp(np.interp(num_episodes, knot_episodes, np.log(x))))
+            if kind == "log":
+                return float(np.exp(np.interp(num_episodes, knot_episodes, np.log(x))))
+            return float(x[max(0, bisect_right(knot_episodes, num_episodes) - 1)])
         return float(value)
 
-    def instantiate_endpoint(value: VariableEndpoint, path: str, log_scale: bool) -> float:
+    def instantiate_endpoint(value: VariableEndpoint, path: str, kind: ScheduleKind) -> float:
         if isinstance(value, list):
             if len(value) != len(knot_episodes):
                 raise ValueError(
                     f"{path} has {len(value)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
                 )
-            if log_scale:
+            if kind == "log":
                 for index, item in enumerate(value):
                     if item <= 0.0:
                         raise ValueError(
                             f"{path}[{index}] must be greater than zero for a log schedule"
                         )
                 return float(np.exp(np.interp(num_episodes, knot_episodes, np.log(value))))
+            if kind == "step":
+                return float(value[max(0, bisect_right(knot_episodes, num_episodes) - 1)])
             return float(np.interp(num_episodes, knot_episodes, value))
-        if log_scale and value <= 0.0:
+        if kind == "log" and value <= 0.0:
             raise ValueError(f"{path} must be greater than zero for a log schedule")
         return float(value)
 
@@ -459,39 +499,42 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
                 }
             )
         if isinstance(value, VariableSchedule):
-            if (value.linear is None) == (value.log is None):
-                raise ValueError(f"{path} must have exactly one schedule value: 'linear' or 'log'")
-            schedule_value = value.linear if value.linear is not None else value.log
-            log_scale = value.log is not None
+            kind, schedule_value = variable_schedule_kind_and_value(value, path)
             if isinstance(schedule_value, VariableRange):
                 min_value = instantiate_endpoint(
                     schedule_value.min,
                     f"{path}.min",
-                    log_scale,
+                    kind,
                 )
                 max_value = instantiate_endpoint(
                     schedule_value.max,
                     f"{path}.max",
-                    log_scale,
+                    kind,
                 )
                 if min_value > max_value:
                     raise ValueError(f"{path}.min must be less than or equal to {path}.max")
                 range_value = VariableRange(min=min_value, max=max_value)
-                if value.linear is not None:
+                if kind == "linear":
                     return VariableSchedule(linear=range_value)
-                return VariableSchedule(log=range_value)
+                if kind == "log":
+                    return VariableSchedule(log=range_value)
+                return VariableSchedule(step=range_value)
             if len(schedule_value) != len(knot_episodes):
                 raise ValueError(
                     f"{path} has {len(schedule_value)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
                 )
-            if value.linear is not None:
+            if kind == "linear":
                 return float(np.interp(num_episodes, knot_episodes, schedule_value))
-            for index, item in enumerate(schedule_value):
-                if item <= 0.0:
-                    raise ValueError(
-                        f"{path}[{index}] must be greater than zero for a log schedule"
-                    )
-            return float(np.exp(np.interp(num_episodes, knot_episodes, np.log(schedule_value))))
+            if kind == "log":
+                for index, item in enumerate(schedule_value):
+                    if item <= 0.0:
+                        raise ValueError(
+                            f"{path}[{index}] must be greater than zero for a log schedule"
+                        )
+                return float(
+                    np.exp(np.interp(num_episodes, knot_episodes, np.log(schedule_value)))
+                )
+            return float(schedule_value[max(0, bisect_right(knot_episodes, num_episodes) - 1)])
         return float(value)
 
     return instantiate_model(config, "config")
@@ -602,10 +645,13 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "generation.num_environments must be divisible by generation.num_devices * generation.pipeline_groups"
         )
-    if config.balance_train.batch_size <= 0:
+    if isinstance(config.balance_train.batch_size, int) and config.balance_train.batch_size <= 0:
         raise ValueError("balance_train.batch_size must be greater than zero")
     round_episodes = config.generation.num_iterations * config.generation.num_environments
-    if round_episodes % config.balance_train.batch_size != 0:
+    if (
+        isinstance(config.balance_train.batch_size, int)
+        and round_episodes % config.balance_train.batch_size != 0
+    ):
         raise ValueError(
             "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
@@ -811,7 +857,11 @@ def validate_config(config: Config) -> None:
 
 def episodes_per_round(config: Config) -> int:
     value = config.generation.num_iterations * config.generation.num_environments
-    if config.train.fresh_pass_factor != 0.0 and value % config.train.batch_size != 0:
+    if (
+        config.train.fresh_pass_factor != 0.0
+        and isinstance(config.train.batch_size, int)
+        and value % config.train.batch_size != 0
+    ):
         raise ValueError(
             "train.batch_size must evenly divide the number of episodes generated per round when "
             "train.fresh_pass_factor is non-zero"
@@ -848,9 +898,7 @@ def validate_beta(value: float, path: str) -> None:
 
 def validate_nonnegative_scheduleable_float(value: ScheduleableFloat, path: str) -> None:
     if isinstance(value, Schedule):
-        values = value.linear if value.linear is not None else value.log
-        if values is None:
-            return
+        _, values = schedule_kind_and_values(value, path)
         for index, item in enumerate(values):
             if item < 0:
                 raise ValueError(f"{path}[{index}] must be greater than or equal to zero")
@@ -864,24 +912,18 @@ def validate_variable_mixture_weights(value: VariableMixture, path: str) -> None
         weight_path = f"{path}.mixture[{index}].weight"
         validate_nonnegative_scheduleable_float(component.weight, weight_path)
         if isinstance(component.weight, Schedule):
-            weights = (
-                component.weight.linear
-                if component.weight.linear is not None
-                else component.weight.log
-            )
+            kind, weights = schedule_kind_and_values(component.weight, weight_path)
         else:
+            kind = None
             weights = [component.weight]
-        if weights is not None:
-            for weight_index, weight in enumerate(weights):
-                if not math.isfinite(weight):
-                    suffix = f"[{weight_index}]" if isinstance(component.weight, Schedule) else ""
-                    raise ValueError(f"{weight_path}{suffix} must be finite")
-                if isinstance(component.weight, Schedule) and component.weight.log is not None:
-                    if weight <= 0.0:
-                        raise ValueError(
-                            f"{weight_path}[{weight_index}] must be greater than zero "
-                            "for a log schedule"
-                        )
+        for weight_index, weight in enumerate(weights):
+            if not math.isfinite(weight):
+                suffix = f"[{weight_index}]" if isinstance(component.weight, Schedule) else ""
+                raise ValueError(f"{weight_path}{suffix} must be finite")
+            if kind == "log" and weight <= 0.0:
+                raise ValueError(
+                    f"{weight_path}[{weight_index}] must be greater than zero for a log schedule"
+                )
     if all(not isinstance(component.weight, Schedule) for component in value.mixture) and not any(
         float(component.weight) > 0.0 for component in value.mixture
     ):
@@ -909,9 +951,7 @@ def validate_nonnegative_variable_float(value: VariableFloat, path: str) -> None
             )
         return
     if isinstance(value, VariableSchedule):
-        values = value.linear if value.linear is not None else value.log
-        if values is None:
-            return
+        _, values = variable_schedule_kind_and_value(value, path)
         if isinstance(values, VariableRange):
             validate_endpoint(values.min, f"{path}.min")
             validate_endpoint(values.max, f"{path}.max")
@@ -942,9 +982,7 @@ def validate_finite_variable_float(value: VariableFloat, path: str) -> None:
             )
         return
     if isinstance(value, VariableSchedule):
-        values = value.linear if value.linear is not None else value.log
-        if values is None:
-            return
+        _, values = variable_schedule_kind_and_value(value, path)
         if isinstance(values, VariableRange):
             validate_finite_endpoint(values.min, f"{path}.min")
             validate_finite_endpoint(values.max, f"{path}.max")
@@ -973,9 +1011,7 @@ def validate_positive_variable_float(value: VariableFloat, path: str) -> None:
             )
         return
     if isinstance(value, VariableSchedule):
-        values = value.linear if value.linear is not None else value.log
-        if values is None:
-            return
+        _, values = variable_schedule_kind_and_value(value, path)
         if isinstance(values, VariableRange):
             validate_endpoint(values.min, f"{path}.min")
             validate_endpoint(values.max, f"{path}.max")
@@ -990,9 +1026,7 @@ def validate_positive_variable_float(value: VariableFloat, path: str) -> None:
 
 def validate_positive_scheduleable_float(value: ScheduleableFloat, path: str) -> None:
     if isinstance(value, Schedule):
-        values = value.linear if value.linear is not None else value.log
-        if values is None:
-            return
+        _, values = schedule_kind_and_values(value, path)
         for index, item in enumerate(values):
             if item <= 0.0:
                 raise ValueError(f"{path}[{index}] must be greater than zero")
@@ -1012,16 +1046,14 @@ def validate_ema_decay_config(
     value: ScheduleableFloat, path: str, knot_episodes: list[int]
 ) -> None:
     if isinstance(value, Schedule):
-        if (value.linear is None) == (value.log is None):
-            raise ValueError(f"{path} must have exactly one schedule value: 'linear' or 'log'")
-        values = value.linear if value.linear is not None else value.log
+        kind, values = schedule_kind_and_values(value, path)
         if len(values) != len(knot_episodes):
             raise ValueError(
                 f"{path} has {len(values)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
             )
         for index, knot_value in enumerate(values):
             validate_ema_decay(knot_value, f"{path}[{index}]")
-            if value.log is not None and knot_value <= 0.0:
+            if kind == "log" and knot_value <= 0.0:
                 raise ValueError(f"{path}[{index}] must be greater than zero for a log schedule")
         return
     validate_ema_decay(value, path)

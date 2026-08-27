@@ -124,15 +124,22 @@ def test_proposal_target_temperature_must_be_positive() -> None:
         raise AssertionError("train.proposal_target_temperature should reject zero")
 
 
-def test_gradient_accumulation_steps_instantiates_schedule() -> None:
+def test_scheduled_ints_instantiate() -> None:
     config_data = load_debug_config()
+    config_data["balance_train"]["batch_size"] = {"step": [1, 3]}
+    config_data["train"]["batch_size"] = {"step": [1, 3]}
     config_data["train"]["gradient_accumulation_steps"] = {"linear": [1, 3]}
     config = Config.model_validate(config_data)
     validate_config(config)
 
-    instantiated = instantiate_scheduleable_config(config, 320)
+    midpoint = instantiate_scheduleable_config(config, 320)
+    second_knot = instantiate_scheduleable_config(config, 640)
 
-    assert instantiated.train.gradient_accumulation_steps == 2
+    assert midpoint.balance_train.batch_size == 1
+    assert midpoint.train.batch_size == 1
+    assert midpoint.train.gradient_accumulation_steps == 2
+    assert second_knot.balance_train.batch_size == 3
+    assert second_knot.train.batch_size == 3
 
 
 def test_generation_area_bounding_box_fields_must_be_positive() -> None:
@@ -218,14 +225,24 @@ def test_area_targets_require_six_finite_values_and_instantiate_schedules() -> N
 
     config_data = load_debug_config()
     config_data["generation"]["target_area_x"][0] = {
-        "linear": {"min": [0.0, 10.0], "max": [20.0, 30.0]}
+        "step": {"min": [0.0, 10.0], "max": [20.0, 30.0]}
     }
-    instantiated = instantiate_scheduleable_config(Config.model_validate(config_data), 320)
-    value = instantiated.generation.target_area_x[0]
-    assert isinstance(value, VariableSchedule)
-    assert isinstance(value.linear, VariableRange)
-    assert value.linear.min == 5.0
-    assert value.linear.max == 25.0
+    config_data["generation"]["target_area_x"][1] = {"step": [1.0, 3.0]}
+    config = Config.model_validate(config_data)
+    midpoint = instantiate_scheduleable_config(config, 320)
+    second_knot = instantiate_scheduleable_config(config, 640)
+    midpoint_range = midpoint.generation.target_area_x[0]
+    second_knot_range = second_knot.generation.target_area_x[0]
+    assert isinstance(midpoint_range, VariableSchedule)
+    assert isinstance(midpoint_range.step, VariableRange)
+    assert midpoint_range.step.min == 0.0
+    assert midpoint_range.step.max == 20.0
+    assert midpoint.generation.target_area_x[1] == 1.0
+    assert isinstance(second_knot_range, VariableSchedule)
+    assert isinstance(second_knot_range.step, VariableRange)
+    assert second_knot_range.step.min == 10.0
+    assert second_knot_range.step.max == 30.0
+    assert second_knot.generation.target_area_x[1] == 3.0
 
     config_data = load_debug_config()
     config_data["generation"]["target_area_tiles"][0] = -1.0
@@ -277,7 +294,7 @@ def main() -> None:
     test_proposal_target_temperature_is_required()
     test_balance_train_is_required_and_batch_size_divides_round()
     test_proposal_target_temperature_must_be_positive()
-    test_gradient_accumulation_steps_instantiates_schedule()
+    test_scheduled_ints_instantiate()
     test_generation_area_bounding_box_fields_must_be_positive()
     test_max_candidate_areas_per_placement_must_be_in_range()
     test_num_scored_invalid_candidates_must_fit_shortlist()

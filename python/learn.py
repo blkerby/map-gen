@@ -122,8 +122,12 @@ def train_balance_fresh(
     context: "TrainRoundContext",
     fresh_episode_data: EpisodeData,
 ) -> float:
-    batch_size = context.config.balance_train.batch_size
-    round_episodes = episodes_per_round(context.config)
+    batch_size = context.step_config.balance_train.batch_size
+    round_episodes = episodes_per_round(context.step_config)
+    if round_episodes % batch_size != 0:
+        raise ValueError(
+            "balance_train.batch_size must evenly divide the number of episodes generated per round"
+        )
     actions = fresh_episode_data.actions.to(torch.device("cpu"))
     generation_variable_floats = fresh_episode_data.generation_variable_floats.to(
         torch.device("cpu")
@@ -1022,7 +1026,7 @@ def prepare_train_batch_task(
     if task.kind == "fresh":
         if task.start is None:
             raise ValueError("fresh train batch task requires a start index")
-        end = task.start + context.config.train.batch_size
+        end = task.start + context.step_config.train.batch_size
         train_episode_data = fresh_episode_data.slice(task.start, end)
         train_outcomes = fresh_outcomes.slice(task.start, end)
         train_proposal_data = fresh_proposal_data.slice(task.start, end)
@@ -1046,7 +1050,7 @@ def prepare_train_batch_task(
         )
 
     replay_episode_data = context.experience.sample(
-        context.config.train.batch_size,
+        context.step_config.train.batch_size,
         context.config.train.episodes_per_file,
         context.config.train.hist_c,
     )
@@ -1662,7 +1666,7 @@ def train_round(
     total_loss = empty_main_loss_breakdown()
     train_batch_count = 0
 
-    train_batch_tasks = iter_train_batch_tasks(context.config, context.experience)
+    train_batch_tasks = iter_train_batch_tasks(context.step_config, context.experience)
     prepared_batches = iter(
         context.train_batch_prefetcher.map(
             train_batch_tasks,

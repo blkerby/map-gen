@@ -48,7 +48,7 @@
     "beta2": 0.99
   },
   "balance_train": {
-    "batch_size": [256, 512, 2048, 2048],
+    "batch_size": {"step": [256, 512, 2048, 2048, 2048]},
     "ema_decay": {"linear": [0.95, 0.998, 0.998, 0.998, 0.998]}
   },
   "generation": {
@@ -175,7 +175,7 @@
     "known_distance": 1
   },
   "train": {
-    "batch_size": [256, 512, 2048, 2048],
+    "batch_size": {"step": [256, 512, 2048, 2048, 2048]},
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "sample_period": 16,

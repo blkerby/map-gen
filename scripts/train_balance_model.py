@@ -211,12 +211,6 @@ def main() -> None:
     validate_config(config)
     rooms = json.loads(config.room_set.read_text())
     episode_counts = {path: experience_episode_count(path) for path in paths}
-    for path, episode_count in episode_counts.items():
-        if episode_count % config.balance_train.batch_size != 0:
-            raise ValueError(
-                f"{path} has {episode_count} episodes, which is not divisible by "
-                f"balance_train.batch_size={config.balance_train.batch_size}"
-            )
     total_replay_episodes = sum(episode_counts.values())
     if total_replay_episodes == 0:
         raise ValueError("experience range contains no episodes")
@@ -260,14 +254,22 @@ def main() -> None:
         room_area = episode_room_area(actions, len(rooms)).to(device)
         room_area_mask = ~generation_area_balance_exempt_room_mask(rooms, variables)
         record_weight = torch.ones(episode_count, dtype=torch.float32, device=device)
-        for start in range(0, episode_count, config.balance_train.batch_size):
-            end = start + config.balance_train.batch_size
+        start = 0
+        batch_number = 0
+        while start < episode_count:
             schedule_episode = interpolate_schedule_episode(
-                processed_episodes + end - start,
+                processed_episodes,
                 total_replay_episodes,
                 checkpoint_episodes,
             )
             step_config = instantiate_scheduleable_config(config, schedule_episode)
+            batch_size = step_config.balance_train.batch_size
+            end = start + batch_size
+            if end > episode_count:
+                raise ValueError(
+                    f"{path} has {episode_count - start} remaining episodes, fewer than "
+                    f"balance_train.batch_size={batch_size} at schedule episode {schedule_episode}"
+                )
             set_optimizer_lrs(balance_optimizer, step_config.balance_optimizer)
             loss = train_balance_batch(
                 generation_variable_floats=variables[start:end],
@@ -283,6 +285,7 @@ def main() -> None:
             )
             processed_episodes += end - start
             optimizer_step += 1
+            batch_number += 1
             ema_loss = args.loss_ema_beta * ema_loss + (1.0 - args.loss_ema_beta) * loss
             ema_weight = args.loss_ema_beta * ema_weight + (1.0 - args.loss_ema_beta)
             lr = balance_optimizer.param_groups[0]["lr"]
@@ -290,12 +293,13 @@ def main() -> None:
                 "%s\t%s\t%s\t%s\t%.9g\t%.9g\t%.9g",
                 optimizer_step,
                 path.stem,
-                start // config.balance_train.batch_size + 1,
+                batch_number,
                 processed_episodes,
                 lr,
                 loss,
                 ema_loss / ema_weight,
             )
+            start = end
 
     if optimizer_step == 0:
         raise RuntimeError("no balance optimizer steps were completed")

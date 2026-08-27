@@ -62,7 +62,9 @@ def test_balance_training_uses_only_fresh_data() -> None:
         ),
         step_config=SimpleNamespace(
             balance_optimizer=object(),
-            balance_train=SimpleNamespace(ema_decay=0.9),
+            balance_train=SimpleNamespace(batch_size=2, ema_decay=0.9),
+            generation=SimpleNamespace(num_iterations=1, num_environments=2),
+            train=SimpleNamespace(fresh_pass_factor=0.0, batch_size=1),
         ),
         train_batch_envs=[SimpleNamespace(engine=engine)],
         device=torch.device("cpu"),
