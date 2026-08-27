@@ -4,13 +4,13 @@ from unittest.mock import patch
 import torch
 
 from env import Actions, DoorMatches, EpisodeData
-from learn import train_balance_replay
+from learn import train_balance_batch, train_balance_fresh
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
 class FakeBalanceEngine:
     def __init__(self) -> None:
-        self.rooms = [{}]
+        self.rooms = [{"water": 1}]
         self.batch_sizes = []
 
     def compute_balance_targets(
@@ -27,18 +27,13 @@ class FakeBalanceEngine:
         )
 
 
-class FakeBalanceExperience:
-    def __init__(self, episode_data: EpisodeData) -> None:
-        self.num_files = 1
-        self.episode_data = episode_data
-        self.requested_files = []
-
-    def read_balance_files(self, file_num_list: list[int]) -> tuple[Actions, torch.Tensor]:
-        self.requested_files.append(file_num_list)
-        return self.episode_data.actions, self.episode_data.generation_variable_floats
-
-
 def example_episode_data(value: int) -> EpisodeData:
+    generation_variable_floats = torch.zeros(
+        (2, len(GENERATION_VARIABLE_FLOAT_FIELDS)),
+    )
+    if value == 2:
+        reward_idx = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_maridia_water_1")
+        generation_variable_floats[:, reward_idx] = 1.0
     actions = Actions(
         room_idx=torch.zeros((2, 1), dtype=torch.int64),
         room_x=torch.full((2, 1), value, dtype=torch.int64),
@@ -49,58 +44,85 @@ def example_episode_data(value: int) -> EpisodeData:
         actions=actions,
         temperature=torch.zeros(2),
         recommended_candidates=torch.zeros(2, dtype=torch.int64),
-        generation_variable_floats=torch.zeros(
-            (2, len(GENERATION_VARIABLE_FLOAT_FIELDS)),
-        ),
+        generation_variable_floats=generation_variable_floats,
     )
 
 
-def test_balance_replay_samples_history_with_linear_age_weight() -> None:
-    history = example_episode_data(1)
+def test_balance_training_uses_only_fresh_data() -> None:
     fresh = example_episode_data(2)
-    experience = FakeBalanceExperience(history)
     engine = FakeBalanceEngine()
+    balance_ema_model = object()
     context = SimpleNamespace(
         config=SimpleNamespace(
             balance_train=SimpleNamespace(
-                replay_window_rounds=3,
-                window_weight="linear",
                 batch_size=2,
-                pass_factor=1.5,
             ),
             generation=SimpleNamespace(num_iterations=1, num_environments=2),
             train=SimpleNamespace(fresh_pass_factor=0.0, batch_size=1),
         ),
-        step_config=SimpleNamespace(balance_optimizer=object()),
-        experience=experience,
+        step_config=SimpleNamespace(
+            balance_optimizer=object(),
+            balance_train=SimpleNamespace(ema_decay=0.9),
+        ),
         train_batch_envs=[SimpleNamespace(engine=engine)],
         device=torch.device("cpu"),
         num_rooms=1,
         balance_model=object(),
+        balance_ema_model=balance_ema_model,
         balance_optimizer=object(),
     )
 
     with (
         patch("learn.set_optimizer_lrs"),
         patch(
-            "learn.torch.multinomial",
-            return_value=torch.tensor([0, 2, 1, 3]),
-        ) as multinomial,
+            "learn.torch.randperm",
+            return_value=torch.tensor([1, 0]),
+        ),
         patch("learn.train_balance_batch", return_value=1.0) as train_batch,
     ):
-        loss = train_balance_replay(context, fresh)
+        loss = train_balance_fresh(context, fresh)
 
     assert loss == 1.0
-    assert experience.requested_files == [[0]]
-    assert engine.batch_sizes == [2, 2]
-    assert len(train_batch.call_args_list) == 2
-    sampling_weight = multinomial.call_args.args[0]
+    assert engine.batch_sizes == [2]
+    assert train_batch.call_count == 1
+    assert train_batch.call_args.kwargs["room_area_mask"].tolist() == [[False], [False]]
     torch.testing.assert_close(
-        sampling_weight,
-        torch.tensor([2.0 / 3.0, 2.0 / 3.0, 1.0, 1.0]),
+        train_batch.call_args.kwargs["record_weight"],
+        torch.ones(2),
     )
-    assert multinomial.call_args.kwargs == {"num_samples": 4, "replacement": True}
+    assert train_batch.call_args.kwargs["balance_ema_model"] is balance_ema_model
+    assert train_batch.call_args.kwargs["ema_decay"] == 0.9
+
+
+def test_balance_batch_updates_ema_after_optimizer_step() -> None:
+    balance_model = torch.nn.Linear(1, 1, bias=False)
+    balance_ema_model = torch.nn.Linear(1, 1, bias=False)
+    balance_model.weight.data.fill_(1.0)
+    balance_ema_model.weight.data.zero_()
+    balance_ema_model.requires_grad_(False)
+    optimizer = torch.optim.SGD(balance_model.parameters(), lr=0.1)
+
+    with patch(
+        "learn.compute_balance_loss",
+        side_effect=lambda prediction, *_args: prediction.square().sum(),
+    ):
+        train_balance_batch(
+            generation_variable_floats=torch.ones((1, 1)),
+            door_matches=object(),
+            toilet_crossed_room_idx=torch.zeros(1, dtype=torch.int64),
+            room_area=torch.zeros((1, 1), dtype=torch.int64),
+            room_area_mask=torch.ones((1, 1), dtype=torch.bool),
+            record_weight=torch.ones(1),
+            balance_model=balance_model,
+            balance_ema_model=balance_ema_model,
+            balance_optimizer=optimizer,
+            ema_decay=0.5,
+        )
+
+    torch.testing.assert_close(balance_model.weight, torch.tensor([[0.9]]))
+    torch.testing.assert_close(balance_ema_model.weight, torch.tensor([[0.45]]))
 
 
 if __name__ == "__main__":
-    test_balance_replay_samples_history_with_linear_age_weight()
+    test_balance_training_uses_only_fresh_data()
+    test_balance_batch_updates_ema_after_optimizer_step()

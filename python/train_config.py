@@ -65,13 +65,9 @@ HEAT_WATER_REWARD_FIELDS = tuple(
     f"reward_{family}_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 4)
 )
 HEAT_WATER_MAX_FIELDS = tuple(
-    f"reward_{family}_max_{tier}"
-    for family in HEAT_WATER_FAMILIES
-    for tier in range(1, 3)
+    f"reward_{family}_max_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 3)
 )
-HEAT_WATER_TIER_3_FIELDS = tuple(
-    f"reward_{family}_3" for family in HEAT_WATER_FAMILIES
-)
+HEAT_WATER_TIER_3_FIELDS = tuple(f"reward_{family}_3" for family in HEAT_WATER_FAMILIES)
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "temperature",
@@ -155,10 +151,8 @@ class BalanceModelConfig(StrictBaseModel):
 
 
 class BalanceTrainConfig(StrictBaseModel):
-    replay_window_rounds: int
-    window_weight: Literal["uniform", "linear"]
     batch_size: int
-    pass_factor: float
+    ema_decay: ScheduleableFloat
 
 
 class GenerationConfig(StrictBaseModel):
@@ -608,17 +602,18 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "generation.num_environments must be divisible by generation.num_devices * generation.pipeline_groups"
         )
-    if config.balance_train.replay_window_rounds <= 0:
-        raise ValueError("balance_train.replay_window_rounds must be greater than zero")
     if config.balance_train.batch_size <= 0:
         raise ValueError("balance_train.batch_size must be greater than zero")
-    if config.balance_train.pass_factor <= 0.0:
-        raise ValueError("balance_train.pass_factor must be greater than zero")
     round_episodes = config.generation.num_iterations * config.generation.num_environments
     if round_episodes % config.balance_train.batch_size != 0:
         raise ValueError(
             "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
+    validate_ema_decay_config(
+        config.balance_train.ema_decay,
+        "balance_train.ema_decay",
+        config.knot_episodes,
+    )
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError(
             "generation.frontier_neighbor_count must be greater than or equal to zero"

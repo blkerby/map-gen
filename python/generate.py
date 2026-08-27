@@ -21,7 +21,7 @@ from env import (
     GeneratedFeatureData,
     concatenate_features,
     extract_candidate_features,
-    forced_special_room_mask,
+    area_balance_exempt_room_mask,
     select_generated_features,
 )
 from loss import (
@@ -2217,9 +2217,13 @@ def run_generation_groups(
         for balance_preds, score_tables in zip(balance_predictions, balance_score_tables)
     ]
     area_balance_exempt_rooms = [
-        forced_special_room_mask(
+        area_balance_exempt_room_mask(
             env.engine.rooms,
             config.vanilla_area_constraint_mask,
+            torch.stack(
+                [config.reward_maridia_water, config.reward_norfair_heat],
+                dim=1,
+            ),
         )
         for env, config in zip(envs, configs)
     ]

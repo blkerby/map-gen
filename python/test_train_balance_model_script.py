@@ -56,17 +56,26 @@ class TrainBalanceModelScriptTest(unittest.TestCase):
                 },
             )
             model = torch.nn.Linear(1, 1)
+            ema_model = torch.nn.Linear(1, 1)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.1)
             model(torch.ones([1, 1])).sum().backward()
             optimizer.step()
 
-            write_checkpoint(input_path, output_path, "new config", model, optimizer)
+            write_checkpoint(
+                input_path,
+                output_path,
+                "new config",
+                model,
+                ema_model,
+                optimizer,
+            )
 
             with safe_open(output_path, framework="pt", device="cpu") as checkpoint:
                 names = set(checkpoint.keys())
                 metadata = checkpoint.metadata()
             self.assertIn("main_model.weight", names)
             self.assertIn("balance_model.weight", names)
+            self.assertIn("balance_ema_model.weight", names)
             self.assertNotIn("balance_model.old", names)
             self.assertFalse(any(name.endswith(".old") for name in names))
             self.assertIsNotNone(metadata)

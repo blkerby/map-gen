@@ -44,6 +44,7 @@ from learn import (
     compute_candidate_diagnostics,
     distance_proximity_utility,
     train_round as run_train_round,
+    update_ema_parameters,
 )
 from loss import (
     LossConfig,
@@ -93,7 +94,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v9"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v10"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -321,7 +322,7 @@ def validate_checkpoint_metadata(path: Path, metadata: dict[str, str] | None) ->
     if metadata is None:
         raise ValueError(f"checkpoint metadata missing in {path}")
     if metadata["format"] != TRAINING_CHECKPOINT_FORMAT:
-        logging.warning(f"unsupported checkpoint format in {path}")
+        raise ValueError(f"unsupported checkpoint format in {path}: {metadata['format']}")
     for field_name in (
         "aim_run_hash",
         "num_episodes",
@@ -672,15 +673,11 @@ def create_generate_config(
         tier_1 = torch.rand([num_envs], device=device) * torch.clamp(tier_2, max=maxima[0])
         coefficients = torch.stack([tier_1, tier_2, tier_3], dim=1)
         generation_variable_floats_by_name.update(
-            {
-                f"reward_{family}_{tier}": coefficients[:, tier - 1]
-                for tier in range(1, 4)
-            }
+            {f"reward_{family}_{tier}": coefficients[:, tier - 1] for tier in range(1, 4)}
         )
     vanilla_area_constraint_mask = torch.stack(
         [
-            torch.rand([num_envs], device=device)
-            < getattr(config.generation, probability_field)
+            torch.rand([num_envs], device=device) < getattr(config.generation, probability_field)
             for probability_field in VANILLA_AREA_PROBABILITY_FIELDS
         ],
         dim=1,
@@ -849,7 +846,6 @@ class GenerationProcessState:
     ignore_scores: bool
     area_tile_scale: float
     heat_water_tier_tile_counts: dict[str, tuple[int, int, int]]
-    cleared_cuda_cache_after_first_task: bool
 
 
 GENERATION_PROCESS_STATE: GenerationProcessState | None = None
@@ -901,7 +897,6 @@ def initialize_generation_process(
         ignore_scores=ignore_scores,
         area_tile_scale=average_area_tile_count(rooms),
         heat_water_tier_tile_counts=compute_heat_water_tier_tile_counts(rooms),
-        cleared_cuda_cache_after_first_task=False,
     )
 
 
@@ -912,8 +907,13 @@ def run_generation_process_task(
     verify_outcome_consistency: bool,
     capture_generated_features: bool,
 ) -> tuple[
-    EpisodeData, EpisodeOutcomes, DoorMatchCounts, ProposalData, GeneratedFeatureData,
-    GenerationStats, RustProfileReport
+    EpisodeData,
+    EpisodeOutcomes,
+    DoorMatchCounts,
+    ProposalData,
+    GeneratedFeatureData,
+    GenerationStats,
+    RustProfileReport,
 ]:
     if GENERATION_PROCESS_STATE is None:
         raise RuntimeError("generation process was not initialized")
@@ -959,9 +959,8 @@ def run_generation_process_task(
     door_match_counts_cpu = door_match_counts.to(torch.device("cpu"))
     proposal_data_cpu = proposal_data.to(torch.device("cpu"))
     del episode_data, outcomes, door_match_counts, proposal_data
-    if state.device.type == "cuda" and not state.cleared_cuda_cache_after_first_task:
+    if state.device.type == "cuda":
         torch.cuda.empty_cache()
-        state.cleared_cuda_cache_after_first_task = True
     return (
         episode_data_cpu,
         outcomes_cpu,
@@ -997,6 +996,7 @@ class TrainingSession:
     main_model: torch.nn.Module
     ema_model: torch.nn.Module
     balance_model: torch.nn.Module
+    balance_ema_model: torch.nn.Module
     main_optimizer: Any
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
@@ -1073,6 +1073,7 @@ class TrainingSession:
         tensors.update(prefixed_state_dict("main_model", self.main_model))
         tensors.update(prefixed_state_dict("ema_model", self.ema_model))
         tensors.update(prefixed_state_dict("balance_model", self.balance_model))
+        tensors.update(prefixed_state_dict("balance_ema_model", self.balance_ema_model))
         metadata = {
             "format": TRAINING_CHECKPOINT_FORMAT,
             "config": self.config.model_dump_json(),
@@ -1111,6 +1112,9 @@ class TrainingSession:
         unwrap_compiled_module(self.balance_model).load_state_dict(
             without_prefix(tensors, "balance_model")
         )
+        unwrap_compiled_module(self.balance_ema_model).load_state_dict(
+            without_prefix(tensors, "balance_ema_model")
+        )
         load_named_optimizer_checkpoint_state(
             self.main_optimizer,
             tensors,
@@ -1139,11 +1143,7 @@ class TrainingSession:
         return metadata
 
     def update_ema_model(self, ema_decay: float) -> None:
-        with torch.no_grad():
-            for ema_param, main_param in zip(
-                self.ema_model.parameters(), self.main_model.parameters()
-            ):
-                ema_param.lerp_(main_param, 1.0 - ema_decay)
+        update_ema_parameters(self.ema_model, self.main_model, ema_decay)
 
     def generate_round(
         self,
@@ -1169,7 +1169,7 @@ class TrainingSession:
         }
         balance_model_state = {
             name: as_checkpoint_tensor(value)
-            for name, value in unwrap_compiled_module(self.balance_model).state_dict().items()
+            for name, value in unwrap_compiled_module(self.balance_ema_model).state_dict().items()
         }
         generation_config = instantiate_scheduleable_config(
             self.config,
@@ -1454,10 +1454,7 @@ class TrainingSession:
                     [proposal_data.target_reward for proposal_data in proposal_data_iterations]
                 ),
                 balance_residual=torch.cat(
-                    [
-                        proposal_data.balance_residual
-                        for proposal_data in proposal_data_iterations
-                    ]
+                    [proposal_data.balance_residual for proposal_data in proposal_data_iterations]
                 ),
             ),
             GeneratedFeatureData(
@@ -1470,9 +1467,7 @@ class TrainingSession:
                     else concatenate_features(
                         [data.feature_batches[step] for data in generated_feature_data_iterations]
                     )
-                    for step in range(
-                        len(generated_feature_data_iterations[0].feature_batches)
-                    )
+                    for step in range(len(generated_feature_data_iterations[0].feature_batches))
                 ]
             ),
             generation_stats,
@@ -1495,6 +1490,7 @@ class TrainingSession:
                 train_batch_envs=self.train_batch_envs,
                 main_model=self.main_model,
                 balance_model=self.balance_model,
+                balance_ema_model=self.balance_ema_model,
                 main_optimizer=self.main_optimizer,
                 balance_optimizer=self.balance_optimizer,
                 loss_config=self.loss_config,
@@ -1607,9 +1603,7 @@ class TrainingSession:
         avg_invalid = torch.mean(total_invalid.to(torch.float32))
         min_invalid = torch.min(total_invalid)
         avg_area_size_invalid = torch.mean(area_size_invalid.to(torch.float32))
-        avg_area_map_station_invalid = torch.mean(
-            area_map_station_invalid.to(torch.float32)
-        )
+        avg_area_map_station_invalid = torch.mean(area_map_station_invalid.to(torch.float32))
         avg_frontiers = torch.mean(end_outcomes.avg_frontiers.to(torch.float32))
         graph_diameter = torch.mean(end_outcomes.graph_diameter.to(torch.float32))
         save_distance_mask = end_outcomes.save_distance_mask.to(torch.float32)
@@ -1721,9 +1715,7 @@ class TrainingSession:
         success_phantoon_pair = torch.mean((phantoon_pair_invalid == 0).to(torch.float32))
         success_phantoon_area = torch.mean((phantoon_area_invalid == 0).to(torch.float32))
         success_area_size = torch.mean((area_size_invalid == 0).to(torch.float32))
-        success_area_map_station = torch.mean(
-            (area_map_station_invalid == 0).to(torch.float32)
-        )
+        success_area_map_station = torch.mean((area_map_station_invalid == 0).to(torch.float32))
 
         horizontal_door_match_counts = door_match_counts.horizontal[:-1, :-1].to(torch.float64)
         vertical_door_match_counts = door_match_counts.vertical[:-1, :-1].to(torch.float64)
@@ -1762,7 +1754,7 @@ class TrainingSession:
                 self.area_tile_scale,
                 self.heat_water_tier_tile_counts,
             )
-            balance_preds = self.balance_model(generate_config.generation_variable_floats)
+            balance_preds = self.balance_ema_model(generate_config.generation_variable_floats)
             balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
             balance_left_topk = topk_or_zeros(
                 expand_direction_balance_probabilities(
@@ -2028,6 +2020,7 @@ class TrainingSession:
             ),
             "distance_proximity_scale": step_config.distance_proximity_scale,
             "ema_decay": step_config.train.ema_decay,
+            "balance_ema_decay": step_config.balance_train.ema_decay,
             "toilet_weight": step_config.train.toilet_weight,
             "phantoon_pair_weight": step_config.train.phantoon_pair_weight,
             "phantoon_area_weight": step_config.train.phantoon_area_weight,
@@ -2425,13 +2418,16 @@ def create_models(
     ema_model.requires_grad_(False)
     ema_model.eval()
     balance_model = create_balance_model(config, rooms, engine, device)
+    balance_ema_model = copy.deepcopy(balance_model).to(device)
+    balance_ema_model.requires_grad_(False)
+    balance_ema_model.eval()
     balance_num_params = sum(p.numel() for p in balance_model.parameters())
     logging.info(f"Balance model parameters: {balance_num_params}")
     if config.model.compile:
         main_model = torch.compile(main_model)
         ema_model = torch.compile(ema_model)
 
-    return main_model, ema_model, balance_model
+    return main_model, ema_model, balance_model, balance_ema_model
 
 
 def create_generation_process_executors(
@@ -2514,7 +2510,7 @@ def build_session(args: Args) -> TrainingSession:
         config.generation.max_area_size,
     )
     train_batch_envs = create_train_batch_environment_groups(config, engine)
-    main_model, ema_model, balance_model = create_models(
+    main_model, ema_model, balance_model, balance_ema_model = create_models(
         config,
         rooms,
         engine,
@@ -2555,6 +2551,7 @@ def build_session(args: Args) -> TrainingSession:
         main_model=main_model,
         ema_model=ema_model,
         balance_model=balance_model,
+        balance_ema_model=balance_ema_model,
         main_optimizer=main_optimizer,
         balance_optimizer=balance_optimizer,
         loss_config=LossConfig(

@@ -84,15 +84,6 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train should be required")
 
     config_data = load_debug_config()
-    del config_data["balance_train"]["pass_factor"]
-    try:
-        Config.model_validate(config_data)
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError("balance_train.pass_factor should be required")
-
-    config_data = load_debug_config()
     config_data["balance_train"]["batch_size"] = 3
     try:
         validate_config(Config.model_validate(config_data))
@@ -102,13 +93,22 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train.batch_size should evenly divide a round")
 
     config_data = load_debug_config()
-    config_data["balance_train"]["pass_factor"] = 0.0
+    del config_data["balance_train"]["ema_decay"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("balance_train.ema_decay should be required")
+
+    config_data = load_debug_config()
+    config_data["balance_train"]["ema_decay"] = 1.0
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
-        assert "balance_train.pass_factor" in str(err)
+        assert "balance_train.ema_decay" in str(err)
     else:
-        raise AssertionError("balance_train.pass_factor should be positive")
+        raise AssertionError("balance_train.ema_decay should reject one")
 
 
 def test_proposal_target_temperature_must_be_positive() -> None:

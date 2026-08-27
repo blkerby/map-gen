@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import json
 import logging
 import os
@@ -14,18 +15,15 @@ from safetensors import safe_open
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
-from env import (  # noqa: E402
-    Engine,
-    forced_special_room_mask,
-)
+from env import Engine  # noqa: E402
 from experience import (  # noqa: E402
     EXPERIENCE_FORMAT,
     REQUIRED_BALANCE_EXPERIENCE_TENSORS,
     load_balance_experience,
 )
 from learn import (  # noqa: E402
-    VANILLA_AREA_CONDITION_INDICES,
     episode_room_area,
+    generation_area_balance_exempt_room_mask,
     set_optimizer_lrs,
     train_balance_batch,
 )
@@ -97,7 +95,9 @@ def experience_paths(directory: Path, first_file: int, last_file: int) -> list[P
         raise ValueError("first_file must be nonnegative")
     if last_file < first_file:
         raise ValueError("last_file must be greater than or equal to first_file")
-    paths = [directory / f"{file_num}.safetensors" for file_num in range(first_file, last_file + 1)]
+    paths = [
+        directory / f"{file_num}.safetensors" for file_num in range(first_file, last_file + 1)
+    ]
     missing = [path for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"experience file does not exist: {missing[0]}")
@@ -143,9 +143,7 @@ def experience_episode_count(path: Path) -> int:
         if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
             raise ValueError(f"unsupported experience format in {path}")
         missing = [
-            name
-            for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS
-            if name not in experience.keys()
+            name for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS if name not in experience.keys()
         ]
         if missing:
             raise ValueError(f"{path} missing tensor(s): {', '.join(missing)}")
@@ -168,6 +166,7 @@ def write_checkpoint(
     output_path: Path,
     config_json: str,
     balance_model: torch.nn.Module,
+    balance_ema_model: torch.nn.Module,
     balance_optimizer: torch.optim.Optimizer,
 ) -> None:
     with safe_open(input_path, framework="pt", device="cpu") as checkpoint:
@@ -175,7 +174,7 @@ def write_checkpoint(
         tensors = {
             name: checkpoint.get_tensor(name)
             for name in checkpoint.keys()
-            if not name.startswith(("balance_model.", "balance_optimizer."))
+            if not name.startswith(("balance_model.", "balance_ema_model.", "balance_optimizer."))
         }
 
     for name in list(metadata):
@@ -183,6 +182,7 @@ def write_checkpoint(
             del metadata[name]
     metadata["config"] = config_json
     tensors.update(prefixed_state_dict("balance_model", balance_model))
+    tensors.update(prefixed_state_dict("balance_ema_model", balance_ema_model))
     save_named_optimizer_checkpoint_state(
         tensors,
         metadata,
@@ -232,6 +232,9 @@ def main() -> None:
         config.generation.max_area_size,
     )
     balance_model = create_balance_model(config, rooms, engine, device)
+    balance_ema_model = copy.deepcopy(balance_model).to(device)
+    balance_ema_model.requires_grad_(False)
+    balance_ema_model.eval()
     initial_config = instantiate_scheduleable_config(config, 0)
     balance_optimizer = create_adam_optimizer(
         balance_model.parameters(),
@@ -243,9 +246,7 @@ def main() -> None:
     optimizer_step = 0
     ema_loss = 0.0
     ema_weight = 0.0
-    logging.info(
-        "step\tfile\tbatch\tepisodes\tlr\tbalance_loss\tbalance_loss_ema"
-    )
+    logging.info("step\tfile\tbatch\tepisodes\tlr\tbalance_loss\tbalance_loss_ema")
     for path in paths:
         actions, variables = load_balance_experience(path, len(rooms))
         episode_count = actions.room_idx.shape[0]
@@ -257,8 +258,8 @@ def main() -> None:
         door_matches = door_matches.to(device)
         toilet_crossed_room_idx = toilet_crossed_room_idx.to(device)
         room_area = episode_room_area(actions, len(rooms)).to(device)
-        vanilla_area_constraint_mask = variables[:, VANILLA_AREA_CONDITION_INDICES].to(torch.bool)
-        room_area_mask = ~forced_special_room_mask(rooms, vanilla_area_constraint_mask)
+        room_area_mask = ~generation_area_balance_exempt_room_mask(rooms, variables)
+        record_weight = torch.ones(episode_count, dtype=torch.float32, device=device)
         for start in range(0, episode_count, config.balance_train.batch_size):
             end = start + config.balance_train.batch_size
             schedule_episode = interpolate_schedule_episode(
@@ -274,17 +275,16 @@ def main() -> None:
                 toilet_crossed_room_idx=toilet_crossed_room_idx[start:end],
                 room_area=room_area[start:end],
                 room_area_mask=room_area_mask[start:end],
+                record_weight=record_weight[start:end],
                 balance_model=balance_model,
+                balance_ema_model=balance_ema_model,
                 balance_optimizer=balance_optimizer,
+                ema_decay=step_config.balance_train.ema_decay,
             )
             processed_episodes += end - start
             optimizer_step += 1
-            ema_loss = (
-                args.loss_ema_beta * ema_loss + (1.0 - args.loss_ema_beta) * loss
-            )
-            ema_weight = (
-                args.loss_ema_beta * ema_weight + (1.0 - args.loss_ema_beta)
-            )
+            ema_loss = args.loss_ema_beta * ema_loss + (1.0 - args.loss_ema_beta) * loss
+            ema_weight = args.loss_ema_beta * ema_weight + (1.0 - args.loss_ema_beta)
             lr = balance_optimizer.param_groups[0]["lr"]
             logging.info(
                 "%s\t%s\t%s\t%s\t%.9g\t%.9g\t%.9g",
@@ -304,6 +304,7 @@ def main() -> None:
         args.output_checkpoint,
         config.model_dump_json(),
         balance_model,
+        balance_ema_model,
         balance_optimizer,
     )
     logging.info("Wrote checkpoint: %s", args.output_checkpoint)

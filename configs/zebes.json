@@ -48,10 +48,8 @@
     "beta2": 0.99
   },
   "balance_train": {
-    "replay_window_rounds": 16,
-    "window_weight": "linear",
-    "batch_size": 4096,
-    "pass_factor": 4.0
+    "batch_size": [256, 512, 2048, 2048],
+    "ema_decay": {"linear": [0.95, 0.998, 0.998, 0.998, 0.998]}
   },
   "generation": {
     "num_environments": 4096,
@@ -83,25 +81,25 @@
     "force_phantoon_in_wrecked_ship_probability": 0.5,
     "force_draygon_in_maridia_probability": 0.5,
     "force_mother_brain_in_tourian_probability": 0.5,
-    "reward_balance": {"log": [1.5, 0.4, 0.2, 0.15, 0.1]},
-    "reward_area_balance": {"log": [1.5, 0.4, 0.2, 0.15, 0.1]},
-    "reward_toilet_balance": {"log": [1.5, 0.4, 0.2, 0.15, 0.1]},
+    "reward_balance": {"log": [2.0, 1.0, 0.3, 0.2, 0.1]},
+    "reward_area_balance": {"log": [2.0, 1.0, 0.3, 0.2, 0.1]},
+    "reward_toilet_balance": {"log": [2.0, 1.0, 0.3, 0.2, 0.1]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
-    "reward_maridia_water_max_1": 0.25,
-    "reward_maridia_water_max_2": 0.5,
+    "reward_maridia_water_max_1": 0.15,
+    "reward_maridia_water_max_2": 0.3,
     "reward_maridia_water_3": {"mixture": [
       {"weight": 0.5, "value": 0.0},
-      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 0.75}}}
+      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 1.0}}}
     ]},
-    "reward_norfair_heat_max_1": 0.25,
-    "reward_norfair_heat_max_2": 0.5,
+    "reward_norfair_heat_max_1": 0.15,
+    "reward_norfair_heat_max_2": 0.25,
     "reward_norfair_heat_3": {"mixture": [
       {"weight": 0.5, "value": 0.0},
-      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 0.75}}}
+      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 0.5}}}
     ]},
-    "maridia_water_floor_scale": 3.0,
-    "norfair_heat_floor_scale": 3.0,
+    "maridia_water_floor_scale": 2.5,
+    "norfair_heat_floor_scale": 2.5,
     "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_missing_connect_utility": {"linear": {"min": 0.0, "max": 1.0}},
@@ -177,7 +175,7 @@
     "known_distance": 1
   },
   "train": {
-    "batch_size": 256,
+    "batch_size": [256, 512, 2048, 2048],
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
     "sample_period": 16,
@@ -208,7 +206,7 @@
     "proposal_weight": 0.005,
     "proposal_target_temperature": {"log": [10.0, 2.0, 0.03, 0.03, 0.03]},
     "pipeline_groups": 4,
-    "gradient_accumulation_steps": {"linear": [1, 2, 8, 8, 8]},
+    "gradient_accumulation_steps": 1,
     "shuffle_buffer_batches": 1
   }
 }

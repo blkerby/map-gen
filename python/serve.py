@@ -60,8 +60,8 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v4"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v9"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v5"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v10"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -277,7 +277,16 @@ def validate_model_input_metadata(path: Path, metadata: dict[str, str] | None) -
 def load_model_input(path: Path) -> ModelExport:
     with safe_open(path, framework="pt", device="cpu") as model_input:
         metadata = validate_model_input_metadata(path, model_input.metadata())
-        tensors = {name: model_input.get_tensor(name) for name in model_input.keys()}
+        if metadata["format"] == TRAINING_CHECKPOINT_FORMAT:
+            tensors = {
+                name.replace("balance_ema_model.", "balance_model.", 1): model_input.get_tensor(
+                    name
+                )
+                for name in model_input.keys()
+                if name.startswith(("ema_model.", "balance_ema_model."))
+            }
+        else:
+            tensors = {name: model_input.get_tensor(name) for name in model_input.keys()}
     missing_prefixes = [
         prefix
         for prefix in MODEL_PREFIXES
@@ -553,9 +562,7 @@ def create_generate_configs(
         "reward_frontier": generate_request.reward_frontier,
         "reward_graph_diameter": generate_request.reward_graph_diameter,
         **{
-            f"reward_{family}_{tier}": getattr(
-                generate_request, f"reward_{family}_{tier}"
-            )
+            f"reward_{family}_{tier}": getattr(generate_request, f"reward_{family}_{tier}")
             for family in ("maridia_water", "norfair_heat")
             for tier in range(1, 4)
         },

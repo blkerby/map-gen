@@ -28,18 +28,28 @@ SPECIAL_ROOM_AREA_CONSTRAINT_IDX = {
 }
 
 
-def forced_special_room_mask(
+def area_balance_exempt_room_mask(
     rooms: list[dict],
     vanilla_area_constraint_mask: torch.Tensor,
+    heat_water_reward: torch.Tensor,
 ) -> torch.Tensor:
     constraint_idx = torch.tensor(
         [SPECIAL_ROOM_AREA_CONSTRAINT_IDX.get(room.get("special_type"), -1) for room in rooms],
         dtype=torch.int64,
         device=vanilla_area_constraint_mask.device,
     )
-    return (constraint_idx >= 0).unsqueeze(0) & vanilla_area_constraint_mask[
+    exempt = (constraint_idx >= 0).unsqueeze(0) & vanilla_area_constraint_mask[
         :, constraint_idx.clamp_min(0)
     ]
+    for family_idx, room_field in enumerate(("water", "heat")):
+        room_tier_idx = torch.tensor(
+            [room.get(room_field, 0) - 1 for room in rooms],
+            dtype=torch.int64,
+            device=heat_water_reward.device,
+        )
+        room_reward = heat_water_reward[:, family_idx, room_tier_idx.clamp_min(0)]
+        exempt |= (room_tier_idx >= 0).unsqueeze(0) & (room_reward > 0.0)
+    return exempt
 
 
 def average_area_tile_count(rooms: list[dict]) -> float:

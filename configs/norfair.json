@@ -48,10 +48,8 @@
     "beta2": 0.99
   },
   "balance_train": {
-    "replay_window_rounds": 8,
-    "window_weight": "linear",
     "batch_size": 8192,
-    "pass_factor": 8.0
+    "ema_decay": {"linear": [0.95, 0.99, 0.99, 0.99, 0.99]}
   },
   "generation": {
     "num_environments": 8192,

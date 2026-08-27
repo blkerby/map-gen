@@ -17,8 +17,8 @@ from env import (
     StepOutcomes,
     ProposalData,
     GeneratedFeatureData,
+    area_balance_exempt_room_mask,
     extract_candidate_features,
-    forced_special_room_mask,
     slice_features,
 )
 from experience import ExperienceStorage
@@ -34,6 +34,7 @@ from loss import (
 from train_config import (
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
+    HEAT_WATER_FAMILIES,
     VANILLA_AREA_CONDITION_FIELDS,
     episodes_per_round,
 )
@@ -42,6 +43,21 @@ INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
 VANILLA_AREA_CONDITION_INDICES = [
     GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_CONDITION_FIELDS
 ]
+HEAT_WATER_REWARD_INDICES = [
+    [GENERATION_VARIABLE_FLOAT_FIELDS.index(f"reward_{family}_{tier}") for tier in range(1, 4)]
+    for family in HEAT_WATER_FAMILIES
+]
+
+
+def generation_area_balance_exempt_room_mask(
+    rooms: list[dict],
+    generation_variable_floats: torch.Tensor,
+) -> torch.Tensor:
+    return area_balance_exempt_room_mask(
+        rooms,
+        generation_variable_floats[:, VANILLA_AREA_CONDITION_INDICES].to(torch.bool),
+        generation_variable_floats[:, HEAT_WATER_REWARD_INDICES],
+    )
 
 
 def episode_room_area(actions: Actions, num_rooms: int) -> torch.Tensor:
@@ -56,16 +72,18 @@ def episode_room_area(actions: Actions, num_rooms: int) -> torch.Tensor:
     return torch.where(room_area < AREA_COUNT, room_area, torch.full_like(room_area, -1))
 
 
-def balance_window_sampling_weight(
-    window_weight: Literal["uniform", "linear"],
-    window_rounds: int,
-    age: int,
-) -> float:
-    if window_weight == "uniform":
-        return 1.0
-    if window_weight == "linear":
-        return (window_rounds - age) / window_rounds
-    raise ValueError(f"unsupported balance window weight: {window_weight}")
+def update_ema_parameters(
+    ema_model: torch.nn.Module,
+    model: torch.nn.Module,
+    ema_decay: float,
+) -> None:
+    with torch.no_grad():
+        for ema_param, model_param in zip(
+            ema_model.parameters(),
+            model.parameters(),
+            strict=True,
+        ):
+            ema_param.lerp_(model_param, 1.0 - ema_decay)
 
 
 def train_balance_batch(
@@ -74,8 +92,11 @@ def train_balance_batch(
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
     room_area_mask: torch.Tensor,
+    record_weight: torch.Tensor,
     balance_model: torch.nn.Module,
+    balance_ema_model: torch.nn.Module,
     balance_optimizer: torch.optim.Optimizer,
+    ema_decay: float,
 ) -> float:
     balance_optimizer.zero_grad(set_to_none=True)
     loss = compute_balance_loss(
@@ -84,6 +105,7 @@ def train_balance_batch(
         toilet_crossed_room_idx,
         room_area,
         room_area_mask,
+        record_weight,
     )
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite balance loss: {loss.item()}")
@@ -92,78 +114,33 @@ def train_balance_batch(
     if not torch.isfinite(grad_norm):
         raise RuntimeError(f"non-finite balance gradient norm: {grad_norm.item()}")
     balance_optimizer.step()
+    update_ema_parameters(balance_ema_model, balance_model, ema_decay)
     return loss.item()
 
 
-def train_balance_replay(
+def train_balance_fresh(
     context: "TrainRoundContext",
     fresh_episode_data: EpisodeData,
 ) -> float:
-    window_rounds = context.config.balance_train.replay_window_rounds
     batch_size = context.config.balance_train.batch_size
     round_episodes = episodes_per_round(context.config)
-    previous_rounds = min(window_rounds - 1, context.experience.num_files)
-    action_parts = []
-    variable_parts = []
-    sampling_weight_parts = []
-
-    if previous_rounds > 0:
-        first_file = context.experience.num_files - previous_rounds
-        history_actions, history_variables = context.experience.read_balance_files(
-            list(range(first_file, context.experience.num_files))
-        )
-        expected_history_episodes = previous_rounds * round_episodes
-        if history_actions.room_idx.shape[0] != expected_history_episodes:
-            raise RuntimeError(
-                f"balance replay expected {expected_history_episodes} historical episodes, got "
-                f"{history_actions.room_idx.shape[0]}"
-            )
-        action_parts.append(history_actions)
-        variable_parts.append(history_variables)
-        history_round_weights = torch.tensor(
-            [
-                balance_window_sampling_weight(
-                    context.config.balance_train.window_weight,
-                    window_rounds,
-                    age,
-                )
-                for age in range(previous_rounds, 0, -1)
-            ],
-            dtype=torch.float32,
-        )
-        sampling_weight_parts.append(history_round_weights.repeat_interleave(round_episodes))
-
-    fresh_actions = fresh_episode_data.actions.to(torch.device("cpu"))
-    fresh_variables = fresh_episode_data.generation_variable_floats.to(torch.device("cpu"))
-    if fresh_actions.room_idx.shape[0] != round_episodes:
+    actions = fresh_episode_data.actions.to(torch.device("cpu"))
+    generation_variable_floats = fresh_episode_data.generation_variable_floats.to(
+        torch.device("cpu")
+    )
+    if actions.room_idx.shape[0] != round_episodes:
         raise RuntimeError(
-            f"balance replay expected {round_episodes} fresh episodes, got "
-            f"{fresh_actions.room_idx.shape[0]}"
+            f"balance training expected {round_episodes} fresh episodes, got "
+            f"{actions.room_idx.shape[0]}"
         )
-    action_parts.append(fresh_actions)
-    variable_parts.append(fresh_variables)
-    sampling_weight_parts.append(torch.ones(round_episodes, dtype=torch.float32))
-
-    actions = Actions(
-        room_idx=torch.cat([part.room_idx for part in action_parts]),
-        room_x=torch.cat([part.room_x for part in action_parts]),
-        room_y=torch.cat([part.room_y for part in action_parts]),
-        room_area=torch.cat([part.room_area for part in action_parts]),
-    )
-    generation_variable_floats = torch.cat(variable_parts)
-    sampling_weight = torch.cat(sampling_weight_parts)
-    batch_count = math.ceil(round_episodes * context.config.balance_train.pass_factor / batch_size)
-    sampled_index = torch.multinomial(
-        sampling_weight,
-        num_samples=batch_count * batch_size,
-        replacement=True,
-    )
+    order = torch.randperm(round_episodes)
     engine = context.train_batch_envs[0].engine
 
     set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
     total_loss = 0.0
-    for start in range(0, sampled_index.shape[0], batch_size):
-        index = sampled_index[start : start + batch_size]
+    batch_count = 0
+    for start in range(0, order.shape[0], batch_size):
+        index = order[start : start + batch_size]
         batch_actions = Actions(
             room_idx=actions.room_idx[index],
             room_x=actions.room_x[index],
@@ -176,13 +153,9 @@ def train_balance_replay(
             context.device,
         )
         room_area = episode_room_area(batch_actions, context.num_rooms).to(context.device)
-        vanilla_area_constraint_mask = batch_variables[
-            :,
-            VANILLA_AREA_CONDITION_INDICES,
-        ].to(torch.bool)
-        room_area_mask = ~forced_special_room_mask(
+        room_area_mask = ~generation_area_balance_exempt_room_mask(
             engine.rooms,
-            vanilla_area_constraint_mask,
+            batch_variables,
         )
         total_loss += train_balance_batch(
             generation_variable_floats=batch_variables,
@@ -190,9 +163,13 @@ def train_balance_replay(
             toilet_crossed_room_idx=toilet_crossed_room_idx.to(context.device),
             room_area=room_area,
             room_area_mask=room_area_mask,
+            record_weight=torch.ones(index.shape[0], dtype=torch.float32, device=context.device),
             balance_model=context.balance_model,
+            balance_ema_model=context.balance_ema_model,
             balance_optimizer=context.balance_optimizer,
+            ema_decay=context.step_config.balance_train.ema_decay,
         )
+        batch_count += 1
     return total_loss / batch_count
 
 
@@ -314,6 +291,7 @@ class TrainRoundContext:
     train_batch_envs: list
     main_model: torch.nn.Module
     balance_model: torch.nn.Module
+    balance_ema_model: torch.nn.Module
     main_optimizer: torch.optim.Optimizer
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
@@ -713,9 +691,9 @@ def collect_action_prefix_feature_mismatches(
     step: int,
 ) -> tuple[list[FeatureMismatch], int, int]:
     current_room_idx = actions.room_idx[:, step].to(device="cpu", dtype=torch.int64)
-    current_real = (
-        current_room_idx >= 0
-    ) & (current_room_idx < features.global_features.room_placed.shape[1])
+    current_real = (current_room_idx >= 0) & (
+        current_room_idx < features.global_features.room_placed.shape[1]
+    )
     if not torch.any(current_real):
         return [], 0, 0
     generated_values = (
@@ -765,9 +743,9 @@ def collect_generated_feature_continuity_mismatches(
     step: int,
 ) -> tuple[list[FeatureMismatch], int, int]:
     current_room_idx = actions.room_idx[:, step].to(device="cpu", dtype=torch.int64)
-    current_real = (
-        current_room_idx >= 0
-    ) & (current_room_idx < current_features.global_features.room_placed.shape[1])
+    current_real = (current_room_idx >= 0) & (
+        current_room_idx < current_features.global_features.room_placed.shape[1]
+    )
     if not torch.any(current_real):
         return [], 0, 0
     previous_values = (
@@ -789,14 +767,10 @@ def collect_generated_feature_continuity_mismatches(
     expected_values[0][environment_idx, valid_room_idx] = 1
     expected_values[1][environment_idx, valid_room_idx] = actions.room_x[current_real][
         valid, step
-    ].to(
-        torch.device("cpu")
-    )
+    ].to(torch.device("cpu"))
     expected_values[2][environment_idx, valid_room_idx] = actions.room_y[current_real][
         valid, step
-    ].to(
-        torch.device("cpu")
-    )
+    ].to(torch.device("cpu"))
     expected_values = (
         expected_values[0],
         torch.where(expected_values[0] != 0, expected_values[1], current_values[1]),
@@ -924,18 +898,18 @@ def prepare_feature_batches(
                 )
             else:
                 replay_features = env.extract_features(
-                        feature_slot,
-                        log_temperature,
-                        config.features.temperature,
-                        log_recommended_candidates,
-                        config.features.recommended_candidates,
-                        generation_variable_floats,
-                        config.features.generation_variable_floats,
-                        next_lookahead_outcomes,
-                        config.features.lookahead_outcomes,
-                        0,
-                        train_actions.room_idx.shape[0],
-                    )
+                    feature_slot,
+                    log_temperature,
+                    config.features.temperature,
+                    log_recommended_candidates,
+                    config.features.recommended_candidates,
+                    generation_variable_floats,
+                    config.features.generation_variable_floats,
+                    next_lookahead_outcomes,
+                    config.features.lookahead_outcomes,
+                    0,
+                    train_actions.room_idx.shape[0],
+                )
             if generated_feature_batches is not None:
                 generated_features = generated_feature_batches[step]
                 if generated_features is not None:
@@ -977,16 +951,10 @@ def prepare_feature_batches(
                     feature_mismatches.extend(continuity_mismatches)
                     feature_mismatches.extend(mismatches)
                     feature_compared_tensors += (
-                        capture_tensors
-                        + prefix_tensors
-                        + continuity_tensors
-                        + compared_tensors
+                        capture_tensors + prefix_tensors + continuity_tensors + compared_tensors
                     )
                     feature_compared_values += (
-                        capture_values
-                        + prefix_values
-                        + continuity_values
-                        + compared_values
+                        capture_values + prefix_values + continuity_values + compared_values
                     )
             feature_batches.append(
                 FeatureTrainBatch(
@@ -1251,7 +1219,7 @@ def train_feature_batch_backward(
     )
     if prepared_batch.kind == "fresh":
         with torch.no_grad():
-            balance_preds = context.balance_model(
+            balance_preds = context.balance_ema_model(
                 prepared_batch.episode_data.generation_variable_floats
             )
             balance_score_tables = compute_balance_score_tables(balance_preds)
@@ -1283,8 +1251,8 @@ def train_feature_batch_backward(
         repeated_area_balance_score_uniform_log_odds = (
             area_balance_score_uniform_log_odds.unsqueeze(1)
         )
-        repeated_toilet_balance_score_target_logits = (
-            toilet_balance_score_target_logits.unsqueeze(1)
+        repeated_toilet_balance_score_target_logits = toilet_balance_score_target_logits.unsqueeze(
+            1
         )
         repeated_toilet_balance_score_mask = toilet_balance_score_mask.unsqueeze(1)
     batch_size = prepared_batch.episode_data.actions.room_idx.shape[0]
@@ -1300,9 +1268,11 @@ def train_feature_batch_backward(
         dtype=torch.bool,
         device=context.device,
     )
-    heat_water_target = torch.cat(
-        [end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1
-    ).to(device=context.device, dtype=torch.int8).unsqueeze(1)
+    heat_water_target = (
+        torch.cat([end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1)
+        .to(device=context.device, dtype=torch.int8)
+        .unsqueeze(1)
+    )
     heat_water_mask = torch.ones_like(heat_water_target, dtype=torch.bool)
     active_room_part_mask = end_outcomes.active_room_part_mask.to(
         device=context.device,
@@ -1370,13 +1340,16 @@ def train_feature_batch_backward(
         dtype=torch.bool,
         device=context.device,
     )
-    vanilla_area_constraint_mask = prepared_batch.episode_data.generation_variable_floats[
+    generation_variable_floats = prepared_batch.episode_data.generation_variable_floats.to(
+        context.device
+    )
+    vanilla_area_constraint_mask = generation_variable_floats[
         :,
         VANILLA_AREA_CONDITION_INDICES,
-    ].to(device=context.device, dtype=torch.bool)
-    area_balance_exempt_room = forced_special_room_mask(
+    ].to(torch.bool)
+    area_balance_exempt_room = generation_area_balance_exempt_room_mask(
         context.train_batch_envs[0].engine.rooms,
-        vanilla_area_constraint_mask,
+        generation_variable_floats,
     )
     total_loss = empty_main_loss_breakdown()
     prefix_weight = 1.0 / len(prepared_batch.feature_batches)
@@ -1422,9 +1395,7 @@ def train_feature_batch_backward(
                 preds.balance_score[:, 0],
                 dtype=torch.bool,
             )
-            repeated_area_balance_score_target_logits = torch.zeros_like(
-                preds.area_balance_score
-            )
+            repeated_area_balance_score_target_logits = torch.zeros_like(preds.area_balance_score)
             repeated_area_balance_score_uniform_log_odds = torch.zeros_like(
                 preds.area_balance_score
             )
@@ -1686,7 +1657,7 @@ def train_round(
     generated_feature_data: GeneratedFeatureData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
-    balance_loss = train_balance_replay(context, episode_data)
+    balance_loss = train_balance_fresh(context, episode_data)
 
     total_loss = empty_main_loss_breakdown()
     train_batch_count = 0
@@ -1740,9 +1711,7 @@ def log_feature_mismatch_summary(context: TrainRoundContext) -> None:
     if context.feature_compared_tensors == 0:
         return
     mismatched_tensors = len(context.feature_mismatches)
-    mismatched_values = sum(
-        mismatch.mismatched_values for mismatch in context.feature_mismatches
-    )
+    mismatched_values = sum(mismatch.mismatched_values for mismatch in context.feature_mismatches)
     logging.warning(
         "Generation feature verification: %s/%s tensors and %s/%s values mismatched.",
         mismatched_tensors,

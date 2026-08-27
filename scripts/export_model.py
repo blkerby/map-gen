@@ -7,9 +7,12 @@ import safetensors.torch
 from safetensors import safe_open
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v9"
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v4"
-MODEL_PREFIXES = ("ema_model", "balance_model")
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v10"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v5"
+MODEL_PREFIX_MAP = {
+    "ema_model": "ema_model",
+    "balance_ema_model": "balance_model",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,10 +51,10 @@ def validate_checkpoint_metadata(path: Path, metadata: dict[str, str] | None) ->
     return metadata
 
 
-def model_prefix(name: str) -> str | None:
-    for prefix in MODEL_PREFIXES:
-        if name.startswith(f"{prefix}."):
-            return prefix
+def exported_model_name(name: str) -> tuple[str, str] | None:
+    for checkpoint_prefix, export_prefix in MODEL_PREFIX_MAP.items():
+        if name.startswith(f"{checkpoint_prefix}."):
+            return checkpoint_prefix, name.replace(checkpoint_prefix, export_prefix, 1)
     return None
 
 
@@ -65,13 +68,14 @@ def export_model_tensors(checkpoint_path: Path, output_path: Path, overwrite: bo
             checkpoint.metadata(),
         )
         tensors = {}
-        tensor_counts = dict.fromkeys(MODEL_PREFIXES, 0)
+        tensor_counts = dict.fromkeys(MODEL_PREFIX_MAP, 0)
         for name in checkpoint.keys():
-            prefix = model_prefix(name)
-            if prefix is None:
+            export_name = exported_model_name(name)
+            if export_name is None:
                 continue
-            tensors[name] = checkpoint.get_tensor(name)
-            tensor_counts[prefix] += 1
+            checkpoint_prefix, output_name = export_name
+            tensors[output_name] = checkpoint.get_tensor(name)
+            tensor_counts[checkpoint_prefix] += 1
 
     missing_prefixes = [prefix for prefix, count in tensor_counts.items() if count == 0]
     if missing_prefixes:
@@ -94,7 +98,7 @@ def export_model_tensors(checkpoint_path: Path, output_path: Path, overwrite: bo
 
     print(
         f"Exported {len(tensors)} tensor(s) from {checkpoint_path} to {output_path}: "
-        f"{', '.join(f'{prefix}={tensor_counts[prefix]}' for prefix in MODEL_PREFIXES)}"
+        f"{', '.join(f'{prefix}={tensor_counts[prefix]}' for prefix in MODEL_PREFIX_MAP)}"
     )
 
 

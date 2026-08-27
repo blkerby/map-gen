@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-from env import Actions, GenerateConfig, StepOutcomes, forced_special_room_mask
+from env import Actions, GenerateConfig, StepOutcomes, area_balance_exempt_room_mask
 from generate import apply_candidate_area_balance_scores, compute_expected_reward
 from train import (
     VANILLA_AREA_SPECIAL_ROOM_TYPES,
@@ -277,24 +277,39 @@ def test_candidate_area_balance_uses_exact_placed_room_score() -> None:
     assert torch.equal(scores, torch.tensor([[[4.0, 2.0], [3.0, 8.0]]]))
 
 
-def test_forced_special_rooms_are_exempt_from_area_balance() -> None:
+def test_forced_and_preferred_rooms_are_exempt_from_area_balance() -> None:
     rooms = [
         {"special_type": "ship"},
         {"special_type": "phantoon_boss"},
         {"special_type": "phantoon_map"},
         {"special_type": "phantoon_save"},
         {},
+        {"water": 1},
+        {"water": 2},
+        {"heat": 3},
     ]
-    exempt = forced_special_room_mask(
+    heat_water_reward = torch.zeros([2, 2, 3])
+    heat_water_reward[1, 0, 1] = 0.5
+    heat_water_reward[1, 1, 2] = 0.5
+    exempt = area_balance_exempt_room_mask(
         rooms,
-        torch.tensor([[True, False, False, True, False, False]]),
+        torch.tensor(
+            [
+                [True, False, False, True, False, False],
+                [False, False, False, False, False, False],
+            ]
+        ),
+        heat_water_reward,
     )
-    assert exempt.tolist() == [[True, True, True, True, False]]
+    assert exempt.tolist() == [
+        [True, True, True, True, False, False, False, False],
+        [False, False, False, False, False, False, True, True],
+    ]
 
     scores = apply_candidate_area_balance_scores(
         torch.ones([1, 1, len(rooms)]),
         torch.zeros([1, 1, len(rooms)], dtype=torch.bool),
-        exempt,
+        exempt[:1],
         Actions(
             room_idx=torch.tensor([[2]]),
             room_x=torch.zeros([1, 1], dtype=torch.int8),
@@ -303,7 +318,7 @@ def test_forced_special_rooms_are_exempt_from_area_balance() -> None:
         ),
         torch.ones([1, len(rooms), 6]),
     )
-    assert scores.tolist() == [[[0.0, 0.0, 0.0, 0.0, 1.0]]]
+    assert scores.tolist() == [[[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]]]
 
 
 def test_training_samples_use_top_down_heat_water_coefficients() -> None:
@@ -415,7 +430,7 @@ def main() -> None:
     test_heat_water_rewards_use_final_tier_coefficients()
     test_area_balance_reward_penalizes_common_area_scores()
     test_candidate_area_balance_uses_exact_placed_room_score()
-    test_forced_special_rooms_are_exempt_from_area_balance()
+    test_forced_and_preferred_rooms_are_exempt_from_area_balance()
     test_training_samples_use_top_down_heat_water_coefficients()
     test_heat_water_rewards_floor_area_tile_targets_before_normalization()
     test_unforced_special_room_area_ss_excludes_forced_episodes()
