@@ -50,7 +50,8 @@
   "balance_train": {
     "replay_window_rounds": 8,
     "window_weight": "linear",
-    "batch_size": 1
+    "batch_size": 1,
+    "pass_factor": 8.0
   },
   "generation": {
     "num_environments": 1,

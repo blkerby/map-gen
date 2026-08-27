@@ -55,7 +55,7 @@ def example_episode_data(value: int) -> EpisodeData:
     )
 
 
-def test_balance_replay_includes_history_and_applies_linear_age_weight() -> None:
+def test_balance_replay_samples_history_with_linear_age_weight() -> None:
     history = example_episode_data(1)
     fresh = example_episode_data(2)
     experience = FakeBalanceExperience(history)
@@ -66,6 +66,7 @@ def test_balance_replay_includes_history_and_applies_linear_age_weight() -> None
                 replay_window_rounds=3,
                 window_weight="linear",
                 batch_size=2,
+                pass_factor=1.5,
             ),
             generation=SimpleNamespace(num_iterations=1, num_environments=2),
             train=SimpleNamespace(fresh_pass_factor=0.0, batch_size=1),
@@ -81,6 +82,10 @@ def test_balance_replay_includes_history_and_applies_linear_age_weight() -> None
 
     with (
         patch("learn.set_optimizer_lrs"),
+        patch(
+            "learn.torch.multinomial",
+            return_value=torch.tensor([0, 2, 1, 3]),
+        ) as multinomial,
         patch("learn.train_balance_batch", return_value=1.0) as train_batch,
     ):
         loss = train_balance_replay(context, fresh)
@@ -88,12 +93,14 @@ def test_balance_replay_includes_history_and_applies_linear_age_weight() -> None
     assert loss == 1.0
     assert experience.requested_files == [[0]]
     assert engine.batch_sizes == [2, 2]
-    weights = torch.cat([call.kwargs["record_weight"] for call in train_batch.call_args_list])
+    assert len(train_batch.call_args_list) == 2
+    sampling_weight = multinomial.call_args.args[0]
     torch.testing.assert_close(
-        weights.sort().values,
+        sampling_weight,
         torch.tensor([2.0 / 3.0, 2.0 / 3.0, 1.0, 1.0]),
     )
+    assert multinomial.call_args.kwargs == {"num_samples": 4, "replacement": True}
 
 
 if __name__ == "__main__":
-    test_balance_replay_includes_history_and_applies_linear_age_weight()
+    test_balance_replay_samples_history_with_linear_age_weight()

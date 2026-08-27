@@ -56,7 +56,7 @@ def episode_room_area(actions: Actions, num_rooms: int) -> torch.Tensor:
     return torch.where(room_area < AREA_COUNT, room_area, torch.full_like(room_area, -1))
 
 
-def balance_window_record_weight(
+def balance_window_sampling_weight(
     window_weight: Literal["uniform", "linear"],
     window_rounds: int,
     age: int,
@@ -74,7 +74,6 @@ def train_balance_batch(
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
     room_area_mask: torch.Tensor,
-    record_weight: torch.Tensor,
     balance_model: torch.nn.Module,
     balance_optimizer: torch.optim.Optimizer,
 ) -> float:
@@ -85,7 +84,6 @@ def train_balance_batch(
         toilet_crossed_room_idx,
         room_area,
         room_area_mask,
-        record_weight,
     )
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite balance loss: {loss.item()}")
@@ -107,7 +105,7 @@ def train_balance_replay(
     previous_rounds = min(window_rounds - 1, context.experience.num_files)
     action_parts = []
     variable_parts = []
-    weight_parts = []
+    sampling_weight_parts = []
 
     if previous_rounds > 0:
         first_file = context.experience.num_files - previous_rounds
@@ -124,7 +122,7 @@ def train_balance_replay(
         variable_parts.append(history_variables)
         history_round_weights = torch.tensor(
             [
-                balance_window_record_weight(
+                balance_window_sampling_weight(
                     context.config.balance_train.window_weight,
                     window_rounds,
                     age,
@@ -133,7 +131,7 @@ def train_balance_replay(
             ],
             dtype=torch.float32,
         )
-        weight_parts.append(history_round_weights.repeat_interleave(round_episodes))
+        sampling_weight_parts.append(history_round_weights.repeat_interleave(round_episodes))
 
     fresh_actions = fresh_episode_data.actions.to(torch.device("cpu"))
     fresh_variables = fresh_episode_data.generation_variable_floats.to(torch.device("cpu"))
@@ -144,7 +142,7 @@ def train_balance_replay(
         )
     action_parts.append(fresh_actions)
     variable_parts.append(fresh_variables)
-    weight_parts.append(torch.ones(round_episodes, dtype=torch.float32))
+    sampling_weight_parts.append(torch.ones(round_episodes, dtype=torch.float32))
 
     actions = Actions(
         room_idx=torch.cat([part.room_idx for part in action_parts]),
@@ -153,15 +151,19 @@ def train_balance_replay(
         room_area=torch.cat([part.room_area for part in action_parts]),
     )
     generation_variable_floats = torch.cat(variable_parts)
-    record_weight = torch.cat(weight_parts)
-    order = torch.randperm(actions.room_idx.shape[0])
+    sampling_weight = torch.cat(sampling_weight_parts)
+    batch_count = math.ceil(round_episodes * context.config.balance_train.pass_factor / batch_size)
+    sampled_index = torch.multinomial(
+        sampling_weight,
+        num_samples=batch_count * batch_size,
+        replacement=True,
+    )
     engine = context.train_batch_envs[0].engine
 
     set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
     total_loss = 0.0
-    batch_count = 0
-    for start in range(0, order.shape[0], batch_size):
-        index = order[start : start + batch_size]
+    for start in range(0, sampled_index.shape[0], batch_size):
+        index = sampled_index[start : start + batch_size]
         batch_actions = Actions(
             room_idx=actions.room_idx[index],
             room_x=actions.room_x[index],
@@ -188,11 +190,9 @@ def train_balance_replay(
             toilet_crossed_room_idx=toilet_crossed_room_idx.to(context.device),
             room_area=room_area,
             room_area_mask=room_area_mask,
-            record_weight=record_weight[index].to(context.device),
             balance_model=context.balance_model,
             balance_optimizer=context.balance_optimizer,
         )
-        batch_count += 1
     return total_loss / batch_count
 
 

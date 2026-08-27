@@ -158,6 +158,7 @@ class BalanceTrainConfig(StrictBaseModel):
     replay_window_rounds: int
     window_weight: Literal["uniform", "linear"]
     batch_size: int
+    pass_factor: float
 
 
 class GenerationConfig(StrictBaseModel):
@@ -611,6 +612,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("balance_train.replay_window_rounds must be greater than zero")
     if config.balance_train.batch_size <= 0:
         raise ValueError("balance_train.batch_size must be greater than zero")
+    if config.balance_train.pass_factor <= 0.0:
+        raise ValueError("balance_train.pass_factor must be greater than zero")
     round_episodes = config.generation.num_iterations * config.generation.num_environments
     if round_episodes % config.balance_train.batch_size != 0:
         raise ValueError(

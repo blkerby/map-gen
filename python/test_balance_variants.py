@@ -127,7 +127,6 @@ def test_balance_loss_maps_concrete_matches_to_variant_pairs() -> None:
         toilet_crossed_room_idx=torch.tensor([-1]),
         room_area=room_area,
         room_area_mask=torch.ones_like(room_area, dtype=torch.bool),
-        record_weight=torch.ones(1),
     )
     concrete_logits = materialize_direction_balance_logits(
         preds.left,
@@ -161,7 +160,6 @@ def test_balance_loss_masks_room_area_targets() -> None:
         toilet_crossed_room_idx=torch.tensor([-1]),
         room_area=room_area,
         room_area_mask=torch.tensor([[False, True]]),
-        record_weight=torch.ones(1),
     )
     expected = torch.nn.functional.cross_entropy(
         preds.room_area[:, 1],
@@ -171,16 +169,15 @@ def test_balance_loss_masks_room_area_targets() -> None:
     torch.testing.assert_close(loss, expected)
 
 
-def test_categorical_balance_loss_weights_records_and_denominator() -> None:
+def test_categorical_balance_loss_sums_records_and_denominator() -> None:
     logits = torch.tensor([[0.0, 0.0], [0.0, 2.0]])
     targets = torch.tensor([0, 0])
-    record_weight = torch.tensor([1.0, 0.25])
 
-    loss, weight = categorical_balance_loss(logits, targets, record_weight)
+    loss, weight = categorical_balance_loss(logits, targets)
     per_record_loss = torch.nn.functional.cross_entropy(logits, targets, reduction="none")
 
-    torch.testing.assert_close(loss, per_record_loss[0] + 0.25 * per_record_loss[1])
-    torch.testing.assert_close(weight, torch.tensor(1.25))
+    torch.testing.assert_close(loss, torch.sum(per_record_loss))
+    torch.testing.assert_close(weight, torch.tensor(2.0))
 
 
 def test_balance_target_scores_expand_variant_probabilities_to_concrete_matches() -> None:
@@ -435,7 +432,7 @@ def main() -> None:
     test_room_area_balance_scores_are_centered_and_gathered()
     test_balance_loss_maps_concrete_matches_to_variant_pairs()
     test_balance_loss_masks_room_area_targets()
-    test_categorical_balance_loss_weights_records_and_denominator()
+    test_categorical_balance_loss_sums_records_and_denominator()
     test_balance_target_scores_expand_variant_probabilities_to_concrete_matches()
     test_main_balance_kl_restores_uniform_log_odds_offset()
     test_proposal_balance_residual_adds_both_door_directions()

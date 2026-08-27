@@ -259,7 +259,6 @@ def main() -> None:
         room_area = episode_room_area(actions, len(rooms)).to(device)
         vanilla_area_constraint_mask = variables[:, VANILLA_AREA_CONDITION_INDICES].to(torch.bool)
         room_area_mask = ~forced_special_room_mask(rooms, vanilla_area_constraint_mask)
-        record_weight = torch.ones(episode_count, dtype=torch.float32, device=device)
         for start in range(0, episode_count, config.balance_train.batch_size):
             end = start + config.balance_train.batch_size
             schedule_episode = interpolate_schedule_episode(
@@ -275,7 +274,6 @@ def main() -> None:
                 toilet_crossed_room_idx=toilet_crossed_room_idx[start:end],
                 room_area=room_area[start:end],
                 room_area_mask=room_area_mask[start:end],
-                record_weight=record_weight[start:end],
                 balance_model=balance_model,
                 balance_optimizer=balance_optimizer,
             )
