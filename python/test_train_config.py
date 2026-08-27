@@ -73,6 +73,26 @@ def test_proposal_target_temperature_is_required() -> None:
         raise AssertionError("train.proposal_target_temperature should be required")
 
 
+def test_balance_train_is_required_and_batch_size_divides_round() -> None:
+    config_data = load_debug_config()
+    del config_data["balance_train"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("balance_train should be required")
+
+    config_data = load_debug_config()
+    config_data["balance_train"]["batch_size"] = 3
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "balance_train.batch_size" in str(err)
+    else:
+        raise AssertionError("balance_train.batch_size should evenly divide a round")
+
+
 def test_proposal_target_temperature_must_be_positive() -> None:
     config_data = load_debug_config()
     config_data["train"]["proposal_target_temperature"] = 0.0
@@ -237,6 +257,7 @@ def main() -> None:
     test_vanilla_area_probability_is_required_and_bounded()
     test_recommended_candidates_same_frontier_is_required()
     test_proposal_target_temperature_is_required()
+    test_balance_train_is_required_and_batch_size_divides_round()
     test_proposal_target_temperature_must_be_positive()
     test_gradient_accumulation_steps_instantiates_schedule()
     test_generation_area_bounding_box_fields_must_be_positive()

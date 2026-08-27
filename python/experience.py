@@ -1,12 +1,64 @@
 import torch
 
 import os
+from pathlib import Path
 import safetensors.torch
 from safetensors import safe_open
 from env import Actions, EpisodeData
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
 EXPERIENCE_FORMAT = "map-gen-experience-v2"
+REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
+    "room_idx",
+    "room_x",
+    "room_y",
+    "room_area",
+    "generation_variable_floats",
+)
+
+
+def load_balance_experience(path: str | Path, num_rooms: int) -> tuple[Actions, torch.Tensor]:
+    with safe_open(path, framework="pt", device="cpu") as experience:
+        metadata = experience.metadata()
+        if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
+            raise ValueError(f"unsupported experience format in {path}")
+        missing = [
+            name for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS if name not in experience.keys()
+        ]
+        if missing:
+            raise ValueError(f"{path} missing tensor(s): {', '.join(missing)}")
+        tensors = {
+            name: experience.get_tensor(name) for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS
+        }
+
+    action_shape = tensors["room_idx"].shape
+    if len(action_shape) != 2 or action_shape[1] != num_rooms:
+        raise ValueError(
+            f"{path} action shape must be (episodes, {num_rooms}), got {tuple(action_shape)}"
+        )
+    for name in ("room_x", "room_y", "room_area"):
+        if tensors[name].shape != action_shape:
+            raise ValueError(
+                f"{path} {name} shape {tuple(tensors[name].shape)} does not match "
+                f"room_idx shape {tuple(action_shape)}"
+            )
+    variable_shape = tensors["generation_variable_floats"].shape
+    expected_variable_shape = (action_shape[0], len(GENERATION_VARIABLE_FLOAT_FIELDS))
+    if variable_shape != expected_variable_shape:
+        raise ValueError(
+            f"{path} generation_variable_floats shape must be {expected_variable_shape}, "
+            f"got {tuple(variable_shape)}"
+        )
+    return (
+        Actions(
+            room_idx=tensors["room_idx"],
+            room_x=tensors["room_x"],
+            room_y=tensors["room_y"],
+            room_area=tensors["room_area"],
+        ),
+        tensors["generation_variable_floats"],
+    )
 
 
 class ExperienceStorage:
@@ -87,6 +139,21 @@ class ExperienceStorage:
             generation_variable_floats=torch.cat(
                 [data.generation_variable_floats for data in data_list], dim=0
             ),
+        )
+
+    def read_balance_files(self, file_num_list: list[int]) -> tuple[Actions, torch.Tensor]:
+        data = [
+            load_balance_experience(Path(self.data_path) / f"{file_num}.safetensors", self.num_rooms)
+            for file_num in file_num_list
+        ]
+        return (
+            Actions(
+                room_idx=torch.cat([actions.room_idx for actions, _ in data]),
+                room_x=torch.cat([actions.room_x for actions, _ in data]),
+                room_y=torch.cat([actions.room_y for actions, _ in data]),
+                room_area=torch.cat([actions.room_area for actions, _ in data]),
+            ),
+            torch.cat([variables for _, variables in data]),
         )
 
     def sample(self, batch_size, episodes_per_file, hist_c) -> EpisodeData:

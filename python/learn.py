@@ -56,6 +56,146 @@ def episode_room_area(actions: Actions, num_rooms: int) -> torch.Tensor:
     return torch.where(room_area < AREA_COUNT, room_area, torch.full_like(room_area, -1))
 
 
+def balance_window_record_weight(
+    window_weight: Literal["uniform", "linear"],
+    window_rounds: int,
+    age: int,
+) -> float:
+    if window_weight == "uniform":
+        return 1.0
+    if window_weight == "linear":
+        return (window_rounds - age) / window_rounds
+    raise ValueError(f"unsupported balance window weight: {window_weight}")
+
+
+def train_balance_batch(
+    generation_variable_floats: torch.Tensor,
+    door_matches: DoorMatches,
+    toilet_crossed_room_idx: torch.Tensor,
+    room_area: torch.Tensor,
+    room_area_mask: torch.Tensor,
+    record_weight: torch.Tensor,
+    balance_model: torch.nn.Module,
+    balance_optimizer: torch.optim.Optimizer,
+) -> float:
+    balance_optimizer.zero_grad(set_to_none=True)
+    loss = compute_balance_loss(
+        balance_model(generation_variable_floats),
+        door_matches,
+        toilet_crossed_room_idx,
+        room_area,
+        room_area_mask,
+        record_weight,
+    )
+    if not torch.isfinite(loss):
+        raise RuntimeError(f"non-finite balance loss: {loss.item()}")
+    loss.backward()
+    grad_norm = torch.nn.utils.clip_grad_norm_(balance_model.parameters(), max_norm=1.0)
+    if not torch.isfinite(grad_norm):
+        raise RuntimeError(f"non-finite balance gradient norm: {grad_norm.item()}")
+    balance_optimizer.step()
+    return loss.item()
+
+
+def train_balance_replay(
+    context: "TrainRoundContext",
+    fresh_episode_data: EpisodeData,
+) -> float:
+    window_rounds = context.config.balance_train.replay_window_rounds
+    batch_size = context.config.balance_train.batch_size
+    round_episodes = episodes_per_round(context.config)
+    previous_rounds = min(window_rounds - 1, context.experience.num_files)
+    action_parts = []
+    variable_parts = []
+    weight_parts = []
+
+    if previous_rounds > 0:
+        first_file = context.experience.num_files - previous_rounds
+        history_actions, history_variables = context.experience.read_balance_files(
+            list(range(first_file, context.experience.num_files))
+        )
+        expected_history_episodes = previous_rounds * round_episodes
+        if history_actions.room_idx.shape[0] != expected_history_episodes:
+            raise RuntimeError(
+                f"balance replay expected {expected_history_episodes} historical episodes, got "
+                f"{history_actions.room_idx.shape[0]}"
+            )
+        action_parts.append(history_actions)
+        variable_parts.append(history_variables)
+        history_round_weights = torch.tensor(
+            [
+                balance_window_record_weight(
+                    context.config.balance_train.window_weight,
+                    window_rounds,
+                    age,
+                )
+                for age in range(previous_rounds, 0, -1)
+            ],
+            dtype=torch.float32,
+        )
+        weight_parts.append(history_round_weights.repeat_interleave(round_episodes))
+
+    fresh_actions = fresh_episode_data.actions.to(torch.device("cpu"))
+    fresh_variables = fresh_episode_data.generation_variable_floats.to(torch.device("cpu"))
+    if fresh_actions.room_idx.shape[0] != round_episodes:
+        raise RuntimeError(
+            f"balance replay expected {round_episodes} fresh episodes, got "
+            f"{fresh_actions.room_idx.shape[0]}"
+        )
+    action_parts.append(fresh_actions)
+    variable_parts.append(fresh_variables)
+    weight_parts.append(torch.ones(round_episodes, dtype=torch.float32))
+
+    actions = Actions(
+        room_idx=torch.cat([part.room_idx for part in action_parts]),
+        room_x=torch.cat([part.room_x for part in action_parts]),
+        room_y=torch.cat([part.room_y for part in action_parts]),
+        room_area=torch.cat([part.room_area for part in action_parts]),
+    )
+    generation_variable_floats = torch.cat(variable_parts)
+    record_weight = torch.cat(weight_parts)
+    order = torch.randperm(actions.room_idx.shape[0])
+    engine = context.train_batch_envs[0].engine
+
+    set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
+    total_loss = 0.0
+    batch_count = 0
+    for start in range(0, order.shape[0], batch_size):
+        index = order[start : start + batch_size]
+        batch_actions = Actions(
+            room_idx=actions.room_idx[index],
+            room_x=actions.room_x[index],
+            room_y=actions.room_y[index],
+            room_area=actions.room_area[index],
+        )
+        batch_variables = generation_variable_floats[index].to(context.device)
+        door_matches, toilet_crossed_room_idx = engine.compute_balance_targets(
+            batch_actions,
+            context.device,
+        )
+        room_area = episode_room_area(batch_actions, context.num_rooms).to(context.device)
+        vanilla_area_constraint_mask = batch_variables[
+            :,
+            VANILLA_AREA_CONDITION_INDICES,
+        ].to(torch.bool)
+        room_area_mask = ~forced_special_room_mask(
+            engine.rooms,
+            vanilla_area_constraint_mask,
+        )
+        total_loss += train_balance_batch(
+            generation_variable_floats=batch_variables,
+            door_matches=door_matches.to(context.device),
+            toilet_crossed_room_idx=toilet_crossed_room_idx.to(context.device),
+            room_area=room_area,
+            room_area_mask=room_area_mask,
+            record_weight=record_weight[index].to(context.device),
+            balance_model=context.balance_model,
+            balance_optimizer=context.balance_optimizer,
+        )
+        batch_count += 1
+    return total_loss / batch_count
+
+
 def distance_proximity_utility(
     distance: torch.Tensor,
     distance_mask: torch.Tensor,
@@ -970,31 +1110,6 @@ def prepare_train_batch_task(
     )
 
 
-def train_balance_batch_backward(
-    balance_model: torch.nn.Module,
-    prepared_batch: PreparedTrainBatch,
-    rooms: list[dict],
-    loss_scale: float,
-) -> torch.Tensor:
-    if prepared_batch.kind != "fresh":
-        raise ValueError("balance model training requires a fresh batch")
-    preds = balance_model(prepared_batch.episode_data.generation_variable_floats)
-    vanilla_area_constraint_mask = prepared_batch.episode_data.generation_variable_floats[
-        :,
-        VANILLA_AREA_CONDITION_INDICES,
-    ].to(dtype=torch.bool)
-    room_area_mask = ~forced_special_room_mask(rooms, vanilla_area_constraint_mask)
-    balance_loss = compute_balance_loss(
-        preds,
-        prepared_batch.door_matches,
-        prepared_batch.outcomes.end_outcomes.toilet_crossed_room_idx,
-        prepared_batch.room_area,
-        room_area_mask,
-    )
-    (balance_loss * loss_scale).backward()
-    return balance_loss
-
-
 def proposal_batch_loss(
     candidate_score: torch.Tensor,
     target_reward: torch.Tensor,
@@ -1485,40 +1600,18 @@ def train_batch_backward(
     context: TrainRoundContext,
     prepared_batch: PreparedTrainBatch,
     main_loss_scale: float,
-    balance_loss_scale: float,
-) -> tuple[MainLossBreakdown, float]:
+) -> MainLossBreakdown:
     loss = train_feature_batch_backward(context, prepared_batch, main_loss_scale)
-    if prepared_batch.kind == "fresh":
-        balance_loss = train_balance_batch_backward(
-            context.balance_model,
-            prepared_batch,
-            context.train_batch_envs[0].engine.rooms,
-            balance_loss_scale,
-        )
-        if not torch.isfinite(balance_loss):
-            raise RuntimeError(f"non-finite balance loss before backward: {balance_loss.item()}")
-        balance_loss_value = balance_loss.item()
-    else:
-        balance_loss_value = 0.0
-
     if not math.isfinite(loss.total):
         raise RuntimeError(f"non-finite loss before backward: {loss}")
-
-    return loss, balance_loss_value
+    return loss
 
 
 def train_optimizer_step(context: TrainRoundContext) -> None:
     grad_norm = torch.nn.utils.clip_grad_norm_(context.main_model.parameters(), max_norm=1.0)
     if not torch.isfinite(grad_norm):
         raise RuntimeError(f"non-finite gradient norm: {grad_norm.item()}")
-    balance_grad_norm = torch.nn.utils.clip_grad_norm_(
-        context.balance_model.parameters(),
-        max_norm=1.0,
-    )
-    if not torch.isfinite(balance_grad_norm):
-        raise RuntimeError(f"non-finite balance gradient norm: {balance_grad_norm.item()}")
     context.main_optimizer.step()
-    context.balance_optimizer.step()
     context.update_ema_model(context.step_config.train.ema_decay)
 
 
@@ -1526,50 +1619,43 @@ def train_prepared_batch_group(
     context: TrainRoundContext,
     prepared_batches: Iterable[PreparedTrainBatch],
     batch_count: int,
-) -> tuple[MainLossBreakdown, float, int]:
+) -> tuple[MainLossBreakdown, int]:
     if batch_count <= 0:
         raise ValueError("batch_count must be greater than zero")
     batches = list(prepared_batches)
     if len(batches) != batch_count:
         raise RuntimeError(f"expected {batch_count} prepared batch(es), got {len(batches)}")
-    fresh_batch_count = sum(batch.kind == "fresh" for batch in batches)
     context.main_model.zero_grad()
-    context.balance_model.zero_grad()
     main_loss_scale = 1.0 / batch_count
-    balance_loss_scale = 1.0 / fresh_batch_count if fresh_batch_count else 0.0
     group_loss = empty_main_loss_breakdown()
-    group_balance_loss = 0.0
     for prepared_batch in batches:
         context.feature_mismatches.extend(prepared_batch.feature_mismatches)
         context.feature_compared_tensors += prepared_batch.feature_compared_tensors
         context.feature_compared_values += prepared_batch.feature_compared_values
-        batch_loss, batch_balance_loss = train_batch_backward(
+        batch_loss = train_batch_backward(
             context,
             prepared_batch,
             main_loss_scale,
-            balance_loss_scale,
         )
         accumulate_main_loss(group_loss, batch_loss)
-        group_balance_loss += batch_balance_loss
     train_optimizer_step(context)
-    return group_loss, group_balance_loss, batch_count
+    return group_loss, batch_count
 
 
 def add_completed_batch_group(
     context: TrainRoundContext,
     total_loss: MainLossBreakdown,
-    total_balance_loss: float,
     train_batch_count: int,
     prepared_batch_group: Iterable[PreparedTrainBatch],
     group_size: int,
-) -> tuple[float, int]:
-    group_loss, group_balance_loss, group_count = train_prepared_batch_group(
+) -> int:
+    group_loss, group_count = train_prepared_batch_group(
         context,
         prepared_batch_group,
         group_size,
     )
     accumulate_main_loss(total_loss, group_loss)
-    return total_balance_loss + group_balance_loss, train_batch_count + group_count
+    return train_batch_count + group_count
 
 
 def pop_random_prepared_batch(buffer: list[PreparedTrainBatch]) -> PreparedTrainBatch:
@@ -1600,16 +1686,12 @@ def train_round(
     generated_feature_data: GeneratedFeatureData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
-    set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
+    balance_loss = train_balance_replay(context, episode_data)
 
     total_loss = empty_main_loss_breakdown()
-    total_balance_loss = 0.0
     train_batch_count = 0
 
     train_batch_tasks = iter_train_batch_tasks(context.config, context.experience)
-    balance_batch_count = sum(task.kind == "fresh" for task in train_batch_tasks)
-    if balance_batch_count == 0:
-        raise RuntimeError("balance model training requires at least one fresh batch")
     prepared_batches = iter(
         context.train_batch_prefetcher.map(
             train_batch_tasks,
@@ -1635,10 +1717,9 @@ def train_round(
             context.step_config.train.gradient_accumulation_steps,
             remaining_batches,
         )
-        total_balance_loss, train_batch_count = add_completed_batch_group(
+        train_batch_count = add_completed_batch_group(
             context,
             total_loss,
-            total_balance_loss,
             train_batch_count,
             (next(shuffled_prepared_batches) for _ in range(group_size)),
             group_size,
@@ -1648,10 +1729,10 @@ def train_round(
     log_feature_mismatch_summary(context)
 
     if train_batch_count == 0:
-        return empty_main_loss_breakdown(), 0.0
+        return empty_main_loss_breakdown(), balance_loss
     return (
         average_main_loss(total_loss, train_batch_count),
-        total_balance_loss / balance_batch_count,
+        balance_loss,
     )
 
 

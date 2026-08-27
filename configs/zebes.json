@@ -47,6 +47,11 @@
     "beta1": 0.95,
     "beta2": 0.99
   },
+  "balance_train": {
+    "replay_window_rounds": 16,
+    "window_weight": "linear",
+    "batch_size": 8192
+  },
   "generation": {
     "num_environments": 4096,
     "num_iterations": 2,

@@ -15,18 +15,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "python"))
 
 from env import (  # noqa: E402
-    Actions,
-    DoorMatches,
     Engine,
     forced_special_room_mask,
 )
-from experience import EXPERIENCE_FORMAT  # noqa: E402
+from experience import (  # noqa: E402
+    EXPERIENCE_FORMAT,
+    REQUIRED_BALANCE_EXPERIENCE_TENSORS,
+    load_balance_experience,
+)
 from learn import (  # noqa: E402
     VANILLA_AREA_CONDITION_INDICES,
     episode_room_area,
     set_optimizer_lrs,
+    train_balance_batch,
 )
-from loss import compute_balance_loss  # noqa: E402
 from model_loading import create_balance_model  # noqa: E402
 from train import (  # noqa: E402
     TRAINING_CHECKPOINT_FORMAT,
@@ -36,19 +38,11 @@ from train import (  # noqa: E402
 )
 from train_config import (  # noqa: E402
     Config,
-    GENERATION_VARIABLE_FLOAT_FIELDS,
     instantiate_scheduleable_config,
     validate_config,
 )
 
 
-REQUIRED_EXPERIENCE_TENSORS = (
-    "room_idx",
-    "room_x",
-    "room_y",
-    "room_area",
-    "generation_variable_floats",
-)
 REQUIRED_CHECKPOINT_METADATA = (
     "format",
     "config",
@@ -148,7 +142,11 @@ def experience_episode_count(path: Path) -> int:
         metadata = experience.metadata()
         if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
             raise ValueError(f"unsupported experience format in {path}")
-        missing = [name for name in REQUIRED_EXPERIENCE_TENSORS if name not in experience.keys()]
+        missing = [
+            name
+            for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS
+            if name not in experience.keys()
+        ]
         if missing:
             raise ValueError(f"{path} missing tensor(s): {', '.join(missing)}")
         shape = experience.get_slice("room_idx").get_shape()
@@ -163,72 +161,6 @@ def interpolate_schedule_episode(
     checkpoint_episodes: int,
 ) -> int:
     return round(processed_episodes / total_replay_episodes * checkpoint_episodes)
-
-
-def load_experience(path: Path, num_rooms: int) -> tuple[Actions, torch.Tensor]:
-    with safe_open(path, framework="pt", device="cpu") as experience:
-        metadata = experience.metadata()
-        if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
-            raise ValueError(f"unsupported experience format in {path}")
-        missing = [name for name in REQUIRED_EXPERIENCE_TENSORS if name not in experience.keys()]
-        if missing:
-            raise ValueError(f"{path} missing tensor(s): {', '.join(missing)}")
-        tensors = {name: experience.get_tensor(name) for name in REQUIRED_EXPERIENCE_TENSORS}
-
-    action_shape = tensors["room_idx"].shape
-    if len(action_shape) != 2 or action_shape[1] != num_rooms:
-        raise ValueError(
-            f"{path} action shape must be (episodes, {num_rooms}), got {tuple(action_shape)}"
-        )
-    for name in ("room_x", "room_y", "room_area"):
-        if tensors[name].shape != action_shape:
-            raise ValueError(
-                f"{path} {name} shape {tuple(tensors[name].shape)} does not match "
-                f"room_idx shape {tuple(action_shape)}"
-            )
-    variable_shape = tensors["generation_variable_floats"].shape
-    expected_variable_shape = (action_shape[0], len(GENERATION_VARIABLE_FLOAT_FIELDS))
-    if variable_shape != expected_variable_shape:
-        raise ValueError(
-            f"{path} generation_variable_floats shape must be {expected_variable_shape}, "
-            f"got {tuple(variable_shape)}"
-        )
-    return (
-        Actions(
-            room_idx=tensors["room_idx"],
-            room_x=tensors["room_x"],
-            room_y=tensors["room_y"],
-            room_area=tensors["room_area"],
-        ),
-        tensors["generation_variable_floats"],
-    )
-
-
-def train_balance_batch(
-    generation_variable_floats: torch.Tensor,
-    door_matches: DoorMatches,
-    toilet_crossed_room_idx: torch.Tensor,
-    room_area: torch.Tensor,
-    room_area_mask: torch.Tensor,
-    balance_model: torch.nn.Module,
-    balance_optimizer: torch.optim.Optimizer,
-) -> float:
-    balance_optimizer.zero_grad(set_to_none=True)
-    loss = compute_balance_loss(
-        balance_model(generation_variable_floats),
-        door_matches,
-        toilet_crossed_room_idx,
-        room_area,
-        room_area_mask,
-    )
-    if not torch.isfinite(loss):
-        raise RuntimeError(f"non-finite balance loss: {loss.item()}")
-    loss.backward()
-    grad_norm = torch.nn.utils.clip_grad_norm_(balance_model.parameters(), max_norm=1.0)
-    if not torch.isfinite(grad_norm):
-        raise RuntimeError(f"non-finite balance gradient norm: {grad_norm.item()}")
-    balance_optimizer.step()
-    return loss.item()
 
 
 def write_checkpoint(
@@ -280,10 +212,10 @@ def main() -> None:
     rooms = json.loads(config.room_set.read_text())
     episode_counts = {path: experience_episode_count(path) for path in paths}
     for path, episode_count in episode_counts.items():
-        if episode_count % config.train.batch_size != 0:
+        if episode_count % config.balance_train.batch_size != 0:
             raise ValueError(
                 f"{path} has {episode_count} episodes, which is not divisible by "
-                f"train.batch_size={config.train.batch_size}"
+                f"balance_train.batch_size={config.balance_train.batch_size}"
             )
     total_replay_episodes = sum(episode_counts.values())
     if total_replay_episodes == 0:
@@ -315,7 +247,7 @@ def main() -> None:
         "step\tfile\tbatch\tepisodes\tlr\tbalance_loss\tbalance_loss_ema"
     )
     for path in paths:
-        actions, variables = load_experience(path, len(rooms))
+        actions, variables = load_balance_experience(path, len(rooms))
         episode_count = actions.room_idx.shape[0]
         if episode_count != episode_counts[path]:
             raise ValueError(f"{path} episode count changed while training")
@@ -327,8 +259,9 @@ def main() -> None:
         room_area = episode_room_area(actions, len(rooms)).to(device)
         vanilla_area_constraint_mask = variables[:, VANILLA_AREA_CONDITION_INDICES].to(torch.bool)
         room_area_mask = ~forced_special_room_mask(rooms, vanilla_area_constraint_mask)
-        for start in range(0, episode_count, config.train.batch_size):
-            end = start + config.train.batch_size
+        record_weight = torch.ones(episode_count, dtype=torch.float32, device=device)
+        for start in range(0, episode_count, config.balance_train.batch_size):
+            end = start + config.balance_train.batch_size
             schedule_episode = interpolate_schedule_episode(
                 processed_episodes + end - start,
                 total_replay_episodes,
@@ -337,13 +270,14 @@ def main() -> None:
             step_config = instantiate_scheduleable_config(config, schedule_episode)
             set_optimizer_lrs(balance_optimizer, step_config.balance_optimizer)
             loss = train_balance_batch(
-                variables[start:end],
-                door_matches.slice(start, end),
-                toilet_crossed_room_idx[start:end],
-                room_area[start:end],
-                room_area_mask[start:end],
-                balance_model,
-                balance_optimizer,
+                generation_variable_floats=variables[start:end],
+                door_matches=door_matches.slice(start, end),
+                toilet_crossed_room_idx=toilet_crossed_room_idx[start:end],
+                room_area=room_area[start:end],
+                room_area_mask=room_area_mask[start:end],
+                record_weight=record_weight[start:end],
+                balance_model=balance_model,
+                balance_optimizer=balance_optimizer,
             )
             processed_episodes += end - start
             optimizer_step += 1
@@ -358,7 +292,7 @@ def main() -> None:
                 "%s\t%s\t%s\t%s\t%.9g\t%.9g\t%.9g",
                 optimizer_step,
                 path.stem,
-                start // config.train.batch_size + 1,
+                start // config.balance_train.batch_size + 1,
                 processed_episodes,
                 lr,
                 loss,

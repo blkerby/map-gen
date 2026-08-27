@@ -470,14 +470,22 @@ def compute_loss_breakdown(
 
 
 def categorical_balance_loss(
-    logits: torch.Tensor, targets: torch.Tensor
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    record_weight: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     mask = targets >= 0
     if not torch.any(mask):
         return torch.sum(logits) * 0.0, logits.new_tensor(0.0)
+    target_weight = record_weight.reshape(
+        [record_weight.shape[0]] + [1] * (targets.ndim - 1)
+    ).expand_as(targets)[mask]
     return (
-        torch.nn.functional.cross_entropy(logits[mask], targets[mask], reduction="sum"),
-        torch.sum(mask).to(logits.dtype),
+        torch.sum(
+            torch.nn.functional.cross_entropy(logits[mask], targets[mask], reduction="none")
+            * target_weight
+        ),
+        torch.sum(target_weight),
     )
 
 
@@ -512,6 +520,7 @@ def direction_variant_balance_loss(
     source_global_door_variant_idx: torch.Tensor,
     target_global_door_variant_idx: torch.Tensor,
     door_variant_compatibility: torch.Tensor,
+    record_weight: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     mask = targets >= 0
     if not torch.any(mask):
@@ -529,13 +538,17 @@ def direction_variant_balance_loss(
         target_door_variant_idx,
     )
     concrete_logits = concrete_logits.masked_fill(~compatibility.unsqueeze(0), -torch.inf)
+    target_weight = record_weight.unsqueeze(1).expand_as(targets)[mask]
     return (
-        torch.nn.functional.cross_entropy(
-            concrete_logits[mask],
-            targets[mask].to(torch.int64),
-            reduction="sum",
+        torch.sum(
+            torch.nn.functional.cross_entropy(
+                concrete_logits[mask],
+                targets[mask].to(torch.int64),
+                reduction="none",
+            )
+            * target_weight
         ),
-        torch.sum(mask).to(logits.dtype),
+        torch.sum(target_weight),
     )
 
 
@@ -545,6 +558,7 @@ def compute_balance_loss(
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
     room_area_mask: torch.Tensor,
+    record_weight: torch.Tensor,
 ) -> torch.Tensor:
     left_loss, left_weight = direction_variant_balance_loss(
         preds.left,
@@ -554,6 +568,7 @@ def compute_balance_loss(
         preds.left_global_door_variant_idx,
         preds.right_global_door_variant_idx,
         preds.door_variant_compatibility,
+        record_weight,
     )
     right_loss, right_weight = direction_variant_balance_loss(
         preds.right,
@@ -563,6 +578,7 @@ def compute_balance_loss(
         preds.right_global_door_variant_idx,
         preds.left_global_door_variant_idx,
         preds.door_variant_compatibility,
+        record_weight,
     )
     up_loss, up_weight = direction_variant_balance_loss(
         preds.up,
@@ -572,6 +588,7 @@ def compute_balance_loss(
         preds.up_global_door_variant_idx,
         preds.down_global_door_variant_idx,
         preds.door_variant_compatibility,
+        record_weight,
     )
     down_loss, down_weight = direction_variant_balance_loss(
         preds.down,
@@ -581,14 +598,17 @@ def compute_balance_loss(
         preds.down_global_door_variant_idx,
         preds.up_global_door_variant_idx,
         preds.door_variant_compatibility,
+        record_weight,
     )
     toilet_loss, toilet_weight = categorical_balance_loss(
         preds.toilet_crossed_room,
         toilet_crossed_room_idx,
+        record_weight,
     )
     room_area_loss, room_area_weight = categorical_balance_loss(
         preds.room_area,
         torch.where(room_area_mask, room_area, -1),
+        record_weight,
     )
     total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss + room_area_loss
     total_weight = (

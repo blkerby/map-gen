@@ -154,6 +154,12 @@ class BalanceModelConfig(StrictBaseModel):
     num_layers: int
 
 
+class BalanceTrainConfig(StrictBaseModel):
+    replay_window_rounds: int
+    window_weight: Literal["uniform", "linear"]
+    batch_size: int
+
+
 class GenerationConfig(StrictBaseModel):
     num_environments: int
     num_iterations: int
@@ -363,6 +369,7 @@ class Config(StrictBaseModel):
     optimizer: OptimizerConfig
     balance_model: BalanceModelConfig
     balance_optimizer: AdamOptimizerConfig
+    balance_train: BalanceTrainConfig
     generation: GenerationConfig
     features: FeatureConfig
     train: TrainConfig
@@ -599,6 +606,15 @@ def validate_config(config: Config) -> None:
     if config.generation.num_environments % num_generation_groups != 0:
         raise ValueError(
             "generation.num_environments must be divisible by generation.num_devices * generation.pipeline_groups"
+        )
+    if config.balance_train.replay_window_rounds <= 0:
+        raise ValueError("balance_train.replay_window_rounds must be greater than zero")
+    if config.balance_train.batch_size <= 0:
+        raise ValueError("balance_train.batch_size must be greater than zero")
+    round_episodes = config.generation.num_iterations * config.generation.num_environments
+    if round_episodes % config.balance_train.batch_size != 0:
+        raise ValueError(
+            "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError(
