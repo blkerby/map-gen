@@ -24,6 +24,7 @@ from env import (
     AREA_COUNT,
     Actions,
     DoorMatchCounts,
+    DoorMatches,
     Engine,
     EndOutcomes,
     EpisodeData,
@@ -43,14 +44,13 @@ from learn import (
     TrainRoundContext,
     compute_candidate_diagnostics,
     distance_proximity_utility,
+    ema_decay_for_batch,
     train_round as run_train_round,
     update_ema_parameters,
 )
 from loss import (
     LossConfig,
-    compute_balance_toilet_crossed_room_ss,
-    compute_balance_door_match_ss,
-    expand_direction_balance_probabilities,
+    expand_balance_door_match_probabilities,
 )
 from model import FrontierModel
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
@@ -94,7 +94,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v10"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v11"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -465,6 +465,104 @@ def topk_or_zeros(values: torch.Tensor, k0: int) -> torch.Tensor:
     if k == k0:
         return top
     return torch.cat([top, top.new_zeros([k0 - k])])
+
+
+@dataclass
+class BalanceMetricValues:
+    door_match_ss: torch.Tensor
+    door_match_left_topk: torch.Tensor
+    door_match_up_topk: torch.Tensor
+    toilet_crossed_room_ss: torch.Tensor
+    toilet_crossed_room_topk: torch.Tensor
+
+
+def compute_balance_metric_values(
+    balance_model: torch.nn.Module,
+    generation_variable_floats: torch.Tensor,
+    door_matches: DoorMatches,
+    toilet_crossed_room_idx: torch.Tensor,
+    batch_size: int,
+) -> BalanceMetricValues:
+    episode_count = generation_variable_floats.shape[0]
+    if episode_count <= 0:
+        raise ValueError("balance metrics require at least one generation configuration")
+    if batch_size <= 0:
+        raise ValueError("balance metric batch size must be greater than zero")
+
+    match_targets = (
+        door_matches.left,
+        door_matches.right,
+        door_matches.up,
+        door_matches.down,
+    )
+    if any(targets.shape[0] != episode_count for targets in match_targets):
+        raise ValueError("door match target count must equal generation configuration count")
+    if toilet_crossed_room_idx.shape[0] != episode_count:
+        raise ValueError("toilet target count must equal generation configuration count")
+
+    door_probability_sums: list[torch.Tensor] = []
+    door_valid_counts: list[torch.Tensor] = []
+    toilet_probability_sum: torch.Tensor | None = None
+    toilet_valid_count = 0
+    with torch.no_grad():
+        for start in range(0, episode_count, batch_size):
+            end = start + batch_size
+            preds = balance_model(generation_variable_floats[start:end])
+            batch_door_probability_sums = []
+            batch_door_valid_counts = []
+            for probability, targets in zip(
+                expand_balance_door_match_probabilities(preds),
+                match_targets,
+                strict=True,
+            ):
+                valid = (targets[start:end] >= 0).to(probability.device)
+                batch_door_probability_sums.append(
+                    (probability * valid.unsqueeze(-1)).sum(dim=0, dtype=torch.float64)
+                )
+                batch_door_valid_counts.append(valid.sum(dim=0, dtype=torch.float64))
+            if door_probability_sums:
+                for total, batch_total, valid_count, batch_valid_count in zip(
+                    door_probability_sums,
+                    batch_door_probability_sums,
+                    door_valid_counts,
+                    batch_door_valid_counts,
+                    strict=True,
+                ):
+                    total.add_(batch_total)
+                    valid_count.add_(batch_valid_count)
+            else:
+                door_probability_sums = batch_door_probability_sums
+                door_valid_counts = batch_door_valid_counts
+
+            toilet_valid = (toilet_crossed_room_idx[start:end] >= 0).to(
+                preds.toilet_crossed_room.device
+            )
+            batch_toilet_probability_sum = (
+                torch.softmax(preds.toilet_crossed_room, dim=-1) * toilet_valid.unsqueeze(-1)
+            ).sum(dim=0, dtype=torch.float64)
+            if toilet_probability_sum is None:
+                toilet_probability_sum = batch_toilet_probability_sum
+            else:
+                toilet_probability_sum.add_(batch_toilet_probability_sum)
+            toilet_valid_count += int(toilet_valid.sum().item())
+
+    mean_door_probabilities = [
+        probability_sum / valid_count.unsqueeze(-1)
+        for probability_sum, valid_count in zip(
+            door_probability_sums,
+            door_valid_counts,
+            strict=True,
+        )
+    ]
+    assert toilet_probability_sum is not None
+    mean_toilet_probability = toilet_probability_sum / toilet_valid_count
+    return BalanceMetricValues(
+        door_match_ss=sum(torch.sum(value.square()) for value in mean_door_probabilities),
+        door_match_left_topk=topk_or_zeros(mean_door_probabilities[0], 3),
+        door_match_up_topk=topk_or_zeros(mean_door_probabilities[2], 3),
+        toilet_crossed_room_ss=torch.sum(mean_toilet_probability.square()),
+        toilet_crossed_room_topk=topk_or_zeros(mean_toilet_probability, 4),
+    )
 
 
 def toilet_crossed_room_distribution(
@@ -1142,8 +1240,12 @@ class TrainingSession:
         )
         return metadata
 
-    def update_ema_model(self, ema_decay: float) -> None:
-        update_ema_parameters(self.ema_model, self.main_model, ema_decay)
+    def update_ema_model(self, ema_half_life_episodes: float, batch_episodes: int) -> None:
+        update_ema_parameters(
+            self.ema_model,
+            self.main_model,
+            ema_decay_for_batch(ema_half_life_episodes, batch_episodes),
+        )
 
     def generate_round(
         self,
@@ -1542,6 +1644,7 @@ class TrainingSession:
         loss: MainLossBreakdown,
         candidate_diagnostics: CandidateDiagnostics,
         generation_stats: GenerationStats,
+        balance_metrics: BalanceMetricValues,
         balance_loss: float,
         round_idx: int,
         step_config: Config,
@@ -1749,46 +1852,6 @@ class TrainingSession:
             episode_data.generation_variable_floats,
             self.rooms,
         )
-        with torch.no_grad():
-            generate_config = create_generate_config(
-                step_config,
-                self.episode_length,
-                1,
-                self.device,
-                False,
-                self.area_tile_scale,
-                self.heat_water_tier_tile_counts,
-            )
-            balance_preds = self.balance_ema_model(generate_config.generation_variable_floats)
-            balance_door_match_ss = compute_balance_door_match_ss(balance_preds)
-            balance_left_topk = topk_or_zeros(
-                expand_direction_balance_probabilities(
-                    balance_preds.left,
-                    balance_preds.left_door_variant_idx,
-                    balance_preds.right_door_variant_idx,
-                    balance_preds.left_global_door_variant_idx,
-                    balance_preds.right_global_door_variant_idx,
-                    balance_preds.door_variant_compatibility,
-                ).flatten(),
-                3,
-            )
-            balance_up_topk = topk_or_zeros(
-                expand_direction_balance_probabilities(
-                    balance_preds.up,
-                    balance_preds.up_door_variant_idx,
-                    balance_preds.down_door_variant_idx,
-                    balance_preds.up_global_door_variant_idx,
-                    balance_preds.down_global_door_variant_idx,
-                    balance_preds.door_variant_compatibility,
-                ).flatten(),
-                3,
-            )
-            balance_toilet_crossed_room_p = torch.softmax(
-                balance_preds.toilet_crossed_room,
-                dim=-1,
-            ).squeeze(0)
-            balance_toilet_crossed_room_topk = topk_or_zeros(balance_toilet_crossed_room_p, 4)
-            balance_toilet_crossed_room_ss = compute_balance_toilet_crossed_room_ss(balance_preds)
         loss_denominator = loss.total + 1e-15
         door_loss_pct = 100.0 * loss.door_contribution / loss_denominator
         connection_loss_pct = 100.0 * loss.connection_contribution / loss_denominator
@@ -2026,8 +2089,8 @@ class TrainingSession:
                 "generation.reward_area_y",
             ),
             "distance_proximity_scale": step_config.distance_proximity_scale,
-            "ema_decay": step_config.train.ema_decay,
-            "balance_ema_decay": step_config.balance_train.ema_decay,
+            "ema_half_life_episodes": step_config.train.ema_half_life_episodes,
+            "balance_ema_half_life_episodes": (step_config.balance_train.ema_half_life_episodes),
             "toilet_weight": step_config.train.toilet_weight,
             "phantoon_pair_weight": step_config.train.phantoon_pair_weight,
             "phantoon_area_weight": step_config.train.phantoon_area_weight,
@@ -2052,24 +2115,24 @@ class TrainingSession:
             "door_match_up_top2": up_topk[1],
             "door_match_up_top3": up_topk[2],
             "door_match_ss": door_match_ss,
-            "balance_door_match_left_top1": balance_left_topk[0],
-            "balance_door_match_left_top2": balance_left_topk[1],
-            "balance_door_match_left_top3": balance_left_topk[2],
-            "balance_door_match_up_top1": balance_up_topk[0],
-            "balance_door_match_up_top2": balance_up_topk[1],
-            "balance_door_match_up_top3": balance_up_topk[2],
-            "balance_door_match_ss": balance_door_match_ss,
+            "balance_door_match_left_top1": balance_metrics.door_match_left_topk[0],
+            "balance_door_match_left_top2": balance_metrics.door_match_left_topk[1],
+            "balance_door_match_left_top3": balance_metrics.door_match_left_topk[2],
+            "balance_door_match_up_top1": balance_metrics.door_match_up_topk[0],
+            "balance_door_match_up_top2": balance_metrics.door_match_up_topk[1],
+            "balance_door_match_up_top3": balance_metrics.door_match_up_topk[2],
+            "balance_door_match_ss": balance_metrics.door_match_ss,
             "toilet_crossed_room_top1": toilet_crossed_room_topk[0],
             "toilet_crossed_room_top2": toilet_crossed_room_topk[1],
             "toilet_crossed_room_top3": toilet_crossed_room_topk[2],
             "toilet_crossed_room_top4": toilet_crossed_room_topk[3],
             "toilet_crossed_room_ss": toilet_crossed_room_ss,
             "unforced_special_room_area_ss": unforced_special_room_area_ss,
-            "balance_toilet_crossed_room_top1": balance_toilet_crossed_room_topk[0],
-            "balance_toilet_crossed_room_top2": balance_toilet_crossed_room_topk[1],
-            "balance_toilet_crossed_room_top3": balance_toilet_crossed_room_topk[2],
-            "balance_toilet_crossed_room_top4": balance_toilet_crossed_room_topk[3],
-            "balance_toilet_crossed_room_ss": balance_toilet_crossed_room_ss,
+            "balance_toilet_crossed_room_top1": balance_metrics.toilet_crossed_room_topk[0],
+            "balance_toilet_crossed_room_top2": balance_metrics.toilet_crossed_room_topk[1],
+            "balance_toilet_crossed_room_top3": balance_metrics.toilet_crossed_room_topk[2],
+            "balance_toilet_crossed_room_top4": balance_metrics.toilet_crossed_room_topk[3],
+            "balance_toilet_crossed_room_ss": balance_metrics.toilet_crossed_room_ss,
             **generation_stats,
         }
         for name, value in metrics.items():
@@ -2178,6 +2241,23 @@ class TrainingSession:
                     generation_stats,
                     generation_profile,
                 ) = self.generate_round()
+                generation_step_config = instantiate_scheduleable_config(
+                    self.config,
+                    self.num_episodes,
+                )
+                balance_door_matches, balance_toilet_crossed_room_idx = (
+                    self.engine.compute_balance_targets(
+                        episode_data.actions,
+                        torch.device("cpu"),
+                    )
+                )
+                balance_metrics = compute_balance_metric_values(
+                    balance_model=self.balance_ema_model,
+                    generation_variable_floats=episode_data.generation_variable_floats,
+                    door_matches=balance_door_matches,
+                    toilet_crossed_room_idx=balance_toilet_crossed_room_idx,
+                    batch_size=generation_step_config.balance_train.batch_size,
+                )
                 if self.config.visualize > 0:
                     self.visualize_round(episode_data, round_idx)
                 self.num_episodes += self.episodes_per_round
@@ -2206,6 +2286,7 @@ class TrainingSession:
                     avg_loss,
                     candidate_diagnostics,
                     generation_stats,
+                    balance_metrics,
                     avg_balance_loss,
                     round_idx,
                     step_config,

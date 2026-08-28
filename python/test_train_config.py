@@ -48,6 +48,45 @@ def test_vanilla_area_probability_is_required_and_bounded() -> None:
     else:
         raise AssertionError("force_ship_in_crateria_probability should reject values above one")
 
+    config_data = load_debug_config()
+    config_data["generation"]["force_ship_in_crateria_probability"] = {
+        "linear": [0.0, 0.5]
+    }
+    config = Config.model_validate(config_data)
+    validate_config(config)
+    instantiated = instantiate_scheduleable_config(config, 320)
+    assert instantiated.generation.force_ship_in_crateria_probability == 0.25
+
+    config_data["generation"]["force_ship_in_crateria_probability"] = {
+        "linear": [0.0, 0.5, 1.0]
+    }
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "knot_episodes" in str(err)
+    else:
+        raise AssertionError("force probability schedule should match knot_episodes")
+
+    config_data["generation"]["force_ship_in_crateria_probability"] = {
+        "linear": [0.0, 1.1]
+    }
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "force_ship_in_crateria_probability[1]" in str(err)
+    else:
+        raise AssertionError("force probability schedule should reject values above one")
+
+    config_data["generation"]["force_ship_in_crateria_probability"] = {
+        "log": [0.0, 0.5]
+    }
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "greater than zero for a log schedule" in str(err)
+    else:
+        raise AssertionError("log force probability schedule should reject zero")
+
 
 def test_recommended_candidates_same_frontier_is_required() -> None:
     config_data = load_debug_config()
@@ -93,22 +132,22 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train.batch_size should evenly divide a round")
 
     config_data = load_debug_config()
-    del config_data["balance_train"]["ema_decay"]
+    del config_data["balance_train"]["ema_half_life_episodes"]
     try:
         Config.model_validate(config_data)
     except ValidationError:
         pass
     else:
-        raise AssertionError("balance_train.ema_decay should be required")
+        raise AssertionError("balance_train.ema_half_life_episodes should be required")
 
     config_data = load_debug_config()
-    config_data["balance_train"]["ema_decay"] = 1.0
+    config_data["balance_train"]["ema_half_life_episodes"] = 0.0
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
-        assert "balance_train.ema_decay" in str(err)
+        assert "balance_train.ema_half_life_episodes" in str(err)
     else:
-        raise AssertionError("balance_train.ema_decay should reject one")
+        raise AssertionError("balance_train.ema_half_life_episodes should reject zero")
 
 
 def test_proposal_target_temperature_must_be_positive() -> None:

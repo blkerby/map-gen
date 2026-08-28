@@ -40,7 +40,7 @@
   },
   "balance_train": {
     "batch_size": 256,
-    "ema_decay": 0.995
+    "ema_half_life_episodes": 35400.338684
   },
   "generation": {
     "num_environments": 256,
@@ -144,7 +144,7 @@
     "replay_pass_factor": 2.0,
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_decay": 0.995,
+    "ema_half_life_episodes": 35400.338684,
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,

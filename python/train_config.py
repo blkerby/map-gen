@@ -190,7 +190,7 @@ class BalanceModelConfig(StrictBaseModel):
 
 class BalanceTrainConfig(StrictBaseModel):
     batch_size: ScheduleableInt
-    ema_decay: ScheduleableFloat
+    ema_half_life_episodes: ScheduleableFloat
 
 
 class GenerationConfig(StrictBaseModel):
@@ -242,12 +242,12 @@ class GenerationConfig(StrictBaseModel):
     target_area_tiles: AreaVariableFloats
     target_area_x: AreaVariableFloats
     target_area_y: AreaVariableFloats
-    force_ship_in_crateria_probability: float
-    force_kraid_in_brinstar_probability: float
-    force_ridley_in_norfair_probability: float
-    force_phantoon_in_wrecked_ship_probability: float
-    force_draygon_in_maridia_probability: float
-    force_mother_brain_in_tourian_probability: float
+    force_ship_in_crateria_probability: ScheduleableFloat
+    force_kraid_in_brinstar_probability: ScheduleableFloat
+    force_ridley_in_norfair_probability: ScheduleableFloat
+    force_phantoon_in_wrecked_ship_probability: ScheduleableFloat
+    force_draygon_in_maridia_probability: ScheduleableFloat
+    force_mother_brain_in_tourian_probability: ScheduleableFloat
     min_area_size: int
     max_area_size: int
     frontier_neighbor_algorithm: Literal["delaunay", "nearest", "nearest-exclusive"]
@@ -384,7 +384,7 @@ class TrainConfig(StrictBaseModel):
     area_y_weight: float
     proposal_weight: float
     proposal_target_temperature: ScheduleableFloat
-    ema_decay: ScheduleableFloat
+    ema_half_life_episodes: ScheduleableFloat
     pipeline_groups: int
     gradient_accumulation_steps: ScheduleableInt
     shuffle_buffer_batches: int
@@ -655,9 +655,9 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
-    validate_ema_decay_config(
-        config.balance_train.ema_decay,
-        "balance_train.ema_decay",
+    validate_ema_half_life_config(
+        config.balance_train.ema_half_life_episodes,
+        "balance_train.ema_half_life_episodes",
         config.knot_episodes,
     )
     if config.generation.frontier_neighbor_count < 0:
@@ -702,9 +702,11 @@ def validate_config(config: Config) -> None:
             f"generation.{field_name}",
         )
     for field_name in VANILLA_AREA_PROBABILITY_FIELDS:
-        probability = getattr(config.generation, field_name)
-        if not 0.0 <= probability <= 1.0:
-            raise ValueError(f"generation.{field_name} must be between zero and one")
+        validate_probability_config(
+            getattr(config.generation, field_name),
+            f"generation.{field_name}",
+            config.knot_episodes,
+        )
     validate_nonnegative_variable_float(
         config.generation.reward_area_balance,
         "generation.reward_area_balance",
@@ -822,7 +824,11 @@ def validate_config(config: Config) -> None:
     for field_name in ("area_tiles_weight", "area_x_weight", "area_y_weight"):
         if getattr(config.train, field_name) < 0:
             raise ValueError(f"train.{field_name} must be greater than or equal to zero")
-    validate_ema_decay_config(config.train.ema_decay, "train.ema_decay", config.knot_episodes)
+    validate_ema_half_life_config(
+        config.train.ema_half_life_episodes,
+        "train.ema_half_life_episodes",
+        config.knot_episodes,
+    )
     if (
         config.generation.num_threads is not None
         and config.generation.num_threads % config.train.pipeline_groups != 0
@@ -1035,25 +1041,44 @@ def validate_positive_scheduleable_float(value: ScheduleableFloat, path: str) ->
         raise ValueError(f"{path} must be greater than zero")
 
 
-def validate_ema_decay(value: float, path: str) -> None:
-    if not math.isfinite(value) or value < 0.0 or value >= 1.0:
-        raise ValueError(
-            f"{path} must be finite, greater than or equal to zero, and less than one"
-        )
+def validate_probability_config(
+    value: ScheduleableFloat,
+    path: str,
+    knot_episodes: list[int],
+) -> None:
+    kind = None
+    if isinstance(value, Schedule):
+        kind, values = schedule_kind_and_values(value, path)
+        if len(values) != len(knot_episodes):
+            raise ValueError(
+                f"{path} has {len(values)} schedule value(s), but knot_episodes has "
+                f"{len(knot_episodes)} knot(s)"
+            )
+    else:
+        values = [value]
+    for index, probability in enumerate(values):
+        value_path = f"{path}[{index}]" if isinstance(value, Schedule) else path
+        if kind == "log" and probability <= 0.0:
+            raise ValueError(f"{value_path} must be greater than zero for a log schedule")
+        if not 0.0 <= probability <= 1.0:
+            raise ValueError(f"{value_path} must be between zero and one")
 
 
-def validate_ema_decay_config(
+def validate_ema_half_life(value: float, path: str) -> None:
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValueError(f"{path} must be finite and greater than zero")
+
+
+def validate_ema_half_life_config(
     value: ScheduleableFloat, path: str, knot_episodes: list[int]
 ) -> None:
     if isinstance(value, Schedule):
-        kind, values = schedule_kind_and_values(value, path)
+        _, values = schedule_kind_and_values(value, path)
         if len(values) != len(knot_episodes):
             raise ValueError(
                 f"{path} has {len(values)} schedule value(s), but knot_episodes has {len(knot_episodes)} knot(s)"
             )
         for index, knot_value in enumerate(values):
-            validate_ema_decay(knot_value, f"{path}[{index}]")
-            if kind == "log" and knot_value <= 0.0:
-                raise ValueError(f"{path}[{index}] must be greater than zero for a log schedule")
+            validate_ema_half_life(knot_value, f"{path}[{index}]")
         return
-    validate_ema_decay(value, path)
+    validate_ema_half_life(value, path)

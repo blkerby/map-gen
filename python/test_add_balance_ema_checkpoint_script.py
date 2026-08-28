@@ -48,7 +48,10 @@ def test_add_balance_ema_to_checkpoint() -> None:
             balance_ema_model = checkpoint.get_tensor("balance_ema_model.weight")
         assert metadata is not None
         assert metadata["format"] == TRAINING_CHECKPOINT_FORMAT
-        assert json.loads(metadata["config"])["balance_train"]["ema_decay"] == 0.995
+        assert (
+            json.loads(metadata["config"])["balance_train"]["ema_half_life_episodes"]
+            == 35400.338684
+        )
         torch.testing.assert_close(balance_model, balance_ema_model)
 
 

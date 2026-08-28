@@ -612,12 +612,7 @@ def compute_balance_loss(
     )
     total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss + room_area_loss
     total_weight = (
-        left_weight
-        + right_weight
-        + up_weight
-        + down_weight
-        + toilet_weight
-        + room_area_weight
+        left_weight + right_weight + up_weight + down_weight + toilet_weight + room_area_weight
     )
     return total_loss / (total_weight + 1e-15)
 
@@ -650,48 +645,55 @@ def expand_direction_balance_probabilities(
     return torch.where(compatibility.unsqueeze(0), probabilities, 0.0)
 
 
-def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
-    return (
-        torch.sum(
-            expand_direction_balance_probabilities(
+def expand_balance_door_match_probabilities(
+    preds: BalancePredictions,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    return tuple(
+        expand_direction_balance_probabilities(
+            logits,
+            source_idx,
+            target_idx,
+            source_global_idx,
+            target_global_idx,
+            preds.door_variant_compatibility,
+        )
+        for logits, source_idx, target_idx, source_global_idx, target_global_idx in (
+            (
                 preds.left,
                 preds.left_door_variant_idx,
                 preds.right_door_variant_idx,
                 preds.left_global_door_variant_idx,
                 preds.right_global_door_variant_idx,
-                preds.door_variant_compatibility,
-            ).square()
-        )
-        + torch.sum(
-            expand_direction_balance_probabilities(
+            ),
+            (
                 preds.right,
                 preds.right_door_variant_idx,
                 preds.left_door_variant_idx,
                 preds.right_global_door_variant_idx,
                 preds.left_global_door_variant_idx,
-                preds.door_variant_compatibility,
-            ).square()
-        )
-        + torch.sum(
-            expand_direction_balance_probabilities(
+            ),
+            (
                 preds.up,
                 preds.up_door_variant_idx,
                 preds.down_door_variant_idx,
                 preds.up_global_door_variant_idx,
                 preds.down_global_door_variant_idx,
-                preds.door_variant_compatibility,
-            ).square()
-        )
-        + torch.sum(
-            expand_direction_balance_probabilities(
+            ),
+            (
                 preds.down,
                 preds.down_door_variant_idx,
                 preds.up_door_variant_idx,
                 preds.down_global_door_variant_idx,
                 preds.up_global_door_variant_idx,
-                preds.door_variant_compatibility,
-            ).square()
+            ),
         )
+    )
+
+
+def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
+    return sum(
+        torch.sum(probability.square())
+        for probability in expand_balance_door_match_probabilities(preds)
     )
 
 

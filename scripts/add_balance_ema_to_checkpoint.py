@@ -22,12 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Add balance EMA weights to a version 9 training checkpoint and write a "
-            "version 10 checkpoint. The EMA is initialized from the raw balance model."
+            "version 11 checkpoint. The EMA is initialized from the raw balance model."
         )
     )
-    parser.add_argument("config", type=Path, help="Version 10 training config JSON.")
+    parser.add_argument("config", type=Path, help="Version 11 training config JSON.")
     parser.add_argument("input", type=Path, help="Version 9 training checkpoint.")
-    parser.add_argument("output", type=Path, help="Version 10 training checkpoint.")
+    parser.add_argument("output", type=Path, help="Version 11 training checkpoint.")
     return parser.parse_args()
 
 

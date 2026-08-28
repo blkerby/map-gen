@@ -49,7 +49,7 @@
   },
   "balance_train": {
     "batch_size": 64,
-    "ema_decay": {"linear": [0.95, 0.99, 0.99, 0.99, 0.99]}
+    "ema_half_life_episodes": {"log": [864.858069, 4413.924092, 4413.924092, 4413.924092, 4413.924092]}
   },
   "generation": {
     "num_environments": 64,
@@ -159,7 +159,7 @@
     "replay_pass_factor": 2.0,
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_decay": {"linear": [0.95, 0.99, 0.99, 0.99, 0.99]},
+    "ema_half_life_episodes": {"log": [1729.716139, 8827.848184, 8827.848184, 8827.848184, 8827.848184]},
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,

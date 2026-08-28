@@ -86,6 +86,14 @@ def update_ema_parameters(
             ema_param.lerp_(model_param, 1.0 - ema_decay)
 
 
+def ema_decay_for_batch(half_life_episodes: float, batch_episodes: int) -> float:
+    if not math.isfinite(half_life_episodes) or half_life_episodes <= 0.0:
+        raise ValueError("EMA half-life must be finite and greater than zero")
+    if batch_episodes <= 0:
+        raise ValueError("EMA batch episodes must be greater than zero")
+    return 0.5 ** (batch_episodes / half_life_episodes)
+
+
 def train_balance_batch(
     generation_variable_floats: torch.Tensor,
     door_matches: DoorMatches,
@@ -96,7 +104,7 @@ def train_balance_batch(
     balance_model: torch.nn.Module,
     balance_ema_model: torch.nn.Module,
     balance_optimizer: torch.optim.Optimizer,
-    ema_decay: float,
+    ema_half_life_episodes: float,
 ) -> float:
     balance_optimizer.zero_grad(set_to_none=True)
     loss = compute_balance_loss(
@@ -114,7 +122,11 @@ def train_balance_batch(
     if not torch.isfinite(grad_norm):
         raise RuntimeError(f"non-finite balance gradient norm: {grad_norm.item()}")
     balance_optimizer.step()
-    update_ema_parameters(balance_ema_model, balance_model, ema_decay)
+    update_ema_parameters(
+        balance_ema_model,
+        balance_model,
+        ema_decay_for_batch(ema_half_life_episodes, generation_variable_floats.shape[0]),
+    )
     return loss.item()
 
 
@@ -171,7 +183,7 @@ def train_balance_fresh(
             balance_model=context.balance_model,
             balance_ema_model=context.balance_ema_model,
             balance_optimizer=context.balance_optimizer,
-            ema_decay=context.step_config.balance_train.ema_decay,
+            ema_half_life_episodes=(context.step_config.balance_train.ema_half_life_episodes),
         )
         batch_count += 1
     return total_loss / batch_count
@@ -301,7 +313,7 @@ class TrainRoundContext:
     loss_config: LossConfig
     experience: ExperienceStorage
     train_batch_prefetcher: object
-    update_ema_model: Callable[[float], None]
+    update_ema_model: Callable[[float, int], None]
     num_rooms: int
     episode_length: int
     feature_mismatches: list[FeatureMismatch]
@@ -1582,12 +1594,15 @@ def train_batch_backward(
     return loss
 
 
-def train_optimizer_step(context: TrainRoundContext) -> None:
+def train_optimizer_step(context: TrainRoundContext, batch_count: int) -> None:
     grad_norm = torch.nn.utils.clip_grad_norm_(context.main_model.parameters(), max_norm=1.0)
     if not torch.isfinite(grad_norm):
         raise RuntimeError(f"non-finite gradient norm: {grad_norm.item()}")
     context.main_optimizer.step()
-    context.update_ema_model(context.step_config.train.ema_decay)
+    context.update_ema_model(
+        context.step_config.train.ema_half_life_episodes,
+        context.step_config.train.batch_size * batch_count,
+    )
 
 
 def train_prepared_batch_group(
@@ -1613,7 +1628,7 @@ def train_prepared_batch_group(
             main_loss_scale,
         )
         accumulate_main_loss(group_loss, batch_loss)
-    train_optimizer_step(context)
+    train_optimizer_step(context, batch_count)
     return group_loss, batch_count
 
 

@@ -62,7 +62,7 @@ def test_balance_training_uses_only_fresh_data() -> None:
         ),
         step_config=SimpleNamespace(
             balance_optimizer=object(),
-            balance_train=SimpleNamespace(batch_size=2, ema_decay=0.9),
+            balance_train=SimpleNamespace(batch_size=2, ema_half_life_episodes=4.0),
             generation=SimpleNamespace(num_iterations=1, num_environments=2),
             train=SimpleNamespace(fresh_pass_factor=0.0, batch_size=1),
         ),
@@ -93,7 +93,7 @@ def test_balance_training_uses_only_fresh_data() -> None:
         torch.ones(2),
     )
     assert train_batch.call_args.kwargs["balance_ema_model"] is balance_ema_model
-    assert train_batch.call_args.kwargs["ema_decay"] == 0.9
+    assert train_batch.call_args.kwargs["ema_half_life_episodes"] == 4.0
 
 
 def test_balance_batch_updates_ema_after_optimizer_step() -> None:
@@ -118,7 +118,7 @@ def test_balance_batch_updates_ema_after_optimizer_step() -> None:
             balance_model=balance_model,
             balance_ema_model=balance_ema_model,
             balance_optimizer=optimizer,
-            ema_decay=0.5,
+            ema_half_life_episodes=1.0,
         )
 
     torch.testing.assert_close(balance_model.weight, torch.tensor([[0.9]]))

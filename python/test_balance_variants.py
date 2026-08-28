@@ -1,4 +1,5 @@
 import math
+from dataclasses import replace
 
 import torch
 
@@ -15,6 +16,7 @@ from loss import (
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
     compute_step_balance_score_target_logits,
+    expand_balance_door_match_probabilities,
     expand_direction_balance_probabilities,
     materialize_direction_balance_compatibility,
     materialize_direction_balance_logits,
@@ -22,6 +24,7 @@ from loss import (
     masked_offset_bernoulli_kl_loss,
 )
 from model import BalanceModel, BalancePredictions
+from train import compute_balance_metric_values
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
@@ -60,6 +63,25 @@ def example_predictions() -> BalancePredictions:
         down_global_door_variant_idx=torch.tensor([5]),
         door_variant_compatibility=example_door_variant_compatibility(),
     )
+
+
+class ConfigurationBalanceModel:
+    def __call__(self, inputs: torch.Tensor) -> BalancePredictions:
+        preds = example_predictions()
+        batch_size = inputs.shape[0]
+        left = preds.left.expand(batch_size, -1, -1).clone()
+        left[:, 0, 0] += inputs[:, 0]
+        toilet = preds.toilet_crossed_room.expand(batch_size, -1).clone()
+        toilet[:, 0] += inputs[:, 0]
+        return replace(
+            preds,
+            left=left,
+            right=preds.right.expand(batch_size, -1, -1),
+            up=preds.up.expand(batch_size, -1, -1),
+            down=preds.down.expand(batch_size, -1, -1),
+            toilet_crossed_room=toilet,
+            room_area=preds.room_area.expand(batch_size, -1, -1),
+        )
 
 
 def example_door_matches() -> DoorMatches:
@@ -430,6 +452,54 @@ def test_balance_ss_materializes_concrete_pair_probabilities() -> None:
     torch.testing.assert_close(compute_balance_door_match_ss(preds), expected_ss)
 
 
+def test_balance_metrics_average_only_configurations_with_valid_targets() -> None:
+    inputs = torch.zeros((2, len(GENERATION_VARIABLE_FLOAT_FIELDS)))
+    inputs[1, 0] = 2.0
+    model = ConfigurationBalanceModel()
+    preds = model(inputs)
+    door_matches = DoorMatches(
+        left=torch.tensor([[0, -1, 0], [-1, 0, 0]]),
+        right=torch.zeros((2, 3), dtype=torch.int64),
+        up=torch.tensor([[0], [-1]]),
+        down=torch.tensor([[-1], [0]]),
+    )
+    match_targets = (
+        door_matches.left,
+        door_matches.right,
+        door_matches.up,
+        door_matches.down,
+    )
+    mean_probabilities = [
+        torch.sum(probability * (targets >= 0).unsqueeze(-1), dim=0)
+        / torch.sum(targets >= 0, dim=0).unsqueeze(-1)
+        for probability, targets in zip(
+            expand_balance_door_match_probabilities(preds),
+            match_targets,
+            strict=True,
+        )
+    ]
+    mean_toilet_probability = torch.softmax(preds.toilet_crossed_room[0], dim=-1)
+
+    metrics = compute_balance_metric_values(
+        balance_model=model,
+        generation_variable_floats=inputs,
+        door_matches=door_matches,
+        toilet_crossed_room_idx=torch.tensor([0, -1]),
+        batch_size=1,
+    )
+
+    torch.testing.assert_close(
+        metrics.door_match_ss,
+        sum(torch.sum(probability.square()) for probability in mean_probabilities).to(
+            torch.float64
+        ),
+    )
+    torch.testing.assert_close(
+        metrics.toilet_crossed_room_ss,
+        torch.sum(mean_toilet_probability.square()).to(torch.float64),
+    )
+
+
 def main() -> None:
     test_balance_model_outputs_direction_local_variant_pairs()
     test_room_area_balance_scores_are_centered_and_gathered()
@@ -441,6 +511,7 @@ def main() -> None:
     test_proposal_balance_residual_adds_both_door_directions()
     test_proposal_area_balance_residual_uses_tied_room_score()
     test_balance_ss_materializes_concrete_pair_probabilities()
+    test_balance_metrics_average_only_configurations_with_valid_targets()
 
 
 if __name__ == "__main__":

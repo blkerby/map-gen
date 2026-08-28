@@ -2,7 +2,7 @@
   "experiment_name": "zebes-testing",
   "room_set": "room_definitions/zebes.json",
   "map_size": [72, 72],
-  "knot_episodes": [0, 200000, 2000000, 8000000, 32000000],
+  "knot_episodes": [0, 300000, 1200000, 16000000, 32000000],
   "checkpoint_period": 100,
   "visualize": 0,
   "distance_proximity_scale": 5.0,
@@ -25,14 +25,14 @@
   "optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0005, 0.0005, 0.0002, 0.00005, 0.00002]},
+      "lr": {"log": [0.0005, 0.0005, 0.0002, 0.00005, 0.00005]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.001, 0.001, 0.0005, 0.0001, 0.00005]},
+      "lr": {"log": [0.001, 0.001, 0.0005, 0.0001, 0.0001]},
       "beta1": 0.95,
       "beta2": 0.99
     }
@@ -43,13 +43,13 @@
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.0005, 0.0001, 0.00002, 0.00001, 0.000005]},
+    "lr": {"log": [0.0005, 0.0001, 0.00002, 0.00001, 0.00001]},
     "beta1": 0.95,
     "beta2": 0.99
   },
   "balance_train": {
     "batch_size": {"step": [256, 512, 2048, 2048, 2048]},
-    "ema_decay": {"linear": [0.95, 0.998, 0.998, 0.998, 0.998]}
+    "ema_half_life_episodes": {"log": [10000, 20000, 40000, 80000, 80000]}
   },
   "generation": {
     "num_environments": 4096,
@@ -60,10 +60,10 @@
     "recommended_candidates": 8,
     "shortlist_candidates": 1024,
     "num_scored_invalid_candidates": 8,
-    "max_candidate_areas_per_placement": 6,
+    "max_candidate_areas_per_placement": 2,
     "recommended_candidates_same_frontier": false,
-    "temperature": {"log": [300, 20.0, 0.03, 0.03, 0.03]},
-    "proposal_temperature": {"log": [100, 6.66, 0.01, 0.01, 0.01]},
+    "temperature": {"log": [300, 20.0, 5.0, 0.03, 0.03]},
+    "proposal_temperature": {"log": [100, 6.66, 1.66, 0.01, 0.01]},
     "reward_door": 1.0,
     "reward_connection": 1.0,
     "reward_toilet": 1.0,
@@ -75,28 +75,28 @@
     "reward_phantoon_in_wrecked_ship": 1.0,
     "reward_draygon_in_maridia": 1.0,
     "reward_mother_brain_in_tourian": 1.0,
-    "force_ship_in_crateria_probability": 0.5,
-    "force_kraid_in_brinstar_probability": 0.5,
-    "force_ridley_in_norfair_probability": 0.5,
-    "force_phantoon_in_wrecked_ship_probability": 0.5,
-    "force_draygon_in_maridia_probability": 0.5,
-    "force_mother_brain_in_tourian_probability": 0.5,
-    "reward_balance": {"log": [2.0, 1.0, 0.3, 0.2, 0.1]},
-    "reward_area_balance": {"log": [2.0, 1.0, 0.3, 0.2, 0.1]},
-    "reward_toilet_balance": {"log": [2.0, 1.0, 0.3, 0.2, 0.1]},
+    "force_ship_in_crateria_probability": {"linear": [0.0, 0.0, 0.1, 0.5, 0.5]},
+    "force_kraid_in_brinstar_probability": {"linear": [0.0, 0.0, 0.1, 0.5, 0.5]},
+    "force_ridley_in_norfair_probability": {"linear": [0.0, 0.0, 0.1, 0.5, 0.5]},
+    "force_phantoon_in_wrecked_ship_probability": {"linear": [0.0, 0.0, 0.1, 0.5, 0.5]},
+    "force_draygon_in_maridia_probability": {"linear": [0.0, 0.0, 0.1, 0.5, 0.5]},
+    "force_mother_brain_in_tourian_probability": {"linear": [0.0, 0.0, 0.1, 0.5, 0.5]},
+    "reward_balance": {"log": [2.0, 1.0, 0.3, 0.1, 0.1]},
+    "reward_area_balance": {"log": [2.0, 1.0, 0.3, 0.1, 0.1]},
+    "reward_toilet_balance": {"log": [2.0, 1.0, 0.3, 0.1, 0.1]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
-    "reward_maridia_water_max_1": 0.15,
-    "reward_maridia_water_max_2": 0.3,
+    "reward_maridia_water_max_1": {"linear": [0.0, 0.0, 0.02, 0.1, 0.1]},
+    "reward_maridia_water_max_2": {"linear": [0.0, 0.0, 0.06, 0.3, 0.3]},
     "reward_maridia_water_3": {"mixture": [
       {"weight": 0.5, "value": 0.0},
-      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 1.0}}}
+      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": [0.0, 0.0, 0.14, 0.7, 0.7]}}}
     ]},
-    "reward_norfair_heat_max_1": 0.15,
-    "reward_norfair_heat_max_2": 0.25,
+    "reward_norfair_heat_max_1": {"linear": [0.0, 0.0, 0.03, 0.15, 0.15]},
+    "reward_norfair_heat_max_2": {"linear": [0.0, 0.0, 0.06, 0.3, 0.3]},
     "reward_norfair_heat_3": {"mixture": [
       {"weight": 0.5, "value": 0.0},
-      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": 0.5}}}
+      {"weight": 0.5, "value": {"linear": {"min": 0.0, "max": [0.0, 0.0, 0.12, 0.6, 0.6]}}}
     ]},
     "maridia_water_floor_scale": 2.5,
     "norfair_heat_floor_scale": 2.5,
@@ -180,7 +180,7 @@
     "replay_pass_factor": 2.0,
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_decay": {"linear": [0.95, 0.998, 0.998, 0.998, 0.998]},
+    "ema_half_life_episodes": {"log": [10000, 40000, 80000, 80000, 80000]},
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,
@@ -193,7 +193,7 @@
     "toilet_balance_weight": 2.0,
     "avg_frontiers_weight": 0.0,
     "graph_diameter_weight": 0.05,
-    "heat_water_weight": 0.5,
+    "heat_water_weight": 0.25,
     "save_distance_weight": 0.5,
     "refill_distance_weight": 0.5,
     "missing_connect_utility_weight": 1.0,
@@ -204,7 +204,7 @@
     "area_x_weight": 10.0,
     "area_y_weight": 10.0,
     "proposal_weight": 0.005,
-    "proposal_target_temperature": {"log": [10.0, 2.0, 0.03, 0.03, 0.03]},
+    "proposal_target_temperature": {"log": [100, 6.66, 1.66, 0.01, 0.01]},
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 1,
     "shuffle_buffer_batches": 1

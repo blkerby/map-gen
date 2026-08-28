@@ -281,7 +281,7 @@ def main() -> None:
                 balance_model=balance_model,
                 balance_ema_model=balance_ema_model,
                 balance_optimizer=balance_optimizer,
-                ema_decay=step_config.balance_train.ema_decay,
+                ema_half_life_episodes=(step_config.balance_train.ema_half_life_episodes),
             )
             processed_episodes += end - start
             optimizer_step += 1
