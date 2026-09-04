@@ -185,12 +185,9 @@ class BalanceModelConfig(StrictBaseModel):
 
 class BalanceTrainConfig(StrictBaseModel):
     batch_size: ScheduleableInt
-    door_eta: float
-    door_beta: float
-    toilet_eta: float
-    toilet_beta: float
-    area_eta: float
-    area_beta: float
+    door_beta: ScheduleableFloat
+    toilet_beta: ScheduleableFloat
+    area_beta: ScheduleableFloat
 
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
@@ -393,6 +390,7 @@ class Config(StrictBaseModel):
     distance_proximity_scale: float
     model: ModelConfig
     optimizer: OptimizerConfig
+    balance_optimizer: AdamOptimizerConfig
     balance_model: BalanceModelConfig
     balance_train: BalanceTrainConfig
     generation: GenerationConfig
@@ -589,6 +587,7 @@ def validate_config(config: Config) -> None:
     validate_feature_width("toilet_crossed_room", config.features.toilet_crossed_room)
     validate_feature_width("known_distance", config.features.known_distance)
     validate_optimizer_config(config.optimizer, "optimizer")
+    validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
         raise ValueError("generation.num_iterations must be greater than zero")
     if config.generation.num_devices <= 0:
@@ -646,16 +645,11 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
-    for field_name in ("door_eta", "toilet_eta", "area_eta"):
-        value = getattr(config.balance_train, field_name)
-        if not math.isfinite(value) or value < 0.0:
-            raise ValueError(
-                f"balance_train.{field_name} must be finite and greater than or equal to zero"
-            )
     for field_name in ("door_beta", "toilet_beta", "area_beta"):
-        value = getattr(config.balance_train, field_name)
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValueError(f"balance_train.{field_name} must be finite and greater than zero")
+        validate_positive_scheduleable_float(
+            getattr(config.balance_train, field_name),
+            f"balance_train.{field_name}",
+        )
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError(
             "generation.frontier_neighbor_count must be greater than or equal to zero"
@@ -866,6 +860,7 @@ def validate_optimizer_config(config: OptimizerConfig, path: str) -> None:
 
 
 def validate_adam_params(config: AdamOptimizerConfig | AdamParamsConfig, path: str) -> None:
+    validate_nonnegative_scheduleable_float(config.lr, f"{path}.lr")
     validate_beta(config.beta1, f"{path}.beta1")
     validate_beta(config.beta2, f"{path}.beta2")
 
@@ -880,18 +875,20 @@ def validate_muon_params(config: MuonParamsConfig, path: str) -> None:
 
 
 def validate_beta(value: float, path: str) -> None:
-    if value < 0.0 or value >= 1.0:
+    if not math.isfinite(value) or value < 0.0 or value >= 1.0:
         raise ValueError(f"{path} must be greater than or equal to zero and less than one")
 
 
 def validate_nonnegative_scheduleable_float(value: ScheduleableFloat, path: str) -> None:
     if isinstance(value, Schedule):
-        _, values = schedule_kind_and_values(value, path)
+        kind, values = schedule_kind_and_values(value, path)
         for index, item in enumerate(values):
-            if item < 0:
+            if not math.isfinite(item) or item < 0:
                 raise ValueError(f"{path}[{index}] must be greater than or equal to zero")
+            if kind == "log" and item == 0:
+                raise ValueError(f"{path}[{index}] must be greater than zero for a log schedule")
         return
-    if value < 0:
+    if not math.isfinite(value) or value < 0:
         raise ValueError(f"{path} must be greater than or equal to zero")
 
 
@@ -1016,10 +1013,10 @@ def validate_positive_scheduleable_float(value: ScheduleableFloat, path: str) ->
     if isinstance(value, Schedule):
         _, values = schedule_kind_and_values(value, path)
         for index, item in enumerate(values):
-            if item <= 0.0:
+            if not math.isfinite(item) or item <= 0.0:
                 raise ValueError(f"{path}[{index}] must be greater than zero")
         return
-    if value <= 0.0:
+    if not math.isfinite(value) or value <= 0.0:
         raise ValueError(f"{path} must be greater than zero")
 
 

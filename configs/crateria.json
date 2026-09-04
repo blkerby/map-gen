@@ -37,17 +37,20 @@
       "beta2": 0.99
     }
   },
+  "balance_optimizer": {
+    "type": "adam",
+    "lr": 0.001,
+    "beta1": 0.0,
+    "beta2": 0.99
+  },
   "balance_model": {
     "hidden_width": 64,
     "num_layers": 1
   },
   "balance_train": {
     "batch_size": 8192,
-    "door_eta": 0.02,
     "door_beta": 1.0,
-    "toilet_eta": 0.02,
     "toilet_beta": 1.0,
-    "area_eta": 0.02,
     "area_beta": 1.0
   },
   "generation": {

@@ -58,7 +58,7 @@ def example_episode_data() -> EpisodeData:
     )
 
 
-def test_balance_training_chunks_one_round_into_one_optimizer_step() -> None:
+def test_balance_training_steps_each_minibatch() -> None:
     engine = FakeBalanceEngine()
     optimizer = Mock()
     balance_model = torch.nn.Linear(1, 1, bias=False)
@@ -66,11 +66,8 @@ def test_balance_training_chunks_one_round_into_one_optimizer_step() -> None:
         step_config=SimpleNamespace(
             balance_train=SimpleNamespace(
                 batch_size=2,
-                door_eta=0.02,
                 door_beta=1.0,
-                toilet_eta=0.03,
                 toilet_beta=1.0,
-                area_eta=0.04,
                 area_beta=1.0,
             ),
             generation=SimpleNamespace(num_iterations=1, num_environments=4),
@@ -92,11 +89,12 @@ def test_balance_training_chunks_one_round_into_one_optimizer_step() -> None:
     assert loss == 1.0
     assert engine.batch_sizes == [2, 2]
     assert train_batch.call_count == 2
-    assert train_batch.call_args.kwargs["loss_scale"] == 0.5
+    assert "loss_scale" not in train_batch.call_args.kwargs
     assert train_batch.call_args.kwargs["area_dual_mask"].all()
-    optimizer.zero_grad.assert_called_once_with(set_to_none=True)
-    optimizer.step.assert_called_once_with()
+    assert optimizer.zero_grad.call_count == 2
+    optimizer.zero_grad.assert_called_with(set_to_none=True)
+    assert optimizer.step.call_count == 2
 
 
 if __name__ == "__main__":
-    test_balance_training_chunks_one_round_into_one_optimizer_step()
+    test_balance_training_steps_each_minibatch()

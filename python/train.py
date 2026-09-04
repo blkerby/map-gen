@@ -96,7 +96,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v13"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v14"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -2031,11 +2031,11 @@ class TrainingSession:
                 name: getattr(step_config.generation, name)
                 for name in VANILLA_AREA_PROBABILITY_FIELDS
             },
-            "balance_door_eta": step_config.balance_train.door_eta,
+            "balance_optimizer_lr": step_config.balance_optimizer.lr,
+            "balance_optimizer_beta1": step_config.balance_optimizer.beta1,
+            "balance_optimizer_beta2": step_config.balance_optimizer.beta2,
             "balance_door_beta": step_config.balance_train.door_beta,
-            "balance_toilet_eta": step_config.balance_train.toilet_eta,
             "balance_toilet_beta": step_config.balance_train.toilet_beta,
-            "balance_area_eta": step_config.balance_train.area_eta,
             "balance_area_beta": step_config.balance_train.area_beta,
             "reward_frontier": variable_float_metric_value(
                 step_config.generation.reward_frontier,
@@ -2596,7 +2596,11 @@ def build_session(args: Args) -> TrainingSession:
         config.optimizer,
         initial_config.optimizer,
     )
-    balance_optimizer = torch.optim.SGD(balance_model.parameters(), lr=1.0)
+    balance_optimizer = create_adam_optimizer(
+        balance_model.parameters(),
+        config.balance_optimizer,
+        initial_config.balance_optimizer,
+    )
     session = TrainingSession(
         args=args,
         config=config,

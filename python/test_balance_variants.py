@@ -178,11 +178,8 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
         area_probability=area_probability,
         area_dual_mask=area_mask,
         record_weight=torch.ones(1),
-        door_eta=1.0,
         door_beta=1.0,
-        toilet_eta=1.0,
         toilet_beta=1.0,
-        area_eta=1.0,
         area_beta=1.0,
     )
     loss.backward()
@@ -210,11 +207,8 @@ def test_area_beta_does_not_regularize_fixed_prior() -> None:
         area_probability=area_probability,
         area_dual_mask=area_mask,
         record_weight=torch.ones(1),
-        door_eta=0.0,
         door_beta=1.0,
-        toilet_eta=0.0,
         toilet_beta=1.0,
-        area_eta=1.0,
         area_beta=1.0,
     )
     loss.backward()
@@ -243,43 +237,13 @@ def test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero() -> None:
         area_probability=area_probability,
         area_dual_mask=area_mask,
         record_weight=torch.ones(1),
-        door_eta=1.0,
         door_beta=1.0,
-        toilet_eta=0.0,
         toilet_beta=1.0,
-        area_eta=0.0,
         area_beta=1.0,
     )
     loss.backward()
 
     assert torch.sum(preds.left.grad * preds.left) > 0.0
-
-
-def test_zero_eta_freezes_balance_corrections() -> None:
-    preds = example_predictions(requires_grad=True)
-    door_matches = empty_door_matches()
-    door_matches.left[0, 2] = 0
-    area_probability, area_mask = uniform_area_targets()
-    loss = compute_balance_loss(
-        preds=preds,
-        door_matches=door_matches,
-        toilet_crossed_room_idx=torch.tensor([0]),
-        room_area=torch.zeros((1, 2), dtype=torch.int64),
-        area_probability=area_probability,
-        area_dual_mask=area_mask,
-        record_weight=torch.ones(1),
-        door_eta=0.0,
-        door_beta=1.0,
-        toilet_eta=0.0,
-        toilet_beta=1.0,
-        area_eta=0.0,
-        area_beta=1.0,
-    )
-    loss.backward()
-
-    assert torch.count_nonzero(preds.left.grad) == 0
-    assert torch.count_nonzero(preds.toilet_crossed_room.grad) == 0
-    assert torch.count_nonzero(preds.room_area.grad) == 0
 
 
 def test_infeasible_toilet_observation_is_rejected() -> None:
@@ -295,11 +259,8 @@ def test_infeasible_toilet_observation_is_rejected() -> None:
             area_probability=area_probability,
             area_dual_mask=area_mask,
             record_weight=torch.ones(1),
-            door_eta=0.02,
             door_beta=1.0,
-            toilet_eta=0.02,
             toilet_beta=1.0,
-            area_eta=0.02,
             area_beta=1.0,
         )
     except ValueError as error:
@@ -346,7 +307,6 @@ def main() -> None:
     test_dual_gradient_uses_probability_error_scale()
     test_area_beta_does_not_regularize_fixed_prior()
     test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero()
-    test_zero_eta_freezes_balance_corrections()
     test_infeasible_toilet_observation_is_rejected()
     test_proposal_price_residual_is_negative_price_without_gain()
 

@@ -112,13 +112,9 @@ def train_balance_batch(
     area_dual_mask: torch.Tensor,
     record_weight: torch.Tensor,
     balance_model: torch.nn.Module,
-    door_eta: float,
     door_beta: float,
-    toilet_eta: float,
     toilet_beta: float,
-    area_eta: float,
     area_beta: float,
-    loss_scale: float,
 ) -> float:
     loss = compute_balance_loss(
         balance_model(generation_variable_floats),
@@ -128,16 +124,13 @@ def train_balance_batch(
         area_probability,
         area_dual_mask,
         record_weight,
-        door_eta,
         door_beta,
-        toilet_eta,
         toilet_beta,
-        area_eta,
         area_beta,
     )
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite balance loss: {loss.item()}")
-    (loss * loss_scale).backward()
+    loss.backward()
     return loss.item()
 
 
@@ -163,7 +156,6 @@ def train_balance_fresh(
     order = torch.randperm(round_episodes)
     engine = context.train_batch_envs[0].engine
 
-    context.balance_optimizer.zero_grad(set_to_none=True)
     total_loss = 0.0
     batch_count = 0
     for start in range(0, order.shape[0], batch_size):
@@ -184,6 +176,7 @@ def train_balance_fresh(
             engine.rooms,
             batch_variables,
         )
+        context.balance_optimizer.zero_grad(set_to_none=True)
         total_loss += train_balance_batch(
             generation_variable_floats=batch_variables,
             door_matches=door_matches.to(context.device),
@@ -193,21 +186,17 @@ def train_balance_fresh(
             area_dual_mask=area_targets.dual_mask,
             record_weight=torch.ones(index.shape[0], dtype=torch.float32, device=context.device),
             balance_model=context.balance_model,
-            door_eta=context.step_config.balance_train.door_eta,
             door_beta=context.step_config.balance_train.door_beta,
-            toilet_eta=context.step_config.balance_train.toilet_eta,
             toilet_beta=context.step_config.balance_train.toilet_beta,
-            area_eta=context.step_config.balance_train.area_eta,
             area_beta=context.step_config.balance_train.area_beta,
-            loss_scale=index.shape[0] / round_episodes,
         )
+        if any(
+            parameter.grad is not None and not torch.all(torch.isfinite(parameter.grad))
+            for parameter in context.balance_model.parameters()
+        ):
+            raise RuntimeError("non-finite balance gradient")
+        context.balance_optimizer.step()
         batch_count += 1
-    if any(
-        parameter.grad is not None and not torch.all(torch.isfinite(parameter.grad))
-        for parameter in context.balance_model.parameters()
-    ):
-        raise RuntimeError("non-finite balance gradient")
-    context.balance_optimizer.step()
     return total_loss / batch_count
 
 
@@ -1671,6 +1660,7 @@ def train_round(
     generated_feature_data: GeneratedFeatureData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
+    set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
     balance_loss = train_balance_fresh(context, episode_data)
 
     total_loss = empty_main_loss_breakdown()

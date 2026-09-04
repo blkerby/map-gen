@@ -124,25 +124,25 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train.batch_size should evenly divide a round")
 
     config_data = load_debug_config()
-    del config_data["balance_train"]["door_eta"]
+    del config_data["balance_optimizer"]
     try:
         Config.model_validate(config_data)
     except ValidationError:
         pass
     else:
-        raise AssertionError("balance_train.door_eta should be required")
+        raise AssertionError("balance_optimizer should be required")
 
     config_data = load_debug_config()
-    config_data["balance_train"]["door_eta"] = 0.0
+    config_data["balance_optimizer"]["lr"] = 0.0
     validate_config(Config.model_validate(config_data))
 
-    config_data["balance_train"]["door_eta"] = -0.01
+    config_data["balance_optimizer"]["lr"] = -0.01
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
-        assert "balance_train.door_eta" in str(err)
+        assert "balance_optimizer.lr" in str(err)
     else:
-        raise AssertionError("balance_train.door_eta should reject negative values")
+        raise AssertionError("balance_optimizer.lr should reject negative values")
 
     config_data = load_debug_config()
     del config_data["balance_train"]["door_beta"]
@@ -176,9 +176,12 @@ def test_proposal_target_temperature_must_be_positive() -> None:
         raise AssertionError("train.proposal_target_temperature should reject zero")
 
 
-def test_scheduled_ints_instantiate() -> None:
+def test_scheduled_values_instantiate() -> None:
     config_data = load_debug_config()
     config_data["balance_train"]["batch_size"] = {"step": [1, 3]}
+    config_data["balance_train"]["door_beta"] = {"log": [0.25, 1.0]}
+    config_data["balance_train"]["toilet_beta"] = {"linear": [0.25, 1.0]}
+    config_data["balance_train"]["area_beta"] = {"step": [0.25, 1.0]}
     config_data["train"]["batch_size"] = {"step": [1, 3]}
     config_data["train"]["gradient_accumulation_steps"] = {"linear": [1, 3]}
     config = Config.model_validate(config_data)
@@ -188,6 +191,9 @@ def test_scheduled_ints_instantiate() -> None:
     second_knot = instantiate_scheduleable_config(config, 640)
 
     assert midpoint.balance_train.batch_size == 1
+    assert midpoint.balance_train.door_beta == 0.5
+    assert midpoint.balance_train.toilet_beta == 0.625
+    assert midpoint.balance_train.area_beta == 0.25
     assert midpoint.train.batch_size == 1
     assert midpoint.train.gradient_accumulation_steps == 2
     assert second_knot.balance_train.batch_size == 3
@@ -346,7 +352,7 @@ def main() -> None:
     test_proposal_target_temperature_is_required()
     test_balance_train_is_required_and_batch_size_divides_round()
     test_proposal_target_temperature_must_be_positive()
-    test_scheduled_ints_instantiate()
+    test_scheduled_values_instantiate()
     test_generation_area_bounding_box_fields_must_be_positive()
     test_max_candidate_areas_per_placement_must_be_in_range()
     test_num_scored_invalid_candidates_must_fit_shortlist()

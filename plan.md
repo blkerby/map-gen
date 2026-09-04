@@ -33,24 +33,18 @@ The stochastic dual objective for one observation is
 D(theta) = sum_k r_k * lambda_theta(z)_k.
 ```
 
-Gradient descent therefore minimizes `-eta * D`. It raises the price of an
-overrepresented outcome and lowers the alternatives. Each sampled coordinate
-residual is bounded independently of category count and target probability, so
-the three family-specific gains have a comparable meaning.
+The optimizer minimizes `-D`. It raises the price of an overrepresented outcome
+and lowers the alternatives. Each sampled coordinate residual is bounded
+independently of category count and target probability, so the three families
+have comparable loss scales.
 
 Prices have an arbitrary common offset. Before use, center each group:
 
 - door and Toilet prices: arithmetic mean over feasible outcomes;
 - area prices: `q`-weighted mean.
 
-Regularize each learned correction with `beta * lambda^2 / 2`. With the
-regularizer inside the family-specific `eta` factor, the idealized update is
-
-```
-lambda <- (1 - eta * beta) * lambda + eta * r
-```
-
-In expectation under observed distribution `p`, its equilibrium is
+Regularize each learned correction with `beta * lambda^2 / 2`. In expectation
+under a fixed observed distribution `p`, the objective's stationary point is
 `lambda = (p - q) / beta`. The fixed area prior is a reference-distribution
 logit, not a learned correction, so beta does not regularize it. Incompatible
 outcomes are excluded from targets, centering, updates, metrics, and generation.
@@ -79,26 +73,21 @@ price-to-reward ratio or the intended area target distribution `q`.
 
 ### Balance controller
 
-Keep `balance_model.hidden_width` and `balance_model.num_layers`.
-
-Replace `balance_optimizer` and `balance_train.ema_half_life_episodes` with
-required fields in `balance_train`:
+Keep `balance_model.hidden_width` and `balance_model.num_layers`. Add a required
+Adam `balance_optimizer` with `lr`, `beta1`, and `beta2`. Keep these required
+fields in `balance_train`:
 
 ```
 batch_size
-door_eta
 door_beta
-toilet_eta
 toilet_beta
-area_eta
 area_beta
 ```
 
-Initial values for all three gains are `0.02`; all three betas are `1.0`.
-An eta may be zero to freeze that family's learned correction.
-Use plain SGD with no momentum and one optimizer step per generated round.
-`batch_size` only chunks the forward/backward computation, so changing it does
-not change the round-level gain.
+Checked-in optimizer values are `lr = 0.001`, `beta1 = 0`, and `beta2 = 0.99`;
+the existing family beta values are retained. A zero optimizer learning rate
+freezes all learned balance corrections. Take one Adam step per balance
+minibatch, so `batch_size` controls the optimizer update frequency.
 
 Remove generation-time `reward_balance`, `reward_toilet_balance`, and
 `reward_area_balance`; their role is now intrinsic to the dual prices.
@@ -194,9 +183,9 @@ controller or generator.
    tables. Add the `-log(q)` area prior before the learned residual so a new
    controller initially represents the requested area distribution.
 3. Replace cross-entropy balance-model fitting with three quadratically
-   regularized linear dual objectives. Accumulate chunked gradients over the
-   full fresh round, apply family-specific etas and betas, validate finite
-   gradients, and take one plain-SGD step without hidden gradient clipping.
+   regularized linear dual objectives. Shuffle the fresh samples, form
+   minibatches, apply family-specific betas, validate finite gradients, and
+   take one Adam step per minibatch without hidden gradient clipping.
 4. Remove the balance EMA. Generation and main-model price supervision use the
    current balance model; retain the main model EMA unchanged.
 5. Change main-model balance supervision from probability log-odds KL losses to
@@ -211,7 +200,7 @@ controller or generator.
    metrics. Add controller metrics for price RMS/max, target-vs-observed area
    counts, and main-model price tracking error.
 8. Bump training-checkpoint and model-export formats. Store only the main model,
-   main EMA, balance model, main optimizer, and the plain balance optimizer;
+   main EMA, balance model, main optimizer, and the balance Adam optimizer;
    reject old formats as intended.
 9. Update serving request/config construction and exports to use direct target
    room counts and preferred probabilities.
@@ -233,7 +222,7 @@ single debug round has finite losses/prices.
    - each `q` row sums to one and is strictly positive on active outcomes;
    - incompatible/forced entries receive neither gradient nor applied price;
    - effective area counts sum to the room count;
-   - one dual optimizer step occurs per round regardless of chunk count;
+   - one dual optimizer step occurs per balance minibatch;
    - the balance-price-to-ordinary-reward ratio is independent of temperature;
    - checkpoint reload reproduces model outputs.
 
@@ -249,7 +238,7 @@ forced-special interactions.
 
 ## Explicitly deferred
 
-- No PI derivative/proportional term, adaptive gain, replay training, or
+- No family loss weights, replay training, alternating inner optimization, or
   statistical fallback table.
 - No hard per-map area quota; expected counts are the initial contract.
 - No separate exact tier-collapse branch; equal `0.75` maxima already allow

@@ -457,11 +457,8 @@ def compute_balance_loss(
     area_probability: torch.Tensor,
     area_dual_mask: torch.Tensor,
     record_weight: torch.Tensor,
-    door_eta: float,
     door_beta: float,
-    toilet_eta: float,
     toilet_beta: float,
-    area_eta: float,
     area_beta: float,
 ) -> torch.Tensor:
     tables = compute_balance_correction_tables(
@@ -605,9 +602,12 @@ def compute_balance_loss(
         / total_record_weight
     )
     return (
-        door_eta * (0.5 * door_beta * door_regularizer_objective - door_objective)
-        + toilet_eta * (0.5 * toilet_beta * toilet_regularizer_objective - toilet_objective)
-        + area_eta * (0.5 * area_beta * area_regularizer_objective - area_objective)
+        0.5 * door_beta * door_regularizer_objective
+        - door_objective
+        + 0.5 * toilet_beta * toilet_regularizer_objective
+        - toilet_objective
+        + 0.5 * area_beta * area_regularizer_objective
+        - area_objective
     )
 
 
