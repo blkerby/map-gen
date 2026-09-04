@@ -1,12 +1,9 @@
 from dataclasses import dataclass
-import math
 
 import torch
 
 from env import AREA_COUNT, DoorMatches, StepOutcomes
 from model import BalancePredictions, Predictions
-
-BALANCE_TARGET_LOG_ODDS_LIMIT = 20.0
 
 
 @dataclass
@@ -22,17 +19,14 @@ class LossConfig:
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
-    heat_water_weight: float
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
-    area_tiles_weight: float
     area_x_weight: float
     area_y_weight: float
-    area_tile_scale: float
     map_width: int
     map_height: int
     distance_proximity_scale: float
@@ -52,14 +46,12 @@ class LossBreakdown:
     toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
-    heat_water: torch.Tensor
     save_distance: torch.Tensor
     refill_distance: torch.Tensor
     missing_connect_utility: torch.Tensor
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station: torch.Tensor
-    area_tiles: torch.Tensor
     area_x: torch.Tensor
     area_y: torch.Tensor
     door_contribution: torch.Tensor
@@ -73,30 +65,24 @@ class LossBreakdown:
     toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
     graph_diameter_contribution: torch.Tensor
-    heat_water_contribution: torch.Tensor
     save_distance_contribution: torch.Tensor
     refill_distance_contribution: torch.Tensor
     missing_connect_utility_contribution: torch.Tensor
     area_crossings_contribution: torch.Tensor
     area_size_contribution: torch.Tensor
     area_map_station_contribution: torch.Tensor
-    area_tiles_contribution: torch.Tensor
     area_x_contribution: torch.Tensor
     area_y_contribution: torch.Tensor
 
 
 @dataclass
-class BalanceScoreTables:
+class BalancePriceTables:
     left: torch.Tensor
     right: torch.Tensor
     up: torch.Tensor
     down: torch.Tensor
+    toilet_crossed_room: torch.Tensor
     room_area: torch.Tensor
-    left_uniform_log_odds: torch.Tensor
-    right_uniform_log_odds: torch.Tensor
-    up_uniform_log_odds: torch.Tensor
-    down_uniform_log_odds: torch.Tensor
-    room_area_uniform_log_odds: torch.Tensor
 
 
 def masked_binary_cross_entropy_loss(
@@ -182,20 +168,16 @@ def compute_loss_breakdown(
     outcomes: StepOutcomes,
     mask: torch.Tensor,
     vanilla_area_constraint_mask: torch.Tensor,
-    balance_score_target_logits: torch.Tensor,
-    balance_score_uniform_log_odds: torch.Tensor,
+    balance_score_target: torch.Tensor,
     balance_score_mask: torch.Tensor,
-    area_balance_score_target_logits: torch.Tensor,
-    area_balance_score_uniform_log_odds: torch.Tensor,
+    area_balance_score_target: torch.Tensor,
     area_balance_score_mask: torch.Tensor,
-    toilet_balance_score_target_logits: torch.Tensor,
+    toilet_balance_score_target: torch.Tensor,
     toilet_balance_score_mask: torch.Tensor,
     avg_frontiers_target: torch.Tensor,
     avg_frontiers_mask: torch.Tensor,
     graph_diameter_target: torch.Tensor,
     graph_diameter_mask: torch.Tensor,
-    heat_water_target: torch.Tensor,
-    heat_water_mask: torch.Tensor,
     save_to_room_utility_target: torch.Tensor,
     save_from_room_utility_target: torch.Tensor,
     save_utility_mask: torch.Tensor,
@@ -207,7 +189,6 @@ def compute_loss_breakdown(
     area_crossings_target: torch.Tensor,
     area_size_target: torch.Tensor,
     area_map_station_target: torch.Tensor,
-    area_tiles_target: torch.Tensor,
     area_x_target: torch.Tensor,
     area_y_target: torch.Tensor,
     area_mask: torch.Tensor,
@@ -242,23 +223,21 @@ def compute_loss_breakdown(
         mask & vanilla_area_constraint_mask.unsqueeze(1),
         config.vanilla_area_weight,
     )
-    balance_loss, balance_wt = masked_offset_bernoulli_kl_loss(
+    balance_loss, balance_wt = masked_mse_loss(
         preds.balance_score,
-        balance_score_target_logits,
-        balance_score_uniform_log_odds,
+        balance_score_target,
         mask & balance_score_mask,
         config.balance_weight,
     )
-    area_balance_loss, area_balance_wt = masked_offset_bernoulli_kl_loss(
+    area_balance_loss, area_balance_wt = masked_mse_loss(
         preds.area_balance_score,
-        area_balance_score_target_logits,
-        area_balance_score_uniform_log_odds,
+        area_balance_score_target,
         mask & area_balance_score_mask,
         config.area_balance_weight,
     )
-    toilet_balance_loss, toilet_balance_wt = masked_bernoulli_kl_loss(
+    toilet_balance_loss, toilet_balance_wt = masked_mse_loss(
         preds.toilet_balance_score,
-        toilet_balance_score_target_logits,
+        toilet_balance_score_target,
         mask.squeeze(-1) & toilet_balance_score_mask,
         config.toilet_balance_weight,
     )
@@ -275,12 +254,6 @@ def compute_loss_breakdown(
         graph_diameter_target,
         graph_diameter_mask,
         config.graph_diameter_weight,
-    )
-    heat_water_loss, heat_water_wt = masked_binary_cross_entropy_loss(
-        torch.cat([preds.maridia_water, preds.norfair_heat], dim=-1),
-        heat_water_target,
-        heat_water_mask,
-        config.heat_water_weight,
     )
     save_to_room_loss, save_to_room_wt = masked_mse_loss(
         preds.save_to_room_utility,
@@ -334,12 +307,6 @@ def compute_loss_breakdown(
         area_mask,
         config.area_map_station_weight,
     )
-    area_tiles_loss, area_tiles_wt = masked_mse_loss(
-        preds.area_tiles,
-        area_tiles_target,
-        area_mask,
-        config.area_tiles_weight,
-    )
     area_x_loss, area_x_wt = masked_mse_loss(
         preds.area_x,
         area_x_target,
@@ -364,14 +331,12 @@ def compute_loss_breakdown(
         + toilet_balance_wt
         + avg_frontiers_wt
         + graph_diameter_wt
-        + heat_water_wt
         + save_distance_wt
         + refill_distance_wt
         + missing_connect_utility_wt
         + area_crossings_wt
         + area_size_wt
         + area_map_station_wt
-        + area_tiles_wt
         + area_x_wt
         + area_y_wt
         + 1e-15
@@ -387,14 +352,12 @@ def compute_loss_breakdown(
     toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
     graph_diameter_contribution = graph_diameter_loss / total_weight
-    heat_water_contribution = heat_water_loss / total_weight
     save_distance_contribution = save_distance_loss / total_weight
     refill_distance_contribution = refill_distance_loss / total_weight
     missing_connect_utility_contribution = missing_connect_utility_loss / total_weight
     area_crossings_contribution = area_crossings_loss / total_weight
     area_size_contribution = area_size_loss / total_weight
     area_map_station_contribution = area_map_station_loss / total_weight
-    area_tiles_contribution = area_tiles_loss / total_weight
     area_x_contribution = area_x_loss / total_weight
     area_y_contribution = area_y_loss / total_weight
     mean_loss = (
@@ -409,14 +372,12 @@ def compute_loss_breakdown(
         + toilet_balance_contribution
         + avg_frontiers_contribution
         + graph_diameter_contribution
-        + heat_water_contribution
         + save_distance_contribution
         + refill_distance_contribution
         + missing_connect_utility_contribution
         + area_crossings_contribution
         + area_size_contribution
         + area_map_station_contribution
-        + area_tiles_contribution
         + area_x_contribution
         + area_y_contribution
     )
@@ -433,7 +394,6 @@ def compute_loss_breakdown(
         toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
         graph_diameter=graph_diameter_loss / (graph_diameter_wt + 1e-15),
-        heat_water=heat_water_loss / (heat_water_wt + 1e-15),
         save_distance=save_distance_loss / (save_distance_wt + 1e-15),
         refill_distance=refill_distance_loss / (refill_distance_wt + 1e-15),
         missing_connect_utility=(
@@ -442,7 +402,6 @@ def compute_loss_breakdown(
         area_crossings=area_crossings_loss / (area_crossings_wt + 1e-15),
         area_size=area_size_loss / (area_size_wt + 1e-15),
         area_map_station=area_map_station_loss / (area_map_station_wt + 1e-15),
-        area_tiles=area_tiles_loss / (area_tiles_wt + 1e-15),
         area_x=area_x_loss / (area_x_wt + 1e-15),
         area_y=area_y_loss / (area_y_wt + 1e-15),
         door_contribution=door_contribution,
@@ -456,36 +415,14 @@ def compute_loss_breakdown(
         toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,
         graph_diameter_contribution=graph_diameter_contribution,
-        heat_water_contribution=heat_water_contribution,
         save_distance_contribution=save_distance_contribution,
         refill_distance_contribution=refill_distance_contribution,
         missing_connect_utility_contribution=missing_connect_utility_contribution,
         area_crossings_contribution=area_crossings_contribution,
         area_size_contribution=area_size_contribution,
         area_map_station_contribution=area_map_station_contribution,
-        area_tiles_contribution=area_tiles_contribution,
         area_x_contribution=area_x_contribution,
         area_y_contribution=area_y_contribution,
-    )
-
-
-def categorical_balance_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    record_weight: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = targets >= 0
-    if not torch.any(mask):
-        return torch.sum(logits) * 0.0, logits.new_tensor(0.0)
-    target_weight = record_weight.reshape(
-        [record_weight.shape[0]] + [1] * (targets.ndim - 1)
-    ).expand_as(targets)[mask]
-    return (
-        torch.sum(
-            torch.nn.functional.cross_entropy(logits[mask], targets[mask], reduction="none")
-            * target_weight
-        ),
-        torch.sum(target_weight),
     )
 
 
@@ -512,227 +449,138 @@ def materialize_direction_balance_compatibility(
     ]
 
 
-def direction_variant_balance_loss(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
-    source_global_door_variant_idx: torch.Tensor,
-    target_global_door_variant_idx: torch.Tensor,
-    door_variant_compatibility: torch.Tensor,
-    record_weight: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = targets >= 0
-    if not torch.any(mask):
-        return torch.sum(logits) * 0.0, logits.new_tensor(0.0)
-    concrete_logits = materialize_direction_balance_logits(
-        logits,
-        source_door_variant_idx,
-        target_door_variant_idx,
-    )
-    compatibility = materialize_direction_balance_compatibility(
-        door_variant_compatibility,
-        source_global_door_variant_idx,
-        target_global_door_variant_idx,
-        source_door_variant_idx,
-        target_door_variant_idx,
-    )
-    concrete_logits = concrete_logits.masked_fill(~compatibility.unsqueeze(0), -torch.inf)
-    target_weight = record_weight.unsqueeze(1).expand_as(targets)[mask]
-    return (
-        torch.sum(
-            torch.nn.functional.cross_entropy(
-                concrete_logits[mask],
-                targets[mask].to(torch.int64),
-                reduction="none",
-            )
-            * target_weight
-        ),
-        torch.sum(target_weight),
-    )
-
-
 def compute_balance_loss(
     preds: BalancePredictions,
     door_matches: DoorMatches,
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
-    room_area_mask: torch.Tensor,
+    area_probability: torch.Tensor,
+    area_dual_mask: torch.Tensor,
     record_weight: torch.Tensor,
+    door_eta: float,
+    toilet_eta: float,
+    area_eta: float,
+    price_limit: float,
 ) -> torch.Tensor:
-    left_loss, left_weight = direction_variant_balance_loss(
-        preds.left,
-        door_matches.left,
-        preds.left_door_variant_idx,
-        preds.right_door_variant_idx,
-        preds.left_global_door_variant_idx,
-        preds.right_global_door_variant_idx,
-        preds.door_variant_compatibility,
-        record_weight,
+    tables = compute_balance_price_tables(
+        preds,
+        area_probability,
+        area_dual_mask,
+        price_limit,
     )
-    right_loss, right_weight = direction_variant_balance_loss(
-        preds.right,
-        door_matches.right,
-        preds.right_door_variant_idx,
-        preds.left_door_variant_idx,
-        preds.right_global_door_variant_idx,
-        preds.left_global_door_variant_idx,
-        preds.door_variant_compatibility,
-        record_weight,
-    )
-    up_loss, up_weight = direction_variant_balance_loss(
-        preds.up,
-        door_matches.up,
-        preds.up_door_variant_idx,
-        preds.down_door_variant_idx,
-        preds.up_global_door_variant_idx,
-        preds.down_global_door_variant_idx,
-        preds.door_variant_compatibility,
-        record_weight,
-    )
-    down_loss, down_weight = direction_variant_balance_loss(
-        preds.down,
-        door_matches.down,
-        preds.down_door_variant_idx,
-        preds.up_door_variant_idx,
-        preds.down_global_door_variant_idx,
-        preds.up_global_door_variant_idx,
-        preds.door_variant_compatibility,
-        record_weight,
-    )
-    toilet_loss, toilet_weight = categorical_balance_loss(
-        preds.toilet_crossed_room,
-        toilet_crossed_room_idx,
-        record_weight,
-    )
-    room_area_loss, room_area_weight = categorical_balance_loss(
-        preds.room_area,
-        torch.where(room_area_mask, room_area, -1),
-        record_weight,
-    )
-    total_loss = left_loss + right_loss + up_loss + down_loss + toilet_loss + room_area_loss
-    total_weight = (
-        left_weight + right_weight + up_weight + down_weight + toilet_weight + room_area_weight
-    )
-    return total_loss / (total_weight + 1e-15)
-
-
-def expand_direction_balance_probabilities(
-    logits: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
-    source_global_door_variant_idx: torch.Tensor,
-    target_global_door_variant_idx: torch.Tensor,
-    door_variant_compatibility: torch.Tensor,
-) -> torch.Tensor:
-    concrete_logits = materialize_direction_balance_logits(
-        logits,
-        source_door_variant_idx,
-        target_door_variant_idx,
-    )
-    compatibility = materialize_direction_balance_compatibility(
-        door_variant_compatibility,
-        source_global_door_variant_idx,
-        target_global_door_variant_idx,
-        source_door_variant_idx,
-        target_door_variant_idx,
-    )
-    safe_compatibility = compatibility | ~torch.any(compatibility, dim=-1, keepdim=True)
-    probabilities = torch.softmax(
-        concrete_logits.masked_fill(~safe_compatibility.unsqueeze(0), -torch.inf),
-        dim=-1,
-    )
-    return torch.where(compatibility.unsqueeze(0), probabilities, 0.0)
-
-
-def expand_balance_door_match_probabilities(
-    preds: BalancePredictions,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    return tuple(
-        expand_direction_balance_probabilities(
-            logits,
-            source_idx,
-            target_idx,
-            source_global_idx,
-            target_global_idx,
-            preds.door_variant_compatibility,
-        )
-        for logits, source_idx, target_idx, source_global_idx, target_global_idx in (
-            (
-                preds.left,
-                preds.left_door_variant_idx,
-                preds.right_door_variant_idx,
+    door_residual_per_record = tables.left.new_zeros(record_weight.shape)
+    door_count_per_record = tables.left.new_zeros(record_weight.shape)
+    for prices, targets, compatibility in (
+        (
+            tables.left,
+            door_matches.left,
+            materialize_direction_balance_compatibility(
+                preds.door_variant_compatibility,
                 preds.left_global_door_variant_idx,
                 preds.right_global_door_variant_idx,
-            ),
-            (
-                preds.right,
-                preds.right_door_variant_idx,
                 preds.left_door_variant_idx,
+                preds.right_door_variant_idx,
+            ),
+        ),
+        (
+            tables.right,
+            door_matches.right,
+            materialize_direction_balance_compatibility(
+                preds.door_variant_compatibility,
                 preds.right_global_door_variant_idx,
                 preds.left_global_door_variant_idx,
+                preds.right_door_variant_idx,
+                preds.left_door_variant_idx,
             ),
-            (
-                preds.up,
-                preds.up_door_variant_idx,
-                preds.down_door_variant_idx,
+        ),
+        (
+            tables.up,
+            door_matches.up,
+            materialize_direction_balance_compatibility(
+                preds.door_variant_compatibility,
                 preds.up_global_door_variant_idx,
                 preds.down_global_door_variant_idx,
-            ),
-            (
-                preds.down,
-                preds.down_door_variant_idx,
                 preds.up_door_variant_idx,
+                preds.down_door_variant_idx,
+            ),
+        ),
+        (
+            tables.down,
+            door_matches.down,
+            materialize_direction_balance_compatibility(
+                preds.door_variant_compatibility,
                 preds.down_global_door_variant_idx,
                 preds.up_global_door_variant_idx,
+                preds.down_door_variant_idx,
+                preds.up_door_variant_idx,
             ),
+        ),
+    ):
+        mask = targets >= 0
+        if not torch.any(mask):
+            continue
+        if torch.any(targets[mask] >= prices.shape[-1]):
+            raise ValueError("door balance target is out of range")
+        safe_targets = targets.clamp(0, prices.shape[-1] - 1).to(torch.int64)
+        observed_compatible = torch.gather(
+            compatibility.unsqueeze(0).expand(targets.shape[0], -1, -1),
+            -1,
+            safe_targets.unsqueeze(-1),
+        ).squeeze(-1)
+        if torch.any(mask & ~observed_compatible):
+            raise ValueError("observed door pairing is incompatible")
+        selected = torch.gather(prices, -1, safe_targets.unsqueeze(-1)).squeeze(-1)
+        feasible_count = compatibility.sum(dim=-1).clamp_min(1)
+        residual_value = feasible_count * selected - prices.sum(dim=-1)
+        door_residual_per_record += torch.sum(residual_value * mask, dim=1)
+        door_count_per_record += torch.sum(mask, dim=1)
+
+    toilet_mask = toilet_crossed_room_idx >= 0
+    safe_toilet = toilet_crossed_room_idx.clamp(0, tables.toilet_crossed_room.shape[-1] - 1)
+    if torch.any(toilet_mask & ~preds.toilet_compatibility[safe_toilet]):
+        raise ValueError("observed Toilet crossing room is infeasible")
+    toilet_selected = torch.gather(
+        tables.toilet_crossed_room,
+        -1,
+        safe_toilet.unsqueeze(-1),
+    ).squeeze(-1)
+    toilet_residual = (
+        preds.toilet_compatibility.sum() * toilet_selected - tables.toilet_crossed_room.sum(dim=-1)
+    )
+    area_mask = (room_area >= 0) & area_dual_mask
+    safe_area = room_area.clamp(0, AREA_COUNT - 1).to(torch.int64)
+    selected_area_price = torch.gather(
+        tables.room_area,
+        -1,
+        safe_area.unsqueeze(-1),
+    ).squeeze(-1)
+    selected_area_probability = torch.gather(
+        area_probability,
+        -1,
+        safe_area.unsqueeze(-1),
+    ).squeeze(-1)
+    if torch.any(area_mask & (selected_area_probability <= 0.0)):
+        raise ValueError("observed room-area assignment has zero target probability")
+    area_residual = selected_area_price / selected_area_probability.clamp_min(
+        torch.finfo(torch.float32).tiny
+    ) - tables.room_area.sum(dim=-1)
+    total_record_weight = record_weight.sum().clamp_min(1.0)
+    door_objective = (
+        torch.sum(door_residual_per_record / door_count_per_record.clamp_min(1.0) * record_weight)
+        / total_record_weight
+    )
+    toilet_objective = (
+        torch.sum(toilet_residual * toilet_mask * record_weight) / total_record_weight
+    )
+    area_objective = (
+        torch.sum(
+            torch.sum(area_residual * area_mask, dim=1)
+            / torch.sum(area_mask, dim=1).clamp_min(1.0)
+            * record_weight
         )
+        / total_record_weight
     )
-
-
-def compute_balance_door_match_ss(preds: BalancePredictions) -> torch.Tensor:
-    return sum(
-        torch.sum(probability.square())
-        for probability in expand_balance_door_match_probabilities(preds)
-    )
-
-
-def compute_balance_toilet_crossed_room_ss(preds: BalancePredictions) -> torch.Tensor:
-    return torch.sum(torch.softmax(preds.toilet_crossed_room, dim=-1).square())
-
-
-def categorical_balance_score_target_logits(
-    logits: torch.Tensor,
-    targets: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = targets >= 0
-    if logits.shape[-1] == 0:
-        return logits.new_empty(targets.shape, dtype=torch.float32), mask
-    safe_targets = torch.clamp(targets, min=0).to(torch.int64)
-    target_logits = torch.gather(
-        categorical_balance_score_logit_table(logits),
-        -1,
-        safe_targets.unsqueeze(-1),
-    ).squeeze(-1)
-    return target_logits.detach(), mask
-
-
-def direction_balance_score_target_logits(
-    logit_table: torch.Tensor,
-    uniform_log_odds: torch.Tensor,
-    targets: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    mask = targets >= 0
-    if logit_table.shape[-1] == 0:
-        empty = logit_table.new_empty(targets.shape, dtype=torch.float32)
-        return empty, empty.clone(), mask
-    safe_targets = targets.clamp(0, logit_table.shape[-1] - 1).to(torch.int64)
-    target_logits = torch.gather(
-        logit_table,
-        -1,
-        safe_targets.unsqueeze(-1),
-    ).squeeze(-1)
-    return target_logits.detach(), uniform_log_odds.expand_as(target_logits), mask
+    return -(door_eta * door_objective + toilet_eta * toilet_objective + area_eta * area_objective)
 
 
 def direction_valid_match_balance_score_target_logits(
@@ -758,63 +606,20 @@ def direction_valid_match_balance_score_target_logits(
     return target_logits.detach(), mask
 
 
-def categorical_balance_score_logit_table(logits: torch.Tensor) -> torch.Tensor:
-    logits = logits.to(torch.float32)
-    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-    non_target_log_probs = torch.log(-torch.expm1(log_probs))
-    return torch.clamp(
-        log_probs - non_target_log_probs,
-        min=-BALANCE_TARGET_LOG_ODDS_LIMIT,
-        max=BALANCE_TARGET_LOG_ODDS_LIMIT,
-    )
-
-
-def centered_categorical_balance_score_logit_table(
-    logits: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    uniform_log_odds = logits.new_tensor(-math.log(logits.shape[-1] - 1), dtype=torch.float32)
-    return categorical_balance_score_logit_table(logits) - uniform_log_odds, uniform_log_odds
-
-
-def compatibility_uniform_log_odds(compatibility: torch.Tensor) -> torch.Tensor:
-    if compatibility.shape[-1] == 0:
-        return torch.zeros(
-            compatibility.shape[:-1],
-            dtype=torch.float32,
-            device=compatibility.device,
-        )
-    has_compatible_match = torch.any(compatibility, dim=-1)
-    safe_compatibility = compatibility | ~has_compatible_match.unsqueeze(-1)
-    uniform_logits = torch.zeros(
-        [1, *compatibility.shape],
-        dtype=torch.float32,
-        device=compatibility.device,
-    ).masked_fill(~safe_compatibility.unsqueeze(0), -torch.inf)
-    uniform_log_odds_table = categorical_balance_score_logit_table(uniform_logits)
-    uniform_log_odds = torch.max(
-        uniform_log_odds_table.masked_fill(~compatibility.unsqueeze(0), -torch.inf),
-        dim=-1,
-    ).values.squeeze(0)
-    return torch.where(
-        has_compatible_match,
-        uniform_log_odds,
-        torch.zeros_like(uniform_log_odds),
-    )
-
-
-def direction_balance_score_logit_table(
-    logits: torch.Tensor,
+def direction_balance_price_table(
+    prices: torch.Tensor,
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
     source_global_door_variant_idx: torch.Tensor,
     target_global_door_variant_idx: torch.Tensor,
     door_variant_compatibility: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    concrete_logits = materialize_direction_balance_logits(
-        logits,
+    price_limit: float,
+) -> torch.Tensor:
+    concrete_prices = materialize_direction_balance_logits(
+        prices,
         source_door_variant_idx,
         target_door_variant_idx,
-    )
+    ).to(torch.float32)
     compatibility = materialize_direction_balance_compatibility(
         door_variant_compatibility,
         source_global_door_variant_idx,
@@ -822,78 +627,101 @@ def direction_balance_score_logit_table(
         source_door_variant_idx,
         target_door_variant_idx,
     )
-    safe_compatibility = compatibility | ~torch.any(compatibility, dim=-1, keepdim=True)
-    safe_compatibility = safe_compatibility.unsqueeze(0)
-    masked_logits = concrete_logits.masked_fill(~safe_compatibility, -torch.inf)
-    uniform_log_odds = compatibility_uniform_log_odds(compatibility)
-    centered_scores = categorical_balance_score_logit_table(masked_logits) - uniform_log_odds.view(
-        1, -1, 1
-    )
-    centered_scores = torch.clamp(
-        centered_scores,
-        min=-BALANCE_TARGET_LOG_ODDS_LIMIT,
-        max=BALANCE_TARGET_LOG_ODDS_LIMIT,
-    )
-    return (
-        torch.where(compatibility.unsqueeze(0), centered_scores, 0.0),
-        uniform_log_odds,
+    counts = compatibility.sum(dim=-1).clamp_min(1)
+    means = torch.sum(
+        concrete_prices * compatibility.unsqueeze(0),
+        dim=-1,
+    ) / counts.unsqueeze(0)
+    centered = concrete_prices - means.unsqueeze(-1)
+    return torch.where(
+        compatibility.unsqueeze(0),
+        centered.clamp(-price_limit, price_limit),
+        0.0,
     )
 
 
-def compute_balance_score_tables(preds: BalancePredictions) -> BalanceScoreTables:
-    left, left_uniform_log_odds = direction_balance_score_logit_table(
-        preds.left,
-        preds.left_door_variant_idx,
-        preds.right_door_variant_idx,
-        preds.left_global_door_variant_idx,
-        preds.right_global_door_variant_idx,
-        preds.door_variant_compatibility,
+def compute_balance_price_tables(
+    preds: BalancePredictions,
+    area_probability: torch.Tensor,
+    area_dual_mask: torch.Tensor,
+    price_limit: float,
+) -> BalancePriceTables:
+    direction_inputs = (
+        (
+            preds.left,
+            preds.left_door_variant_idx,
+            preds.right_door_variant_idx,
+            preds.left_global_door_variant_idx,
+            preds.right_global_door_variant_idx,
+        ),
+        (
+            preds.right,
+            preds.right_door_variant_idx,
+            preds.left_door_variant_idx,
+            preds.right_global_door_variant_idx,
+            preds.left_global_door_variant_idx,
+        ),
+        (
+            preds.up,
+            preds.up_door_variant_idx,
+            preds.down_door_variant_idx,
+            preds.up_global_door_variant_idx,
+            preds.down_global_door_variant_idx,
+        ),
+        (
+            preds.down,
+            preds.down_door_variant_idx,
+            preds.up_door_variant_idx,
+            preds.down_global_door_variant_idx,
+            preds.up_global_door_variant_idx,
+        ),
     )
-    right, right_uniform_log_odds = direction_balance_score_logit_table(
-        preds.right,
-        preds.right_door_variant_idx,
-        preds.left_door_variant_idx,
-        preds.right_global_door_variant_idx,
-        preds.left_global_door_variant_idx,
-        preds.door_variant_compatibility,
+    left, right, up, down = (
+        direction_balance_price_table(
+            prices,
+            source_idx,
+            target_idx,
+            source_global_idx,
+            target_global_idx,
+            preds.door_variant_compatibility,
+            price_limit,
+        )
+        for prices, source_idx, target_idx, source_global_idx, target_global_idx in direction_inputs
     )
-    up, up_uniform_log_odds = direction_balance_score_logit_table(
-        preds.up,
-        preds.up_door_variant_idx,
-        preds.down_door_variant_idx,
-        preds.up_global_door_variant_idx,
-        preds.down_global_door_variant_idx,
-        preds.door_variant_compatibility,
+    toilet_mask = preds.toilet_compatibility.unsqueeze(0)
+    toilet_count = toilet_mask.sum(dim=-1).clamp_min(1)
+    toilet_mean = torch.sum(preds.toilet_crossed_room * toilet_mask, dim=-1) / toilet_count
+    toilet = torch.where(
+        toilet_mask,
+        (preds.toilet_crossed_room - toilet_mean.unsqueeze(-1)).clamp(-price_limit, price_limit),
+        0.0,
     )
-    down, down_uniform_log_odds = direction_balance_score_logit_table(
-        preds.down,
-        preds.down_door_variant_idx,
-        preds.up_door_variant_idx,
-        preds.down_global_door_variant_idx,
-        preds.up_global_door_variant_idx,
-        preds.door_variant_compatibility,
+    if area_probability.shape != preds.room_area.shape:
+        raise ValueError("area_probability shape must match balance room-area prices")
+    if area_dual_mask.shape != preds.room_area.shape[:2]:
+        raise ValueError("area_dual_mask shape must match balance room rows")
+    safe_probability = area_probability.clamp_min(torch.finfo(torch.float32).tiny)
+    area_raw = preds.room_area.to(torch.float32) - safe_probability.log()
+    area_mean = torch.sum(area_raw * area_probability, dim=-1, keepdim=True)
+    room_area = torch.where(
+        area_dual_mask.unsqueeze(-1),
+        (area_raw - area_mean).clamp(-price_limit, price_limit),
+        0.0,
     )
-    room_area, room_area_uniform_log_odds = centered_categorical_balance_score_logit_table(
-        preds.room_area
-    )
-    return BalanceScoreTables(
-        left=left.detach(),
-        right=right.detach(),
-        up=up.detach(),
-        down=down.detach(),
-        room_area=room_area.detach(),
-        left_uniform_log_odds=left_uniform_log_odds,
-        right_uniform_log_odds=right_uniform_log_odds,
-        up_uniform_log_odds=up_uniform_log_odds,
-        down_uniform_log_odds=down_uniform_log_odds,
-        room_area_uniform_log_odds=room_area_uniform_log_odds,
+    return BalancePriceTables(
+        left=left,
+        right=right,
+        up=up,
+        down=down,
+        toilet_crossed_room=toilet,
+        room_area=room_area,
     )
 
 
 def compute_room_area_balance_score_target_logits(
-    tables: BalanceScoreTables,
+    tables: BalancePriceTables,
     room_area: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     mask = room_area >= 0
     safe_room_area = room_area.clamp_min(0).to(torch.int64)
     target_logits = torch.gather(
@@ -901,54 +729,30 @@ def compute_room_area_balance_score_target_logits(
         -1,
         safe_room_area.unsqueeze(-1),
     ).squeeze(-1)
-    return (
-        target_logits.detach(),
-        tables.room_area_uniform_log_odds.expand_as(target_logits),
-        mask,
-    )
+    return target_logits.detach(), mask
 
 
 def compute_balance_score_target_logits(
-    tables: BalanceScoreTables,
+    tables: BalancePriceTables,
     door_matches: DoorMatches,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    left_values, left_uniform_log_odds, left_mask = direction_balance_score_target_logits(
-        tables.left,
-        tables.left_uniform_log_odds,
-        door_matches.left,
-    )
-    right_values, right_uniform_log_odds, right_mask = direction_balance_score_target_logits(
-        tables.right,
-        tables.right_uniform_log_odds,
-        door_matches.right,
-    )
-    up_values, up_uniform_log_odds, up_mask = direction_balance_score_target_logits(
-        tables.up,
-        tables.up_uniform_log_odds,
-        door_matches.up,
-    )
-    down_values, down_uniform_log_odds, down_mask = direction_balance_score_target_logits(
-        tables.down,
-        tables.down_uniform_log_odds,
-        door_matches.down,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    values_and_masks = tuple(
+        direction_valid_match_balance_score_target_logits(table, targets)
+        for table, targets in (
+            (tables.left, door_matches.left),
+            (tables.right, door_matches.right),
+            (tables.up, door_matches.up),
+            (tables.down, door_matches.down),
+        )
     )
     return (
-        torch.cat([left_values, right_values, up_values, down_values], dim=-1),
-        torch.cat(
-            [
-                left_uniform_log_odds,
-                right_uniform_log_odds,
-                up_uniform_log_odds,
-                down_uniform_log_odds,
-            ],
-            dim=-1,
-        ),
-        torch.cat([left_mask, right_mask, up_mask, down_mask], dim=-1),
+        torch.cat([values for values, _ in values_and_masks], dim=-1),
+        torch.cat([mask for _, mask in values_and_masks], dim=-1),
     )
 
 
 def compute_step_balance_score_target_logits(
-    tables: BalanceScoreTables,
+    tables: BalancePriceTables,
     door_match: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     left, right, up, down = torch.split(
@@ -1032,7 +836,7 @@ def first_concrete_door_idx_by_variant(
 
 def compute_proposal_balance_score_table(
     preds: BalancePredictions,
-    tables: BalanceScoreTables,
+    tables: BalancePriceTables,
     num_door_variants: int,
 ) -> torch.Tensor:
     proposal_score_table = torch.zeros(
@@ -1114,20 +918,11 @@ def compute_proposal_balance_score_residual(
     proposal_score_table: torch.Tensor,
     frontier_door_variant: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
-    reward_balance: float | torch.Tensor,
 ) -> torch.Tensor:
     device = proposal_score_table.device
     frontier_door_variant = frontier_door_variant.to(device=device, dtype=torch.int64)
     row_snapshot_idx = row_snapshot_idx.to(device=device, dtype=torch.int64)
-    reward_balance_tensor = torch.as_tensor(
-        reward_balance,
-        dtype=torch.float32,
-        device=device,
-    ).expand(proposal_score_table.shape[0])
-    variant_residual = (
-        -reward_balance_tensor[row_snapshot_idx].unsqueeze(1)
-        * proposal_score_table[row_snapshot_idx, frontier_door_variant]
-    )
+    variant_residual = -proposal_score_table[row_snapshot_idx, frontier_door_variant]
     return (
         variant_residual.unsqueeze(-1)
         .expand(-1, -1, AREA_COUNT)
@@ -1161,23 +956,23 @@ def compute_proposal_area_balance_score_table(
 def compute_proposal_area_balance_score_residual(
     proposal_score_table: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
-    reward_area_balance: float | torch.Tensor,
 ) -> torch.Tensor:
     device = proposal_score_table.device
     row_snapshot_idx = row_snapshot_idx.to(device=device, dtype=torch.int64)
-    reward_tensor = torch.as_tensor(
-        reward_area_balance,
-        dtype=torch.float32,
-        device=device,
-    ).expand(proposal_score_table.shape[0])
-    return -reward_tensor[row_snapshot_idx].unsqueeze(1) * proposal_score_table[row_snapshot_idx]
+    return -proposal_score_table[row_snapshot_idx]
 
 
 def compute_toilet_balance_score_target_logits(
-    preds: BalancePredictions,
+    tables: BalancePriceTables,
     toilet_crossed_room_idx: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    return categorical_balance_score_target_logits(
-        preds.toilet_crossed_room,
-        toilet_crossed_room_idx,
+    mask = toilet_crossed_room_idx >= 0
+    safe_target = toilet_crossed_room_idx.clamp(0, tables.toilet_crossed_room.shape[-1] - 1).to(
+        torch.int64
     )
+    target = torch.gather(
+        tables.toilet_crossed_room,
+        -1,
+        safe_target.unsqueeze(-1),
+    ).squeeze(-1)
+    return target.detach(), mask

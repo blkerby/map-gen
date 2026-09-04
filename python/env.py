@@ -28,35 +28,89 @@ SPECIAL_ROOM_AREA_CONSTRAINT_IDX = {
 }
 
 
-def area_balance_exempt_room_mask(
+@dataclass
+class AreaBalanceTargets:
+    probability: torch.Tensor
+    dual_mask: torch.Tensor
+    effective_area_rooms: torch.Tensor
+
+
+def compute_area_balance_targets(
     rooms: list[dict],
+    target_area_rooms: torch.Tensor,
     vanilla_area_constraint_mask: torch.Tensor,
-    heat_water_reward: torch.Tensor,
-) -> torch.Tensor:
+    preferred_probability: torch.Tensor,
+) -> AreaBalanceTargets:
+    if target_area_rooms.ndim != 2 or target_area_rooms.shape[1] != AREA_COUNT:
+        raise ValueError("target_area_rooms must have shape [batch, AREA_COUNT]")
+    if preferred_probability.shape != (target_area_rooms.shape[0], 2, 3):
+        raise ValueError("preferred_probability must have shape [batch, 2, 3]")
+    if vanilla_area_constraint_mask.shape != (target_area_rooms.shape[0], AREA_COUNT):
+        raise ValueError("vanilla_area_constraint_mask must have shape [batch, AREA_COUNT]")
+    if not torch.all(torch.isfinite(target_area_rooms)):
+        raise ValueError("target_area_rooms must be finite")
+    if torch.any(target_area_rooms <= 0.0):
+        raise ValueError("target_area_rooms must be positive")
+    if not torch.all(torch.isfinite(preferred_probability)):
+        raise ValueError("preferred_probability must be finite")
+    target_sums = target_area_rooms.sum(dim=1, keepdim=True)
+    if torch.any(target_sums <= 0.0):
+        raise ValueError("target_area_rooms must have a positive row sum")
+    baseline = target_area_rooms / target_sums
+    batch_size = target_area_rooms.shape[0]
+    probability = baseline.unsqueeze(1).expand(-1, len(rooms), -1).clone()
+    dual_mask = torch.ones((batch_size, len(rooms)), dtype=torch.bool, device=baseline.device)
+    for family_idx, (room_field, preferred_area) in enumerate(
+        zip(("water", "heat"), (4, 2), strict=True)
+    ):
+        tiers = torch.tensor(
+            [room.get(room_field, 0) for room in rooms],
+            dtype=torch.int64,
+            device=baseline.device,
+        )
+        tagged = tiers > 0
+        if not torch.any(tagged):
+            continue
+        rho = preferred_probability[:, family_idx, tiers[tagged] - 1]
+        preferred_baseline = baseline[:, preferred_area].unsqueeze(1)
+        if torch.any(rho + 1e-6 < preferred_baseline) or torch.any(rho >= 1.0):
+            raise ValueError(
+                "preferred area probabilities must be at least baseline and below one"
+            )
+        rho = torch.maximum(rho, preferred_baseline)
+        tagged_probability = (
+            (1.0 - rho).unsqueeze(2)
+            * baseline.unsqueeze(1)
+            / (1.0 - preferred_baseline).unsqueeze(2)
+        )
+        tagged_probability[:, :, preferred_area] = rho
+        probability[:, tagged] = tagged_probability
+
     constraint_idx = torch.tensor(
         [SPECIAL_ROOM_AREA_CONSTRAINT_IDX.get(room.get("special_type"), -1) for room in rooms],
         dtype=torch.int64,
         device=vanilla_area_constraint_mask.device,
     )
-    exempt = (constraint_idx >= 0).unsqueeze(0) & vanilla_area_constraint_mask[
+    forced = (constraint_idx >= 0).unsqueeze(0) & vanilla_area_constraint_mask[
         :, constraint_idx.clamp_min(0)
     ]
-    for family_idx, room_field in enumerate(("water", "heat")):
-        room_tier_idx = torch.tensor(
-            [room.get(room_field, 0) - 1 for room in rooms],
-            dtype=torch.int64,
-            device=heat_water_reward.device,
-        )
-        room_reward = heat_water_reward[:, family_idx, room_tier_idx.clamp_min(0)]
-        exempt |= (room_tier_idx >= 0).unsqueeze(0) & (room_reward > 0.0)
-    return exempt
-
-
-def average_area_tile_count(rooms: list[dict]) -> float:
-    total = sum(bool(value) for room in rooms for row in room["map"] for value in row)
-    if total == 0:
-        raise ValueError("room set must contain at least one occupied map tile")
-    return total / AREA_COUNT
+    if torch.any(forced):
+        environment_idx, room_idx = torch.nonzero(forced, as_tuple=True)
+        probability[environment_idx, room_idx] = 0.0
+        probability[environment_idx, room_idx, constraint_idx[room_idx]] = 1.0
+        dual_mask &= ~forced
+    if not torch.allclose(
+        probability.sum(dim=-1),
+        torch.ones_like(probability[..., 0]),
+    ):
+        raise RuntimeError("area balance target rows must sum to one")
+    if torch.any(probability[dual_mask] <= 0.0):
+        raise RuntimeError("active area balance target probabilities must be positive")
+    return AreaBalanceTargets(
+        probability=probability,
+        dual_mask=dual_mask,
+        effective_area_rooms=probability.sum(dim=1),
+    )
 
 
 def proposal_action_idx(door_variant_idx: torch.Tensor, room_area: torch.Tensor) -> torch.Tensor:
@@ -82,32 +136,31 @@ class GenerateConfig:
     gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
+    balance_price_limit: float
     reward_door: float | torch.Tensor
     reward_connection: float | torch.Tensor
     reward_toilet: float | torch.Tensor
     reward_phantoon_pair: float | torch.Tensor
     reward_phantoon_area: float | torch.Tensor
     reward_vanilla_area: torch.Tensor
-    reward_balance: float | torch.Tensor
-    reward_area_balance: float | torch.Tensor
-    reward_toilet_balance: float | torch.Tensor
     reward_frontier: float | torch.Tensor
     reward_graph_diameter: float | torch.Tensor
-    reward_maridia_water: torch.Tensor
-    reward_norfair_heat: torch.Tensor
+    preferred_area_probability: torch.Tensor
     reward_save_distance: float | torch.Tensor
     reward_refill_distance: float | torch.Tensor
     reward_missing_connect_utility: float | torch.Tensor
     reward_area_crossing: float | torch.Tensor
     reward_area_size_valid: float | torch.Tensor
     reward_area_map_station: float | torch.Tensor
-    reward_area_tiles: float | torch.Tensor
     reward_area_x: float | torch.Tensor
     reward_area_y: float | torch.Tensor
-    target_area_tiles: torch.Tensor
+    target_area_rooms: torch.Tensor
     target_area_x: torch.Tensor
     target_area_y: torch.Tensor
     vanilla_area_constraint_mask: torch.Tensor
+    area_balance_probability: torch.Tensor
+    area_balance_dual_mask: torch.Tensor
+    effective_target_area_rooms: torch.Tensor
     generation_variable_floats: torch.Tensor
     log_temperature_model: torch.Tensor
     log_recommended_candidates_model: torch.Tensor
@@ -242,15 +295,9 @@ class StepOutcomes:
             door_invalid=self.door_invalid.to(device, non_blocking=non_blocking),
             connection_invalid=self.connection_invalid.to(device, non_blocking=non_blocking),
             toilet_invalid=self.toilet_invalid.to(device, non_blocking=non_blocking),
-            phantoon_pair_invalid=self.phantoon_pair_invalid.to(
-                device, non_blocking=non_blocking
-            ),
-            phantoon_area_invalid=self.phantoon_area_invalid.to(
-                device, non_blocking=non_blocking
-            ),
-            vanilla_area_invalid=self.vanilla_area_invalid.to(
-                device, non_blocking=non_blocking
-            ),
+            phantoon_pair_invalid=self.phantoon_pair_invalid.to(device, non_blocking=non_blocking),
+            phantoon_area_invalid=self.phantoon_area_invalid.to(device, non_blocking=non_blocking),
+            vanilla_area_invalid=self.vanilla_area_invalid.to(device, non_blocking=non_blocking),
             area_size_bucket=self.area_size_bucket.to(device, non_blocking=non_blocking),
             area_map_station_count_bucket=self.area_map_station_count_bucket.to(
                 device, non_blocking=non_blocking
@@ -535,12 +582,8 @@ class CandidateSlot:
         self.area_map_station_count_bucket = self._empty(
             (*candidate_shape, AREA_COUNT), torch.int8
         )
-        self.maridia_water = self._empty(
-            (*candidate_shape, self.water_room_count), torch.int8
-        )
-        self.norfair_heat = self._empty(
-            (*candidate_shape, self.heat_room_count), torch.int8
-        )
+        self.maridia_water = self._empty((*candidate_shape, self.water_room_count), torch.int8)
+        self.norfair_heat = self._empty((*candidate_shape, self.heat_room_count), torch.int8)
         self.door_match = self._empty((*candidate_shape, self.door_count), torch.int16)
         self.clean_counts = self._empty((self.environment_capacity,), torch.int64)
         self.evaluated_counts = self._empty((self.environment_capacity,), torch.int64)
@@ -595,15 +638,9 @@ class CandidateSlot:
             door_invalid=self.door_invalid[:environment_count, :candidate_count],
             connection_invalid=self.connection_invalid[:environment_count, :candidate_count],
             toilet_invalid=self.toilet_invalid[:environment_count, :candidate_count],
-            phantoon_pair_invalid=self.phantoon_pair_invalid[
-                :environment_count, :candidate_count
-            ],
-            phantoon_area_invalid=self.phantoon_area_invalid[
-                :environment_count, :candidate_count
-            ],
-            vanilla_area_invalid=self.vanilla_area_invalid[
-                :environment_count, :candidate_count
-            ],
+            phantoon_pair_invalid=self.phantoon_pair_invalid[:environment_count, :candidate_count],
+            phantoon_area_invalid=self.phantoon_area_invalid[:environment_count, :candidate_count],
+            vanilla_area_invalid=self.vanilla_area_invalid[:environment_count, :candidate_count],
             area_size_bucket=self.area_size_bucket[:environment_count, :candidate_count],
             area_map_station_count_bucket=self.area_map_station_count_bucket[
                 :environment_count, :candidate_count
@@ -783,9 +820,7 @@ class GlobalFeatures:
                 device, non_blocking=non_blocking
             ),
             lookahead_area_map_station_count_bucket=(
-                self.lookahead_area_map_station_count_bucket.to(
-                    device, non_blocking=non_blocking
-                )
+                self.lookahead_area_map_station_count_bucket.to(device, non_blocking=non_blocking)
             ),
             lookahead_maridia_water=self.lookahead_maridia_water.to(
                 device, non_blocking=non_blocking
@@ -1282,9 +1317,7 @@ class Engine:
         )
         for room_idx, door_variant_idx in door:
             connection_variant_idx = room_connection_variant_idx[room_idx]
-            previous_connection_variant_idx = door_variant_connection_variant_idx[
-                door_variant_idx
-            ]
+            previous_connection_variant_idx = door_variant_connection_variant_idx[door_variant_idx]
             if (
                 previous_connection_variant_idx >= 0
                 and previous_connection_variant_idx != connection_variant_idx
@@ -1424,9 +1457,7 @@ class EnvironmentGroup:
                     "recommended_candidates": recommended_candidates,
                     "num_scored_invalid_candidates": num_scored_invalid_candidates,
                     "max_candidate_areas_per_placement": max_candidate_areas_per_placement,
-                    "recommended_candidates_same_frontier": (
-                        recommended_candidates_same_frontier
-                    ),
+                    "recommended_candidates_same_frontier": (recommended_candidates_same_frontier),
                     "room_idx": candidate_slot.room_idx[: self.num_envs, :candidate_count].numpy(),
                     "room_x": candidate_slot.room_x[: self.num_envs, :candidate_count].numpy(),
                     "room_y": candidate_slot.room_y[: self.num_envs, :candidate_count].numpy(),
@@ -1583,12 +1614,12 @@ class EnvironmentGroup:
                 phantoon_area_invalid=torch.from_numpy(
                     result.step_outcomes.phantoon_area_valid
                 ).to(device),
-                vanilla_area_invalid=torch.from_numpy(
-                    result.step_outcomes.vanilla_area_valid
-                ).to(device),
-                area_size_bucket=torch.from_numpy(
-                    result.step_outcomes.area_size_bucket
-                ).to(device),
+                vanilla_area_invalid=torch.from_numpy(result.step_outcomes.vanilla_area_valid).to(
+                    device
+                ),
+                area_size_bucket=torch.from_numpy(result.step_outcomes.area_size_bucket).to(
+                    device
+                ),
                 area_map_station_count_bucket=torch.from_numpy(
                     result.step_outcomes.area_map_station_count_bucket
                 ).to(device),
@@ -2257,9 +2288,7 @@ class FeatureSlot:
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
         lookahead_vanilla_area_invalid = lookahead_outcomes.vanilla_area_invalid
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
-        lookahead_area_map_station_count_bucket = (
-            lookahead_outcomes.area_map_station_count_bucket
-        )
+        lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
         lookahead_maridia_water = lookahead_outcomes.maridia_water
         lookahead_norfair_heat = lookahead_outcomes.norfair_heat
         if not include_lookahead_outcomes:
@@ -2373,9 +2402,7 @@ class FeatureSlot:
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
-                lookahead_area_map_station_count_bucket=(
-                    lookahead_area_map_station_count_bucket
-                ),
+                lookahead_area_map_station_count_bucket=(lookahead_area_map_station_count_bucket),
                 lookahead_maridia_water=lookahead_maridia_water,
                 lookahead_norfair_heat=lookahead_norfair_heat,
                 connection_reachability=self.connection_reachability[:environment_count],
@@ -2484,9 +2511,7 @@ class FeatureSlot:
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
         lookahead_vanilla_area_invalid = lookahead_outcomes.vanilla_area_invalid
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
-        lookahead_area_map_station_count_bucket = (
-            lookahead_outcomes.area_map_station_count_bucket
-        )
+        lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
         lookahead_maridia_water = lookahead_outcomes.maridia_water
         lookahead_norfair_heat = lookahead_outcomes.norfair_heat
         if not include_lookahead_outcomes:
@@ -2590,7 +2615,6 @@ class FeatureSlot:
                 area_max_y=self.area_max_y[:snapshot_count].view(
                     environment_count, candidate_count, self.area_width
                 ),
-
                 area_crossings=self.area_crossings[:snapshot_count].view(
                     environment_count, candidate_count, self.area_crossings_width
                 ),
@@ -2611,9 +2635,7 @@ class FeatureSlot:
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
-                lookahead_area_map_station_count_bucket=(
-                    lookahead_area_map_station_count_bucket
-                ),
+                lookahead_area_map_station_count_bucket=(lookahead_area_map_station_count_bucket),
                 lookahead_maridia_water=lookahead_maridia_water,
                 lookahead_norfair_heat=lookahead_norfair_heat,
                 connection_reachability=self.connection_reachability[:snapshot_count].view(

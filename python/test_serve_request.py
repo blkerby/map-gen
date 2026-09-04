@@ -44,27 +44,23 @@ def base_payload() -> dict:
         "force_phantoon_in_wrecked_ship": False,
         "force_draygon_in_maridia": False,
         "force_mother_brain_in_tourian": False,
-        "reward_balance": 1.0,
-        "reward_area_balance": 1.0,
-        "reward_toilet_balance": 1.0,
         "reward_frontier": 1.0,
         "reward_graph_diameter": 1.0,
-        "reward_maridia_water_1": 0.1,
-        "reward_maridia_water_2": 0.2,
-        "reward_maridia_water_3": 0.3,
-        "reward_norfair_heat_1": 0.1,
-        "reward_norfair_heat_2": 0.2,
-        "reward_norfair_heat_3": 0.3,
+        "maridia_water_preferred_probability_1": 0.25,
+        "maridia_water_preferred_probability_2": 0.5,
+        "maridia_water_preferred_probability_3": 0.75,
+        "norfair_heat_preferred_probability_1": 0.25,
+        "norfair_heat_preferred_probability_2": 0.5,
+        "norfair_heat_preferred_probability_3": 0.75,
         "reward_save_distance": 1.0,
         "reward_refill_distance": 1.0,
         "reward_missing_connect_utility": 1.0,
         "reward_area_crossing": 1.0,
         "reward_area_size_valid": 1.0,
         "reward_area_map_station": 1.0,
-        "reward_area_tiles": 1.0,
         "reward_area_x": 1.0,
         "reward_area_y": 1.0,
-        "target_area_tiles": [1.0] * 6,
+        "target_area_rooms": [1.0] * 6,
         "target_area_x": [1.0] * 6,
         "target_area_y": [1.0] * 6,
         "area_assignment_base_order": "random",
@@ -121,19 +117,19 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         base_payload()
         | {
             "small_map": False,
-            "target_area_tiles": [1.0, 2.0, 3.0, 4.0, 5.0, 9.0],
+            "target_area_rooms": [1.0, 2.0, 3.0, 4.0, 5.0, 9.0],
             "target_area_x": [5.0] * 6,
             "target_area_y": [10.0] * 6,
         }
     )
     state = SimpleNamespace(
         rooms=[{"map": [[1] * 6]}],
-        area_tile_scale=1.0,
         serving_config=SimpleNamespace(gpu_prefetch_batches=0, autocast=False),
         training_config=SimpleNamespace(
             map_size=(10, 20),
             distance_proximity_scale=1.0,
             model=SimpleNamespace(generation_autocast=False),
+            balance_train=SimpleNamespace(price_limit=20.0),
         ),
     )
     config = create_generate_configs(
@@ -142,14 +138,16 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         [SimpleNamespace(num_envs=2)],
         torch.device("cpu"),
     )[0]
-    expected_area_tiles = torch.tensor([0.25, 0.5, 0.75, 1.0, 1.25, 2.25]).expand(2, 6)
-    assert torch.equal(config.target_area_tiles, expected_area_tiles)
+    expected_area_rooms = (
+        torch.tensor([1, 2, 3, 4, 5, 9], dtype=torch.float32).div(24).expand(2, 6)
+    )
+    assert torch.equal(config.target_area_rooms, expected_area_rooms)
     assert torch.equal(config.target_area_x, torch.full([2, 6], 0.5))
     assert torch.equal(config.target_area_y, torch.full([2, 6], 0.5))
-    target_tiles_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_tiles_0")
+    target_rooms_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_rooms_0")
     assert torch.equal(
-        config.generation_variable_floats[:, target_tiles_index : target_tiles_index + 6],
-        expected_area_tiles,
+        config.generation_variable_floats[:, target_rooms_index : target_rooms_index + 6],
+        expected_area_rooms,
     )
     target_x_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_x_0")
     assert torch.equal(
@@ -513,21 +511,21 @@ def main() -> None:
         "target_area_x[0] must be finite",
     )
     assert_invalid_value(
-        base_payload() | {"small_map": False, "target_area_tiles": [-1.0] + [1.0] * 5},
-        "target_area_tiles values must be greater than or equal to zero",
+        base_payload() | {"small_map": False, "target_area_rooms": [-1.0] + [1.0] * 5},
+        "target_area_rooms values must be greater than zero",
     )
     assert_invalid_value(
-        base_payload() | {"small_map": False, "target_area_tiles": [0.0] * 6},
-        "target_area_tiles must have a positive sum",
+        base_payload() | {"small_map": False, "target_area_rooms": [0.0] * 6},
+        "target_area_rooms values must be greater than zero",
     )
     assert_invalid_value(
         base_payload()
         | {
             "small_map": False,
-            "reward_maridia_water_1": 0.2,
-            "reward_maridia_water_2": 0.1,
+            "maridia_water_preferred_probability_1": 0.6,
+            "maridia_water_preferred_probability_2": 0.5,
         },
-        "reward_maridia_water values must be nonnegative and nondecreasing",
+        "maridia_water_preferred_probability values must be positive, below one, and nondecreasing",
     )
 
     try:
@@ -663,11 +661,8 @@ def main() -> None:
     assert not warmup_request.recommended_candidates_same_frontier
     assert warmup_request.temperature == 0.03
     assert warmup_request.proposal_temperature == 0.3
-    assert warmup_request.reward_balance == 0.1
-    assert warmup_request.reward_area_balance == 0.1
-    assert warmup_request.reward_toilet_balance == 0.1
     assert warmup_request.reward_missing_connect_utility == 0.5
-    assert warmup_request.target_area_tiles == [1.0] * 6
+    assert warmup_request.target_area_rooms == [1.0] * 6
     assert warmup_request.area_assignment_base_order == "random"
     assert not warmup_request.small_map
     validate_generate_request(warmup_request, rooms=[{} for _ in range(253)])

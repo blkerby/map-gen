@@ -165,6 +165,28 @@ def test_selected_probability_uses_generation_temperature() -> None:
     assert sharp_target.target_entropy < soft_target.target_entropy
 
 
+def test_candidate_diagnostics_apply_balance_outside_temperature() -> None:
+    proposal_data = ProposalData(
+        frontier_idx=torch.tensor([[[0, 0]]], dtype=torch.int16),
+        action_idx=torch.tensor([[[0, 1]]], dtype=torch.int16),
+        invalid=torch.zeros((1, 1, 2), dtype=torch.bool),
+        selected_candidate=torch.ones((1, 1), dtype=torch.int64),
+        target_reward=torch.zeros((1, 1, 2)),
+        balance_residual=torch.tensor([[[0.0, 1.0]]]),
+    )
+
+    diagnostics = compute_candidate_diagnostics(
+        proposal_data,
+        proposal_target_temperature=0.1,
+        generation_temperature=torch.tensor([0.01]),
+    )
+
+    torch.testing.assert_close(
+        diagnostics.selected_probability,
+        torch.softmax(torch.tensor([0.0, 1.0]), dim=0)[1],
+    )
+
+
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
     output = ProposalOutput(input_width=1, hidden_widths=[], output_width=3)
     with torch.no_grad():
@@ -234,7 +256,6 @@ def test_proposal_shortlist_ranks_all_frontiers_per_environment() -> None:
         row_frontier_idx=torch.tensor([0, 1, 0]),
         environment_count=2,
         shortlist_candidates=2,
-        proposal_temperature=torch.ones(2),
         device=torch.device("cpu"),
     )
 
@@ -255,7 +276,6 @@ def test_proposal_shortlist_pads_environment_without_frontiers() -> None:
         row_frontier_idx=torch.tensor([0]),
         environment_count=2,
         shortlist_candidates=2,
-        proposal_temperature=torch.ones(2),
         device=torch.device("cpu"),
     )
 
@@ -276,7 +296,6 @@ def test_proposal_shortlist_masks_incompatible_door_variants() -> None:
         row_frontier_idx=torch.tensor([0]),
         environment_count=1,
         shortlist_candidates=AREA_COUNT,
-        proposal_temperature=torch.ones(1),
         device=torch.device("cpu"),
     )
 
@@ -296,7 +315,6 @@ def test_proposal_shortlist_pads_fully_incompatible_frontier() -> None:
         row_frontier_idx=torch.tensor([0]),
         environment_count=1,
         shortlist_candidates=2,
-        proposal_temperature=torch.ones(1),
         device=torch.device("cpu"),
     )
 
@@ -316,7 +334,6 @@ def test_proposal_shortlist_masks_door_variants_without_inventory() -> None:
         row_frontier_idx=torch.tensor([0]),
         environment_count=1,
         shortlist_candidates=AREA_COUNT,
-        proposal_temperature=torch.ones(1),
         device=torch.device("cpu"),
     )
 
@@ -336,7 +353,6 @@ def test_proposal_possible_count_is_computed_without_a_shortlist() -> None:
         row_frontier_idx=torch.tensor([0]),
         environment_count=1,
         shortlist_candidates=0,
-        proposal_temperature=torch.ones(1),
         device=torch.device("cpu"),
     )
 
@@ -354,6 +370,7 @@ def main() -> None:
     test_proposal_target_temperature_preserves_reward_score_scale()
     test_proposal_target_temperature_scales_student_and_target_logits()
     test_selected_probability_uses_generation_temperature()
+    test_candidate_diagnostics_apply_balance_outside_temperature()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_residual_values_follow_sampled_candidates()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()

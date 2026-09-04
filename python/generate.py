@@ -21,12 +21,11 @@ from env import (
     GeneratedFeatureData,
     concatenate_features,
     extract_candidate_features,
-    area_balance_exempt_room_mask,
     select_generated_features,
 )
 from loss import (
-    BalanceScoreTables,
-    compute_balance_score_tables,
+    BalancePriceTables,
+    compute_balance_price_tables,
     compute_proposal_area_balance_score_residual,
     compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
@@ -121,9 +120,7 @@ def balance_reward(
         match_probability,
         known_match_probability,
     )
-    model_reward = -balance_score * match_probability
-    known_reward = torch.zeros_like(model_reward)
-    return torch.where(known_invalid == 0, known_reward, model_reward)
+    return -balance_score * match_probability
 
 
 def toilet_balance_reward(
@@ -145,6 +142,22 @@ def toilet_balance_reward(
         known_valid_probability,
     )
     return -toilet_balance_score * valid_probability
+
+
+def apply_candidate_toilet_balance_score(
+    predicted_score: torch.Tensor,
+    crossed_room_idx: torch.Tensor,
+    score_table: torch.Tensor,
+) -> torch.Tensor:
+    if torch.any(crossed_room_idx >= score_table.shape[1]):
+        raise RuntimeError("candidate Toilet crossing room index is out of range")
+    known = crossed_room_idx >= 0
+    exact_score = torch.gather(
+        score_table,
+        1,
+        crossed_room_idx.clamp_min(0).to(torch.int64),
+    )
+    return torch.where(known, exact_score, predicted_score.to(torch.float32))
 
 
 def area_balance_reward(area_balance_score: torch.Tensor) -> torch.Tensor:
@@ -205,25 +218,9 @@ def compute_expected_reward(
     door_logprobs = outcome_reward(door_logprobs, outcomes.door_invalid)
     connection_logprobs = outcome_reward(connection_logprobs, outcomes.connection_invalid)
     toilet_logprobs = outcome_reward(toilet_logprobs, outcomes.toilet_invalid)
-    phantoon_pair_logprobs = outcome_reward(
-        phantoon_pair_logprobs, outcomes.phantoon_pair_invalid
-    )
-    phantoon_area_logprobs = outcome_reward(
-        phantoon_area_logprobs, outcomes.phantoon_area_invalid
-    )
-    vanilla_area_logprobs = outcome_reward(
-        vanilla_area_logprobs, outcomes.vanilla_area_invalid
-    )
-    balance_scores = balance_reward(
-        preds.balance_score,
-        preds.door_invalid,
-        outcomes.door_invalid,
-    )
-    toilet_balance_scores = toilet_balance_reward(
-        preds.toilet_balance_score,
-        preds.toilet_invalid,
-        outcomes.toilet_invalid,
-    )
+    phantoon_pair_logprobs = outcome_reward(phantoon_pair_logprobs, outcomes.phantoon_pair_invalid)
+    phantoon_area_logprobs = outcome_reward(phantoon_area_logprobs, outcomes.phantoon_area_invalid)
+    vanilla_area_logprobs = outcome_reward(vanilla_area_logprobs, outcomes.vanilla_area_invalid)
     area_size_valid_log_probability = torch.log_softmax(
         preds.area_size.to(torch.float32),
         dim=-1,
@@ -232,10 +229,6 @@ def compute_expected_reward(
         preds.area_map_station_count.to(torch.float32),
         dim=-1,
     )[..., 1]
-    area_tiles_reward = -torch.sum(
-        (preds.area_tiles.to(torch.float32) - config.target_area_tiles.unsqueeze(1)).square(),
-        dim=2,
-    )
     area_x_reward = -torch.sum(
         (preds.area_x.to(torch.float32) - config.target_area_x.unsqueeze(1)).square(),
         dim=2,
@@ -256,23 +249,8 @@ def compute_expected_reward(
             * vanilla_area_logprobs,
             dim=2,
         )
-        + batch_weight(config.reward_balance) * torch.sum(balance_scores, dim=2)
-        + batch_weight(config.reward_area_balance) * area_balance_reward(
-            preds.area_balance_score
-        )
-        + batch_weight(config.reward_toilet_balance) * toilet_balance_scores
         - batch_weight(config.reward_frontier) * preds.avg_frontiers.to(torch.float32)
         - batch_weight(config.reward_graph_diameter) * preds.graph_diameter.to(torch.float32)
-        + torch.sum(
-            config.reward_maridia_water.to(preds.door_invalid.device).unsqueeze(1)
-            * preds.maridia_water_count.to(torch.float32),
-            dim=2,
-        )
-        + torch.sum(
-            config.reward_norfair_heat.to(preds.door_invalid.device).unsqueeze(1)
-            * preds.norfair_heat_count.to(torch.float32),
-            dim=2,
-        )
         + batch_weight(config.reward_save_distance)
         * (
             total_proximity_utility(preds.save_to_room_utility)
@@ -292,7 +270,6 @@ def compute_expected_reward(
         * torch.sum(area_size_valid_log_probability, dim=2)
         + batch_weight(config.reward_area_map_station)
         * torch.sum(area_map_station_log_probability, dim=2)
-        + batch_weight(config.reward_area_tiles) * area_tiles_reward
         + batch_weight(config.reward_area_x) * area_x_reward
         + batch_weight(config.reward_area_y) * area_y_reward
     )
@@ -390,8 +367,8 @@ class GenerationGroup:
     feature_slot: FeatureSlot
     candidate_slot: CandidateSlot
     balance_preds: BalancePredictions
-    balance_score_tables: BalanceScoreTables
-    area_balance_exempt_room: torch.Tensor
+    balance_score_tables: BalancePriceTables
+    area_balance_dual_mask: torch.Tensor
     proposal_balance_score_table: torch.Tensor
     proposal_area_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
@@ -593,7 +570,6 @@ def sample_proposal_shortlist(
     row_frontier_idx: torch.Tensor,
     environment_count: int,
     shortlist_candidates: int,
-    proposal_temperature: torch.Tensor,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     proposal_action_count = proposal_scores.shape[1]
@@ -608,9 +584,7 @@ def sample_proposal_shortlist(
     )
     valid_variants = compatible_variants & candidate_variant_available
     row_possible_counts = valid_variants.sum(dim=1, dtype=torch.int64) * AREA_COUNT
-    proposal_possible_counts = torch.zeros(
-        environment_count, dtype=torch.int64, device=device
-    )
+    proposal_possible_counts = torch.zeros(environment_count, dtype=torch.int64, device=device)
     proposal_possible_counts.scatter_add_(0, row_snapshot_idx, row_possible_counts)
     if shortlist_candidates == 0:
         empty = torch.empty((environment_count, 0), dtype=torch.int16, device=device)
@@ -629,8 +603,6 @@ def sample_proposal_shortlist(
         ~valid_variants.unsqueeze(2),
         float("-inf"),
     )
-    row_temperature = proposal_temperature.to(device)[row_snapshot_idx]
-    sample_keys.div_(row_temperature.unsqueeze(1).clamp_min(1e-6))
     sample_keys.add_(torch.empty_like(sample_keys).exponential_().log_().neg_())
 
     per_frontier_count = min(shortlist_candidates, proposal_action_count)
@@ -833,9 +805,7 @@ def prepare_candidate_features(
             candidate_batch=candidate_batch,
             features=None,
             proposal_balance_residual=proposal_balance_residual,
-            scored_invalid_proposal_balance_residual=(
-                scored_invalid_proposal_balance_residual
-            ),
+            scored_invalid_proposal_balance_residual=(scored_invalid_proposal_balance_residual),
         )
     if initial_candidates:
         environment_count, candidate_count = candidates.room_idx.shape
@@ -851,9 +821,7 @@ def prepare_candidate_features(
             log_recommended_candidates.unsqueeze(1).expand(-1, candidate_count).contiguous()
         )
         candidate_generation_variable_floats = (
-            generation_variable_floats.unsqueeze(1)
-            .expand(-1, candidate_count, -1)
-            .contiguous()
+            generation_variable_floats.unsqueeze(1).expand(-1, candidate_count, -1).contiguous()
         )
     else:
         (
@@ -897,9 +865,8 @@ def match_sampled_proposal_values(
         if torch.any(candidate_valid):
             raise RuntimeError("valid proposal candidate was not present in the sampled shortlist")
         return torch.zeros_like(candidate_frontier_idx, dtype=torch.float32)
-    matches = (
-        (candidate_frontier_idx.unsqueeze(2) == sampled_frontier_idx.unsqueeze(1))
-        & (candidate_action_idx.unsqueeze(2) == sampled_action_idx.unsqueeze(1))
+    matches = (candidate_frontier_idx.unsqueeze(2) == sampled_frontier_idx.unsqueeze(1)) & (
+        candidate_action_idx.unsqueeze(2) == sampled_action_idx.unsqueeze(1)
     )
     matched = torch.any(matches, dim=2)
     if torch.any(candidate_valid & ~matched):
@@ -989,9 +956,17 @@ def select_candidate_actions(
     area_balance_score = apply_candidate_area_balance_scores(
         preds.area_balance_score.view(environment_count, candidate_count, -1),
         features.global_features.room_placed.view(environment_count, candidate_count, -1),
-        group.area_balance_exempt_room,
+        ~group.area_balance_dual_mask,
         candidates,
         group.balance_score_tables.room_area,
+    )
+    toilet_balance_score = apply_candidate_toilet_balance_score(
+        preds.toilet_balance_score.view(environment_count, candidate_count),
+        features.global_features.toilet_crossed_room_idx.view(
+            environment_count,
+            candidate_count,
+        ),
+        group.balance_score_tables.toilet_crossed_room,
     )
     expected_reward = compute_expected_reward(
         Predictions(
@@ -1015,24 +990,9 @@ def select_candidate_actions(
             ),
             balance_score=balance_score,
             area_balance_score=area_balance_score,
-            toilet_balance_score=preds.toilet_balance_score.view(
-                environment_count,
-                candidate_count,
-            ),
+            toilet_balance_score=toilet_balance_score,
             avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
             graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
-            maridia_water=preds.maridia_water.view(
-                environment_count, candidate_count, preds.maridia_water.shape[-1]
-            ),
-            norfair_heat=preds.norfair_heat.view(
-                environment_count, candidate_count, preds.norfair_heat.shape[-1]
-            ),
-            maridia_water_count=preds.maridia_water_count.view(
-                environment_count, candidate_count, 3
-            ),
-            norfair_heat_count=preds.norfair_heat_count.view(
-                environment_count, candidate_count, 3
-            ),
             save_to_room_utility=preds.save_to_room_utility.view(
                 environment_count,
                 candidate_count,
@@ -1066,7 +1026,6 @@ def select_candidate_actions(
                 -1,
                 3,
             ),
-            area_tiles=preds.area_tiles.view(environment_count, candidate_count, -1),
             area_x=preds.area_x.view(environment_count, candidate_count, -1),
             area_y=preds.area_y.view(environment_count, candidate_count, -1),
             proposal_state=preds.proposal_state,
@@ -1076,13 +1035,31 @@ def select_candidate_actions(
         outcomes,
         group.config,
     )
+    balance_logit = (
+        torch.sum(
+            balance_reward(
+                balance_score,
+                preds.door_invalid.view(environment_count, candidate_count, -1),
+                outcomes.door_invalid,
+            ),
+            dim=2,
+        )
+        + area_balance_reward(area_balance_score)
+        + toilet_balance_reward(
+            toilet_balance_score,
+            preds.toilet_invalid.view(environment_count, candidate_count),
+            outcomes.toilet_invalid,
+        )
+    )
     sync_profile_device(device, profile)
     profiler.add("python.score.reward", profile_time)
 
     profile_time = profile_start(profile)
     # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
     dummy_candidate = candidates.room_idx == num_rooms
-    candidate_logits = expected_reward / torch.unsqueeze(group.config.temperature, 1)
+    candidate_logits = (
+        expected_reward / torch.unsqueeze(group.config.temperature, 1) + balance_logit
+    )
     candidate_logits = torch.where(
         dummy_candidate,
         torch.full_like(candidate_logits, float("-inf")),
@@ -1349,9 +1326,9 @@ def score_staged_candidate_request(
             dtype=candidate_batch.proposal_action_idx.dtype,
             device=device,
         )
-        proposal_action_idx[:, :recorded_candidate_count] = (
-            candidate_batch.proposal_action_idx[:, :recorded_candidate_count]
-        )
+        proposal_action_idx[:, :recorded_candidate_count] = candidate_batch.proposal_action_idx[
+            :, :recorded_candidate_count
+        ]
     proposal_target_reward = torch.where(
         candidates.room_idx == num_rooms,
         torch.full_like(candidate_rewards, float("-inf")),
@@ -1377,9 +1354,9 @@ def score_staged_candidate_request(
             [candidates.room_idx.shape[0], max_candidates],
             dtype=torch.float32,
         )
-        balance_residual[:, :recorded_candidate_count] = (
-            candidate_balance_residual[:, :recorded_candidate_count].to(torch.float32)
-        )
+        balance_residual[:, :recorded_candidate_count] = candidate_balance_residual[
+            :, :recorded_candidate_count
+        ].to(torch.float32)
     scored_invalid = (candidate_batch.scored_invalid_frontier_idx >= 0) & (
         candidate_batch.scored_invalid_proposal_action_idx >= 0
     )
@@ -1622,14 +1599,16 @@ def compute_group_proposal_shortlist(
             group.proposal_balance_score_table,
             frontier_door_variant,
             row_snapshot_idx,
-            group.config.reward_balance,
         )
         proposal_balance_residual += compute_proposal_area_balance_score_residual(
             group.proposal_area_balance_score_table,
             row_snapshot_idx,
-            group.config.reward_area_balance,
         )
-        proposal_scores = proposal_scores.to(torch.float32) + proposal_balance_residual
+        proposal_scores = (
+            proposal_scores.to(torch.float32)
+            / group.config.proposal_temperature.to(device)[row_snapshot_idx].unsqueeze(1)
+            + proposal_balance_residual
+        )
         shared.profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
         profile_time = profile_start(profile)
         (
@@ -1647,7 +1626,6 @@ def compute_group_proposal_shortlist(
             row_frontier_idx,
             group.config.temperature.shape[0],
             group.config.shortlist_candidates,
-            group.config.proposal_temperature,
             device,
         )
         sampled_proposal_balance_residual = gather_proposal_row_values(
@@ -1887,7 +1865,9 @@ def merge_generation_results(
                     [episode_data.actions.room_area for episode_data, _, _, _, _ in results]
                 ),
             ),
-            temperature=torch.cat([episode_data.temperature for episode_data, _, _, _, _ in results]),
+            temperature=torch.cat(
+                [episode_data.temperature for episode_data, _, _, _, _ in results]
+            ),
             recommended_candidates=torch.cat(
                 [episode_data.recommended_candidates for episode_data, _, _, _, _ in results]
             ),
@@ -2206,7 +2186,13 @@ def run_generation_groups(
         raise ValueError("generation groups require matching gpu_prefetch_batches")
     balance_predictions = [balance_model(config.generation_variable_floats) for config in configs]
     balance_score_tables = [
-        compute_balance_score_tables(balance_preds) for balance_preds in balance_predictions
+        compute_balance_price_tables(
+            balance_preds,
+            config.area_balance_probability,
+            config.area_balance_dual_mask,
+            config.balance_price_limit,
+        )
+        for balance_preds, config in zip(balance_predictions, configs, strict=True)
     ]
     proposal_balance_score_tables = [
         compute_proposal_balance_score_table(
@@ -2216,17 +2202,7 @@ def run_generation_groups(
         )
         for balance_preds, score_tables in zip(balance_predictions, balance_score_tables)
     ]
-    area_balance_exempt_rooms = [
-        area_balance_exempt_room_mask(
-            env.engine.rooms,
-            config.vanilla_area_constraint_mask,
-            torch.stack(
-                [config.reward_maridia_water, config.reward_norfair_heat],
-                dim=1,
-            ),
-        )
-        for env, config in zip(envs, configs)
-    ]
+    area_balance_dual_masks = [config.area_balance_dual_mask for config in configs]
     door_room_idx = torch.tensor(
         [room_idx for room_idx, _ in output_metadata.door],
         dtype=torch.int64,
@@ -2240,14 +2216,14 @@ def run_generation_groups(
     proposal_area_balance_score_tables = [
         compute_proposal_area_balance_score_table(
             score_tables.room_area,
-            exempt_room,
+            ~dual_mask,
             door_room_idx,
             door_output_variant_idx,
             output_metadata.num_door_variants,
         )
-        for score_tables, exempt_room in zip(
+        for score_tables, dual_mask in zip(
             balance_score_tables,
-            area_balance_exempt_rooms,
+            area_balance_dual_masks,
         )
     ]
     groups = [
@@ -2259,7 +2235,7 @@ def run_generation_groups(
             candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
             balance_preds=balance_preds,
             balance_score_tables=score_tables,
-            area_balance_exempt_room=exempt_room,
+            area_balance_dual_mask=dual_mask,
             proposal_balance_score_table=proposal_score_table,
             proposal_area_balance_score_table=proposal_area_score_table,
             previous_lookahead_outcomes=None,
@@ -2271,7 +2247,7 @@ def run_generation_groups(
             config,
             balance_preds,
             score_tables,
-            exempt_room,
+            dual_mask,
             proposal_score_table,
             proposal_area_score_table,
         ) in zip(
@@ -2279,7 +2255,7 @@ def run_generation_groups(
             configs,
             balance_predictions,
             balance_score_tables,
-            area_balance_exempt_rooms,
+            area_balance_dual_masks,
             proposal_balance_score_tables,
             proposal_area_balance_score_tables,
         )

@@ -14,7 +14,7 @@ from serve import load_model_input  # noqa: E402
 from train import TRAINING_CHECKPOINT_FORMAT  # noqa: E402
 
 
-def test_export_and_serving_use_balance_ema() -> None:
+def test_export_and_serving_use_current_balance_model() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         checkpoint_path = root / "checkpoint.safetensors"
@@ -24,7 +24,6 @@ def test_export_and_serving_use_balance_ema() -> None:
             {
                 "ema_model.weight": torch.tensor([1.0]),
                 "balance_model.weight": torch.tensor([2.0]),
-                "balance_ema_model.weight": torch.tensor([3.0]),
             },
             checkpoint_path,
             metadata={
@@ -41,14 +40,14 @@ def test_export_and_serving_use_balance_ema() -> None:
             assert "balance_ema_model.weight" not in exported.keys()
             torch.testing.assert_close(
                 exported.get_tensor("balance_model.weight"),
-                torch.tensor([3.0]),
+                torch.tensor([2.0]),
             )
         loaded_checkpoint = load_model_input(checkpoint_path)
         torch.testing.assert_close(
             loaded_checkpoint.tensors["balance_model.weight"],
-            torch.tensor([3.0]),
+            torch.tensor([2.0]),
         )
 
 
 if __name__ == "__main__":
-    test_export_and_serving_use_balance_ema()
+    test_export_and_serving_use_current_balance_model()

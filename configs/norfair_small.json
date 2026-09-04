@@ -41,15 +41,12 @@
     "hidden_width": 64,
     "num_layers": 1
   },
-  "balance_optimizer": {
-    "type": "adam",
-    "lr": {"log": [0.001, 0.001, 0.0005, 0.0001, 0.00005]},
-    "beta1": 0.95,
-    "beta2": 0.99
-  },
   "balance_train": {
     "batch_size": 8192,
-    "ema_half_life_episodes": {"log": [110701.83288, 564982.283768, 564982.283768, 564982.283768, 564982.283768]}
+    "door_eta": 0.02,
+    "toilet_eta": 0.02,
+    "area_eta": 0.02,
+    "price_limit": 20.0
   },
   "generation": {
     "num_environments": 8192,
@@ -81,29 +78,25 @@
     "force_phantoon_in_wrecked_ship_probability": 0.0,
     "force_draygon_in_maridia_probability": 0.0,
     "force_mother_brain_in_tourian_probability": 0.0,
-    "reward_balance": {"log": [0.01, 0.2, 0.1, 0.05, 0.05]},
-    "reward_area_balance": {"log": [0.01, 0.2, 0.1, 0.05, 0.05]},
-    "reward_toilet_balance": {"log": [0.01, 0.2, 0.1, 0.05, 0.05]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": 0.1,
-    "reward_maridia_water_max_1": 0.0,
-    "reward_maridia_water_max_2": 0.0,
-    "reward_maridia_water_3": 0.0,
-    "reward_norfair_heat_max_1": 0.0,
-    "reward_norfair_heat_max_2": 0.0,
-    "reward_norfair_heat_3": 0.0,
-    "maridia_water_floor_scale": 1.5,
-    "norfair_heat_floor_scale": 1.5,
+    "maridia_water_preferred_probability": {
+      "active_probability": 0.5,
+      "tier_max": [0.75, 0.75, 0.75]
+    },
+    "norfair_heat_preferred_probability": {
+      "active_probability": 0.5,
+      "tier_max": [0.75, 0.75, 0.75]
+    },
     "reward_save_distance": 0.1,
     "reward_refill_distance": 0.1,
     "reward_missing_connect_utility": 0.5,
     "reward_area_crossing": 0.0,
     "reward_area_size_valid": 0.0,
     "reward_area_map_station": 0.0,
-    "reward_area_tiles": {"linear": {"min": 0.0, "max": 1.0}},
     "reward_area_x": {"linear": {"min": 0.0, "max": 1.0}},
     "reward_area_y": {"linear": {"min": 0.0, "max": 1.0}},
-    "target_area_tiles": [{"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}],
+    "target_area_rooms": [{"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}, {"linear": {"min": 30.5, "max": 91.5}}],
     "target_area_x": [{"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}],
     "target_area_y": [{"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}, {"linear": {"min": 7.2, "max": 64.8}}],
     "min_area_size": 1,
@@ -166,14 +159,12 @@
     "toilet_balance_weight": 2.0,
     "avg_frontiers_weight": 0.0,
     "graph_diameter_weight": 0.05,
-    "heat_water_weight": 0.05,
     "save_distance_weight": 0.5,
     "refill_distance_weight": 0.5,
     "missing_connect_utility_weight": 1.0,
     "area_crossing_weight": 0.1,
     "area_size_weight": 0.1,
     "area_map_station_weight": 0.1,
-    "area_tiles_weight": 0.1,
     "area_x_weight": 0.1,
     "area_y_weight": 0.1,
     "proposal_weight": 0.005,

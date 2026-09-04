@@ -49,17 +49,13 @@ def test_vanilla_area_probability_is_required_and_bounded() -> None:
         raise AssertionError("force_ship_in_crateria_probability should reject values above one")
 
     config_data = load_debug_config()
-    config_data["generation"]["force_ship_in_crateria_probability"] = {
-        "linear": [0.0, 0.5]
-    }
+    config_data["generation"]["force_ship_in_crateria_probability"] = {"linear": [0.0, 0.5]}
     config = Config.model_validate(config_data)
     validate_config(config)
     instantiated = instantiate_scheduleable_config(config, 320)
     assert instantiated.generation.force_ship_in_crateria_probability == 0.25
 
-    config_data["generation"]["force_ship_in_crateria_probability"] = {
-        "linear": [0.0, 0.5, 1.0]
-    }
+    config_data["generation"]["force_ship_in_crateria_probability"] = {"linear": [0.0, 0.5, 1.0]}
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
@@ -67,9 +63,7 @@ def test_vanilla_area_probability_is_required_and_bounded() -> None:
     else:
         raise AssertionError("force probability schedule should match knot_episodes")
 
-    config_data["generation"]["force_ship_in_crateria_probability"] = {
-        "linear": [0.0, 1.1]
-    }
+    config_data["generation"]["force_ship_in_crateria_probability"] = {"linear": [0.0, 1.1]}
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
@@ -77,9 +71,7 @@ def test_vanilla_area_probability_is_required_and_bounded() -> None:
     else:
         raise AssertionError("force probability schedule should reject values above one")
 
-    config_data["generation"]["force_ship_in_crateria_probability"] = {
-        "log": [0.0, 0.5]
-    }
+    config_data["generation"]["force_ship_in_crateria_probability"] = {"log": [0.0, 0.5]}
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
@@ -132,22 +124,22 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train.batch_size should evenly divide a round")
 
     config_data = load_debug_config()
-    del config_data["balance_train"]["ema_half_life_episodes"]
+    del config_data["balance_train"]["door_eta"]
     try:
         Config.model_validate(config_data)
     except ValidationError:
         pass
     else:
-        raise AssertionError("balance_train.ema_half_life_episodes should be required")
+        raise AssertionError("balance_train.door_eta should be required")
 
     config_data = load_debug_config()
-    config_data["balance_train"]["ema_half_life_episodes"] = 0.0
+    config_data["balance_train"]["door_eta"] = 0.0
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
-        assert "balance_train.ema_half_life_episodes" in str(err)
+        assert "balance_train.door_eta" in str(err)
     else:
-        raise AssertionError("balance_train.ema_half_life_episodes should reject zero")
+        raise AssertionError("balance_train.door_eta should reject zero")
 
 
 def test_proposal_target_temperature_must_be_positive() -> None:
@@ -284,19 +276,19 @@ def test_area_targets_require_six_finite_values_and_instantiate_schedules() -> N
     assert second_knot.generation.target_area_x[1] == 3.0
 
     config_data = load_debug_config()
-    config_data["generation"]["target_area_tiles"][0] = -1.0
+    config_data["generation"]["target_area_rooms"][0] = 0.0
     config = Config.model_validate(config_data)
     try:
         validate_config(config)
     except ValueError as err:
-        assert "generation.target_area_tiles[0]" in str(err)
+        assert "generation.target_area_rooms[0]" in str(err)
     else:
-        raise AssertionError("target_area_tiles should reject negative values")
+        raise AssertionError("target_area_rooms should reject nonpositive values")
 
 
 def test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values() -> None:
     config_data = load_debug_config()
-    config_data["generation"]["reward_area_tiles"] = {
+    config_data["generation"]["reward_area_x"] = {
         "mixture": [
             {"weight": {"linear": [0.25, 0.75]}, "value": 0.0},
             {
@@ -308,7 +300,7 @@ def test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values(
     config = Config.model_validate(config_data)
     validate_config(config)
     instantiated = instantiate_scheduleable_config(config, 320)
-    mixture = instantiated.generation.reward_area_tiles
+    mixture = instantiated.generation.reward_area_x
     assert isinstance(mixture, VariableMixture)
     assert mixture.mixture[0].weight == 0.5
     value = mixture.mixture[1].value
@@ -317,11 +309,11 @@ def test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values(
     assert value.linear.min == 1.5
     assert value.linear.max == 3.5
 
-    config_data["generation"]["reward_area_tiles"]["mixture"][0]["weight"] = -1.0
+    config_data["generation"]["reward_area_x"]["mixture"][0]["weight"] = -1.0
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
-        assert "reward_area_tiles.mixture[0].weight" in str(err)
+        assert "reward_area_x.mixture[0].weight" in str(err)
     else:
         raise AssertionError("mixture weights should reject negative values")
 

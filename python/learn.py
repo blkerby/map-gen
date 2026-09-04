@@ -8,6 +8,7 @@ import torch
 
 from env import (
     AREA_COUNT,
+    AreaBalanceTargets,
     Actions,
     DoorMatches,
     EpisodeData,
@@ -17,7 +18,7 @@ from env import (
     StepOutcomes,
     ProposalData,
     GeneratedFeatureData,
-    area_balance_exempt_room_mask,
+    compute_area_balance_targets,
     extract_candidate_features,
     slice_features,
 )
@@ -25,7 +26,7 @@ from experience import ExperienceStorage
 from loss import (
     LossConfig,
     compute_balance_loss,
-    compute_balance_score_tables,
+    compute_balance_price_tables,
     compute_balance_score_target_logits,
     compute_room_area_balance_score_target_logits,
     compute_toilet_balance_score_target_logits,
@@ -43,20 +44,28 @@ INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
 VANILLA_AREA_CONDITION_INDICES = [
     GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_CONDITION_FIELDS
 ]
-HEAT_WATER_REWARD_INDICES = [
-    [GENERATION_VARIABLE_FLOAT_FIELDS.index(f"reward_{family}_{tier}") for tier in range(1, 4)]
+TARGET_AREA_ROOM_INDICES = [
+    GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_rooms_{area}")
+    for area in range(AREA_COUNT)
+]
+HEAT_WATER_PROBABILITY_INDICES = [
+    [
+        GENERATION_VARIABLE_FLOAT_FIELDS.index(f"{family}_preferred_probability_{tier}")
+        for tier in range(1, 4)
+    ]
     for family in HEAT_WATER_FAMILIES
 ]
 
 
-def generation_area_balance_exempt_room_mask(
+def generation_area_balance_targets(
     rooms: list[dict],
     generation_variable_floats: torch.Tensor,
-) -> torch.Tensor:
-    return area_balance_exempt_room_mask(
+) -> AreaBalanceTargets:
+    return compute_area_balance_targets(
         rooms,
+        generation_variable_floats[:, TARGET_AREA_ROOM_INDICES],
         generation_variable_floats[:, VANILLA_AREA_CONDITION_INDICES].to(torch.bool),
-        generation_variable_floats[:, HEAT_WATER_REWARD_INDICES],
+        generation_variable_floats[:, HEAT_WATER_PROBABILITY_INDICES],
     )
 
 
@@ -99,34 +108,32 @@ def train_balance_batch(
     door_matches: DoorMatches,
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
-    room_area_mask: torch.Tensor,
+    area_probability: torch.Tensor,
+    area_dual_mask: torch.Tensor,
     record_weight: torch.Tensor,
     balance_model: torch.nn.Module,
-    balance_ema_model: torch.nn.Module,
-    balance_optimizer: torch.optim.Optimizer,
-    ema_half_life_episodes: float,
+    door_eta: float,
+    toilet_eta: float,
+    area_eta: float,
+    price_limit: float,
+    loss_scale: float,
 ) -> float:
-    balance_optimizer.zero_grad(set_to_none=True)
     loss = compute_balance_loss(
         balance_model(generation_variable_floats),
         door_matches,
         toilet_crossed_room_idx,
         room_area,
-        room_area_mask,
+        area_probability,
+        area_dual_mask,
         record_weight,
+        door_eta,
+        toilet_eta,
+        area_eta,
+        price_limit,
     )
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite balance loss: {loss.item()}")
-    loss.backward()
-    grad_norm = torch.nn.utils.clip_grad_norm_(balance_model.parameters(), max_norm=1.0)
-    if not torch.isfinite(grad_norm):
-        raise RuntimeError(f"non-finite balance gradient norm: {grad_norm.item()}")
-    balance_optimizer.step()
-    update_ema_parameters(
-        balance_ema_model,
-        balance_model,
-        ema_decay_for_batch(ema_half_life_episodes, generation_variable_floats.shape[0]),
-    )
+    (loss * loss_scale).backward()
     return loss.item()
 
 
@@ -152,7 +159,7 @@ def train_balance_fresh(
     order = torch.randperm(round_episodes)
     engine = context.train_batch_envs[0].engine
 
-    set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
+    context.balance_optimizer.zero_grad(set_to_none=True)
     total_loss = 0.0
     batch_count = 0
     for start in range(0, order.shape[0], batch_size):
@@ -169,7 +176,7 @@ def train_balance_fresh(
             context.device,
         )
         room_area = episode_room_area(batch_actions, context.num_rooms).to(context.device)
-        room_area_mask = ~generation_area_balance_exempt_room_mask(
+        area_targets = generation_area_balance_targets(
             engine.rooms,
             batch_variables,
         )
@@ -178,14 +185,23 @@ def train_balance_fresh(
             door_matches=door_matches.to(context.device),
             toilet_crossed_room_idx=toilet_crossed_room_idx.to(context.device),
             room_area=room_area,
-            room_area_mask=room_area_mask,
+            area_probability=area_targets.probability,
+            area_dual_mask=area_targets.dual_mask,
             record_weight=torch.ones(index.shape[0], dtype=torch.float32, device=context.device),
             balance_model=context.balance_model,
-            balance_ema_model=context.balance_ema_model,
-            balance_optimizer=context.balance_optimizer,
-            ema_half_life_episodes=(context.step_config.balance_train.ema_half_life_episodes),
+            door_eta=context.step_config.balance_train.door_eta,
+            toilet_eta=context.step_config.balance_train.toilet_eta,
+            area_eta=context.step_config.balance_train.area_eta,
+            price_limit=context.step_config.balance_train.price_limit,
+            loss_scale=index.shape[0] / round_episodes,
         )
         batch_count += 1
+    if any(
+        parameter.grad is not None and not torch.all(torch.isfinite(parameter.grad))
+        for parameter in context.balance_model.parameters()
+    ):
+        raise RuntimeError("non-finite balance gradient")
+    context.balance_optimizer.step()
     return total_loss / batch_count
 
 
@@ -257,14 +273,12 @@ class MainLossBreakdown:
     toilet_balance: float
     avg_frontiers: float
     graph_diameter: float
-    heat_water: float
     save_distance: float
     refill_distance: float
     missing_connect_utility: float
     area_crossings: float
     area_size: float
     area_map_station: float
-    area_tiles: float
     area_x: float
     area_y: float
     proposal: float
@@ -279,14 +293,12 @@ class MainLossBreakdown:
     toilet_balance_contribution: float
     avg_frontiers_contribution: float
     graph_diameter_contribution: float
-    heat_water_contribution: float
     save_distance_contribution: float
     refill_distance_contribution: float
     missing_connect_utility_contribution: float
     area_crossings_contribution: float
     area_size_contribution: float
     area_map_station_contribution: float
-    area_tiles_contribution: float
     area_x_contribution: float
     area_y_contribution: float
     proposal_contribution: float
@@ -307,7 +319,6 @@ class TrainRoundContext:
     train_batch_envs: list
     main_model: torch.nn.Module
     balance_model: torch.nn.Module
-    balance_ema_model: torch.nn.Module
     main_optimizer: torch.optim.Optimizer
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
@@ -335,14 +346,12 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet_balance=0.0,
         avg_frontiers=0.0,
         graph_diameter=0.0,
-        heat_water=0.0,
         save_distance=0.0,
         refill_distance=0.0,
         missing_connect_utility=0.0,
         area_crossings=0.0,
         area_size=0.0,
         area_map_station=0.0,
-        area_tiles=0.0,
         area_x=0.0,
         area_y=0.0,
         proposal=0.0,
@@ -357,14 +366,12 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet_balance_contribution=0.0,
         avg_frontiers_contribution=0.0,
         graph_diameter_contribution=0.0,
-        heat_water_contribution=0.0,
         save_distance_contribution=0.0,
         refill_distance_contribution=0.0,
         missing_connect_utility_contribution=0.0,
         area_crossings_contribution=0.0,
         area_size_contribution=0.0,
         area_map_station_contribution=0.0,
-        area_tiles_contribution=0.0,
         area_x_contribution=0.0,
         area_y_contribution=0.0,
         proposal_contribution=0.0,
@@ -383,14 +390,12 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet_balance += source.toilet_balance
     target.avg_frontiers += source.avg_frontiers
     target.graph_diameter += source.graph_diameter
-    target.heat_water += source.heat_water
     target.save_distance += source.save_distance
     target.refill_distance += source.refill_distance
     target.missing_connect_utility += source.missing_connect_utility
     target.area_crossings += source.area_crossings
     target.area_size += source.area_size
     target.area_map_station += source.area_map_station
-    target.area_tiles += source.area_tiles
     target.area_x += source.area_x
     target.area_y += source.area_y
     target.proposal += source.proposal
@@ -406,14 +411,12 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet_balance_contribution += source.toilet_balance_contribution
     target.avg_frontiers_contribution += source.avg_frontiers_contribution
     target.graph_diameter_contribution += source.graph_diameter_contribution
-    target.heat_water_contribution += source.heat_water_contribution
     target.save_distance_contribution += source.save_distance_contribution
     target.refill_distance_contribution += source.refill_distance_contribution
     target.missing_connect_utility_contribution += source.missing_connect_utility_contribution
     target.area_crossings_contribution += source.area_crossings_contribution
     target.area_size_contribution += source.area_size_contribution
     target.area_map_station_contribution += source.area_map_station_contribution
-    target.area_tiles_contribution += source.area_tiles_contribution
     target.area_x_contribution += source.area_x_contribution
     target.area_y_contribution += source.area_y_contribution
     target.proposal_contribution += source.proposal_contribution
@@ -433,14 +436,12 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet_balance=total_loss.toilet_balance / count,
         avg_frontiers=total_loss.avg_frontiers / count,
         graph_diameter=total_loss.graph_diameter / count,
-        heat_water=total_loss.heat_water / count,
         save_distance=total_loss.save_distance / count,
         refill_distance=total_loss.refill_distance / count,
         missing_connect_utility=total_loss.missing_connect_utility / count,
         area_crossings=total_loss.area_crossings / count,
         area_size=total_loss.area_size / count,
         area_map_station=total_loss.area_map_station / count,
-        area_tiles=total_loss.area_tiles / count,
         area_x=total_loss.area_x / count,
         area_y=total_loss.area_y / count,
         proposal=total_loss.proposal / count,
@@ -455,7 +456,6 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet_balance_contribution=total_loss.toilet_balance_contribution / count,
         avg_frontiers_contribution=total_loss.avg_frontiers_contribution / count,
         graph_diameter_contribution=total_loss.graph_diameter_contribution / count,
-        heat_water_contribution=total_loss.heat_water_contribution / count,
         save_distance_contribution=total_loss.save_distance_contribution / count,
         refill_distance_contribution=total_loss.refill_distance_contribution / count,
         missing_connect_utility_contribution=(
@@ -464,7 +464,6 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         area_crossings_contribution=total_loss.area_crossings_contribution / count,
         area_size_contribution=total_loss.area_size_contribution / count,
         area_map_station_contribution=total_loss.area_map_station_contribution / count,
-        area_tiles_contribution=total_loss.area_tiles_contribution / count,
         area_x_contribution=total_loss.area_x_contribution / count,
         area_y_contribution=total_loss.area_y_contribution / count,
         proposal_contribution=total_loss.proposal_contribution / count,
@@ -477,7 +476,8 @@ def compute_candidate_diagnostics(
     generation_temperature: torch.Tensor,
 ) -> CandidateDiagnostics:
     target_reward = proposal_data.target_reward.to(torch.float32)
-    target_logits = target_reward / proposal_target_temperature
+    balance_residual = proposal_data.balance_residual.to(torch.float32)
+    target_logits = target_reward / proposal_target_temperature + balance_residual
     target_logits = torch.where(
         proposal_data.invalid,
         torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
@@ -492,10 +492,14 @@ def compute_candidate_diagnostics(
     candidate_count = target_logits.shape[-1]
     flat_logits = target_logits.reshape(-1, candidate_count)
     temperature_shape = (-1,) + (1,) * (target_reward.ndim - 1)
-    sampling_logits = target_reward / generation_temperature.to(
-        device=target_reward.device,
-        dtype=torch.float32,
-    ).view(temperature_shape)
+    sampling_logits = (
+        target_reward
+        / generation_temperature.to(
+            device=target_reward.device,
+            dtype=torch.float32,
+        ).view(temperature_shape)
+        + balance_residual
+    )
     flat_sampling_logits = sampling_logits.reshape(-1, candidate_count)
     flat_present = present.reshape(-1, candidate_count)
     flat_resolved = resolved.reshape(-1, candidate_count)
@@ -1235,41 +1239,38 @@ def train_feature_batch_backward(
     )
     if prepared_batch.kind == "fresh":
         with torch.no_grad():
-            balance_preds = context.balance_ema_model(
+            balance_preds = context.balance_model(
                 prepared_batch.episode_data.generation_variable_floats
             )
-            balance_score_tables = compute_balance_score_tables(balance_preds)
-            (
-                balance_score_target_logits,
-                balance_score_uniform_log_odds,
-                balance_score_mask,
-            ) = compute_balance_score_target_logits(
+            area_targets = generation_area_balance_targets(
+                context.train_batch_envs[0].engine.rooms,
+                prepared_batch.episode_data.generation_variable_floats,
+            )
+            balance_score_tables = compute_balance_price_tables(
+                balance_preds,
+                area_targets.probability,
+                area_targets.dual_mask,
+                context.step_config.balance_train.price_limit,
+            )
+            balance_score_target, balance_score_mask = compute_balance_score_target_logits(
                 balance_score_tables,
                 prepared_batch.door_matches,
             )
-            (
-                area_balance_score_target_logits,
-                area_balance_score_uniform_log_odds,
-                area_balance_score_mask,
-            ) = compute_room_area_balance_score_target_logits(
-                balance_score_tables,
-                prepared_batch.room_area,
+            area_balance_score_target, area_balance_score_mask = (
+                compute_room_area_balance_score_target_logits(
+                    balance_score_tables,
+                    prepared_batch.room_area,
+                )
             )
-            toilet_balance_score_target_logits, toilet_balance_score_mask = (
+            toilet_balance_score_target, toilet_balance_score_mask = (
                 compute_toilet_balance_score_target_logits(
-                    balance_preds,
+                    balance_score_tables,
                     end_outcomes.toilet_crossed_room_idx,
                 )
             )
-        repeated_balance_score_target_logits = balance_score_target_logits.unsqueeze(1)
-        repeated_balance_score_uniform_log_odds = balance_score_uniform_log_odds.unsqueeze(1)
-        repeated_area_balance_score_target_logits = area_balance_score_target_logits.unsqueeze(1)
-        repeated_area_balance_score_uniform_log_odds = (
-            area_balance_score_uniform_log_odds.unsqueeze(1)
-        )
-        repeated_toilet_balance_score_target_logits = toilet_balance_score_target_logits.unsqueeze(
-            1
-        )
+        repeated_balance_score_target = balance_score_target.unsqueeze(1)
+        repeated_area_balance_score_target = area_balance_score_target.unsqueeze(1)
+        repeated_toilet_balance_score_target = toilet_balance_score_target.unsqueeze(1)
         repeated_toilet_balance_score_mask = toilet_balance_score_mask.unsqueeze(1)
     batch_size = prepared_batch.episode_data.actions.room_idx.shape[0]
     avg_frontiers_target = end_outcomes.avg_frontiers.to(context.device).unsqueeze(1)
@@ -1284,12 +1285,6 @@ def train_feature_batch_backward(
         dtype=torch.bool,
         device=context.device,
     )
-    heat_water_target = (
-        torch.cat([end_outcomes.maridia_water, end_outcomes.norfair_heat], dim=1)
-        .to(device=context.device, dtype=torch.int8)
-        .unsqueeze(1)
-    )
-    heat_water_mask = torch.ones_like(heat_water_target, dtype=torch.bool)
     active_room_part_mask = end_outcomes.active_room_part_mask.to(
         device=context.device,
         dtype=torch.bool,
@@ -1339,9 +1334,6 @@ def train_feature_batch_backward(
     ).unsqueeze(1)
     area_map_station_values = end_outcomes.area_map_station_count.to(context.device)
     area_map_station_target = torch.clamp(area_map_station_values, max=2).unsqueeze(1)
-    area_tiles_target = (
-        area_size_values.to(torch.float32) / context.loss_config.area_tile_scale
-    ).unsqueeze(1)
     area_x_target = (
         end_outcomes.area_x.to(context.device) / context.loss_config.map_width
     ).unsqueeze(1)
@@ -1363,10 +1355,10 @@ def train_feature_batch_backward(
         :,
         VANILLA_AREA_CONDITION_INDICES,
     ].to(torch.bool)
-    area_balance_exempt_room = generation_area_balance_exempt_room_mask(
+    area_balance_dual_mask = generation_area_balance_targets(
         context.train_batch_envs[0].engine.rooms,
         generation_variable_floats,
-    )
+    ).dual_mask
     total_loss = empty_main_loss_breakdown()
     prefix_weight = 1.0 / len(prepared_batch.feature_batches)
 
@@ -1402,58 +1394,39 @@ def train_feature_batch_backward(
                     device=context.device,
                     dtype=torch.bool,
                 )
-                & ~area_balance_exempt_room
+                & area_balance_dual_mask
             )
         else:
-            repeated_balance_score_target_logits = torch.zeros_like(preds.balance_score)
-            repeated_balance_score_uniform_log_odds = torch.zeros_like(preds.balance_score)
+            repeated_balance_score_target = torch.zeros_like(preds.balance_score)
             prefix_balance_score_mask = torch.zeros_like(
                 preds.balance_score[:, 0],
                 dtype=torch.bool,
             )
-            repeated_area_balance_score_target_logits = torch.zeros_like(preds.area_balance_score)
-            repeated_area_balance_score_uniform_log_odds = torch.zeros_like(
-                preds.area_balance_score
-            )
+            repeated_area_balance_score_target = torch.zeros_like(preds.area_balance_score)
             prefix_area_balance_score_mask = torch.zeros_like(
                 preds.area_balance_score[:, 0],
                 dtype=torch.bool,
             )
-            repeated_toilet_balance_score_target_logits = torch.zeros_like(
-                preds.toilet_balance_score
-            )
+            repeated_toilet_balance_score_target = torch.zeros_like(preds.toilet_balance_score)
             repeated_toilet_balance_score_mask = torch.zeros_like(
                 preds.toilet_balance_score,
                 dtype=torch.bool,
             )
-        prefix_heat_water_mask = heat_water_mask
-        if features.global_features.lookahead_maridia_water.shape[-1] > 0:
-            prefix_heat_water_mask = torch.cat(
-                [
-                    features.global_features.lookahead_maridia_water < 0,
-                    features.global_features.lookahead_norfair_heat < 0,
-                ],
-                dim=-1,
-            ).unsqueeze(1)
         prefix_loss = compute_loss_breakdown(
             preds,
             repeated_outcomes,
             mask,
             vanilla_area_constraint_mask,
-            repeated_balance_score_target_logits,
-            repeated_balance_score_uniform_log_odds,
+            repeated_balance_score_target,
             prefix_balance_score_mask.unsqueeze(1),
-            repeated_area_balance_score_target_logits,
-            repeated_area_balance_score_uniform_log_odds,
+            repeated_area_balance_score_target,
             prefix_area_balance_score_mask.unsqueeze(1),
-            repeated_toilet_balance_score_target_logits,
+            repeated_toilet_balance_score_target,
             repeated_toilet_balance_score_mask,
             avg_frontiers_target,
             avg_frontiers_mask,
             graph_diameter_target,
             graph_diameter_mask,
-            heat_water_target,
-            prefix_heat_water_mask,
             save_to_room_utility_target,
             save_from_room_utility_target,
             active_room_part_mask,
@@ -1465,7 +1438,6 @@ def train_feature_batch_backward(
             area_crossings_target,
             area_size_target,
             area_map_station_target,
-            area_tiles_target,
             area_x_target,
             area_y_target,
             area_mask,
@@ -1486,7 +1458,6 @@ def train_feature_batch_backward(
         total_loss.toilet_balance += prefix_loss.toilet_balance.item() * prefix_weight
         total_loss.avg_frontiers += prefix_loss.avg_frontiers.item() * prefix_weight
         total_loss.graph_diameter += prefix_loss.graph_diameter.item() * prefix_weight
-        total_loss.heat_water += prefix_loss.heat_water.item() * prefix_weight
         total_loss.save_distance += prefix_loss.save_distance.item() * prefix_weight
         total_loss.refill_distance += prefix_loss.refill_distance.item() * prefix_weight
         total_loss.missing_connect_utility += (
@@ -1495,7 +1466,6 @@ def train_feature_batch_backward(
         total_loss.area_crossings += prefix_loss.area_crossings.item() * prefix_weight
         total_loss.area_size += prefix_loss.area_size.item() * prefix_weight
         total_loss.area_map_station += prefix_loss.area_map_station.item() * prefix_weight
-        total_loss.area_tiles += prefix_loss.area_tiles.item() * prefix_weight
         total_loss.area_x += prefix_loss.area_x.item() * prefix_weight
         total_loss.area_y += prefix_loss.area_y.item() * prefix_weight
         total_loss.door_contribution += prefix_loss.door_contribution.item() * prefix_weight
@@ -1525,9 +1495,6 @@ def train_feature_batch_backward(
         total_loss.graph_diameter_contribution += (
             prefix_loss.graph_diameter_contribution.item() * prefix_weight
         )
-        total_loss.heat_water_contribution += (
-            prefix_loss.heat_water_contribution.item() * prefix_weight
-        )
         total_loss.save_distance_contribution += (
             prefix_loss.save_distance_contribution.item() * prefix_weight
         )
@@ -1546,9 +1513,6 @@ def train_feature_batch_backward(
         total_loss.area_map_station_contribution += (
             prefix_loss.area_map_station_contribution.item() * prefix_weight
         )
-        total_loss.area_tiles_contribution += (
-            prefix_loss.area_tiles_contribution.item() * prefix_weight
-        )
         total_loss.area_x_contribution += prefix_loss.area_x_contribution.item() * prefix_weight
         total_loss.area_y_contribution += prefix_loss.area_y_contribution.item() * prefix_weight
         if return_proposal_state:
@@ -1561,9 +1525,12 @@ def train_feature_batch_backward(
                 feature_batch.proposal_action_idx,
                 context.device,
             )
-            proposal_score = proposal_score + feature_batch.proposal_balance_residual.to(
-                device=context.device,
-                dtype=torch.float32,
+            proposal_score = proposal_score + (
+                context.step_config.train.proposal_target_temperature
+                * feature_batch.proposal_balance_residual.to(
+                    device=context.device,
+                    dtype=torch.float32,
+                )
             )
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,

@@ -24,7 +24,6 @@ from env import (
     AREA_COUNT,
     Actions,
     DoorMatchCounts,
-    DoorMatches,
     Engine,
     EndOutcomes,
     EpisodeData,
@@ -33,8 +32,8 @@ from env import (
     StepOutcomes,
     ProposalData,
     GeneratedFeatureData,
-    average_area_tile_count,
     concatenate_features,
+    compute_area_balance_targets,
 )
 from experience import ExperienceStorage
 from generate import GenerationStats, run_generation_groups
@@ -45,12 +44,14 @@ from learn import (
     compute_candidate_diagnostics,
     distance_proximity_utility,
     ema_decay_for_batch,
+    generation_area_balance_targets,
     train_round as run_train_round,
     update_ema_parameters,
 )
 from loss import (
     LossConfig,
-    expand_balance_door_match_probabilities,
+    compute_balance_price_tables,
+    materialize_direction_balance_compatibility,
 )
 from model import FrontierModel
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
@@ -61,7 +62,7 @@ from train_config import (
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_FAMILIES,
-    HEAT_WATER_REWARD_FIELDS,
+    HEAT_WATER_PROBABILITY_FIELDS,
     HEAT_WATER_TARGET_AREAS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_PROBABILITY_FIELDS,
@@ -94,7 +95,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v11"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v12"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -136,24 +137,6 @@ def compute_unforced_special_room_area_ss(
         area_proportions = area_counts / torch.sum(area_counts)
         room_area_ss.append(torch.sum(area_proportions.square()))
     return torch.mean(torch.stack(room_area_ss))
-
-
-def compute_heat_water_tier_tile_counts(rooms: list[dict]) -> dict[str, tuple[int, int, int]]:
-    return {
-        family: tuple(
-            sum(
-                sum(bool(tile) for row in room["map"] for tile in row)
-                for room in rooms
-                if room.get(room_field, 0) == tier
-            )
-            for tier in range(1, 4)
-        )
-        for family, room_field in zip(
-            HEAT_WATER_FAMILIES,
-            ("water", "heat"),
-            strict=True,
-        )
-    }
 
 
 class Prefetcher:
@@ -469,18 +452,22 @@ def topk_or_zeros(values: torch.Tensor, k0: int) -> torch.Tensor:
 
 @dataclass
 class BalanceMetricValues:
-    door_match_ss: torch.Tensor
-    door_match_left_topk: torch.Tensor
-    door_match_up_topk: torch.Tensor
-    toilet_crossed_room_ss: torch.Tensor
-    toilet_crossed_room_topk: torch.Tensor
+    door_price_rms: torch.Tensor
+    door_price_max: torch.Tensor
+    door_price_saturation: torch.Tensor
+    toilet_price_rms: torch.Tensor
+    toilet_price_max: torch.Tensor
+    toilet_price_saturation: torch.Tensor
+    area_price_rms: torch.Tensor
+    area_price_max: torch.Tensor
+    area_price_saturation: torch.Tensor
 
 
 def compute_balance_metric_values(
     balance_model: torch.nn.Module,
+    rooms: list[dict],
     generation_variable_floats: torch.Tensor,
-    door_matches: DoorMatches,
-    toilet_crossed_room_idx: torch.Tensor,
+    price_limit: float,
     batch_size: int,
 ) -> BalanceMetricValues:
     episode_count = generation_variable_floats.shape[0]
@@ -489,79 +476,97 @@ def compute_balance_metric_values(
     if batch_size <= 0:
         raise ValueError("balance metric batch size must be greater than zero")
 
-    match_targets = (
-        door_matches.left,
-        door_matches.right,
-        door_matches.up,
-        door_matches.down,
-    )
-    if any(targets.shape[0] != episode_count for targets in match_targets):
-        raise ValueError("door match target count must equal generation configuration count")
-    if toilet_crossed_room_idx.shape[0] != episode_count:
-        raise ValueError("toilet target count must equal generation configuration count")
-
-    door_probability_sums: list[torch.Tensor] = []
-    door_valid_counts: list[torch.Tensor] = []
-    toilet_probability_sum: torch.Tensor | None = None
-    toilet_valid_count = 0
+    totals = {
+        family: {"squares": 0.0, "count": 0, "max": 0.0, "saturated": 0}
+        for family in ("door", "toilet", "area")
+    }
     with torch.no_grad():
         for start in range(0, episode_count, batch_size):
             end = start + batch_size
-            preds = balance_model(generation_variable_floats[start:end])
-            batch_door_probability_sums = []
-            batch_door_valid_counts = []
-            for probability, targets in zip(
-                expand_balance_door_match_probabilities(preds),
-                match_targets,
-                strict=True,
-            ):
-                valid = (targets[start:end] >= 0).to(probability.device)
-                batch_door_probability_sums.append(
-                    (probability * valid.unsqueeze(-1)).sum(dim=0, dtype=torch.float64)
-                )
-                batch_door_valid_counts.append(valid.sum(dim=0, dtype=torch.float64))
-            if door_probability_sums:
-                for total, batch_total, valid_count, batch_valid_count in zip(
-                    door_probability_sums,
-                    batch_door_probability_sums,
-                    door_valid_counts,
-                    batch_door_valid_counts,
-                    strict=True,
-                ):
-                    total.add_(batch_total)
-                    valid_count.add_(batch_valid_count)
-            else:
-                door_probability_sums = batch_door_probability_sums
-                door_valid_counts = batch_door_valid_counts
-
-            toilet_valid = (toilet_crossed_room_idx[start:end] >= 0).to(
-                preds.toilet_crossed_room.device
+            variables = generation_variable_floats[start:end]
+            area_targets = generation_area_balance_targets(rooms, variables)
+            preds = balance_model(variables)
+            tables = compute_balance_price_tables(
+                preds,
+                area_targets.probability,
+                area_targets.dual_mask,
+                price_limit,
             )
-            batch_toilet_probability_sum = (
-                torch.softmax(preds.toilet_crossed_room, dim=-1) * toilet_valid.unsqueeze(-1)
-            ).sum(dim=0, dtype=torch.float64)
-            if toilet_probability_sum is None:
-                toilet_probability_sum = batch_toilet_probability_sum
-            else:
-                toilet_probability_sum.add_(batch_toilet_probability_sum)
-            toilet_valid_count += int(toilet_valid.sum().item())
+            direction_metrics = (
+                (
+                    tables.left,
+                    preds.left_global_door_variant_idx,
+                    preds.right_global_door_variant_idx,
+                    preds.left_door_variant_idx,
+                    preds.right_door_variant_idx,
+                ),
+                (
+                    tables.right,
+                    preds.right_global_door_variant_idx,
+                    preds.left_global_door_variant_idx,
+                    preds.right_door_variant_idx,
+                    preds.left_door_variant_idx,
+                ),
+                (
+                    tables.up,
+                    preds.up_global_door_variant_idx,
+                    preds.down_global_door_variant_idx,
+                    preds.up_door_variant_idx,
+                    preds.down_door_variant_idx,
+                ),
+                (
+                    tables.down,
+                    preds.down_global_door_variant_idx,
+                    preds.up_global_door_variant_idx,
+                    preds.down_door_variant_idx,
+                    preds.up_door_variant_idx,
+                ),
+            )
+            values_by_family = {
+                "door": torch.cat(
+                    [
+                        table[
+                            :,
+                            materialize_direction_balance_compatibility(
+                                preds.door_variant_compatibility,
+                                source_global_idx,
+                                target_global_idx,
+                                source_idx,
+                                target_idx,
+                            ),
+                        ].flatten()
+                        for (
+                            table,
+                            source_global_idx,
+                            target_global_idx,
+                            source_idx,
+                            target_idx,
+                        ) in direction_metrics
+                    ]
+                ),
+                "toilet": tables.toilet_crossed_room[:, preds.toilet_compatibility].flatten(),
+                "area": tables.room_area[area_targets.dual_mask].flatten(),
+            }
+            for family, values in values_by_family.items():
+                if values.numel() == 0:
+                    continue
+                totals[family]["squares"] += float(torch.sum(values.square()).item())
+                totals[family]["count"] += values.numel()
+                totals[family]["max"] = max(
+                    totals[family]["max"], float(values.abs().max().item())
+                )
+                totals[family]["saturated"] += int(
+                    torch.count_nonzero(values.abs() >= price_limit).item()
+                )
 
-    mean_door_probabilities = [
-        probability_sum / valid_count.unsqueeze(-1)
-        for probability_sum, valid_count in zip(
-            door_probability_sums,
-            door_valid_counts,
-            strict=True,
-        )
-    ]
-    assert toilet_probability_sum is not None
-    mean_toilet_probability = toilet_probability_sum / toilet_valid_count
+    metrics = {}
+    for family, total in totals.items():
+        count = max(total["count"], 1)
+        metrics[f"{family}_price_rms"] = torch.tensor(math.sqrt(total["squares"] / count))
+        metrics[f"{family}_price_max"] = torch.tensor(total["max"])
+        metrics[f"{family}_price_saturation"] = torch.tensor(total["saturated"] / count)
     return BalanceMetricValues(
-        door_match_ss=sum(torch.sum(value.square()) for value in mean_door_probabilities),
-        door_match_left_topk=topk_or_zeros(mean_door_probabilities[0], 3),
-        door_match_up_topk=topk_or_zeros(mean_door_probabilities[2], 3),
-        toilet_crossed_room_ss=torch.sum(mean_toilet_probability.square()),
-        toilet_crossed_room_topk=topk_or_zeros(mean_toilet_probability, 4),
+        **metrics,
     )
 
 
@@ -609,12 +614,11 @@ def create_generation_environment_groups_for_device(
 
 def create_generate_config(
     config: Config,
+    rooms: list[dict],
     episode_length: int,
     num_envs: int,
     device: torch.device,
     ignore_scores: bool,
-    area_tile_scale: float,
-    heat_water_tier_tile_counts: dict[str, tuple[int, int, int]],
 ) -> GenerateConfig:
     def variable_float_tensor(value: VariableFloat, path: str) -> torch.Tensor:
         if isinstance(value, VariableMixture):
@@ -691,18 +695,6 @@ def create_generate_config(
             config.generation.reward_phantoon_area,
             "generation.reward_phantoon_area",
         ),
-        "reward_balance": variable_float_tensor(
-            config.generation.reward_balance,
-            "generation.reward_balance",
-        ),
-        "reward_area_balance": variable_float_tensor(
-            config.generation.reward_area_balance,
-            "generation.reward_area_balance",
-        ),
-        "reward_toilet_balance": variable_float_tensor(
-            config.generation.reward_toilet_balance,
-            "generation.reward_toilet_balance",
-        ),
         "reward_frontier": variable_float_tensor(
             config.generation.reward_frontier,
             "generation.reward_frontier",
@@ -735,10 +727,6 @@ def create_generate_config(
             config.generation.reward_area_map_station,
             "generation.reward_area_map_station",
         ),
-        "reward_area_tiles": variable_float_tensor(
-            config.generation.reward_area_tiles,
-            "generation.reward_area_tiles",
-        ),
         "reward_area_x": variable_float_tensor(
             config.generation.reward_area_x,
             "generation.reward_area_x",
@@ -756,23 +744,6 @@ def create_generate_config(
             for field_name in VANILLA_AREA_REWARD_FIELDS
         }
     )
-    for family in HEAT_WATER_FAMILIES:
-        maxima = [
-            float(getattr(config.generation, f"reward_{family}_max_{tier}"))
-            for tier in range(1, 3)
-        ]
-        if maxima != sorted(maxima):
-            raise ValueError(f"generation.reward_{family}_max values must be nondecreasing")
-        tier_3 = variable_float_tensor(
-            getattr(config.generation, f"reward_{family}_3"),
-            f"generation.reward_{family}_3",
-        )
-        tier_2 = torch.rand([num_envs], device=device) * torch.clamp(tier_3, max=maxima[1])
-        tier_1 = torch.rand([num_envs], device=device) * torch.clamp(tier_2, max=maxima[0])
-        coefficients = torch.stack([tier_1, tier_2, tier_3], dim=1)
-        generation_variable_floats_by_name.update(
-            {f"reward_{family}_{tier}": coefficients[:, tier - 1] for tier in range(1, 4)}
-        )
     vanilla_area_constraint_mask = torch.stack(
         [
             torch.rand([num_envs], device=device) < getattr(config.generation, probability_field)
@@ -797,12 +768,63 @@ def create_generate_config(
             for idx, name in enumerate(VANILLA_AREA_REWARD_FIELDS)
         }
     )
+    target_area_rooms = torch.stack(
+        [
+            variable_float_tensor(value, f"generation.target_area_rooms[{area}]")
+            for area, value in enumerate(config.generation.target_area_rooms)
+        ],
+        dim=1,
+    )
+    target_area_room_sums = target_area_rooms.sum(dim=1, keepdim=True)
+    if torch.any(target_area_room_sums <= 0.0):
+        raise ValueError("generation.target_area_rooms must have a positive sum")
+    target_area_rooms = target_area_rooms * len(rooms) / target_area_room_sums
+    baseline_area_probability = target_area_rooms / len(rooms)
+    preferred_area_probability = []
+    for family, preferred_area in zip(
+        HEAT_WATER_FAMILIES,
+        HEAT_WATER_TARGET_AREAS,
+        strict=True,
+    ):
+        preference = getattr(config.generation, f"{family}_preferred_probability")
+        baseline = baseline_area_probability[:, preferred_area]
+        maxima = baseline.new_tensor(preference.tier_max).unsqueeze(0).expand(num_envs, -1)
+        if torch.any(maxima < baseline.unsqueeze(1)):
+            raise ValueError(
+                f"generation.{family}_preferred_probability.tier_max must be at least the "
+                "sampled baseline preferred-area probability"
+            )
+        active = torch.rand([num_envs], device=device) < preference.active_probability
+        tier_3 = baseline + torch.rand([num_envs], device=device) * (maxima[:, 2] - baseline)
+        tier_2_max = torch.minimum(tier_3, maxima[:, 1])
+        tier_2 = baseline + torch.rand([num_envs], device=device) * (tier_2_max - baseline)
+        tier_1_max = torch.minimum(tier_2, maxima[:, 0])
+        tier_1 = baseline + torch.rand([num_envs], device=device) * (tier_1_max - baseline)
+        probabilities = torch.stack([tier_1, tier_2, tier_3], dim=1)
+        probabilities = torch.where(active.unsqueeze(1), probabilities, baseline.unsqueeze(1))
+        preferred_area_probability.append(probabilities)
+        generation_variable_floats_by_name.update(
+            {
+                f"{family}_preferred_probability_{tier}": probabilities[:, tier - 1]
+                for tier in range(1, 4)
+            }
+        )
+    preferred_area_probability_tensor = torch.stack(preferred_area_probability, dim=1)
+    generation_variable_floats_by_name.update(
+        {f"target_area_rooms_{area}": target_area_rooms[:, area] for area in range(AREA_COUNT)}
+    )
+    area_balance_targets = compute_area_balance_targets(
+        rooms,
+        target_area_rooms,
+        vanilla_area_constraint_mask,
+        preferred_area_probability_tensor,
+    )
     target_scales = {
         "target_area_x": config.map_size[0],
         "target_area_y": config.map_size[1],
     }
-    target_tensors = {}
-    for field_name in ("target_area_tiles", *target_scales):
+    target_tensors = {"target_area_rooms": target_area_rooms}
+    for field_name in target_scales:
         values = torch.stack(
             [
                 variable_float_tensor(value, f"generation.{field_name}[{area}]")
@@ -810,29 +832,7 @@ def create_generate_config(
             ],
             dim=1,
         )
-        if field_name == "target_area_tiles":
-            for family, area in zip(
-                HEAT_WATER_FAMILIES,
-                HEAT_WATER_TARGET_AREAS,
-                strict=True,
-            ):
-                rewards = torch.stack(
-                    [
-                        generation_variable_floats_by_name[f"reward_{family}_{tier}"]
-                        for tier in range(1, 4)
-                    ],
-                    dim=1,
-                )
-                floor = getattr(config.generation, f"{family}_floor_scale") * (
-                    rewards @ rewards.new_tensor(heat_water_tier_tile_counts[family])
-                )
-                values[:, area] = torch.maximum(values[:, area], floor)
-            value_sums = values.sum(dim=1, keepdim=True)
-            if torch.any(value_sums <= 0.0):
-                raise ValueError("generation.target_area_tiles must have a positive sum")
-            values = values * AREA_COUNT / value_sums
-        else:
-            values = values / target_scales[field_name]
+        values = values / target_scales[field_name]
         target_tensors[field_name] = values
         generation_variable_floats_by_name.update(
             {f"{field_name}_{area}": values[:, area] for area in range(6)}
@@ -880,31 +880,16 @@ def create_generate_config(
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,
+        balance_price_limit=config.balance_train.price_limit,
         reward_door=generation_variable_floats_by_name["reward_door"],
         reward_connection=generation_variable_floats_by_name["reward_connection"],
         reward_toilet=generation_variable_floats_by_name["reward_toilet"],
         reward_phantoon_pair=generation_variable_floats_by_name["reward_phantoon_pair"],
         reward_phantoon_area=generation_variable_floats_by_name["reward_phantoon_area"],
         reward_vanilla_area=raw_vanilla_area_rewards,
-        reward_balance=generation_variable_floats_by_name["reward_balance"],
-        reward_area_balance=generation_variable_floats_by_name["reward_area_balance"],
-        reward_toilet_balance=generation_variable_floats_by_name["reward_toilet_balance"],
         reward_frontier=generation_variable_floats_by_name["reward_frontier"],
         reward_graph_diameter=generation_variable_floats_by_name["reward_graph_diameter"],
-        reward_maridia_water=torch.stack(
-            [
-                generation_variable_floats_by_name[f"reward_maridia_water_{tier}"]
-                for tier in range(1, 4)
-            ],
-            dim=1,
-        ),
-        reward_norfair_heat=torch.stack(
-            [
-                generation_variable_floats_by_name[f"reward_norfair_heat_{tier}"]
-                for tier in range(1, 4)
-            ],
-            dim=1,
-        ),
+        preferred_area_probability=preferred_area_probability_tensor,
         reward_save_distance=generation_variable_floats_by_name["reward_save_distance"],
         reward_refill_distance=generation_variable_floats_by_name["reward_refill_distance"],
         reward_missing_connect_utility=(
@@ -913,13 +898,15 @@ def create_generate_config(
         reward_area_crossing=generation_variable_floats_by_name["reward_area_crossing"],
         reward_area_size_valid=generation_variable_floats_by_name["reward_area_size_valid"],
         reward_area_map_station=generation_variable_floats_by_name["reward_area_map_station"],
-        reward_area_tiles=generation_variable_floats_by_name["reward_area_tiles"],
         reward_area_x=generation_variable_floats_by_name["reward_area_x"],
         reward_area_y=generation_variable_floats_by_name["reward_area_y"],
-        target_area_tiles=target_tensors["target_area_tiles"],
+        target_area_rooms=target_tensors["target_area_rooms"],
         target_area_x=target_tensors["target_area_x"],
         target_area_y=target_tensors["target_area_y"],
         vanilla_area_constraint_mask=vanilla_area_constraint_mask,
+        area_balance_probability=area_balance_targets.probability,
+        area_balance_dual_mask=area_balance_targets.dual_mask,
+        effective_target_area_rooms=area_balance_targets.effective_area_rooms,
         generation_variable_floats=generation_variable_floats,
         log_temperature_model=log_temperature_model,
         log_recommended_candidates_model=log_recommended_candidates_model,
@@ -935,6 +922,7 @@ def create_generate_config(
 @dataclass
 class GenerationProcessState:
     config: Config
+    rooms: list[dict]
     episode_length: int
     device: torch.device
     envs: list
@@ -942,8 +930,6 @@ class GenerationProcessState:
     balance_model: torch.nn.Module
     profile: bool
     ignore_scores: bool
-    area_tile_scale: float
-    heat_water_tier_tile_counts: dict[str, tuple[int, int, int]]
 
 
 GENERATION_PROCESS_STATE: GenerationProcessState | None = None
@@ -986,6 +972,7 @@ def initialize_generation_process(
     map_gen.set_profile_enabled(profile)
     GENERATION_PROCESS_STATE = GenerationProcessState(
         config=config,
+        rooms=rooms,
         episode_length=len(rooms),
         device=device,
         envs=envs,
@@ -993,8 +980,6 @@ def initialize_generation_process(
         balance_model=balance_model,
         profile=profile,
         ignore_scores=ignore_scores,
-        area_tile_scale=average_area_tile_count(rooms),
-        heat_water_tier_tile_counts=compute_heat_water_tier_tile_counts(rooms),
     )
 
 
@@ -1023,13 +1008,12 @@ def run_generation_process_task(
     generation_config = Config.model_validate_json(generation_config_json)
     gen_configs = [
         create_generate_config(
-            generation_config,
-            state.episode_length,
-            env.num_envs,
-            state.device,
-            state.ignore_scores,
-            state.area_tile_scale,
-            state.heat_water_tier_tile_counts,
+            config=generation_config,
+            rooms=state.rooms,
+            episode_length=state.episode_length,
+            num_envs=env.num_envs,
+            device=state.device,
+            ignore_scores=state.ignore_scores,
         )
         for env in state.envs
     ]
@@ -1085,8 +1069,6 @@ class TrainingSession:
     config: Config
     run_path: str
     rooms: list[dict]
-    area_tile_scale: float
-    heat_water_tier_tile_counts: dict[str, tuple[int, int, int]]
     device: torch.device
     generation_devices: list[torch.device]
     engine: Engine
@@ -1094,7 +1076,6 @@ class TrainingSession:
     main_model: torch.nn.Module
     ema_model: torch.nn.Module
     balance_model: torch.nn.Module
-    balance_ema_model: torch.nn.Module
     main_optimizer: Any
     balance_optimizer: torch.optim.Optimizer
     loss_config: LossConfig
@@ -1171,7 +1152,6 @@ class TrainingSession:
         tensors.update(prefixed_state_dict("main_model", self.main_model))
         tensors.update(prefixed_state_dict("ema_model", self.ema_model))
         tensors.update(prefixed_state_dict("balance_model", self.balance_model))
-        tensors.update(prefixed_state_dict("balance_ema_model", self.balance_ema_model))
         metadata = {
             "format": TRAINING_CHECKPOINT_FORMAT,
             "config": self.config.model_dump_json(),
@@ -1209,9 +1189,6 @@ class TrainingSession:
         )
         unwrap_compiled_module(self.balance_model).load_state_dict(
             without_prefix(tensors, "balance_model")
-        )
-        unwrap_compiled_module(self.balance_ema_model).load_state_dict(
-            without_prefix(tensors, "balance_ema_model")
         )
         load_named_optimizer_checkpoint_state(
             self.main_optimizer,
@@ -1271,7 +1248,7 @@ class TrainingSession:
         }
         balance_model_state = {
             name: as_checkpoint_tensor(value)
-            for name, value in unwrap_compiled_module(self.balance_ema_model).state_dict().items()
+            for name, value in unwrap_compiled_module(self.balance_model).state_dict().items()
         }
         generation_config = instantiate_scheduleable_config(
             self.config,
@@ -1597,7 +1574,6 @@ class TrainingSession:
                 train_batch_envs=self.train_batch_envs,
                 main_model=self.main_model,
                 balance_model=self.balance_model,
-                balance_ema_model=self.balance_ema_model,
                 main_optimizer=self.main_optimizer,
                 balance_optimizer=self.balance_optimizer,
                 loss_config=self.loss_config,
@@ -1802,18 +1778,38 @@ class TrainingSession:
         avg_area_map_station = torch.mean(
             (end_outcomes.area_map_station_count == 1).to(torch.float32)
         )
+        valid_action_area = episode_data.actions.room_area < AREA_COUNT
+        area_room_counts = torch.nn.functional.one_hot(
+            episode_data.actions.room_area.clamp_max(AREA_COUNT - 1).to(torch.int64),
+            AREA_COUNT,
+        ).to(torch.float32)
+        area_room_counts = torch.sum(area_room_counts * valid_action_area.unsqueeze(-1), dim=1)
         normalized_area_outputs = {
-            "area_tiles": end_outcomes.area_size.to(torch.float32) / self.area_tile_scale,
+            "area_rooms": area_room_counts,
             "area_x": end_outcomes.area_x.to(torch.float32) / self.config.map_size[0],
             "area_y": end_outcomes.area_y.to(torch.float32) / self.config.map_size[1],
         }
+        area_targets = generation_area_balance_targets(
+            self.rooms,
+            episode_data.generation_variable_floats,
+        )
+        normalized_area_targets = {
+            "area_rooms": area_targets.effective_area_rooms,
+            **{
+                name: episode_data.generation_variable_floats[
+                    :,
+                    GENERATION_VARIABLE_FLOAT_FIELDS.index(
+                        f"target_{name}_0"
+                    ) : GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_{name}_0") + AREA_COUNT,
+                ]
+                for name in ("area_x", "area_y")
+            },
+        }
         average_area_errors = {}
         for name, output in normalized_area_outputs.items():
-            target_start = GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_{name}_0")
-            target = episode_data.generation_variable_floats[
-                :, target_start : target_start + 6
-            ].to(output.device)
+            target = normalized_area_targets[name].to(output.device)
             average_area_errors[name] = torch.mean((output - target).square())
+        average_area_room_variance = torch.mean(torch.var(area_room_counts, dim=0, correction=0))
 
         success = total_invalid == 0
         success_rate = torch.mean(success.to(torch.float32))
@@ -1864,7 +1860,6 @@ class TrainingSession:
         main_toilet_balance_loss_pct = 100.0 * loss.toilet_balance_contribution / loss_denominator
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
         graph_diameter_loss_pct = 100.0 * loss.graph_diameter_contribution / loss_denominator
-        heat_water_loss_pct = 100.0 * loss.heat_water_contribution / loss_denominator
         save_distance_loss_pct = 100.0 * loss.save_distance_contribution / loss_denominator
         refill_distance_loss_pct = 100.0 * loss.refill_distance_contribution / loss_denominator
         missing_connect_utility_loss_pct = (
@@ -1873,7 +1868,6 @@ class TrainingSession:
         area_crossings_loss_pct = 100.0 * loss.area_crossings_contribution / loss_denominator
         area_size_loss_pct = 100.0 * loss.area_size_contribution / loss_denominator
         area_map_station_loss_pct = 100.0 * loss.area_map_station_contribution / loss_denominator
-        area_tiles_loss_pct = 100.0 * loss.area_tiles_contribution / loss_denominator
         area_x_loss_pct = 100.0 * loss.area_x_contribution / loss_denominator
         area_y_loss_pct = 100.0 * loss.area_y_contribution / loss_denominator
         proposal_loss_pct = 100.0 * loss.proposal_contribution / loss_denominator
@@ -1902,11 +1896,10 @@ class TrainingSession:
             "avg_frontiers_loss_pct": avg_frontiers_loss_pct,
             "graph_diameter_loss": loss.graph_diameter,
             "graph_diameter_loss_pct": graph_diameter_loss_pct,
-            "heat_water_loss": loss.heat_water,
-            "heat_water_loss_pct": heat_water_loss_pct,
             **{
-                f"avg_{name.removeprefix('reward_')}": heat_water_counts[idx]
-                for idx, name in enumerate(HEAT_WATER_REWARD_FIELDS)
+                f"avg_{family}_{tier}": heat_water_counts[family_idx * 3 + tier - 1]
+                for family_idx, family in enumerate(HEAT_WATER_FAMILIES)
+                for tier in range(1, 4)
             },
             **{
                 name: torch.mean(
@@ -1914,7 +1907,7 @@ class TrainingSession:
                         :, GENERATION_VARIABLE_FLOAT_FIELDS.index(name)
                     ]
                 )
-                for name in HEAT_WATER_REWARD_FIELDS
+                for name in HEAT_WATER_PROBABILITY_FIELDS
             },
             "save_distance_loss": loss.save_distance,
             "save_distance_loss_pct": save_distance_loss_pct,
@@ -1928,8 +1921,6 @@ class TrainingSession:
             "area_size_loss_pct": area_size_loss_pct,
             "area_map_station_loss": loss.area_map_station,
             "area_map_station_loss_pct": area_map_station_loss_pct,
-            "area_tiles_loss": loss.area_tiles,
-            "area_tiles_loss_pct": area_tiles_loss_pct,
             "area_x_loss": loss.area_x,
             "area_x_loss_pct": area_x_loss_pct,
             "area_y_loss": loss.area_y,
@@ -1968,7 +1959,18 @@ class TrainingSession:
             "avg_area_map_station_invalid": avg_area_map_station_invalid,
             "avg_area_size_valid": avg_area_size_valid,
             "avg_area_map_station": avg_area_map_station,
-            "avg_area_tiles": average_area_errors["area_tiles"],
+            "avg_area_rooms": average_area_errors["area_rooms"],
+            "avg_area_rooms_variance": average_area_room_variance,
+            **{
+                f"avg_area_{area}_rooms": torch.mean(area_room_counts[:, area])
+                for area in range(AREA_COUNT)
+            },
+            **{
+                f"avg_target_area_{area}_rooms": torch.mean(
+                    area_targets.effective_area_rooms[:, area]
+                )
+                for area in range(AREA_COUNT)
+            },
             "avg_area_x": average_area_errors["area_x"],
             "avg_area_y": average_area_errors["area_y"],
             "avg_door": avg_door,
@@ -2026,18 +2028,10 @@ class TrainingSession:
                 name: getattr(step_config.generation, name)
                 for name in VANILLA_AREA_PROBABILITY_FIELDS
             },
-            "reward_balance": variable_float_metric_value(
-                step_config.generation.reward_balance,
-                "generation.reward_balance",
-            ),
-            "reward_area_balance": variable_float_metric_value(
-                step_config.generation.reward_area_balance,
-                "generation.reward_area_balance",
-            ),
-            "reward_toilet_balance": variable_float_metric_value(
-                step_config.generation.reward_toilet_balance,
-                "generation.reward_toilet_balance",
-            ),
+            "balance_door_eta": step_config.balance_train.door_eta,
+            "balance_toilet_eta": step_config.balance_train.toilet_eta,
+            "balance_area_eta": step_config.balance_train.area_eta,
+            "balance_price_limit": step_config.balance_train.price_limit,
             "reward_frontier": variable_float_metric_value(
                 step_config.generation.reward_frontier,
                 "generation.reward_frontier",
@@ -2076,10 +2070,6 @@ class TrainingSession:
                     "generation.reward_area_map_station",
                 )
             ),
-            "reward_area_tiles": variable_float_metric_value(
-                step_config.generation.reward_area_tiles,
-                "generation.reward_area_tiles",
-            ),
             "reward_area_x": variable_float_metric_value(
                 step_config.generation.reward_area_x,
                 "generation.reward_area_x",
@@ -2090,7 +2080,6 @@ class TrainingSession:
             ),
             "distance_proximity_scale": step_config.distance_proximity_scale,
             "ema_half_life_episodes": step_config.train.ema_half_life_episodes,
-            "balance_ema_half_life_episodes": (step_config.balance_train.ema_half_life_episodes),
             "toilet_weight": step_config.train.toilet_weight,
             "phantoon_pair_weight": step_config.train.phantoon_pair_weight,
             "phantoon_area_weight": step_config.train.phantoon_area_weight,
@@ -2104,10 +2093,8 @@ class TrainingSession:
             "area_crossing_weight": step_config.train.area_crossing_weight,
             "area_size_weight": step_config.train.area_size_weight,
             "area_map_station_weight": step_config.train.area_map_station_weight,
-            "area_tiles_weight": step_config.train.area_tiles_weight,
             "area_x_weight": step_config.train.area_x_weight,
             "area_y_weight": step_config.train.area_y_weight,
-            "heat_water_weight": step_config.train.heat_water_weight,
             "door_match_left_top1": left_topk[0],
             "door_match_left_top2": left_topk[1],
             "door_match_left_top3": left_topk[2],
@@ -2115,24 +2102,21 @@ class TrainingSession:
             "door_match_up_top2": up_topk[1],
             "door_match_up_top3": up_topk[2],
             "door_match_ss": door_match_ss,
-            "balance_door_match_left_top1": balance_metrics.door_match_left_topk[0],
-            "balance_door_match_left_top2": balance_metrics.door_match_left_topk[1],
-            "balance_door_match_left_top3": balance_metrics.door_match_left_topk[2],
-            "balance_door_match_up_top1": balance_metrics.door_match_up_topk[0],
-            "balance_door_match_up_top2": balance_metrics.door_match_up_topk[1],
-            "balance_door_match_up_top3": balance_metrics.door_match_up_topk[2],
-            "balance_door_match_ss": balance_metrics.door_match_ss,
+            "balance_door_price_rms": balance_metrics.door_price_rms,
+            "balance_door_price_max": balance_metrics.door_price_max,
+            "balance_door_price_saturation": balance_metrics.door_price_saturation,
             "toilet_crossed_room_top1": toilet_crossed_room_topk[0],
             "toilet_crossed_room_top2": toilet_crossed_room_topk[1],
             "toilet_crossed_room_top3": toilet_crossed_room_topk[2],
             "toilet_crossed_room_top4": toilet_crossed_room_topk[3],
             "toilet_crossed_room_ss": toilet_crossed_room_ss,
             "unforced_special_room_area_ss": unforced_special_room_area_ss,
-            "balance_toilet_crossed_room_top1": balance_metrics.toilet_crossed_room_topk[0],
-            "balance_toilet_crossed_room_top2": balance_metrics.toilet_crossed_room_topk[1],
-            "balance_toilet_crossed_room_top3": balance_metrics.toilet_crossed_room_topk[2],
-            "balance_toilet_crossed_room_top4": balance_metrics.toilet_crossed_room_topk[3],
-            "balance_toilet_crossed_room_ss": balance_metrics.toilet_crossed_room_ss,
+            "balance_toilet_price_rms": balance_metrics.toilet_price_rms,
+            "balance_toilet_price_max": balance_metrics.toilet_price_max,
+            "balance_toilet_price_saturation": balance_metrics.toilet_price_saturation,
+            "balance_area_price_rms": balance_metrics.area_price_rms,
+            "balance_area_price_max": balance_metrics.area_price_max,
+            "balance_area_price_saturation": balance_metrics.area_price_saturation,
             **generation_stats,
         }
         for name, value in metrics.items():
@@ -2245,17 +2229,11 @@ class TrainingSession:
                     self.config,
                     self.num_episodes,
                 )
-                balance_door_matches, balance_toilet_crossed_room_idx = (
-                    self.engine.compute_balance_targets(
-                        episode_data.actions,
-                        torch.device("cpu"),
-                    )
-                )
                 balance_metrics = compute_balance_metric_values(
-                    balance_model=self.balance_ema_model,
+                    balance_model=self.balance_model,
+                    rooms=self.rooms,
                     generation_variable_floats=episode_data.generation_variable_floats,
-                    door_matches=balance_door_matches,
-                    toilet_crossed_room_idx=balance_toilet_crossed_room_idx,
+                    price_limit=generation_step_config.balance_train.price_limit,
                     batch_size=generation_step_config.balance_train.batch_size,
                 )
                 if self.config.visualize > 0:
@@ -2506,16 +2484,13 @@ def create_models(
     ema_model.requires_grad_(False)
     ema_model.eval()
     balance_model = create_balance_model(config, rooms, engine, device)
-    balance_ema_model = copy.deepcopy(balance_model).to(device)
-    balance_ema_model.requires_grad_(False)
-    balance_ema_model.eval()
     balance_num_params = sum(p.numel() for p in balance_model.parameters())
     logging.info(f"Balance model parameters: {balance_num_params}")
     if config.model.compile:
         main_model = torch.compile(main_model)
         ema_model = torch.compile(ema_model)
 
-    return main_model, ema_model, balance_model, balance_ema_model
+    return main_model, ema_model, balance_model
 
 
 def create_generation_process_executors(
@@ -2599,7 +2574,7 @@ def build_session(args: Args) -> TrainingSession:
     )
     initial_config = instantiate_scheduleable_config(config, 0)
     train_batch_envs = create_train_batch_environment_groups(initial_config, engine)
-    main_model, ema_model, balance_model, balance_ema_model = create_models(
+    main_model, ema_model, balance_model = create_models(
         config,
         rooms,
         engine,
@@ -2613,25 +2588,17 @@ def build_session(args: Args) -> TrainingSession:
         args.profile,
         args.ignore_scores,
     )
-    area_tile_scale = average_area_tile_count(rooms)
-    heat_water_tier_tile_counts = compute_heat_water_tier_tile_counts(rooms)
     main_optimizer = create_main_optimizer(
         main_model,
         config.optimizer,
         initial_config.optimizer,
     )
-    balance_optimizer = create_adam_optimizer(
-        balance_model.parameters(),
-        config.balance_optimizer,
-        initial_config.balance_optimizer,
-    )
+    balance_optimizer = torch.optim.SGD(balance_model.parameters(), lr=1.0)
     session = TrainingSession(
         args=args,
         config=config,
         run_path=run_path,
         rooms=rooms,
-        area_tile_scale=area_tile_scale,
-        heat_water_tier_tile_counts=heat_water_tier_tile_counts,
         device=device,
         generation_devices=generation_devices,
         engine=engine,
@@ -2639,7 +2606,6 @@ def build_session(args: Args) -> TrainingSession:
         main_model=main_model,
         ema_model=ema_model,
         balance_model=balance_model,
-        balance_ema_model=balance_ema_model,
         main_optimizer=main_optimizer,
         balance_optimizer=balance_optimizer,
         loss_config=LossConfig(
@@ -2654,17 +2620,14 @@ def build_session(args: Args) -> TrainingSession:
             toilet_balance_weight=config.train.toilet_balance_weight,
             avg_frontiers_weight=config.train.avg_frontiers_weight,
             graph_diameter_weight=config.train.graph_diameter_weight,
-            heat_water_weight=config.train.heat_water_weight,
             save_distance_weight=config.train.save_distance_weight,
             refill_distance_weight=config.train.refill_distance_weight,
             missing_connect_utility_weight=config.train.missing_connect_utility_weight,
             area_crossing_weight=config.train.area_crossing_weight,
             area_size_weight=config.train.area_size_weight,
             area_map_station_weight=config.train.area_map_station_weight,
-            area_tiles_weight=config.train.area_tiles_weight,
             area_x_weight=config.train.area_x_weight,
             area_y_weight=config.train.area_y_weight,
-            area_tile_scale=area_tile_scale,
             map_width=config.map_size[0],
             map_height=config.map_size[1],
             distance_proximity_scale=config.distance_proximity_scale,

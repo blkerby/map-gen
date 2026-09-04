@@ -92,6 +92,10 @@ def create_balance_model(
             dtype=torch.int64,
         ),
         num_room_connection_variants=output_metadata.num_room_connection_variants,
+        toilet_room_idx=next(
+            (index for index, room in enumerate(rooms) if room.get("special_type") == "toilet"),
+            None,
+        ),
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,
     ).to(device)

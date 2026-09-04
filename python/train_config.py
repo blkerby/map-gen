@@ -82,8 +82,9 @@ class VariableMixture(StrictBaseModel):
 
 type VariableFloat = VariableFloatValue | VariableMixture
 type AreaVariableFloats = Annotated[list[VariableFloat], Field(min_length=6, max_length=6)]
+type TierProbabilities = Annotated[list[float], Field(min_length=3, max_length=3)]
 
-AREA_TARGET_FIELDS = ("target_area_tiles", "target_area_x", "target_area_y")
+AREA_TARGET_FIELDS = ("target_area_rooms", "target_area_x", "target_area_y")
 VANILLA_AREA_OUTCOME_NAMES = (
     "ship_in_crateria",
     "kraid_in_brinstar",
@@ -99,13 +100,11 @@ VANILLA_AREA_REWARD_FIELDS = tuple(f"reward_{name}" for name in VANILLA_AREA_OUT
 VANILLA_AREA_CONDITION_FIELDS = tuple(f"force_{name}" for name in VANILLA_AREA_OUTCOME_NAMES)
 HEAT_WATER_FAMILIES = ("maridia_water", "norfair_heat")
 HEAT_WATER_TARGET_AREAS = (4, 2)
-HEAT_WATER_REWARD_FIELDS = tuple(
-    f"reward_{family}_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 4)
+HEAT_WATER_PROBABILITY_FIELDS = tuple(
+    f"{family}_preferred_probability_{tier}"
+    for family in HEAT_WATER_FAMILIES
+    for tier in range(1, 4)
 )
-HEAT_WATER_MAX_FIELDS = tuple(
-    f"reward_{family}_max_{tier}" for family in HEAT_WATER_FAMILIES for tier in range(1, 3)
-)
-HEAT_WATER_TIER_3_FIELDS = tuple(f"reward_{family}_3" for family in HEAT_WATER_FAMILIES)
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "temperature",
@@ -116,19 +115,15 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_phantoon_pair",
     "reward_phantoon_area",
     *VANILLA_AREA_REWARD_FIELDS,
-    "reward_balance",
-    "reward_area_balance",
-    "reward_toilet_balance",
     "reward_frontier",
     "reward_graph_diameter",
-    *HEAT_WATER_REWARD_FIELDS,
+    *HEAT_WATER_PROBABILITY_FIELDS,
     "reward_save_distance",
     "reward_refill_distance",
     "reward_missing_connect_utility",
     "reward_area_crossing",
     "reward_area_size_valid",
     "reward_area_map_station",
-    "reward_area_tiles",
     "reward_area_x",
     "reward_area_y",
     *(f"{field}_{area}" for field in AREA_TARGET_FIELDS for area in range(6)),
@@ -190,7 +185,15 @@ class BalanceModelConfig(StrictBaseModel):
 
 class BalanceTrainConfig(StrictBaseModel):
     batch_size: ScheduleableInt
-    ema_half_life_episodes: ScheduleableFloat
+    door_eta: float
+    toilet_eta: float
+    area_eta: float
+    price_limit: float
+
+
+class TieredAreaPreferenceConfig(StrictBaseModel):
+    active_probability: float
+    tier_max: TierProbabilities
 
 
 class GenerationConfig(StrictBaseModel):
@@ -217,29 +220,19 @@ class GenerationConfig(StrictBaseModel):
     reward_phantoon_in_wrecked_ship: VariableFloat
     reward_draygon_in_maridia: VariableFloat
     reward_mother_brain_in_tourian: VariableFloat
-    reward_balance: VariableFloat
-    reward_area_balance: VariableFloat
-    reward_toilet_balance: VariableFloat
     reward_frontier: VariableFloat
     reward_graph_diameter: VariableFloat
-    reward_maridia_water_max_1: ScheduleableFloat
-    reward_maridia_water_max_2: ScheduleableFloat
-    reward_maridia_water_3: VariableFloat
-    reward_norfair_heat_max_1: ScheduleableFloat
-    reward_norfair_heat_max_2: ScheduleableFloat
-    reward_norfair_heat_3: VariableFloat
-    maridia_water_floor_scale: ScheduleableFloat
-    norfair_heat_floor_scale: ScheduleableFloat
+    maridia_water_preferred_probability: TieredAreaPreferenceConfig
+    norfair_heat_preferred_probability: TieredAreaPreferenceConfig
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
     reward_area_crossing: VariableFloat
     reward_area_size_valid: VariableFloat
     reward_area_map_station: VariableFloat
-    reward_area_tiles: VariableFloat
     reward_area_x: VariableFloat
     reward_area_y: VariableFloat
-    target_area_tiles: AreaVariableFloats
+    target_area_rooms: AreaVariableFloats
     target_area_x: AreaVariableFloats
     target_area_y: AreaVariableFloats
     force_ship_in_crateria_probability: ScheduleableFloat
@@ -372,14 +365,12 @@ class TrainConfig(StrictBaseModel):
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
-    heat_water_weight: float
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
-    area_tiles_weight: float
     area_x_weight: float
     area_y_weight: float
     proposal_weight: float
@@ -401,7 +392,6 @@ class Config(StrictBaseModel):
     model: ModelConfig
     optimizer: OptimizerConfig
     balance_model: BalanceModelConfig
-    balance_optimizer: AdamOptimizerConfig
     balance_train: BalanceTrainConfig
     generation: GenerationConfig
     features: FeatureConfig
@@ -597,7 +587,6 @@ def validate_config(config: Config) -> None:
     validate_feature_width("toilet_crossed_room", config.features.toilet_crossed_room)
     validate_feature_width("known_distance", config.features.known_distance)
     validate_optimizer_config(config.optimizer, "optimizer")
-    validate_optimizer_config(config.balance_optimizer, "balance_optimizer")
     if config.generation.num_iterations <= 0:
         raise ValueError("generation.num_iterations must be greater than zero")
     if config.generation.num_devices <= 0:
@@ -655,11 +644,15 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
-    validate_ema_half_life_config(
-        config.balance_train.ema_half_life_episodes,
-        "balance_train.ema_half_life_episodes",
-        config.knot_episodes,
-    )
+    for field_name in ("door_eta", "toilet_eta", "area_eta"):
+        value = getattr(config.balance_train, field_name)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"balance_train.{field_name} must be finite and greater than zero")
+    if (
+        not math.isfinite(config.balance_train.price_limit)
+        or config.balance_train.price_limit <= 0.0
+    ):
+        raise ValueError("balance_train.price_limit must be finite and greater than zero")
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError(
             "generation.frontier_neighbor_count must be greater than or equal to zero"
@@ -708,33 +701,21 @@ def validate_config(config: Config) -> None:
             config.knot_episodes,
         )
     validate_nonnegative_variable_float(
-        config.generation.reward_area_balance,
-        "generation.reward_area_balance",
-    )
-    validate_nonnegative_variable_float(
-        config.generation.reward_toilet_balance,
-        "generation.reward_toilet_balance",
-    )
-    validate_nonnegative_variable_float(
         config.generation.reward_graph_diameter,
         "generation.reward_graph_diameter",
     )
-    for field_name in HEAT_WATER_MAX_FIELDS:
-        validate_nonnegative_scheduleable_float(
-            getattr(config.generation, field_name),
-            f"generation.{field_name}",
-        )
-    for field_name in HEAT_WATER_TIER_3_FIELDS:
-        validate_nonnegative_variable_float(
-            getattr(config.generation, field_name),
-            f"generation.{field_name}",
-        )
     for family in HEAT_WATER_FAMILIES:
-        field_name = f"{family}_floor_scale"
-        validate_nonnegative_scheduleable_float(
-            getattr(config.generation, field_name),
-            f"generation.{field_name}",
-        )
+        preference = getattr(config.generation, f"{family}_preferred_probability")
+        if not 0.0 <= preference.active_probability <= 1.0:
+            raise ValueError(
+                f"generation.{family}_preferred_probability.active_probability must be between zero and one"
+            )
+        for tier, value in enumerate(preference.tier_max, start=1):
+            if not math.isfinite(value) or not 0.0 < value < 1.0:
+                raise ValueError(
+                    f"generation.{family}_preferred_probability.tier_max[{tier - 1}] "
+                    "must be finite and strictly between zero and one"
+                )
     validate_nonnegative_variable_float(
         config.generation.reward_save_distance,
         "generation.reward_save_distance",
@@ -759,7 +740,7 @@ def validate_config(config: Config) -> None:
         config.generation.reward_area_map_station,
         "generation.reward_area_map_station",
     )
-    for field_name in ("reward_area_tiles", "reward_area_x", "reward_area_y"):
+    for field_name in ("reward_area_x", "reward_area_y"):
         validate_nonnegative_variable_float(
             getattr(config.generation, field_name),
             f"generation.{field_name}",
@@ -767,8 +748,8 @@ def validate_config(config: Config) -> None:
     for field_name in AREA_TARGET_FIELDS:
         for area, value in enumerate(getattr(config.generation, field_name)):
             validate_finite_variable_float(value, f"generation.{field_name}[{area}]")
-    for area, value in enumerate(config.generation.target_area_tiles):
-        validate_nonnegative_variable_float(value, f"generation.target_area_tiles[{area}]")
+    for area, value in enumerate(config.generation.target_area_rooms):
+        validate_positive_variable_float(value, f"generation.target_area_rooms[{area}]")
     if config.generation.num_threads is not None and config.generation.num_threads <= 0:
         raise ValueError("generation.num_threads must be greater than zero")
     if (
@@ -805,8 +786,6 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.avg_frontiers_weight must be greater than or equal to zero")
     if config.train.graph_diameter_weight < 0:
         raise ValueError("train.graph_diameter_weight must be greater than or equal to zero")
-    if config.train.heat_water_weight < 0:
-        raise ValueError("train.heat_water_weight must be greater than or equal to zero")
     if config.train.save_distance_weight < 0:
         raise ValueError("train.save_distance_weight must be greater than or equal to zero")
     if config.train.refill_distance_weight < 0:
@@ -821,7 +800,7 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.area_size_weight must be greater than or equal to zero")
     if config.train.area_map_station_weight < 0:
         raise ValueError("train.area_map_station_weight must be greater than or equal to zero")
-    for field_name in ("area_tiles_weight", "area_x_weight", "area_y_weight"):
+    for field_name in ("area_x_weight", "area_y_weight"):
         if getattr(config.train, field_name) < 0:
             raise ValueError(f"train.{field_name} must be greater than or equal to zero")
     validate_ema_half_life_config(

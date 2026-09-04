@@ -35,7 +35,7 @@ from env import (
     EpisodeData,
     EpisodeOutcomes,
     GenerateConfig,
-    average_area_tile_count,
+    compute_area_balance_targets,
 )
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from model import FrontierModel
@@ -60,8 +60,8 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v5"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v11"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v6"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v12"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -132,27 +132,23 @@ class GenerateRequest(StrictBaseModel):
     force_phantoon_in_wrecked_ship: bool
     force_draygon_in_maridia: bool
     force_mother_brain_in_tourian: bool
-    reward_balance: float
-    reward_area_balance: float
-    reward_toilet_balance: float
     reward_frontier: float
     reward_graph_diameter: float
-    reward_maridia_water_1: float
-    reward_maridia_water_2: float
-    reward_maridia_water_3: float
-    reward_norfair_heat_1: float
-    reward_norfair_heat_2: float
-    reward_norfair_heat_3: float
+    maridia_water_preferred_probability_1: float
+    maridia_water_preferred_probability_2: float
+    maridia_water_preferred_probability_3: float
+    norfair_heat_preferred_probability_1: float
+    norfair_heat_preferred_probability_2: float
+    norfair_heat_preferred_probability_3: float
     reward_save_distance: float
     reward_refill_distance: float
     reward_missing_connect_utility: float
     reward_area_crossing: float
     reward_area_size_valid: float
     reward_area_map_station: float
-    reward_area_tiles: float
     reward_area_x: float
     reward_area_y: float
-    target_area_tiles: Annotated[list[float], Field(min_length=6, max_length=6)]
+    target_area_rooms: Annotated[list[float], Field(min_length=6, max_length=6)]
     target_area_x: Annotated[list[float], Field(min_length=6, max_length=6)]
     target_area_y: Annotated[list[float], Field(min_length=6, max_length=6)]
     area_assignment_base_order: Literal["random", "depth", "size"]
@@ -211,7 +207,6 @@ class ServingState:
     serving_config: ServingConfig
     training_config: Config
     rooms: list[dict]
-    area_tile_scale: float
     device: torch.device
     envs: list
     model: torch.nn.Module
@@ -279,11 +274,9 @@ def load_model_input(path: Path) -> ModelExport:
         metadata = validate_model_input_metadata(path, model_input.metadata())
         if metadata["format"] == TRAINING_CHECKPOINT_FORMAT:
             tensors = {
-                name.replace("balance_ema_model.", "balance_model.", 1): model_input.get_tensor(
-                    name
-                )
+                name: model_input.get_tensor(name)
                 for name in model_input.keys()
-                if name.startswith(("ema_model.", "balance_ema_model."))
+                if name.startswith(("ema_model.", "balance_model."))
             }
         else:
             tensors = {name: model_input.get_tensor(name) for name in model_input.keys()}
@@ -439,7 +432,6 @@ def create_serving_state(
         serving_config=serving_config,
         training_config=model_export.training_config,
         rooms=rooms,
-        area_tile_scale=average_area_tile_count(rooms),
         device=device,
         envs=envs,
         model=model,
@@ -487,30 +479,31 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
     if generate_request.proposal_temperature <= 0:
         raise ValueError("proposal_temperature must be greater than zero")
     for name in (
-        "reward_area_balance",
         "reward_area_crossing",
         "reward_area_size_valid",
         "reward_area_map_station",
-        "reward_area_tiles",
         "reward_area_x",
         "reward_area_y",
     ):
         if getattr(generate_request, name) < 0.0:
             raise ValueError(f"{name} must be greater than or equal to zero")
     for family in ("maridia_water", "norfair_heat"):
-        rewards = [getattr(generate_request, f"reward_{family}_{tier}") for tier in range(1, 4)]
-        if any(not math.isfinite(value) for value in rewards):
-            raise ValueError(f"reward_{family} values must be finite")
-        if not 0.0 <= rewards[0] <= rewards[1] <= rewards[2]:
-            raise ValueError(f"reward_{family} values must be nonnegative and nondecreasing")
-    for name in ("target_area_tiles", "target_area_x", "target_area_y"):
+        probabilities = [
+            getattr(generate_request, f"{family}_preferred_probability_{tier}")
+            for tier in range(1, 4)
+        ]
+        if any(not math.isfinite(value) for value in probabilities):
+            raise ValueError(f"{family}_preferred_probability values must be finite")
+        if not 0.0 < probabilities[0] <= probabilities[1] <= probabilities[2] < 1.0:
+            raise ValueError(
+                f"{family}_preferred_probability values must be positive, below one, and nondecreasing"
+            )
+    for name in ("target_area_rooms", "target_area_x", "target_area_y"):
         for area, value in enumerate(getattr(generate_request, name)):
             if not math.isfinite(value):
                 raise ValueError(f"{name}[{area}] must be finite")
-    if any(value < 0.0 for value in generate_request.target_area_tiles):
-        raise ValueError("target_area_tiles values must be greater than or equal to zero")
-    if sum(generate_request.target_area_tiles) <= 0.0:
-        raise ValueError("target_area_tiles must have a positive sum")
+    if any(value <= 0.0 for value in generate_request.target_area_rooms):
+        raise ValueError("target_area_rooms values must be greater than zero")
     if generate_request.small_map:
         missing_fields = [
             field
@@ -544,9 +537,9 @@ def create_generate_configs(
         name: [value / target_scales[name] for value in getattr(generate_request, name)]
         for name in target_scales
     }
-    area_tile_sum = sum(generate_request.target_area_tiles)
-    normalized_targets["target_area_tiles"] = [
-        value * AREA_COUNT / area_tile_sum for value in generate_request.target_area_tiles
+    area_room_sum = sum(generate_request.target_area_rooms)
+    normalized_targets["target_area_rooms"] = [
+        value * len(state.rooms) / area_room_sum for value in generate_request.target_area_rooms
     ]
     generation_variable_float_values = {
         "temperature": generate_request.temperature,
@@ -556,13 +549,12 @@ def create_generate_configs(
         "reward_toilet": generate_request.reward_toilet,
         "reward_phantoon_pair": generate_request.reward_phantoon_pair,
         "reward_phantoon_area": generate_request.reward_phantoon_area,
-        "reward_balance": generate_request.reward_balance,
-        "reward_area_balance": generate_request.reward_area_balance,
-        "reward_toilet_balance": generate_request.reward_toilet_balance,
         "reward_frontier": generate_request.reward_frontier,
         "reward_graph_diameter": generate_request.reward_graph_diameter,
         **{
-            f"reward_{family}_{tier}": getattr(generate_request, f"reward_{family}_{tier}")
+            f"{family}_preferred_probability_{tier}": getattr(
+                generate_request, f"{family}_preferred_probability_{tier}"
+            )
             for family in ("maridia_water", "norfair_heat")
             for tier in range(1, 4)
         },
@@ -572,7 +564,6 @@ def create_generate_configs(
         "reward_area_crossing": generate_request.reward_area_crossing,
         "reward_area_size_valid": generate_request.reward_area_size_valid,
         "reward_area_map_station": generate_request.reward_area_map_station,
-        "reward_area_tiles": generate_request.reward_area_tiles,
         "reward_area_x": generate_request.reward_area_x,
         "reward_area_y": generate_request.reward_area_y,
     }
@@ -584,6 +575,12 @@ def create_generate_configs(
                 VANILLA_AREA_REWARD_FIELDS,
                 VANILLA_AREA_CONDITION_FIELDS,
             )
+        }
+    )
+    generation_variable_float_values.update(
+        {
+            f"target_area_rooms_{area}": normalized_targets["target_area_rooms"][area]
+            for area in range(AREA_COUNT)
         }
     )
     generation_variable_float_values.update(
@@ -656,6 +653,29 @@ def create_generate_configs(
             )
             .contiguous()
         )
+        target_area_rooms = torch.tensor(
+            normalized_targets["target_area_rooms"], dtype=torch.float32, device=device
+        ).expand(env.num_envs, AREA_COUNT)
+        preferred_area_probability = torch.tensor(
+            [
+                [
+                    getattr(generate_request, f"{family}_preferred_probability_{tier}")
+                    for tier in range(1, 4)
+                ]
+                for family in ("maridia_water", "norfair_heat")
+            ],
+            dtype=torch.float32,
+            device=device,
+        ).expand(env.num_envs, 2, 3)
+        vanilla_area_constraint_mask = torch.tensor(
+            vanilla_area_constraint_values, dtype=torch.bool, device=device
+        ).expand(env.num_envs, AREA_COUNT)
+        area_balance_targets = compute_area_balance_targets(
+            state.rooms,
+            target_area_rooms,
+            vanilla_area_constraint_mask,
+            preferred_area_probability,
+        )
         configs.append(
             GenerateConfig(
                 episode_length=generate_request.episode_length,
@@ -671,6 +691,7 @@ def create_generate_configs(
                 gpu_prefetch_batches=state.serving_config.gpu_prefetch_batches,
                 temperature=temperature,
                 proposal_temperature=proposal_temperature,
+                balance_price_limit=state.training_config.balance_train.price_limit,
                 reward_door=generate_request.reward_door,
                 reward_connection=generate_request.reward_connection,
                 reward_toilet=generate_request.reward_toilet,
@@ -681,50 +702,28 @@ def create_generate_configs(
                     dtype=torch.float32,
                     device=device,
                 ).expand(env.num_envs, 6),
-                reward_balance=generate_request.reward_balance,
-                reward_area_balance=generate_request.reward_area_balance,
-                reward_toilet_balance=generate_request.reward_toilet_balance,
                 reward_frontier=generate_request.reward_frontier,
                 reward_graph_diameter=generate_request.reward_graph_diameter,
-                reward_maridia_water=torch.tensor(
-                    [
-                        generate_request.reward_maridia_water_1,
-                        generate_request.reward_maridia_water_2,
-                        generate_request.reward_maridia_water_3,
-                    ],
-                    dtype=torch.float32,
-                    device=device,
-                ).expand(env.num_envs, 3),
-                reward_norfair_heat=torch.tensor(
-                    [
-                        generate_request.reward_norfair_heat_1,
-                        generate_request.reward_norfair_heat_2,
-                        generate_request.reward_norfair_heat_3,
-                    ],
-                    dtype=torch.float32,
-                    device=device,
-                ).expand(env.num_envs, 3),
+                preferred_area_probability=preferred_area_probability,
                 reward_save_distance=generate_request.reward_save_distance,
                 reward_refill_distance=generate_request.reward_refill_distance,
                 reward_missing_connect_utility=generate_request.reward_missing_connect_utility,
                 reward_area_crossing=generate_request.reward_area_crossing,
                 reward_area_size_valid=generate_request.reward_area_size_valid,
                 reward_area_map_station=generate_request.reward_area_map_station,
-                reward_area_tiles=generate_request.reward_area_tiles,
                 reward_area_x=generate_request.reward_area_x,
                 reward_area_y=generate_request.reward_area_y,
-                target_area_tiles=torch.tensor(
-                    normalized_targets["target_area_tiles"], dtype=torch.float32, device=device
-                ).expand(env.num_envs, 6),
+                target_area_rooms=target_area_rooms,
                 target_area_x=torch.tensor(
                     normalized_targets["target_area_x"], dtype=torch.float32, device=device
                 ).expand(env.num_envs, 6),
                 target_area_y=torch.tensor(
                     normalized_targets["target_area_y"], dtype=torch.float32, device=device
                 ).expand(env.num_envs, 6),
-                vanilla_area_constraint_mask=torch.tensor(
-                    vanilla_area_constraint_values, dtype=torch.bool, device=device
-                ).expand(env.num_envs, 6),
+                vanilla_area_constraint_mask=vanilla_area_constraint_mask,
+                area_balance_probability=area_balance_targets.probability,
+                area_balance_dual_mask=area_balance_targets.dual_mask,
+                effective_target_area_rooms=area_balance_targets.effective_area_rooms,
                 generation_variable_floats=generation_variable_floats_model,
                 log_temperature_model=log_temperature_model,
                 log_recommended_candidates_model=log_recommended_candidates_model,
@@ -963,27 +962,23 @@ def warmup_generate_request() -> GenerateRequest:
         force_phantoon_in_wrecked_ship=False,
         force_draygon_in_maridia=False,
         force_mother_brain_in_tourian=False,
-        reward_balance=0.1,
-        reward_area_balance=0.1,
-        reward_toilet_balance=0.1,
         reward_frontier=0.0,
         reward_graph_diameter=0.1,
-        reward_maridia_water_1=0.0,
-        reward_maridia_water_2=0.0,
-        reward_maridia_water_3=0.0,
-        reward_norfair_heat_1=0.0,
-        reward_norfair_heat_2=0.0,
-        reward_norfair_heat_3=0.0,
+        maridia_water_preferred_probability_1=1.0 / AREA_COUNT,
+        maridia_water_preferred_probability_2=1.0 / AREA_COUNT,
+        maridia_water_preferred_probability_3=1.0 / AREA_COUNT,
+        norfair_heat_preferred_probability_1=1.0 / AREA_COUNT,
+        norfair_heat_preferred_probability_2=1.0 / AREA_COUNT,
+        norfair_heat_preferred_probability_3=1.0 / AREA_COUNT,
         reward_save_distance=0.1,
         reward_refill_distance=0.1,
         reward_missing_connect_utility=0.5,
         reward_area_crossing=0.0,
         reward_area_size_valid=0.0,
         reward_area_map_station=0.0,
-        reward_area_tiles=0.0,
         reward_area_x=0.0,
         reward_area_y=0.0,
-        target_area_tiles=[1.0] * 6,
+        target_area_rooms=[1.0] * 6,
         target_area_x=[0.0] * 6,
         target_area_y=[0.0] * 6,
         area_assignment_base_order="random",
