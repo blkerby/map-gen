@@ -120,7 +120,11 @@ def test_prices_are_centered_masked_and_include_area_prior() -> None:
     area_probability, area_mask = uniform_area_targets()
     area_probability[0, 0] = torch.tensor([0.5, 0.1, 0.1, 0.1, 0.1, 0.1])
     area_mask[0, 1] = False
-    tables = compute_balance_price_tables(preds, area_probability, area_mask, 20.0)
+    tables = compute_balance_price_tables(
+        preds,
+        area_probability,
+        area_mask,
+    )
 
     left_compatibility = torch.tensor(
         [[True, False, False], [True, False, False], [True, True, True]]
@@ -147,37 +151,135 @@ def test_forced_one_hot_area_target_has_finite_zero_price() -> None:
         example_predictions(),
         targets.probability,
         targets.dual_mask,
-        20.0,
     )
 
     assert torch.all(torch.isfinite(tables.room_area))
     assert torch.count_nonzero(tables.room_area[0, 0]) == 0
 
 
-def test_dual_gradient_raises_observed_door_price() -> None:
+def test_dual_gradient_uses_probability_error_scale() -> None:
     preds = example_predictions(requires_grad=True)
+    with torch.no_grad():
+        preds.left.zero_()
+        preds.right.zero_()
+        preds.toilet_crossed_room.zero_()
+        preds.room_area.zero_()
+    preds.toilet_compatibility[:] = True
     door_matches = empty_door_matches()
     door_matches.left[0, 2] = 0
     area_probability, area_mask = uniform_area_targets()
-    area_mask.zero_()
+    area_mask[0, 1] = False
 
     loss = compute_balance_loss(
         preds=preds,
         door_matches=door_matches,
+        toilet_crossed_room_idx=torch.tensor([0]),
+        room_area=torch.tensor([[0, -1]]),
+        area_probability=area_probability,
+        area_dual_mask=area_mask,
+        record_weight=torch.ones(1),
+        door_eta=1.0,
+        door_beta=1.0,
+        toilet_eta=1.0,
+        toilet_beta=1.0,
+        area_eta=1.0,
+        area_beta=1.0,
+    )
+    loss.backward()
+
+    torch.testing.assert_close(preds.left.grad[0, 1], torch.tensor([-2.0 / 3.0, 2.0 / 3.0]))
+    torch.testing.assert_close(preds.toilet_crossed_room.grad[0], torch.tensor([-0.5, 0.5]))
+    torch.testing.assert_close(
+        preds.room_area.grad[0, 0],
+        torch.tensor([-5.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]),
+    )
+
+
+def test_area_beta_does_not_regularize_fixed_prior() -> None:
+    preds = example_predictions(requires_grad=True)
+    area_probability, area_mask = uniform_area_targets()
+    area_probability[0, 0] = torch.tensor([0.5, 0.1, 0.1, 0.1, 0.1, 0.1])
+    area_mask[0, 1] = False
+    with torch.no_grad():
+        preds.room_area.zero_()
+    loss = compute_balance_loss(
+        preds=preds,
+        door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
         room_area=torch.full((1, 2), -1),
         area_probability=area_probability,
         area_dual_mask=area_mask,
         record_weight=torch.ones(1),
-        door_eta=0.02,
-        toilet_eta=0.02,
-        area_eta=0.02,
-        price_limit=20.0,
+        door_eta=0.0,
+        door_beta=1.0,
+        toilet_eta=0.0,
+        toilet_beta=1.0,
+        area_eta=1.0,
+        area_beta=1.0,
     )
     loss.backward()
 
-    assert preds.left.grad[0, 1, 0] < 0.0
-    assert preds.left.grad[0, 1, 1] > 0.0
+    assert torch.count_nonzero(preds.room_area.grad) == 0
+
+
+def test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero() -> None:
+    preds = example_predictions(requires_grad=True)
+    with torch.no_grad():
+        preds.left.mul_(100.0)
+    area_probability, area_mask = uniform_area_targets()
+    area_mask.zero_()
+
+    tables = compute_balance_price_tables(
+        preds,
+        area_probability,
+        area_mask,
+    )
+    assert tables.left.abs().max() > 20.0
+    loss = compute_balance_loss(
+        preds=preds,
+        door_matches=empty_door_matches(),
+        toilet_crossed_room_idx=torch.tensor([-1]),
+        room_area=torch.full((1, 2), -1),
+        area_probability=area_probability,
+        area_dual_mask=area_mask,
+        record_weight=torch.ones(1),
+        door_eta=1.0,
+        door_beta=1.0,
+        toilet_eta=0.0,
+        toilet_beta=1.0,
+        area_eta=0.0,
+        area_beta=1.0,
+    )
+    loss.backward()
+
+    assert torch.sum(preds.left.grad * preds.left) > 0.0
+
+
+def test_zero_eta_freezes_balance_corrections() -> None:
+    preds = example_predictions(requires_grad=True)
+    door_matches = empty_door_matches()
+    door_matches.left[0, 2] = 0
+    area_probability, area_mask = uniform_area_targets()
+    loss = compute_balance_loss(
+        preds=preds,
+        door_matches=door_matches,
+        toilet_crossed_room_idx=torch.tensor([0]),
+        room_area=torch.zeros((1, 2), dtype=torch.int64),
+        area_probability=area_probability,
+        area_dual_mask=area_mask,
+        record_weight=torch.ones(1),
+        door_eta=0.0,
+        door_beta=1.0,
+        toilet_eta=0.0,
+        toilet_beta=1.0,
+        area_eta=0.0,
+        area_beta=1.0,
+    )
+    loss.backward()
+
+    assert torch.count_nonzero(preds.left.grad) == 0
+    assert torch.count_nonzero(preds.toilet_crossed_room.grad) == 0
+    assert torch.count_nonzero(preds.room_area.grad) == 0
 
 
 def test_infeasible_toilet_observation_is_rejected() -> None:
@@ -194,9 +296,11 @@ def test_infeasible_toilet_observation_is_rejected() -> None:
             area_dual_mask=area_mask,
             record_weight=torch.ones(1),
             door_eta=0.02,
+            door_beta=1.0,
             toilet_eta=0.02,
+            toilet_beta=1.0,
             area_eta=0.02,
-            price_limit=20.0,
+            area_beta=1.0,
         )
     except ValueError as error:
         assert "infeasible" in str(error)
@@ -207,7 +311,11 @@ def test_infeasible_toilet_observation_is_rejected() -> None:
 def test_proposal_price_residual_is_negative_price_without_gain() -> None:
     preds = example_predictions()
     area_probability, area_mask = uniform_area_targets()
-    tables = compute_balance_price_tables(preds, area_probability, area_mask, 20.0)
+    tables = compute_balance_price_tables(
+        preds,
+        area_probability,
+        area_mask,
+    )
     proposal = compute_proposal_balance_score_table(preds, tables, 6)
     residual = compute_proposal_balance_score_residual(
         proposal,
@@ -235,7 +343,10 @@ def main() -> None:
     test_area_targets_apply_preferences_and_mask_forced_rooms()
     test_prices_are_centered_masked_and_include_area_prior()
     test_forced_one_hot_area_target_has_finite_zero_price()
-    test_dual_gradient_raises_observed_door_price()
+    test_dual_gradient_uses_probability_error_scale()
+    test_area_beta_does_not_regularize_fixed_prior()
+    test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero()
+    test_zero_eta_freezes_balance_corrections()
     test_infeasible_toilet_observation_is_rejected()
     test_proposal_price_residual_is_negative_price_without_gain()
 

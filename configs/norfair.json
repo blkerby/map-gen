@@ -43,10 +43,12 @@
   },
   "balance_train": {
     "batch_size": 8192,
-    "door_eta": 0.001,
-    "toilet_eta": 0.001,
-    "area_eta": 0.001,
-    "price_limit": 20.0
+    "door_eta": 0.2,
+    "door_beta": 0.3,
+    "toilet_eta": 0.005,
+    "toilet_beta": 0.3,
+    "area_eta": 0.005,
+    "area_beta": 0.3
   },
   "generation": {
     "num_environments": 8192,

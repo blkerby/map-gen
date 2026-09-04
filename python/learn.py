@@ -25,8 +25,8 @@ from env import (
 from experience import ExperienceStorage
 from loss import (
     LossConfig,
+    compute_balance_correction_tables,
     compute_balance_loss,
-    compute_balance_price_tables,
     compute_balance_score_target_logits,
     compute_room_area_balance_score_target_logits,
     compute_toilet_balance_score_target_logits,
@@ -113,9 +113,11 @@ def train_balance_batch(
     record_weight: torch.Tensor,
     balance_model: torch.nn.Module,
     door_eta: float,
+    door_beta: float,
     toilet_eta: float,
+    toilet_beta: float,
     area_eta: float,
-    price_limit: float,
+    area_beta: float,
     loss_scale: float,
 ) -> float:
     loss = compute_balance_loss(
@@ -127,9 +129,11 @@ def train_balance_batch(
         area_dual_mask,
         record_weight,
         door_eta,
+        door_beta,
         toilet_eta,
+        toilet_beta,
         area_eta,
-        price_limit,
+        area_beta,
     )
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite balance loss: {loss.item()}")
@@ -190,9 +194,11 @@ def train_balance_fresh(
             record_weight=torch.ones(index.shape[0], dtype=torch.float32, device=context.device),
             balance_model=context.balance_model,
             door_eta=context.step_config.balance_train.door_eta,
+            door_beta=context.step_config.balance_train.door_beta,
             toilet_eta=context.step_config.balance_train.toilet_eta,
+            toilet_beta=context.step_config.balance_train.toilet_beta,
             area_eta=context.step_config.balance_train.area_eta,
-            price_limit=context.step_config.balance_train.price_limit,
+            area_beta=context.step_config.balance_train.area_beta,
             loss_scale=index.shape[0] / round_episodes,
         )
         batch_count += 1
@@ -231,6 +237,7 @@ class FeatureTrainBatch:
     proposal_invalid: torch.Tensor | None
     proposal_target_reward: torch.Tensor | None
     proposal_balance_residual: torch.Tensor | None
+    proposal_area_prior_logit: torch.Tensor | None
 
 
 @dataclass
@@ -477,7 +484,11 @@ def compute_candidate_diagnostics(
 ) -> CandidateDiagnostics:
     target_reward = proposal_data.target_reward.to(torch.float32)
     balance_residual = proposal_data.balance_residual.to(torch.float32)
-    target_logits = target_reward / proposal_target_temperature + balance_residual
+    area_prior_logit = proposal_data.area_prior_logit.to(torch.float32)
+    target_logits = (
+        (target_reward + balance_residual) / proposal_target_temperature
+        + area_prior_logit
+    )
     target_logits = torch.where(
         proposal_data.invalid,
         torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
@@ -493,12 +504,12 @@ def compute_candidate_diagnostics(
     flat_logits = target_logits.reshape(-1, candidate_count)
     temperature_shape = (-1,) + (1,) * (target_reward.ndim - 1)
     sampling_logits = (
-        target_reward
+        (target_reward + balance_residual)
         / generation_temperature.to(
             device=target_reward.device,
             dtype=torch.float32,
         ).view(temperature_shape)
-        + balance_residual
+        + area_prior_logit
     )
     flat_sampling_logits = sampling_logits.reshape(-1, candidate_count)
     flat_present = present.reshape(-1, candidate_count)
@@ -862,12 +873,14 @@ def prepare_feature_batches(
             proposal_invalid = None
             proposal_target_reward = None
             proposal_balance_residual = None
+            proposal_area_prior_logit = None
             if proposal_data is not None and step + 1 < episode_length:
                 proposal_frontier_idx = proposal_data.frontier_idx[:, step]
                 proposal_action_idx = proposal_data.action_idx[:, step]
                 proposal_invalid = proposal_data.invalid[:, step]
                 proposal_target_reward = proposal_data.target_reward[:, step]
                 proposal_balance_residual = proposal_data.balance_residual[:, step]
+                proposal_area_prior_logit = proposal_data.area_prior_logit[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
             if generated_feature_batches is not None and next_lookahead_outcomes is not None:
                 replay_feature_requirements = env.get_replay_action_feature_requirements(
@@ -984,6 +997,7 @@ def prepare_feature_batches(
                     proposal_invalid=proposal_invalid,
                     proposal_target_reward=proposal_target_reward,
                     proposal_balance_residual=proposal_balance_residual,
+                    proposal_area_prior_logit=proposal_area_prior_logit,
                 )
             )
     return (
@@ -1101,11 +1115,13 @@ def prepare_train_batch_task(
 def proposal_batch_loss(
     candidate_score: torch.Tensor,
     target_reward: torch.Tensor,
+    logit_offset: torch.Tensor,
     invalid: torch.Tensor,
     proposal_target_temperature: float,
     device: torch.device,
 ) -> torch.Tensor:
     target_reward = target_reward.to(device, dtype=torch.float32)
+    logit_offset = logit_offset.to(device, dtype=torch.float32)
     invalid = invalid.to(device=device, dtype=torch.bool)
     present = torch.isfinite(candidate_score) & torch.isfinite(target_reward)
     valid = present & ~invalid
@@ -1118,7 +1134,7 @@ def proposal_batch_loss(
         candidate_score,
         torch.full_like(candidate_score, invalid_logit),
     ).to(torch.float32)
-    target_logits = target_reward / proposal_target_temperature
+    target_logits = target_reward / proposal_target_temperature + logit_offset
     target_logits = torch.where(
         invalid,
         torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
@@ -1129,7 +1145,9 @@ def proposal_batch_loss(
         target_logits,
         torch.full_like(target_logits, invalid_logit),
     )
-    row_candidate_logits = candidate_score[row_valid] / proposal_target_temperature
+    row_candidate_logits = (
+        candidate_score[row_valid] / proposal_target_temperature + logit_offset[row_valid]
+    )
     row_target_logits = target_logits[row_valid]
     row_mask = valid[row_valid]
     proposal_log_probs = torch.nn.functional.log_softmax(
@@ -1246,11 +1264,10 @@ def train_feature_batch_backward(
                 context.train_batch_envs[0].engine.rooms,
                 prepared_batch.episode_data.generation_variable_floats,
             )
-            balance_score_tables = compute_balance_price_tables(
+            balance_score_tables = compute_balance_correction_tables(
                 balance_preds,
                 area_targets.probability,
                 area_targets.dual_mask,
-                context.step_config.balance_train.price_limit,
             )
             balance_score_target, balance_score_mask = compute_balance_score_target_logits(
                 balance_score_tables,
@@ -1372,6 +1389,7 @@ def train_feature_batch_backward(
             and feature_batch.proposal_invalid is not None
             and feature_batch.proposal_target_reward is not None
             and feature_batch.proposal_balance_residual is not None
+            and feature_batch.proposal_area_prior_logit is not None
         )
         with torch.amp.autocast(
             "cuda",
@@ -1525,16 +1543,26 @@ def train_feature_batch_backward(
                 feature_batch.proposal_action_idx,
                 context.device,
             )
-            proposal_score = proposal_score + (
-                context.step_config.train.proposal_target_temperature
-                * feature_batch.proposal_balance_residual.to(
+            proposal_balance_residual = feature_batch.proposal_balance_residual.to(
+                device=context.device,
+                dtype=torch.float32,
+            )
+            proposal_score = proposal_score + proposal_balance_residual
+            proposal_target_reward = (
+                feature_batch.proposal_target_reward.to(
                     device=context.device,
                     dtype=torch.float32,
                 )
+                + proposal_balance_residual
+            )
+            proposal_area_prior_logit = feature_batch.proposal_area_prior_logit.to(
+                device=context.device,
+                dtype=torch.float32,
             )
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,
-                feature_batch.proposal_target_reward,
+                proposal_target_reward,
+                proposal_area_prior_logit,
                 feature_batch.proposal_invalid,
                 context.step_config.train.proposal_target_temperature,
                 context.device,

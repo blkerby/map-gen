@@ -67,9 +67,11 @@ def test_balance_training_chunks_one_round_into_one_optimizer_step() -> None:
             balance_train=SimpleNamespace(
                 batch_size=2,
                 door_eta=0.02,
+                door_beta=1.0,
                 toilet_eta=0.03,
+                toilet_beta=1.0,
                 area_eta=0.04,
-                price_limit=20.0,
+                area_beta=1.0,
             ),
             generation=SimpleNamespace(num_iterations=1, num_environments=4),
             train=SimpleNamespace(fresh_pass_factor=0.0, batch_size=1),

@@ -2,16 +2,19 @@ import torch
 
 from env import (
     AREA_COUNT,
+    Actions,
     ProposalData,
     proposal_action_door_variant_idx,
     proposal_action_idx,
     proposal_action_room_area,
 )
 from generate import (
+    candidate_area_prior_logit,
     gather_proposal_row_values,
     match_sampled_proposal_values,
     sample_proposal_shortlist,
 )
+from loss import compute_area_balance_prior
 from learn import (
     compute_candidate_diagnostics,
     proposal_batch_loss,
@@ -41,6 +44,7 @@ def test_proposal_loss_compares_candidate_scores() -> None:
     aligned_loss = proposal_batch_loss(
         aligned_score,
         target_reward,
+        torch.zeros_like(target_reward),
         torch.zeros_like(target_reward, dtype=torch.bool),
         1.0,
         device,
@@ -48,6 +52,7 @@ def test_proposal_loss_compares_candidate_scores() -> None:
     reversed_loss = proposal_batch_loss(
         reversed_score,
         target_reward,
+        torch.zeros_like(target_reward),
         torch.zeros_like(target_reward, dtype=torch.bool),
         1.0,
         device,
@@ -63,6 +68,7 @@ def test_invalid_candidate_receives_downward_gradient() -> None:
     loss = proposal_batch_loss(
         candidate_score,
         torch.zeros((1, 2)),
+        torch.zeros((1, 2)),
         torch.tensor([[False, True]]),
         1.0,
         torch.device("cpu"),
@@ -77,6 +83,7 @@ def test_all_invalid_row_has_zero_proposal_loss() -> None:
     candidate_score = torch.tensor([[1.0, 2.0]], requires_grad=True)
     loss = proposal_batch_loss(
         candidate_score,
+        torch.zeros((1, 2)),
         torch.zeros((1, 2)),
         torch.ones((1, 2), dtype=torch.bool),
         1.0,
@@ -94,6 +101,7 @@ def test_proposal_target_temperature_preserves_reward_score_scale() -> None:
     sharp_loss = proposal_batch_loss(
         candidate_score,
         target_reward,
+        torch.zeros_like(target_reward),
         invalid,
         0.5,
         torch.device("cpu"),
@@ -101,6 +109,7 @@ def test_proposal_target_temperature_preserves_reward_score_scale() -> None:
     soft_loss = proposal_batch_loss(
         candidate_score,
         target_reward,
+        torch.zeros_like(target_reward),
         invalid,
         2.0,
         torch.device("cpu"),
@@ -118,6 +127,7 @@ def test_proposal_target_temperature_scales_student_and_target_logits() -> None:
     temperature_loss = proposal_batch_loss(
         candidate_score,
         target_reward,
+        torch.zeros_like(target_reward),
         invalid,
         0.5,
         torch.device("cpu"),
@@ -125,6 +135,7 @@ def test_proposal_target_temperature_scales_student_and_target_logits() -> None:
     explicitly_scaled_loss = proposal_batch_loss(
         candidate_score / 0.5,
         target_reward / 0.5,
+        torch.zeros_like(target_reward),
         invalid,
         1.0,
         torch.device("cpu"),
@@ -141,6 +152,7 @@ def test_selected_probability_uses_generation_temperature() -> None:
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
         target_reward=torch.tensor([[[0.0, 1.0]]]),
         balance_residual=torch.zeros((1, 1, 2)),
+        area_prior_logit=torch.zeros((1, 1, 2)),
     )
     soft_target = compute_candidate_diagnostics(
         proposal_data,
@@ -165,14 +177,15 @@ def test_selected_probability_uses_generation_temperature() -> None:
     assert sharp_target.target_entropy < soft_target.target_entropy
 
 
-def test_candidate_diagnostics_apply_balance_outside_temperature() -> None:
+def test_candidate_diagnostics_scale_balance_with_temperature() -> None:
     proposal_data = ProposalData(
         frontier_idx=torch.tensor([[[0, 0]]], dtype=torch.int16),
         action_idx=torch.tensor([[[0, 1]]], dtype=torch.int16),
         invalid=torch.zeros((1, 1, 2), dtype=torch.bool),
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
-        target_reward=torch.zeros((1, 1, 2)),
-        balance_residual=torch.tensor([[[0.0, 1.0]]]),
+        target_reward=torch.tensor([[[0.0, 1.0]]]),
+        balance_residual=torch.tensor([[[1.0, 0.0]]]),
+        area_prior_logit=torch.tensor([[[0.0, 1.0]]]),
     )
 
     diagnostics = compute_candidate_diagnostics(
@@ -183,8 +196,28 @@ def test_candidate_diagnostics_apply_balance_outside_temperature() -> None:
 
     torch.testing.assert_close(
         diagnostics.selected_probability,
-        torch.softmax(torch.tensor([0.0, 1.0]), dim=0)[1],
+        torch.softmax(torch.tensor([100.0, 101.0]), dim=0)[1],
     )
+
+
+def test_candidate_area_prior_preserves_target_odds() -> None:
+    area_probability = torch.tensor([[[0.75, 0.05, 0.05, 0.05, 0.05, 0.05]]])
+    prior_price = compute_area_balance_prior(
+        area_probability,
+        torch.tensor([[True]]),
+    )
+    logits = candidate_area_prior_logit(
+        Actions(
+            room_idx=torch.tensor([[0, 0]], dtype=torch.int16),
+            room_x=torch.zeros((1, 2), dtype=torch.int16),
+            room_y=torch.zeros((1, 2), dtype=torch.int16),
+            room_area=torch.tensor([[0, 1]], dtype=torch.int16),
+        ),
+        exempt_room=torch.tensor([[False]]),
+        area_prior_price=prior_price,
+    )
+
+    torch.testing.assert_close(torch.exp(logits[0, 0] - logits[0, 1]), torch.tensor(15.0))
 
 
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
@@ -370,7 +403,8 @@ def main() -> None:
     test_proposal_target_temperature_preserves_reward_score_scale()
     test_proposal_target_temperature_scales_student_and_target_logits()
     test_selected_probability_uses_generation_temperature()
-    test_candidate_diagnostics_apply_balance_outside_temperature()
+    test_candidate_diagnostics_scale_balance_with_temperature()
+    test_candidate_area_prior_preserves_target_odds()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_residual_values_follow_sampled_candidates()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()

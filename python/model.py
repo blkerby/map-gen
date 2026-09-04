@@ -37,11 +37,11 @@ class Predictions:
     # log-odds of invalid Phantoon area assignment:
     phantoon_area_invalid: torch.Tensor
     vanilla_area_invalid: torch.Tensor
-    # Predicted balance-model log-odds for the matched target door:
+    # Predicted learned balance price for the matched target door:
     balance_score: torch.Tensor
-    # Predicted centered balance-model log-odds for each room's final area:
+    # Predicted centered learned balance correction for each room's final area:
     area_balance_score: torch.Tensor
-    # Predicted balance-model log-odds for the room crossed by the Toilet:
+    # Predicted learned balance price for the room crossed by the Toilet:
     toilet_balance_score: torch.Tensor
     # Predicted average live frontier count across the full episode:
     avg_frontiers: torch.Tensor

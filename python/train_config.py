@@ -186,9 +186,11 @@ class BalanceModelConfig(StrictBaseModel):
 class BalanceTrainConfig(StrictBaseModel):
     batch_size: ScheduleableInt
     door_eta: float
+    door_beta: float
     toilet_eta: float
+    toilet_beta: float
     area_eta: float
-    price_limit: float
+    area_beta: float
 
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
@@ -646,13 +648,14 @@ def validate_config(config: Config) -> None:
         )
     for field_name in ("door_eta", "toilet_eta", "area_eta"):
         value = getattr(config.balance_train, field_name)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(
+                f"balance_train.{field_name} must be finite and greater than or equal to zero"
+            )
+    for field_name in ("door_beta", "toilet_beta", "area_beta"):
+        value = getattr(config.balance_train, field_name)
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"balance_train.{field_name} must be finite and greater than zero")
-    if (
-        not math.isfinite(config.balance_train.price_limit)
-        or config.balance_train.price_limit <= 0.0
-    ):
-        raise ValueError("balance_train.price_limit must be finite and greater than zero")
     if config.generation.frontier_neighbor_count < 0:
         raise ValueError(
             "generation.frontier_neighbor_count must be greater than or equal to zero"

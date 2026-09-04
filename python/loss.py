@@ -458,18 +458,21 @@ def compute_balance_loss(
     area_dual_mask: torch.Tensor,
     record_weight: torch.Tensor,
     door_eta: float,
+    door_beta: float,
     toilet_eta: float,
+    toilet_beta: float,
     area_eta: float,
-    price_limit: float,
+    area_beta: float,
 ) -> torch.Tensor:
-    tables = compute_balance_price_tables(
+    tables = compute_balance_correction_tables(
         preds,
         area_probability,
         area_dual_mask,
-        price_limit,
     )
     door_residual_per_record = tables.left.new_zeros(record_weight.shape)
+    door_regularizer_per_record = tables.left.new_zeros(record_weight.shape)
     door_count_per_record = tables.left.new_zeros(record_weight.shape)
+    door_regularizer_group_count = tables.left.new_zeros(())
     for prices, targets, compatibility in (
         (
             tables.left,
@@ -516,6 +519,12 @@ def compute_balance_loss(
             ),
         ),
     ):
+        regularized_group = compatibility.any(dim=-1)
+        door_regularizer_per_record += torch.sum(
+            torch.sum(prices.square(), dim=-1) * regularized_group.unsqueeze(0),
+            dim=1,
+        )
+        door_regularizer_group_count += regularized_group.sum()
         mask = targets >= 0
         if not torch.any(mask):
             continue
@@ -530,9 +539,7 @@ def compute_balance_loss(
         if torch.any(mask & ~observed_compatible):
             raise ValueError("observed door pairing is incompatible")
         selected = torch.gather(prices, -1, safe_targets.unsqueeze(-1)).squeeze(-1)
-        feasible_count = compatibility.sum(dim=-1).clamp_min(1)
-        residual_value = feasible_count * selected - prices.sum(dim=-1)
-        door_residual_per_record += torch.sum(residual_value * mask, dim=1)
+        door_residual_per_record += torch.sum(selected * mask, dim=1)
         door_count_per_record += torch.sum(mask, dim=1)
 
     toilet_mask = toilet_crossed_room_idx >= 0
@@ -544,9 +551,8 @@ def compute_balance_loss(
         -1,
         safe_toilet.unsqueeze(-1),
     ).squeeze(-1)
-    toilet_residual = (
-        preds.toilet_compatibility.sum() * toilet_selected - tables.toilet_crossed_room.sum(dim=-1)
-    )
+    toilet_residual = toilet_selected
+    toilet_regularizer = torch.sum(tables.toilet_crossed_room.square(), dim=-1)
     area_mask = (room_area >= 0) & area_dual_mask
     safe_area = room_area.clamp(0, AREA_COUNT - 1).to(torch.int64)
     selected_area_price = torch.gather(
@@ -561,16 +567,26 @@ def compute_balance_loss(
     ).squeeze(-1)
     if torch.any(area_mask & (selected_area_probability <= 0.0)):
         raise ValueError("observed room-area assignment has zero target probability")
-    area_residual = selected_area_price / selected_area_probability.clamp_min(
-        torch.finfo(torch.float32).tiny
-    ) - tables.room_area.sum(dim=-1)
+    area_residual = selected_area_price
+    area_regularizer = torch.sum(tables.room_area.square(), dim=-1)
     total_record_weight = record_weight.sum().clamp_min(1.0)
     door_objective = (
         torch.sum(door_residual_per_record / door_count_per_record.clamp_min(1.0) * record_weight)
         / total_record_weight
     )
+    door_regularizer_objective = (
+        torch.sum(
+            door_regularizer_per_record
+            / door_regularizer_group_count.clamp_min(1.0)
+            * record_weight
+        )
+        / total_record_weight
+    )
     toilet_objective = (
         torch.sum(toilet_residual * toilet_mask * record_weight) / total_record_weight
+    )
+    toilet_regularizer_objective = (
+        torch.sum(toilet_regularizer * record_weight) / total_record_weight
     )
     area_objective = (
         torch.sum(
@@ -580,7 +596,19 @@ def compute_balance_loss(
         )
         / total_record_weight
     )
-    return -(door_eta * door_objective + toilet_eta * toilet_objective + area_eta * area_objective)
+    area_regularizer_objective = (
+        torch.sum(
+            torch.sum(area_regularizer * area_dual_mask, dim=1)
+            / torch.sum(area_dual_mask, dim=1).clamp_min(1.0)
+            * record_weight
+        )
+        / total_record_weight
+    )
+    return (
+        door_eta * (0.5 * door_beta * door_regularizer_objective - door_objective)
+        + toilet_eta * (0.5 * toilet_beta * toilet_regularizer_objective - toilet_objective)
+        + area_eta * (0.5 * area_beta * area_regularizer_objective - area_objective)
+    )
 
 
 def direction_valid_match_balance_score_target_logits(
@@ -613,7 +641,6 @@ def direction_balance_price_table(
     source_global_door_variant_idx: torch.Tensor,
     target_global_door_variant_idx: torch.Tensor,
     door_variant_compatibility: torch.Tensor,
-    price_limit: float,
 ) -> torch.Tensor:
     concrete_prices = materialize_direction_balance_logits(
         prices,
@@ -635,16 +662,40 @@ def direction_balance_price_table(
     centered = concrete_prices - means.unsqueeze(-1)
     return torch.where(
         compatibility.unsqueeze(0),
-        centered.clamp(-price_limit, price_limit),
+        centered,
         0.0,
     )
 
 
-def compute_balance_price_tables(
+def center_area_balance_prices(
+    prices: torch.Tensor,
+    area_probability: torch.Tensor,
+    area_dual_mask: torch.Tensor,
+) -> torch.Tensor:
+    mean = torch.sum(prices * area_probability, dim=-1, keepdim=True)
+    return torch.where(
+        area_dual_mask.unsqueeze(-1),
+        prices - mean,
+        0.0,
+    )
+
+
+def compute_area_balance_prior(
+    area_probability: torch.Tensor,
+    area_dual_mask: torch.Tensor,
+) -> torch.Tensor:
+    safe_probability = area_probability.clamp_min(torch.finfo(torch.float32).tiny)
+    return center_area_balance_prices(
+        -safe_probability.log(),
+        area_probability,
+        area_dual_mask,
+    )
+
+
+def compute_balance_correction_tables(
     preds: BalancePredictions,
     area_probability: torch.Tensor,
     area_dual_mask: torch.Tensor,
-    price_limit: float,
 ) -> BalancePriceTables:
     direction_inputs = (
         (
@@ -684,7 +735,6 @@ def compute_balance_price_tables(
             source_global_idx,
             target_global_idx,
             preds.door_variant_compatibility,
-            price_limit,
         )
         for prices, source_idx, target_idx, source_global_idx, target_global_idx in direction_inputs
     )
@@ -693,20 +743,17 @@ def compute_balance_price_tables(
     toilet_mean = torch.sum(preds.toilet_crossed_room * toilet_mask, dim=-1) / toilet_count
     toilet = torch.where(
         toilet_mask,
-        (preds.toilet_crossed_room - toilet_mean.unsqueeze(-1)).clamp(-price_limit, price_limit),
+        preds.toilet_crossed_room - toilet_mean.unsqueeze(-1),
         0.0,
     )
     if area_probability.shape != preds.room_area.shape:
         raise ValueError("area_probability shape must match balance room-area prices")
     if area_dual_mask.shape != preds.room_area.shape[:2]:
         raise ValueError("area_dual_mask shape must match balance room rows")
-    safe_probability = area_probability.clamp_min(torch.finfo(torch.float32).tiny)
-    area_raw = preds.room_area.to(torch.float32) - safe_probability.log()
-    area_mean = torch.sum(area_raw * area_probability, dim=-1, keepdim=True)
-    room_area = torch.where(
-        area_dual_mask.unsqueeze(-1),
-        (area_raw - area_mean).clamp(-price_limit, price_limit),
-        0.0,
+    room_area = center_area_balance_prices(
+        preds.room_area.to(torch.float32),
+        area_probability,
+        area_dual_mask,
     )
     return BalancePriceTables(
         left=left,
@@ -715,6 +762,30 @@ def compute_balance_price_tables(
         down=down,
         toilet_crossed_room=toilet,
         room_area=room_area,
+    )
+
+
+def compute_balance_price_tables(
+    preds: BalancePredictions,
+    area_probability: torch.Tensor,
+    area_dual_mask: torch.Tensor,
+) -> BalancePriceTables:
+    corrections = compute_balance_correction_tables(
+        preds,
+        area_probability,
+        area_dual_mask,
+    )
+    area_prior = compute_area_balance_prior(
+        area_probability,
+        area_dual_mask,
+    )
+    return BalancePriceTables(
+        left=corrections.left,
+        right=corrections.right,
+        up=corrections.up,
+        down=corrections.down,
+        toilet_crossed_room=corrections.toilet_crossed_room,
+        room_area=corrections.room_area + area_prior,
     )
 
 

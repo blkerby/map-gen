@@ -134,12 +134,33 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
 
     config_data = load_debug_config()
     config_data["balance_train"]["door_eta"] = 0.0
+    validate_config(Config.model_validate(config_data))
+
+    config_data["balance_train"]["door_eta"] = -0.01
     try:
         validate_config(Config.model_validate(config_data))
     except ValueError as err:
         assert "balance_train.door_eta" in str(err)
     else:
-        raise AssertionError("balance_train.door_eta should reject zero")
+        raise AssertionError("balance_train.door_eta should reject negative values")
+
+    config_data = load_debug_config()
+    del config_data["balance_train"]["door_beta"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("balance_train.door_beta should be required")
+
+    config_data = load_debug_config()
+    config_data["balance_train"]["door_beta"] = 0.0
+    try:
+        validate_config(Config.model_validate(config_data))
+    except ValueError as err:
+        assert "balance_train.door_beta" in str(err)
+    else:
+        raise AssertionError("balance_train.door_beta should reject zero")
 
 
 def test_proposal_target_temperature_must_be_positive() -> None:

@@ -9,10 +9,10 @@ dual-price controller for all three balance families:
 - Toilet crossing rooms;
 - room-to-area assignments.
 
-The generator will subtract prices *after* dividing ordinary rewards by sampling
-temperature. This separates balance-loop gain from the temperature schedules that
-caused the Zebes oscillation. The balance model remains conditional on the full
-generation-configuration vector and emits every price in one forward pass.
+The generator will combine prices with ordinary rewards before dividing by
+sampling temperature. This keeps their relative strength constant as temperature
+changes. The balance model remains conditional on the full generation-configuration
+vector and emits every price in one forward pass.
 
 This is one backward-incompatible cutover. There will be no compatibility mode,
 old/new feature flag, or fallback for old configs and checkpoints.
@@ -20,11 +20,11 @@ old/new feature flag, or fallback for old configs and checkpoints.
 ## Mathematical contract
 
 For a categorical balance group with target distribution `q`, observed outcome
-`y`, and learned price vector `lambda_theta(z)`, use the target-normalized sampled
+`y`, and learned price vector `lambda_theta(z)`, use the probability-error sampled
 residual
 
 ```
-r_k = (1[y = k] - q_k) / q_k.
+r_k = 1[y = k] - q_k.
 ```
 
 The stochastic dual objective for one observation is
@@ -34,32 +34,46 @@ D(theta) = sum_k r_k * lambda_theta(z)_k.
 ```
 
 Gradient descent therefore minimizes `-eta * D`. It raises the price of an
-overrepresented outcome and lowers the alternatives. For uniform `q_k = 1/K`,
-the residual is `K * 1[y = k] - 1`, so a family does not become weaker merely
-because it has more categories.
+overrepresented outcome and lowers the alternatives. Each sampled coordinate
+residual is bounded independently of category count and target probability, so
+the three family-specific gains have a comparable meaning.
 
 Prices have an arbitrary common offset. Before use, center each group:
 
 - door and Toilet prices: arithmetic mean over feasible outcomes;
 - area prices: `q`-weighted mean.
 
-Then clamp applied and supervised prices to `[-price_limit, price_limit]`.
-Incompatible outcomes are excluded from targets, centering, updates, metrics,
-and generation. Encountering an observed incompatible outcome is an error.
-
-The generation logits become
+Regularize each learned correction with `beta * lambda^2 / 2`. With the
+regularizer inside the family-specific `eta` factor, the idealized update is
 
 ```
-ordinary_reward / temperature - balance_price
+lambda <- (1 - eta * beta) * lambda + eta * r
 ```
 
-and proposal logits use the analogous
+In expectation under observed distribution `p`, its equilibrium is
+`lambda = (p - q) / beta`. The fixed area prior is a reference-distribution
+logit, not a learned correction, so beta does not regularize it. Incompatible
+outcomes are excluded from targets, centering, updates, metrics, and generation.
+Encountering an observed incompatible outcome is an error.
+
+The area target distribution is applied as a temperature-independent base
+measure. With `a = -log(q)`, final generation logits become
 
 ```
-proposal_score / proposal_temperature - balance_price.
+(ordinary_reward - learned_price) / temperature - a
 ```
 
-Thus `eta`, rather than `eta / temperature`, controls the balance feedback.
+and proposal logits use the analogous expression with `proposal_temperature`.
+Equivalently, an area price table used inside the numerator contains
+`learned_price + temperature * a`. Door and Toilet prices have no non-uniform
+prior and remain
+
+```
+(ordinary_reward - learned_price) / temperature.
+```
+
+Thus temperature changes sampling sharpness without changing either the
+price-to-reward ratio or the intended area target distribution `q`.
 
 ## Configuration schema
 
@@ -73,12 +87,15 @@ required fields in `balance_train`:
 ```
 batch_size
 door_eta
+door_beta
 toilet_eta
+toilet_beta
 area_eta
-price_limit
+area_beta
 ```
 
-Initial values for all three gains are `0.02`; the initial price limit is `20`.
+Initial values for all three gains are `0.02`; all three betas are `1.0`.
+An eta may be zero to freeze that family's learned correction.
 Use plain SGD with no momentum and one optimizer step per generated round.
 `batch_size` only chunks the forward/backward computation, so changing it does
 not change the round-level gain.
@@ -173,24 +190,26 @@ controller or generator.
 
 1. Reinterpret `BalanceModel` outputs as residual prices, retaining its compact
    direction-local door-variant representation and single-pass output layout.
-2. Replace probability/log-odds table construction with centered bounded price
+2. Replace probability/log-odds table construction with centered price
    tables. Add the `-log(q)` area prior before the learned residual so a new
    controller initially represents the requested area distribution.
-3. Replace cross-entropy balance-model fitting with the three linear dual
-   objectives. Accumulate chunked gradients over the full fresh round, apply
-   family-specific etas, validate finite gradients, and take one plain-SGD
-   step without hidden gradient clipping.
+3. Replace cross-entropy balance-model fitting with three quadratically
+   regularized linear dual objectives. Accumulate chunked gradients over the
+   full fresh round, apply family-specific etas and betas, validate finite
+   gradients, and take one plain-SGD step without hidden gradient clipping.
 4. Remove the balance EMA. Generation and main-model price supervision use the
    current balance model; retain the main model EMA unchanged.
 5. Change main-model balance supervision from probability log-odds KL losses to
    price regression for doors, Toilet, and areas, preserving masks for known
-   outcomes and already placed rooms.
-6. Apply balance prices after temperature in final-candidate and proposal
-   sampling. Keep immediate known door/area substitutions so the exact table
-   price is used when an action determines an outcome.
+   outcomes and already placed rooms. The area output predicts only the learned
+   correction; the exactly known `log(q)` prior is not regressed.
+6. Combine learned prices before temperature in final-candidate and proposal
+   sampling, while adding the area `log(q)` prior afterward. Keep immediate
+   known door/area substitutions so the exact value is used when an action
+   determines an outcome.
 7. Remove obsolete heat/water and area-tile model outputs, losses, rewards, and
-   metrics. Add controller metrics for price RMS/max, saturation fraction,
-   target-vs-observed area counts, and main-model price tracking error.
+   metrics. Add controller metrics for price RMS/max, target-vs-observed area
+   counts, and main-model price tracking error.
 8. Bump training-checkpoint and model-export formats. Store only the main model,
    main EMA, balance model, main optimizer, and the plain balance optimizer;
    reject old formats as intended.
@@ -198,7 +217,7 @@ controller or generator.
    room counts and preferred probabilities.
 
 Gate: all unit tests pass, checkpoint save/load/export round-trips pass, and a
-single debug round has finite losses/prices with no saturated initial outputs.
+single debug round has finite losses/prices.
 
 ## Milestone 3: cheap integration validation
 
@@ -215,7 +234,7 @@ single debug round has finite losses/prices with no saturated initial outputs.
    - incompatible/forced entries receive neither gradient nor applied price;
    - effective area counts sum to the room count;
    - one dual optimizer step occurs per round regardless of chunk count;
-   - balance price corrections are independent of sampling temperature;
+   - the balance-price-to-ordinary-reward ratio is independent of temperature;
    - checkpoint reload reproduces model outputs.
 
 ## Expensive-run protocol
@@ -223,14 +242,14 @@ single debug round has finite losses/prices with no saturated initial outputs.
 Use Norfair for the first full run. Inspect controller and generation metrics at
 roughly rounds 10 and 25, and treat checkpoint 100 as the continuation gate.
 Continue toward at least eight million episodes only if prices remain finite,
-saturation is negligible, main-model price tracking is improving, and door,
+main-model price tracking is improving, and door,
 Toilet, and area distributions move toward their targets without a growing
 alternating mode. Run Zebes only after that gate because it adds heat/water and
 forced-special interactions.
 
 ## Explicitly deferred
 
-- No PI derivative/proportional term, leak, adaptive gain, replay training, or
+- No PI derivative/proportional term, adaptive gain, replay training, or
   statistical fallback table.
 - No hard per-map area quota; expected counts are the initial contract.
 - No separate exact tier-collapse branch; equal `0.75` maxima already allow

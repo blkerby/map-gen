@@ -136,7 +136,6 @@ class GenerateConfig:
     gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
-    balance_price_limit: float
     reward_door: float | torch.Tensor
     reward_connection: float | torch.Tensor
     reward_toilet: float | torch.Tensor
@@ -239,6 +238,7 @@ class ProposalData:
     selected_candidate: torch.Tensor
     target_reward: torch.Tensor
     balance_residual: torch.Tensor
+    area_prior_logit: torch.Tensor
 
     def to(self, device: torch.device) -> "ProposalData":
         return ProposalData(
@@ -248,6 +248,7 @@ class ProposalData:
             selected_candidate=self.selected_candidate.to(device),
             target_reward=self.target_reward.to(device),
             balance_residual=self.balance_residual.to(device),
+            area_prior_logit=self.area_prior_logit.to(device),
         )
 
     def slice(self, start: int, end: int) -> "ProposalData":
@@ -258,6 +259,7 @@ class ProposalData:
             selected_candidate=self.selected_candidate[start:end],
             target_reward=self.target_reward[start:end],
             balance_residual=self.balance_residual[start:end],
+            area_prior_logit=self.area_prior_logit[start:end],
         )
 
 

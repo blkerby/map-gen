@@ -60,8 +60,8 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v6"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v12"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v7"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v13"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -691,7 +691,6 @@ def create_generate_configs(
                 gpu_prefetch_batches=state.serving_config.gpu_prefetch_batches,
                 temperature=temperature,
                 proposal_temperature=proposal_temperature,
-                balance_price_limit=state.training_config.balance_train.price_limit,
                 reward_door=generate_request.reward_door,
                 reward_connection=generate_request.reward_connection,
                 reward_toilet=generate_request.reward_toilet,

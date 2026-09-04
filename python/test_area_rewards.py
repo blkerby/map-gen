@@ -49,7 +49,6 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         gpu_prefetch_batches=0,
         temperature=torch.ones([1]),
         proposal_temperature=torch.ones([1]),
-        balance_price_limit=20.0,
         reward_door=0.0,
         reward_connection=0.0,
         reward_toilet=0.0,

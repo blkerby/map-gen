@@ -129,7 +129,6 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
             map_size=(10, 20),
             distance_proximity_scale=1.0,
             model=SimpleNamespace(generation_autocast=False),
-            balance_train=SimpleNamespace(price_limit=20.0),
         ),
     )
     config = create_generate_configs(

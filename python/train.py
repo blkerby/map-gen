@@ -50,6 +50,7 @@ from learn import (
 )
 from loss import (
     LossConfig,
+    compute_area_balance_prior,
     compute_balance_price_tables,
     materialize_direction_balance_compatibility,
 )
@@ -95,7 +96,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v12"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v13"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -454,20 +455,18 @@ def topk_or_zeros(values: torch.Tensor, k0: int) -> torch.Tensor:
 class BalanceMetricValues:
     door_price_rms: torch.Tensor
     door_price_max: torch.Tensor
-    door_price_saturation: torch.Tensor
     toilet_price_rms: torch.Tensor
     toilet_price_max: torch.Tensor
-    toilet_price_saturation: torch.Tensor
     area_price_rms: torch.Tensor
     area_price_max: torch.Tensor
-    area_price_saturation: torch.Tensor
+    area_correction_price_rms: torch.Tensor
+    area_correction_price_max: torch.Tensor
 
 
 def compute_balance_metric_values(
     balance_model: torch.nn.Module,
     rooms: list[dict],
     generation_variable_floats: torch.Tensor,
-    price_limit: float,
     batch_size: int,
 ) -> BalanceMetricValues:
     episode_count = generation_variable_floats.shape[0]
@@ -477,8 +476,8 @@ def compute_balance_metric_values(
         raise ValueError("balance metric batch size must be greater than zero")
 
     totals = {
-        family: {"squares": 0.0, "count": 0, "max": 0.0, "saturated": 0}
-        for family in ("door", "toilet", "area")
+        family: {"squares": 0.0, "count": 0, "max": 0.0}
+        for family in ("door", "toilet", "area", "area_correction")
     }
     with torch.no_grad():
         for start in range(0, episode_count, batch_size):
@@ -490,7 +489,10 @@ def compute_balance_metric_values(
                 preds,
                 area_targets.probability,
                 area_targets.dual_mask,
-                price_limit,
+            )
+            area_prior = compute_area_balance_prior(
+                area_targets.probability,
+                area_targets.dual_mask,
             )
             direction_metrics = (
                 (
@@ -546,6 +548,9 @@ def compute_balance_metric_values(
                 ),
                 "toilet": tables.toilet_crossed_room[:, preds.toilet_compatibility].flatten(),
                 "area": tables.room_area[area_targets.dual_mask].flatten(),
+                "area_correction": (tables.room_area - area_prior)[
+                    area_targets.dual_mask
+                ].flatten(),
             }
             for family, values in values_by_family.items():
                 if values.numel() == 0:
@@ -555,16 +560,12 @@ def compute_balance_metric_values(
                 totals[family]["max"] = max(
                     totals[family]["max"], float(values.abs().max().item())
                 )
-                totals[family]["saturated"] += int(
-                    torch.count_nonzero(values.abs() >= price_limit).item()
-                )
 
     metrics = {}
     for family, total in totals.items():
         count = max(total["count"], 1)
         metrics[f"{family}_price_rms"] = torch.tensor(math.sqrt(total["squares"] / count))
         metrics[f"{family}_price_max"] = torch.tensor(total["max"])
-        metrics[f"{family}_price_saturation"] = torch.tensor(total["saturated"] / count)
     return BalanceMetricValues(
         **metrics,
     )
@@ -880,7 +881,6 @@ def create_generate_config(
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,
-        balance_price_limit=config.balance_train.price_limit,
         reward_door=generation_variable_floats_by_name["reward_door"],
         reward_connection=generation_variable_floats_by_name["reward_connection"],
         reward_toilet=generation_variable_floats_by_name["reward_toilet"],
@@ -1535,6 +1535,9 @@ class TrainingSession:
                 balance_residual=torch.cat(
                     [proposal_data.balance_residual for proposal_data in proposal_data_iterations]
                 ),
+                area_prior_logit=torch.cat(
+                    [proposal_data.area_prior_logit for proposal_data in proposal_data_iterations]
+                ),
             ),
             GeneratedFeatureData(
                 [
@@ -2029,9 +2032,11 @@ class TrainingSession:
                 for name in VANILLA_AREA_PROBABILITY_FIELDS
             },
             "balance_door_eta": step_config.balance_train.door_eta,
+            "balance_door_beta": step_config.balance_train.door_beta,
             "balance_toilet_eta": step_config.balance_train.toilet_eta,
+            "balance_toilet_beta": step_config.balance_train.toilet_beta,
             "balance_area_eta": step_config.balance_train.area_eta,
-            "balance_price_limit": step_config.balance_train.price_limit,
+            "balance_area_beta": step_config.balance_train.area_beta,
             "reward_frontier": variable_float_metric_value(
                 step_config.generation.reward_frontier,
                 "generation.reward_frontier",
@@ -2104,7 +2109,6 @@ class TrainingSession:
             "door_match_ss": door_match_ss,
             "balance_door_price_rms": balance_metrics.door_price_rms,
             "balance_door_price_max": balance_metrics.door_price_max,
-            "balance_door_price_saturation": balance_metrics.door_price_saturation,
             "toilet_crossed_room_top1": toilet_crossed_room_topk[0],
             "toilet_crossed_room_top2": toilet_crossed_room_topk[1],
             "toilet_crossed_room_top3": toilet_crossed_room_topk[2],
@@ -2113,10 +2117,10 @@ class TrainingSession:
             "unforced_special_room_area_ss": unforced_special_room_area_ss,
             "balance_toilet_price_rms": balance_metrics.toilet_price_rms,
             "balance_toilet_price_max": balance_metrics.toilet_price_max,
-            "balance_toilet_price_saturation": balance_metrics.toilet_price_saturation,
             "balance_area_price_rms": balance_metrics.area_price_rms,
             "balance_area_price_max": balance_metrics.area_price_max,
-            "balance_area_price_saturation": balance_metrics.area_price_saturation,
+            "balance_area_correction_price_rms": balance_metrics.area_correction_price_rms,
+            "balance_area_correction_price_max": balance_metrics.area_correction_price_max,
             **generation_stats,
         }
         for name, value in metrics.items():
@@ -2233,7 +2237,6 @@ class TrainingSession:
                     balance_model=self.balance_model,
                     rooms=self.rooms,
                     generation_variable_floats=episode_data.generation_variable_floats,
-                    price_limit=generation_step_config.balance_train.price_limit,
                     batch_size=generation_step_config.balance_train.batch_size,
                 )
                 if self.config.visualize > 0:
