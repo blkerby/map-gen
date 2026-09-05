@@ -84,7 +84,10 @@ class BalancePredictions:
     right_global_door_variant_idx: torch.Tensor
     up_global_door_variant_idx: torch.Tensor
     down_global_door_variant_idx: torch.Tensor
-    door_variant_compatibility: torch.Tensor
+    left_compatibility: torch.Tensor
+    right_compatibility: torch.Tensor
+    up_compatibility: torch.Tensor
+    down_compatibility: torch.Tensor
     toilet_compatibility: torch.Tensor
 
 
@@ -1158,6 +1161,7 @@ class BalanceModel(torch.nn.Module):
         up_count: int,
         down_count: int,
         door_output_variant_idx: torch.Tensor,
+        door_room_idx: torch.Tensor,
         door_variant_compatibility: torch.Tensor,
         room_connection_variant_idx: torch.Tensor,
         num_room_connection_variants: int,
@@ -1206,19 +1210,34 @@ class BalanceModel(torch.nn.Module):
             door_output_variant_idx >= variant_count
         ):
             raise ValueError("door_output_variant_idx contains an out-of-range variant")
-        self.register_buffer(
-            "door_variant_compatibility",
-            door_variant_compatibility.to(torch.bool),
-        )
+        if door_room_idx.shape != (door_count,) or door_room_idx.dtype != torch.int64:
+            raise ValueError("door_room_idx must contain one int64 room ID per directional door")
+        if torch.any(door_room_idx < 0) or torch.any(door_room_idx >= self.num_rooms):
+            raise ValueError("door_room_idx contains an out-of-range room ID")
+        direction_counts = [left_count, right_count, up_count, down_count]
+        direction_variants = torch.split(door_output_variant_idx.to(torch.int64), direction_counts)
+        direction_rooms = torch.split(door_room_idx, direction_counts)
+        # Variant compatibility alone includes impossible connections within one room.
+        # Cache concrete masks once for loss, price centering, and diagnostics.
+        for name, source, target in (
+            ("left", 0, 1),
+            ("right", 1, 0),
+            ("up", 2, 3),
+            ("down", 3, 2),
+        ):
+            compatibility = door_variant_compatibility[
+                direction_variants[source].unsqueeze(1),
+                direction_variants[target].unsqueeze(0),
+            ].to(torch.bool) & (
+                direction_rooms[source].unsqueeze(1) != direction_rooms[target].unsqueeze(0)
+            )
+            self.register_buffer(f"{name}_compatibility", compatibility)
         (
             left_output_variant_idx,
             right_output_variant_idx,
             up_output_variant_idx,
             down_output_variant_idx,
-        ) = torch.split(
-            door_output_variant_idx.to(torch.int64),
-            [left_count, right_count, up_count, down_count],
-        )
+        ) = direction_variants
         left_variants, left_door_variant_idx = torch.unique(
             left_output_variant_idx,
             sorted=True,
@@ -1335,6 +1354,9 @@ class BalanceModel(torch.nn.Module):
             right_global_door_variant_idx=self.right_global_door_variant_idx,
             up_global_door_variant_idx=self.up_global_door_variant_idx,
             down_global_door_variant_idx=self.down_global_door_variant_idx,
-            door_variant_compatibility=self.door_variant_compatibility,
+            left_compatibility=self.left_compatibility,
+            right_compatibility=self.right_compatibility,
+            up_compatibility=self.up_compatibility,
+            down_compatibility=self.down_compatibility,
             toilet_compatibility=self.toilet_compatibility,
         )

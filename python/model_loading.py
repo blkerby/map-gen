@@ -86,6 +86,10 @@ def create_balance_model(
             [variant_idx for _, variant_idx in output_metadata.door],
             dtype=torch.int64,
         ),
+        door_room_idx=torch.tensor(
+            [room_idx for room_idx, _ in output_metadata.door],
+            dtype=torch.int64,
+        ),
         door_variant_compatibility=output_metadata.door_variant_compatibility,
         room_connection_variant_idx=torch.tensor(
             output_metadata.room_connection_variant_idx,

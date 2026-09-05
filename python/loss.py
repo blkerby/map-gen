@@ -434,21 +434,6 @@ def materialize_direction_balance_logits(
     return logits[:, source_door_variant_idx, :][:, :, target_door_variant_idx]
 
 
-def materialize_direction_balance_compatibility(
-    door_variant_compatibility: torch.Tensor,
-    source_global_door_variant_idx: torch.Tensor,
-    target_global_door_variant_idx: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
-) -> torch.Tensor:
-    source_variant_idx = source_global_door_variant_idx[source_door_variant_idx]
-    target_variant_idx = target_global_door_variant_idx[target_door_variant_idx]
-    return door_variant_compatibility[
-        source_variant_idx.unsqueeze(1),
-        target_variant_idx.unsqueeze(0),
-    ]
-
-
 def compute_balance_loss(
     preds: BalancePredictions,
     door_matches: DoorMatches,
@@ -474,46 +459,22 @@ def compute_balance_loss(
         (
             tables.left,
             door_matches.left,
-            materialize_direction_balance_compatibility(
-                preds.door_variant_compatibility,
-                preds.left_global_door_variant_idx,
-                preds.right_global_door_variant_idx,
-                preds.left_door_variant_idx,
-                preds.right_door_variant_idx,
-            ),
+            preds.left_compatibility,
         ),
         (
             tables.right,
             door_matches.right,
-            materialize_direction_balance_compatibility(
-                preds.door_variant_compatibility,
-                preds.right_global_door_variant_idx,
-                preds.left_global_door_variant_idx,
-                preds.right_door_variant_idx,
-                preds.left_door_variant_idx,
-            ),
+            preds.right_compatibility,
         ),
         (
             tables.up,
             door_matches.up,
-            materialize_direction_balance_compatibility(
-                preds.door_variant_compatibility,
-                preds.up_global_door_variant_idx,
-                preds.down_global_door_variant_idx,
-                preds.up_door_variant_idx,
-                preds.down_door_variant_idx,
-            ),
+            preds.up_compatibility,
         ),
         (
             tables.down,
             door_matches.down,
-            materialize_direction_balance_compatibility(
-                preds.door_variant_compatibility,
-                preds.down_global_door_variant_idx,
-                preds.up_global_door_variant_idx,
-                preds.down_door_variant_idx,
-                preds.up_door_variant_idx,
-            ),
+            preds.down_compatibility,
         ),
     ):
         regularized_group = compatibility.any(dim=-1)
@@ -638,22 +599,13 @@ def direction_balance_price_table(
     prices: torch.Tensor,
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
-    source_global_door_variant_idx: torch.Tensor,
-    target_global_door_variant_idx: torch.Tensor,
-    door_variant_compatibility: torch.Tensor,
+    compatibility: torch.Tensor,
 ) -> torch.Tensor:
     concrete_prices = materialize_direction_balance_logits(
         prices,
         source_door_variant_idx,
         target_door_variant_idx,
     ).to(torch.float32)
-    compatibility = materialize_direction_balance_compatibility(
-        door_variant_compatibility,
-        source_global_door_variant_idx,
-        target_global_door_variant_idx,
-        source_door_variant_idx,
-        target_door_variant_idx,
-    )
     counts = compatibility.sum(dim=-1).clamp_min(1)
     means = torch.sum(
         concrete_prices * compatibility.unsqueeze(0),
@@ -702,41 +654,25 @@ def compute_balance_correction_tables(
             preds.left,
             preds.left_door_variant_idx,
             preds.right_door_variant_idx,
-            preds.left_global_door_variant_idx,
-            preds.right_global_door_variant_idx,
+            preds.left_compatibility,
         ),
         (
             preds.right,
             preds.right_door_variant_idx,
             preds.left_door_variant_idx,
-            preds.right_global_door_variant_idx,
-            preds.left_global_door_variant_idx,
+            preds.right_compatibility,
         ),
-        (
-            preds.up,
-            preds.up_door_variant_idx,
-            preds.down_door_variant_idx,
-            preds.up_global_door_variant_idx,
-            preds.down_global_door_variant_idx,
-        ),
+        (preds.up, preds.up_door_variant_idx, preds.down_door_variant_idx, preds.up_compatibility),
         (
             preds.down,
             preds.down_door_variant_idx,
             preds.up_door_variant_idx,
-            preds.down_global_door_variant_idx,
-            preds.up_global_door_variant_idx,
+            preds.down_compatibility,
         ),
     )
     left, right, up, down = (
-        direction_balance_price_table(
-            prices,
-            source_idx,
-            target_idx,
-            source_global_idx,
-            target_global_idx,
-            preds.door_variant_compatibility,
-        )
-        for prices, source_idx, target_idx, source_global_idx, target_global_idx in direction_inputs
+        direction_balance_price_table(prices, source_idx, target_idx, compatibility)
+        for prices, source_idx, target_idx, compatibility in direction_inputs
     )
     toilet_mask = preds.toilet_compatibility.unsqueeze(0)
     toilet_count = toilet_mask.sum(dim=-1).clamp_min(1)

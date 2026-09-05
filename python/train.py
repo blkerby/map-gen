@@ -53,7 +53,6 @@ from loss import (
     LossConfig,
     compute_area_balance_prior,
     compute_balance_price_tables,
-    materialize_direction_balance_compatibility,
 )
 from model import FrontierModel
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
@@ -496,55 +495,16 @@ def compute_balance_metric_values(
                 area_targets.dual_mask,
             )
             direction_metrics = (
-                (
-                    tables.left,
-                    preds.left_global_door_variant_idx,
-                    preds.right_global_door_variant_idx,
-                    preds.left_door_variant_idx,
-                    preds.right_door_variant_idx,
-                ),
-                (
-                    tables.right,
-                    preds.right_global_door_variant_idx,
-                    preds.left_global_door_variant_idx,
-                    preds.right_door_variant_idx,
-                    preds.left_door_variant_idx,
-                ),
-                (
-                    tables.up,
-                    preds.up_global_door_variant_idx,
-                    preds.down_global_door_variant_idx,
-                    preds.up_door_variant_idx,
-                    preds.down_door_variant_idx,
-                ),
-                (
-                    tables.down,
-                    preds.down_global_door_variant_idx,
-                    preds.up_global_door_variant_idx,
-                    preds.down_door_variant_idx,
-                    preds.up_door_variant_idx,
-                ),
+                (tables.left, preds.left_compatibility),
+                (tables.right, preds.right_compatibility),
+                (tables.up, preds.up_compatibility),
+                (tables.down, preds.down_compatibility),
             )
             values_by_family = {
                 "door": torch.cat(
                     [
-                        table[
-                            :,
-                            materialize_direction_balance_compatibility(
-                                preds.door_variant_compatibility,
-                                source_global_idx,
-                                target_global_idx,
-                                source_idx,
-                                target_idx,
-                            ),
-                        ].flatten()
-                        for (
-                            table,
-                            source_global_idx,
-                            target_global_idx,
-                            source_idx,
-                            target_idx,
-                        ) in direction_metrics
+                        table[:, compatibility].flatten()
+                        for table, compatibility in direction_metrics
                     ]
                 ),
                 "toilet": tables.toilet_crossed_room[:, preds.toilet_compatibility].flatten(),

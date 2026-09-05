@@ -21,16 +21,35 @@ completion note remain open.
    through active targets. The reductions keep tensor sizes suitable for
    compilation without filtering to a variable-length index.
 
-2. **[P2] Door balancing assigns target probability to impossible same-room connections.**
+2. **[P2, completed] Door balancing assigns target probability to impossible same-room connections.**
 
-   Compatibility is based on room variants and geometry, without excluding
+   Compatibility was based on room variants and geometry, without excluding
    connections between two doors belonging to the same concrete room. Zebes has
    **356 such directed entries affecting 322 doors**. Some Botwoon Quicksand Room
    doors assign two of eight target outcomes to impossible partners. The
    controller therefore cannot achieve its target distribution and learns
-   distorted prices. Concrete compatibility needs to exclude identical room IDs.
+   distorted prices.
 
-   Reference: [python/loss.py:437](python/loss.py#L437).
+   **Completed 2026-09-04.** The balance model precomputes and stores concrete
+   door-pair compatibility masks for all four directions, excluding identical
+   room IDs. Variant compatibility is used only during construction; the balance
+   model no longer stores that mask. Variant-index mappings remain for expanding
+   predicted prices. Loss validation, price centering, and training diagnostics
+   share the cached concrete masks.
+
+   Validation: all 11 balance tests passed, including same-room exclusion,
+   compatibility between distinct rooms sharing a variant, zero prices when no
+   partner is feasible, and finite gradients toward the corrected distribution.
+   Real metadata checks removed exactly 356 directed pairs affecting 322 Zebes
+   doors (44 pairs / 40 doors in debug), preserving every other compatibility
+   entry. Reduced debug and Zebes generation/training runs produced finite losses
+   and gradients with no captured feature mismatches. Zebes outcome verification
+   remained disabled for the separate issue 8. CUDA was not tested.
+
+   Checkpoint compatibility: the stored balance-model mask buffers have changed;
+   older checkpoints will fail strict loading. No fallback loading was added.
+
+   References: [python/model.py](python/model.py), [python/loss.py](python/loss.py).
 
 3. **[P2, completed] Proposal training can silently lose all gradients at low temperatures.**
 
