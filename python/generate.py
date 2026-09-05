@@ -1152,12 +1152,11 @@ def selected_proposal_rows_from_cache(
 def verify_and_step(
     group: GenerationGroup,
     selected_actions: Actions,
-    device: torch.device,
     verify_outcome_consistency: bool,
 ) -> None:
     group.env.step(selected_actions)
     if verify_outcome_consistency:
-        group.env.get_outcomes(device, verify_consistency=True)
+        group.env.verify_outcome_consistency()
 
 
 def put_queue_until_done(
@@ -1825,7 +1824,6 @@ def run_group_producer(
         verify_and_step(
             group,
             initial_result.selected_actions,
-            torch.device("cpu"),
             verify_outcome_consistency,
         )
         group.step = 1
@@ -1898,7 +1896,6 @@ def run_group_producer(
             verify_and_step(
                 group,
                 result.selected_actions,
-                torch.device("cpu"),
                 verify_outcome_consistency,
             )
             shared.profiler.add("python.step_environment", profile_time)

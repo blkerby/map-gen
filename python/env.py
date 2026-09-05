@@ -1646,6 +1646,9 @@ class EnvironmentGroup:
             stats=candidate_slot.stats(self.num_envs),
         )
 
+    def verify_outcome_consistency(self) -> None:
+        self.env.verify_outcome_consistency()
+
     def get_outcomes(self, device: torch.device, verify_consistency: bool) -> EpisodeOutcomes:
         result = self.env.get_outcomes(verify_consistency)
         return EpisodeOutcomes(

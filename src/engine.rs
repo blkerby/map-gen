@@ -73,6 +73,7 @@ profile_metrics! {
     WorkerStep => "worker.step",
     WorkerGetActions => "worker.get_actions",
     WorkerGetOutcomes => "worker.get_outcomes",
+    WorkerVerifyOutcomeConsistency => "worker.verify_outcome_consistency",
     WorkerGetDoorMatchCounts => "worker.get_door_match_counts",
     WorkerGetDoorMatches => "worker.get_door_matches",
     WorkerGetFeatures => "worker.get_features",
@@ -273,6 +274,7 @@ impl<T> OutputShard<T> {
 
 enum WorkerCommand {
     Clear,
+    VerifyOutcomeConsistency,
     Finish,
     Step {
         room_idx: InputShard<RoomIdx>,
@@ -446,6 +448,9 @@ impl WorkerCommand {
     fn profile_metric(&self) -> Option<ProfileMetric> {
         match self {
             WorkerCommand::Clear => Some(ProfileMetric::WorkerClear),
+            WorkerCommand::VerifyOutcomeConsistency => {
+                Some(ProfileMetric::WorkerVerifyOutcomeConsistency)
+            }
             WorkerCommand::Finish => Some(ProfileMetric::WorkerFinish),
             WorkerCommand::Step { .. } => Some(ProfileMetric::WorkerStep),
             WorkerCommand::GetActions { .. } => Some(ProfileMetric::WorkerGetActions),
@@ -562,6 +567,16 @@ fn worker_loop(
                     env.clear(&common_data);
                 }
                 WorkerResponse::Done
+            }
+            WorkerCommand::VerifyOutcomeConsistency => {
+                let result = environments.iter_mut().try_for_each(|env| {
+                    env.verified_outcomes(&common_data, "verify_outcome_consistency")
+                        .map(|_| ())
+                });
+                match result {
+                    Ok(()) => WorkerResponse::Done,
+                    Err(err) => WorkerResponse::Error(err),
+                }
             }
             WorkerCommand::Finish => {
                 for env in &mut environments {
@@ -4465,6 +4480,24 @@ impl EnvironmentGroup {
 
         self.action_count = 0;
         Ok(())
+    }
+
+    // Intermediate outcomes may still be unknown. Check transitions without
+    // exporting the unsigned terminal outcome arrays.
+    fn verify_outcome_consistency(&mut self, py: Python<'_>) -> PyResult<()> {
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::VerifyOutcomeConsistency) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
     }
 
     fn finish(&mut self, py: Python<'_>) -> PyResult<()> {

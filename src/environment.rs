@@ -8483,6 +8483,29 @@ mod tests {
     }
 
     #[test]
+    fn binary_outcome_consistency_allows_unknown_but_rejects_known_changes() {
+        for name in ["Maridia water", "Norfair heat"] {
+            for current in [-1, 0, 1] {
+                assert!(
+                    check_binary_transition_consistency(&[-1], &[current], name, "test").is_ok()
+                );
+            }
+            for known in [0, 1] {
+                assert!(
+                    check_binary_transition_consistency(&[known], &[known], name, "test").is_ok()
+                );
+                assert!(
+                    check_binary_transition_consistency(&[known], &[-1], name, "test").is_err()
+                );
+                assert!(
+                    check_binary_transition_consistency(&[known], &[1 - known], name, "test")
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn introduces_invalid_outcome_only_detects_unknown_to_invalid() {
         use DoorValidOutcome::{Invalid, Unknown, Valid};
 

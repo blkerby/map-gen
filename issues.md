@@ -150,17 +150,32 @@ completion note remain open.
 
    Reference: [python/generate.py:251](python/generate.py#L251).
 
-8. **[P2] Outcome verification crashes on unfinished Zebes maps.**
+8. **[P2, completed] Outcome verification crashes on unfinished Zebes maps.**
 
-   `--verify-outcome-consistency` calls the full outcome getter after each
+   `--verify-outcome-consistency` previously called the full outcome getter after each
    placement. That getter attempts to convert unknown heat/water outcomes (`-1`)
    into unsigned final outcomes and panics. This was reproduced immediately on
    Zebes. Normal generation works with the flag disabled, but the validation
-   path cannot check these maps. Separate intermediate verification from
-   final-outcome extraction.
+   path could not check these maps.
 
-   References: [python/generate.py:1219](python/generate.py#L1219),
-   [src/engine.rs:1279](src/engine.rs#L1279).
+   **Completed 2026-09-04.** Added `verify_outcome_consistency()` on the environment
+   group. Its Rust worker command runs the existing known-outcome transition
+   checks and returns only success or an error, without exporting terminal
+   outcome arrays. Generation uses this method after placements. Final outcome
+   extraction retains its existing optional verification. The intermediate call
+   no longer allocates or transfers unused final-outcome arrays to Python.
+
+   Validation: all 102 Rust tests and three new Python regression tests passed.
+   Coverage includes unknown heat/water values on unfinished Zebes maps,
+   reset/reuse, final outcome export, rejection of known-outcome changes, error
+   propagation, and disabled verification. Reduced CPU debug and Zebes runs
+   completed with outcome verification enabled throughout generation, finite
+   training losses and gradients, and no captured feature mismatches.
+   Rust bindings were rebuilt locally; other environments need a rebuild.
+
+   References: [python/generate.py](python/generate.py),
+   [src/engine.rs](src/engine.rs),
+   [regression tests](python/test_outcome_verification.py).
 
 9. **[P2, completed] A clean training stop does not save the latest model.**
 
