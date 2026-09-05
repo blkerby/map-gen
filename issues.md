@@ -1,19 +1,25 @@
 Review of generation and training, excluding serving. Recorded on 2026-09-04.
 
 The review identified concrete bugs and three sampling/reward flaws that could
-affect map quality. The highest priority is the save/refill query bug. No code
-changes were made as part of the review.
+affect map quality. Completion notes track fixes below; items without a
+completion note remain open.
 
-1. **[P1] Save/refill queries overwrite each other's outputs and masks.**
+1. **[P1, completed] Save/refill queries overwrite each other's outputs and masks.**
 
    Rust legitimately emits separate queries for the same room part when travel
-   directions need different frontier contexts. The Python head scatters all
+   directions need different frontier contexts. The Python head scattered all
    four outputs from every query, including inactive targets, into the same
-   locations. Later queries overwrite earlier predictions and erase their masks.
+   locations. Later queries overwrote earlier predictions and erased their masks.
    In the reduced Zebes run, **9,963 of 100,191 intended query outputs
-   disappeared**. Scatter only the entries enabled by each query's target mask.
+   disappeared**.
 
    Reference: [python/model.py:519](python/model.py#L519).
+
+   **Completed 2026-09-04.** The head now masks inactive predictions before
+   accumulating values and combines target masks with a Boolean OR. Split
+   queries preserve both directions' predictions, and gradients flow only
+   through active targets. The reductions keep tensor sizes suitable for
+   compilation without filtering to a variable-length index.
 
 2. **[P2] Door balancing assigns target probability to impossible same-room connections.**
 

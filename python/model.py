@@ -520,11 +520,23 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
             target_idx.unsqueeze(1) * (snapshot_count * room_part_count)
             + query_snapshot_idx.unsqueeze(0) * room_part_count
             + safe_room_part_idx.unsqueeze(0)
-        )
+        ).flatten()
+        # Split queries have disjoint active targets for each room part. Reductions
+        # preserve their values and masks without creating a variable-length index.
+        active_targets = target_mask.transpose(0, 1)
+        query_utility = torch.where(active_targets, query_utility, 0.0)
         output = frontier_state.new_zeros([self.target_count * snapshot_count * room_part_count])
-        output.scatter_(0, flat_idx.flatten(), query_utility.flatten())
-        output_mask = torch.zeros_like(output, dtype=torch.bool)
-        output_mask[flat_idx.flatten()] = target_mask.transpose(0, 1).flatten()
+        output.scatter_add_(0, flat_idx, query_utility.flatten())
+        # CUDA scatter_reduce does not support Bool; max over 0/1 has OR semantics.
+        output_mask = torch.zeros_like(output, dtype=torch.int32)
+        output_mask.scatter_reduce_(
+            0,
+            flat_idx,
+            active_targets.flatten().to(torch.int32),
+            reduce="amax",
+            include_self=True,
+        )
+        output_mask = output_mask.to(torch.bool)
         return output.view(
             self.target_count, snapshot_count, 1, room_part_count
         ), output_mask.view(
