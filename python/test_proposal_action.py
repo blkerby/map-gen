@@ -79,6 +79,24 @@ def test_invalid_candidate_receives_downward_gradient() -> None:
     assert candidate_score.grad[0, 1] > 0
 
 
+def test_low_temperature_negative_reward_preserves_proposal_gradients() -> None:
+    candidate_score = torch.zeros((1, 2), requires_grad=True)
+    loss = proposal_batch_loss(
+        candidate_score=candidate_score,
+        target_reward=torch.tensor([[-102.0, 0.0]]),
+        logit_offset=torch.zeros((1, 2)),
+        invalid=torch.tensor([[False, True]]),
+        proposal_target_temperature=0.01,
+        device=torch.device("cpu"),
+    )
+
+    torch.testing.assert_close(loss, torch.tensor(2.0).log())
+    loss.backward()
+    assert candidate_score.grad is not None
+    assert torch.isfinite(candidate_score.grad).all()
+    torch.testing.assert_close(candidate_score.grad, torch.tensor([[-50.0, 50.0]]))
+
+
 def test_all_invalid_row_has_zero_proposal_loss() -> None:
     candidate_score = torch.tensor([[1.0, 2.0]], requires_grad=True)
     loss = proposal_batch_loss(
@@ -400,6 +418,7 @@ def main() -> None:
     test_proposal_action_helpers_flatten_area_variants()
     test_proposal_loss_compares_candidate_scores()
     test_invalid_candidate_receives_downward_gradient()
+    test_low_temperature_negative_reward_preserves_proposal_gradients()
     test_all_invalid_row_has_zero_proposal_loss()
     test_proposal_target_temperature_preserves_reward_score_scale()
     test_proposal_target_temperature_scales_student_and_target_logits()

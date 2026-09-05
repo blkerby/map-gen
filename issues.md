@@ -32,18 +32,30 @@ completion note remain open.
 
    Reference: [python/loss.py:437](python/loss.py#L437).
 
-3. **[P2] Proposal training can silently lose all gradients at low temperatures.**
+3. **[P2, completed] Proposal training can silently lose all gradients at low temperatures.**
 
-   Invalid teacher logits use the fixed value `-10000`. At the configured
+   Invalid teacher logits previously used the fixed value `-10000`. At the configured
    late-stage temperature of `0.01`, a valid reward below approximately `-100`
    can score worse than that sentinel. Softmax then puts its probability on
    invalid candidates, which the subsequent loss mask discards. A valid reward
    of `-102` reproduced **zero loss and zero gradients**, despite the student
-   assigning equal probability to a valid and invalid action. Exclude invalid
-   candidates from the teacher's normalization while retaining them in the
-   student's denominator.
+   assigning equal probability to a valid and invalid action.
 
-   Reference: [python/learn.py:1126](python/learn.py#L1126).
+   **Completed 2026-09-04.** Increased the shared invalid teacher-logit sentinel
+   to `-1_000_000`, retaining finite arithmetic because an earlier `-inf`
+   approach reportedly produced gradient NaNs. Invalid examples remain in the
+   student's denominator. This increases the numerical margin rather than
+   eliminating the finite threshold: at temperature `0.01`, valid rewards near
+   `-10_000` can still approach the sentinel, ignoring logit offsets.
+
+   The regression test reproduced zero loss with the old constant. With the new
+   constant, reward `-102` at temperature `0.01` gives loss `log(2)` and finite
+   score gradients `[-50, 50]`, increasing the valid score and decreasing the
+   invalid score under gradient descent. All 18 proposal-action tests and four
+   candidate-record tests passed on CPU.
+
+   Reference: [python/learn.py](python/learn.py),
+   [regression test](python/test_proposal_action.py).
 
 4. **[P2, completed] Lookahead-rejected proposals usually provide no negative supervision.**
 

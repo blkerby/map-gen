@@ -40,7 +40,9 @@ from train_config import (
     episodes_per_round,
 )
 
-INVALID_PROPOSAL_TARGET_LOGIT = -10_000.0
+# Keep this finite to avoid infinity-related NaNs, with headroom for negative
+# rewards divided by low proposal target temperatures.
+INVALID_PROPOSAL_TARGET_LOGIT = -1_000_000.0
 VANILLA_AREA_CONDITION_INDICES = [
     GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_CONDITION_FIELDS
 ]
