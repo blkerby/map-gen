@@ -1149,7 +1149,7 @@ class BalanceModel(torch.nn.Module):
         door_variant_compatibility: torch.Tensor,
         room_connection_variant_idx: torch.Tensor,
         num_room_connection_variants: int,
-        toilet_room_idx: int | None,
+        toilet_compatibility: torch.Tensor,
         hidden_width: int,
         num_layers: int,
     ):
@@ -1172,10 +1172,9 @@ class BalanceModel(torch.nn.Module):
             raise ValueError("room_connection_variant_idx contains an out-of-range variant")
         self.num_rooms = room_connection_variant_idx.numel()
         self.num_room_connection_variants = num_room_connection_variants
-        toilet_compatibility = torch.ones(self.num_rooms, dtype=torch.bool)
-        if toilet_room_idx is not None:
-            toilet_compatibility[toilet_room_idx] = False
-        self.register_buffer("toilet_compatibility", toilet_compatibility)
+        if toilet_compatibility.shape != (self.num_rooms,) or toilet_compatibility.dtype != torch.bool:
+            raise ValueError("toilet_compatibility must contain one boolean per room")
+        self.register_buffer("toilet_compatibility", toilet_compatibility, persistent=False)
         self.register_buffer(
             "room_connection_variant_idx",
             room_connection_variant_idx.to(torch.int64),

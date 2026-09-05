@@ -92,9 +92,12 @@ def create_balance_model(
             dtype=torch.int64,
         ),
         num_room_connection_variants=output_metadata.num_room_connection_variants,
-        toilet_room_idx=next(
-            (index for index, room in enumerate(rooms) if room.get("special_type") == "toilet"),
-            None,
+        toilet_compatibility=torch.tensor(
+            [
+                bool(room["toilet_crossing_x"]) and room.get("special_type") != "toilet"
+                for room in rooms
+            ],
+            dtype=torch.bool,
         ),
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,

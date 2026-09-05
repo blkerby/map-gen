@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import torch
 
 from env import AREA_COUNT, DoorMatches, compute_area_balance_targets
@@ -10,6 +13,7 @@ from loss import (
     compute_proposal_balance_score_table,
 )
 from model import BalanceModel, BalancePredictions
+from model_loading import create_balance_model
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
@@ -76,7 +80,7 @@ def test_balance_model_outputs_direction_local_variant_pairs() -> None:
         door_variant_compatibility=torch.ones((41, 41), dtype=torch.bool),
         room_connection_variant_idx=torch.tensor([0, 0, 1]),
         num_room_connection_variants=2,
-        toilet_room_idx=2,
+        toilet_compatibility=torch.tensor([True, False, False]),
         hidden_width=4,
         num_layers=1,
     )
@@ -89,7 +93,51 @@ def test_balance_model_outputs_direction_local_variant_pairs() -> None:
     assert preds.room_area.shape == (1, 3, AREA_COUNT)
     assert torch.equal(preds.room_area[0, 0], preds.room_area[0, 1])
     assert not torch.equal(preds.room_area[0, 0], preds.room_area[0, 2])
-    assert preds.toilet_compatibility.tolist() == [True, True, False]
+    assert preds.toilet_compatibility.tolist() == [True, False, False]
+    assert "toilet_compatibility" not in model.state_dict()
+    tables = compute_balance_price_tables(
+        preds,
+        torch.full((1, 3, AREA_COUNT), 1.0 / AREA_COUNT),
+        torch.ones((1, 3), dtype=torch.bool),
+    )
+    # A single feasible crossing has zero centered price, regardless of other outputs.
+    torch.testing.assert_close(tables.toilet_crossed_room, torch.zeros((1, 3)))
+
+
+def test_toilet_compatibility_uses_crossing_columns() -> None:
+    rooms = [
+        {"doors": [[{"direction": "left"}]], "toilet_crossing_x": [0]},
+        {"doors": [[{"direction": "right"}]], "toilet_crossing_x": []},
+        {"doors": [], "toilet_crossing_x": [1]},
+        {"doors": [], "toilet_crossing_x": [0], "special_type": "toilet"},
+    ]
+    engine = Mock()
+    engine.get_output_metadata.return_value = SimpleNamespace(
+        door=[(0, 0), (1, 1)],
+        door_variant_compatibility=torch.ones((2, 2), dtype=torch.bool),
+        room_connection_variant_idx=[0, 1, 2, 3],
+        num_room_connection_variants=4,
+    )
+    model = create_balance_model(
+        config=SimpleNamespace(balance_model=SimpleNamespace(hidden_width=4, num_layers=1)),
+        rooms=rooms,
+        engine=engine,
+        device=torch.device("cpu"),
+    )
+    preds = model(torch.zeros((1, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
+    assert preds.toilet_compatibility.tolist() == [True, False, True, False]
+    preds.toilet_crossed_room = torch.tensor([[2.0, 100.0, 4.0, 200.0]], requires_grad=True)
+    tables = compute_balance_price_tables(
+        preds,
+        torch.full((1, 4, AREA_COUNT), 1.0 / AREA_COUNT),
+        torch.ones((1, 4), dtype=torch.bool),
+    )
+    torch.testing.assert_close(
+        tables.toilet_crossed_room, torch.tensor([[-1.0, 0.0, 1.0, 0.0]])
+    )
+    tables.toilet_crossed_room.square().sum().backward()
+    assert preds.toilet_crossed_room.grad[0, 1] == 0
+    assert preds.toilet_crossed_room.grad[0, 3] == 0
 
 
 def test_area_targets_apply_preferences_and_mask_forced_rooms() -> None:
@@ -301,6 +349,7 @@ def test_proposal_price_residual_is_negative_price_without_gain() -> None:
 
 def main() -> None:
     test_balance_model_outputs_direction_local_variant_pairs()
+    test_toilet_compatibility_uses_crossing_columns()
     test_area_targets_apply_preferences_and_mask_forced_rooms()
     test_prices_are_centered_masked_and_include_area_prior()
     test_forced_one_hot_area_target_has_finite_zero_price()
