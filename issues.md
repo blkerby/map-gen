@@ -108,17 +108,34 @@ completion note remain open.
    References: [proposal sampling, python/generate.py:1689](python/generate.py#L1689),
    [final sampling, python/generate.py:1115](python/generate.py#L1115).
 
-6. **[P2, reward flaw] Save/refill rewards include predictions that failed episodes never supervise.**
+6. **[P2, completed] Save/refill rewards include predictions that failed episodes never supervise.**
 
-   Training masks out room parts that were never placed, while generation sums
+   Training previously masked out room parts that were never placed, while generation sums
    utility predictions over every room part. This trains utility conditional on
    eventual placement, then uses it as unconditional expected utility. Failed
    continuations can therefore retain optimistic rewards for rooms they omit.
    Different candidate rewards were reproduced from omitted-room predictions
-   whose training gradients were both zero. Use a consistent treatment of absent
-   rooms, such as zero utility targets or explicit placement probabilities.
+   whose training gradients were both zero.
 
-   References: [training mask, python/learn.py:1437](python/learn.py#L1437),
+   **Completed 2026-09-04.** All four save/refill utility targets are explicitly
+   zero for room parts absent from the terminal episode. Every room part now
+   contributes to utility supervision in both fresh and replay training,
+   including the loss normalization. Placed-room targets keep the existing
+   distance-based utility; unreachable paths remain zero. Placement in the
+   current partial map does not gate supervision, so predictions still account
+   for utility from rooms that may be placed later. Generation continues to sum
+   these predictions as expected terminal utility.
+
+   Validation: the new training-path regression fails against the old loss mask
+   and passes for both fresh and replay training. It checks explicit zero targets
+   even with reachable-distance data for absent rooms, unchanged placed-room
+   targets, and finite downward gradients for positive absent-room predictions.
+   Four utility-query tests passed; one CUDA test was skipped. Reduced CPU debug
+   and Zebes generation/training runs had finite losses and gradients and no
+   captured feature mismatches (Zebes outcome verification disabled for issue 8).
+
+   References: [training targets and masks, python/learn.py](python/learn.py),
+   [regression test](python/test_utility_supervision.py),
    [generation reward, python/generate.py:273](python/generate.py#L273).
 
 7. **[P2, reward flaw] Area-position scoring ignores outcome variance.**

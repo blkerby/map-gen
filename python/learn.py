@@ -1287,25 +1287,28 @@ def train_feature_batch_backward(
     active_room_part_mask = end_outcomes.active_room_part_mask.to(
         device=context.device,
         dtype=torch.bool,
-    ).unsqueeze(1)
+    )
+    # Absent terminal rooms have zero utility, but still contribute to the loss.
+    # Current-prefix placement must not mask predictions of eventual utility.
+    utility_mask = torch.ones_like(active_room_part_mask, dtype=torch.bool).unsqueeze(1)
     save_to_room_utility_target = distance_proximity_utility(
         end_outcomes.save_to_room_distance.to(context.device),
-        end_outcomes.save_to_room_distance_mask.to(context.device),
+        end_outcomes.save_to_room_distance_mask.to(context.device) & active_room_part_mask,
         context.loss_config.distance_proximity_scale,
     ).unsqueeze(1)
     save_from_room_utility_target = distance_proximity_utility(
         end_outcomes.save_from_room_distance.to(context.device),
-        end_outcomes.save_from_room_distance_mask.to(context.device),
+        end_outcomes.save_from_room_distance_mask.to(context.device) & active_room_part_mask,
         context.loss_config.distance_proximity_scale,
     ).unsqueeze(1)
     refill_to_room_utility_target = distance_proximity_utility(
         end_outcomes.refill_to_room_distance.to(context.device),
-        end_outcomes.refill_to_room_distance_mask.to(context.device),
+        end_outcomes.refill_to_room_distance_mask.to(context.device) & active_room_part_mask,
         context.loss_config.distance_proximity_scale,
     ).unsqueeze(1)
     refill_from_room_utility_target = distance_proximity_utility(
         end_outcomes.refill_from_room_distance.to(context.device),
-        end_outcomes.refill_from_room_distance_mask.to(context.device),
+        end_outcomes.refill_from_room_distance_mask.to(context.device) & active_room_part_mask,
         context.loss_config.distance_proximity_scale,
     ).unsqueeze(1)
     missing_connect_utility_target = distance_proximity_utility(
@@ -1429,10 +1432,10 @@ def train_feature_batch_backward(
             graph_diameter_mask,
             save_to_room_utility_target,
             save_from_room_utility_target,
-            active_room_part_mask,
+            utility_mask,
             refill_to_room_utility_target,
             refill_from_room_utility_target,
-            active_room_part_mask,
+            utility_mask,
             missing_connect_utility_target,
             missing_connect_utility_mask,
             area_crossings_target,
