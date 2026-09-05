@@ -24,8 +24,7 @@ from env import (
 )
 from loss import (
     BalancePriceTables,
-    compute_area_balance_prior,
-    compute_balance_correction_tables,
+    compute_balance_price_tables,
     compute_proposal_area_balance_score_residual,
     compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
@@ -164,22 +163,6 @@ def area_balance_reward(area_balance_score: torch.Tensor) -> torch.Tensor:
     return -torch.sum(area_balance_score.to(torch.float32), dim=2)
 
 
-def candidate_area_prior_logit(
-    candidates: Actions,
-    exempt_room: torch.Tensor,
-    area_prior_price: torch.Tensor,
-) -> torch.Tensor:
-    logits = area_prior_price.new_zeros(candidates.room_idx.shape)
-    valid = candidates.room_idx < area_prior_price.shape[1]
-    environment_idx, candidate_idx = torch.nonzero(valid, as_tuple=True)
-    room_idx = candidates.room_idx[valid].to(torch.int64)
-    area_idx = candidates.room_area[valid].to(torch.int64)
-    logits[valid] = torch.where(
-        exempt_room[environment_idx, room_idx],
-        0.0,
-        -area_prior_price[environment_idx, room_idx, area_idx],
-    )
-    return logits
 
 
 def apply_candidate_area_balance_scores(
@@ -346,7 +329,6 @@ class CandidateScoreSuccess:
     selected_candidate: torch.Tensor
     target_reward: torch.Tensor
     balance_residual: torch.Tensor
-    area_prior_logit: torch.Tensor
 
 
 @dataclass
@@ -366,11 +348,9 @@ class GenerationGroup:
     candidate_slot: CandidateSlot
     balance_preds: BalancePredictions
     balance_score_tables: BalancePriceTables
-    area_prior_price_table: torch.Tensor
     area_balance_dual_mask: torch.Tensor
     proposal_balance_score_table: torch.Tensor
     proposal_area_balance_score_table: torch.Tensor
-    proposal_area_prior_price_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
     previous_proposal_scores: ProposalCache | None
     score_result_queue: Queue[CandidateScoreResult]
@@ -382,8 +362,6 @@ class PreparedGenerationStep:
     features: Features | None
     proposal_balance_residual: torch.Tensor
     scored_invalid_proposal_balance_residual: torch.Tensor
-    proposal_area_prior_logit: torch.Tensor
-    scored_invalid_proposal_area_prior_logit: torch.Tensor
 
 
 @dataclass
@@ -421,7 +399,6 @@ class GroupPipelineOutput:
     selected_candidate: list[torch.Tensor]
     target_reward: list[torch.Tensor]
     balance_residual: list[torch.Tensor]
-    area_prior_logit: list[torch.Tensor]
     feature_batches: list[Features | None]
 
 
@@ -761,8 +738,6 @@ def prepare_candidate_features(
     feature_slot: FeatureSlot,
     proposal_balance_residual: torch.Tensor,
     scored_invalid_proposal_balance_residual: torch.Tensor,
-    proposal_area_prior_logit: torch.Tensor,
-    scored_invalid_proposal_area_prior_logit: torch.Tensor,
 ) -> PreparedGenerationStep:
     candidates = candidate_batch.candidates
     if candidates.room_idx.shape[1] == 1:
@@ -771,10 +746,6 @@ def prepare_candidate_features(
             features=None,
             proposal_balance_residual=proposal_balance_residual,
             scored_invalid_proposal_balance_residual=(scored_invalid_proposal_balance_residual),
-            proposal_area_prior_logit=proposal_area_prior_logit,
-            scored_invalid_proposal_area_prior_logit=(
-                scored_invalid_proposal_area_prior_logit
-            ),
         )
     if initial_candidates:
         environment_count, candidate_count = candidates.room_idx.shape
@@ -819,8 +790,6 @@ def prepare_candidate_features(
         ),
         proposal_balance_residual=proposal_balance_residual,
         scored_invalid_proposal_balance_residual=scored_invalid_proposal_balance_residual,
-        proposal_area_prior_logit=proposal_area_prior_logit,
-        scored_invalid_proposal_area_prior_logit=scored_invalid_proposal_area_prior_logit,
     )
 
 
@@ -852,7 +821,6 @@ def prepare_shortlist_generation_step(
     sampled_frontier_idx: torch.Tensor,
     sampled_proposal_action_idx: torch.Tensor,
     sampled_proposal_balance_residual: torch.Tensor,
-    sampled_proposal_area_prior_logit: torch.Tensor,
     proposal_possible_counts: torch.Tensor,
 ) -> PreparedGenerationStep:
     candidate_batch = get_shortlist_candidate_batch(
@@ -875,20 +843,6 @@ def prepare_shortlist_generation_step(
         candidate_batch.scored_invalid_frontier_idx,
         candidate_batch.scored_invalid_proposal_action_idx,
     )
-    proposal_area_prior_logit = match_sampled_proposal_values(
-        sampled_frontier_idx,
-        sampled_proposal_action_idx,
-        sampled_proposal_area_prior_logit,
-        candidate_batch.proposal_frontier_idx,
-        candidate_batch.proposal_action_idx,
-    )
-    scored_invalid_proposal_area_prior_logit = match_sampled_proposal_values(
-        sampled_frontier_idx,
-        sampled_proposal_action_idx,
-        sampled_proposal_area_prior_logit,
-        candidate_batch.scored_invalid_frontier_idx,
-        candidate_batch.scored_invalid_proposal_action_idx,
-    )
     return prepare_candidate_features(
         group.env,
         group.config,
@@ -897,8 +851,6 @@ def prepare_shortlist_generation_step(
         group.feature_slot,
         proposal_balance_residual,
         scored_invalid_proposal_balance_residual,
-        proposal_area_prior_logit,
-        scored_invalid_proposal_area_prior_logit,
     )
 
 
@@ -1039,11 +991,6 @@ def select_candidate_actions(
             outcomes.toilet_invalid,
         )
     )
-    area_prior_logit = candidate_area_prior_logit(
-        candidates,
-        ~group.area_balance_dual_mask,
-        group.area_prior_price_table,
-    )
     sync_profile_device(device, profile)
     profiler.add("python.score.reward", profile_time)
 
@@ -1053,7 +1000,7 @@ def select_candidate_actions(
     candidate_logits = (expected_reward + balance_logit) / torch.unsqueeze(
         group.config.temperature,
         1,
-    ) + area_prior_logit
+    )
     candidate_logits = torch.where(
         dummy_candidate,
         torch.full_like(candidate_logits, float("-inf")),
@@ -1371,17 +1318,6 @@ def score_staged_candidate_request(
         balance_residual[:, :recorded_candidate_count] = candidate_balance_residual[
             :, :recorded_candidate_count
         ].to(torch.float32)
-    candidate_area_prior_logit = staged.request.prepared_step.proposal_area_prior_logit
-    if candidate_area_prior_logit.shape[1] == max_candidates:
-        area_prior_logit = candidate_area_prior_logit.to(torch.float32)
-    else:
-        area_prior_logit = torch.zeros(
-            [candidates.room_idx.shape[0], max_candidates],
-            dtype=torch.float32,
-        )
-        area_prior_logit[:, :recorded_candidate_count] = candidate_area_prior_logit[
-            :, :recorded_candidate_count
-        ].to(torch.float32)
     scored_invalid = (candidate_batch.scored_invalid_frontier_idx >= 0) & (
         candidate_batch.scored_invalid_proposal_action_idx >= 0
     )
@@ -1422,15 +1358,6 @@ def score_staged_candidate_request(
         ],
         dim=1,
     )
-    area_prior_logit = torch.cat(
-        [
-            area_prior_logit,
-            staged.request.prepared_step.scored_invalid_proposal_area_prior_logit.to(
-                torch.float32
-            ),
-        ],
-        dim=1,
-    )
     selected_outcomes = select_outcomes(
         candidate_batch.post_candidate_outcomes,
         action_index,
@@ -1449,7 +1376,6 @@ def score_staged_candidate_request(
         selected_candidate=action_index.to(device="cpu", copy=True),
         target_reward=target_reward.to(device="cpu", copy=True),
         balance_residual=balance_residual,
-        area_prior_logit=area_prior_logit,
     )
     profiler.add("python.record_proposal_data", profile_time)
     return result
@@ -1584,7 +1510,6 @@ def compute_group_proposal_shortlist(
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
-    torch.Tensor,
     Features | None,
 ]:
     profile = shared.profiler.enabled
@@ -1648,15 +1573,9 @@ def compute_group_proposal_shortlist(
             group.proposal_area_balance_score_table,
             row_snapshot_idx,
         )
-        proposal_area_prior_logit = compute_proposal_area_balance_score_residual(
-            group.proposal_area_prior_price_table,
-            row_snapshot_idx,
-        )
         proposal_scores = (
             proposal_scores.to(torch.float32) + proposal_balance_residual
-        ) / group.config.proposal_temperature.to(device)[row_snapshot_idx].unsqueeze(
-            1
-        ) + proposal_area_prior_logit
+        ) / group.config.proposal_temperature.to(device)[row_snapshot_idx].unsqueeze(1)
         shared.profiler.add("python.proposal.total_before_shortlist", before_shortlist_time)
         profile_time = profile_start(profile)
         (
@@ -1678,14 +1597,6 @@ def compute_group_proposal_shortlist(
         )
         sampled_proposal_balance_residual = gather_proposal_row_values(
             proposal_balance_residual,
-            row_snapshot_idx,
-            row_frontier_idx,
-            sampled_frontier_idx,
-            sampled_proposal_action_idx,
-            group.config.temperature.shape[0],
-        )
-        sampled_proposal_area_prior_logit = gather_proposal_row_values(
-            proposal_area_prior_logit,
             row_snapshot_idx,
             row_frontier_idx,
             sampled_frontier_idx,
@@ -1716,7 +1627,6 @@ def compute_group_proposal_shortlist(
         sampled_frontier_idx.to(torch.device("cpu")),
         sampled_proposal_action_idx.to(torch.device("cpu")),
         sampled_proposal_balance_residual.to(torch.device("cpu")),
-        sampled_proposal_area_prior_logit.to(torch.device("cpu")),
         proposal_possible_counts.to(torch.device("cpu")),
         shortlist_limited.to(torch.device("cpu")),
         proposal_inputs.features,
@@ -1771,8 +1681,6 @@ def score_initial_action(
         candidate_batch,
         True,
         group.feature_slot,
-        torch.zeros([environment_count, AREA_COUNT]),
-        torch.empty([environment_count, 0]),
         torch.zeros([environment_count, AREA_COUNT]),
         torch.empty([environment_count, 0]),
     )
@@ -1832,7 +1740,6 @@ def run_group_producer(
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
                 sampled_proposal_balance_residual,
-                sampled_proposal_area_prior_logit,
                 proposal_possible_counts,
                 shortlist_limited,
                 _proposal_features,
@@ -1848,7 +1755,6 @@ def run_group_producer(
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
                 sampled_proposal_balance_residual,
-                sampled_proposal_area_prior_logit,
                 proposal_possible_counts,
             )
             shared.profiler.add("python.wait_candidate_features", profile_time)
@@ -1877,7 +1783,6 @@ def run_group_producer(
             output.selected_candidate.append(result.selected_candidate)
             output.target_reward.append(result.target_reward)
             output.balance_residual.append(result.balance_residual)
-            output.area_prior_logit.append(result.area_prior_logit)
             if capture_generated_features:
                 output.feature_batches.append(
                     None
@@ -2184,9 +2089,6 @@ def merge_generation_results(
             balance_residual=torch.cat(
                 [proposal.balance_residual for _, _, _, proposal, _ in results]
             ),
-            area_prior_logit=torch.cat(
-                [proposal.area_prior_logit for _, _, _, proposal, _ in results]
-            ),
         ),
         GeneratedFeatureData(
             [
@@ -2229,9 +2131,6 @@ def empty_proposal_data(
         balance_residual=torch.empty(
             (environment_count, 0, max_candidates), dtype=torch.float32, device=device
         ),
-        area_prior_logit=torch.empty(
-            (environment_count, 0, max_candidates), dtype=torch.float32, device=device
-        ),
     )
 
 
@@ -2263,21 +2162,13 @@ def run_generation_groups(
     if any(config.gpu_prefetch_batches != gpu_prefetch_batches for config in configs):
         raise ValueError("generation groups require matching gpu_prefetch_batches")
     balance_predictions = [balance_model(config.generation_variable_floats) for config in configs]
-    balance_correction_tables = [
-        compute_balance_correction_tables(
+    balance_score_tables = [
+        compute_balance_price_tables(
             balance_preds,
             config.area_balance_probability,
             config.area_balance_dual_mask,
         )
         for balance_preds, config in zip(balance_predictions, configs, strict=True)
-    ]
-    balance_score_tables = balance_correction_tables
-    area_prior_price_tables = [
-        compute_area_balance_prior(
-            config.area_balance_probability,
-            config.area_balance_dual_mask,
-        )
-        for config in configs
     ]
     proposal_balance_score_tables = [
         compute_proposal_balance_score_table(
@@ -2285,7 +2176,7 @@ def run_generation_groups(
             score_tables,
             model.proposal_output.out_features // AREA_COUNT,
         )
-        for balance_preds, score_tables in zip(balance_predictions, balance_correction_tables)
+        for balance_preds, score_tables in zip(balance_predictions, balance_score_tables)
     ]
     area_balance_dual_masks = [config.area_balance_dual_mask for config in configs]
     door_room_idx = torch.tensor(
@@ -2300,29 +2191,15 @@ def run_generation_groups(
     )
     proposal_area_balance_score_tables = [
         compute_proposal_area_balance_score_table(
-            correction_tables.room_area,
+            score_tables.room_area,
             ~dual_mask,
             door_room_idx,
             door_output_variant_idx,
             output_metadata.num_door_variants,
         )
-        for correction_tables, dual_mask in zip(
-            balance_correction_tables,
+        for score_tables, dual_mask in zip(
+            balance_score_tables,
             area_balance_dual_masks,
-        )
-    ]
-    proposal_area_prior_price_tables = [
-        compute_proposal_area_balance_score_table(
-            area_prior_price_table,
-            ~dual_mask,
-            door_room_idx,
-            door_output_variant_idx,
-            output_metadata.num_door_variants,
-        )
-        for area_prior_price_table, dual_mask in zip(
-            area_prior_price_tables,
-            area_balance_dual_masks,
-            strict=True,
         )
     ]
     groups = [
@@ -2334,11 +2211,9 @@ def run_generation_groups(
             candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
             balance_preds=balance_preds,
             balance_score_tables=score_tables,
-            area_prior_price_table=area_prior_price_table,
             area_balance_dual_mask=dual_mask,
             proposal_balance_score_table=proposal_score_table,
             proposal_area_balance_score_table=proposal_area_score_table,
-            proposal_area_prior_price_table=proposal_area_prior_price_table,
             previous_lookahead_outcomes=None,
             previous_proposal_scores=None,
             score_result_queue=Queue(maxsize=1),
@@ -2348,21 +2223,17 @@ def run_generation_groups(
             config,
             balance_preds,
             score_tables,
-            area_prior_price_table,
             dual_mask,
             proposal_score_table,
             proposal_area_score_table,
-            proposal_area_prior_price_table,
         ) in zip(
             envs,
             configs,
             balance_predictions,
             balance_score_tables,
-            area_prior_price_tables,
             area_balance_dual_masks,
             proposal_balance_score_tables,
             proposal_area_balance_score_tables,
-            proposal_area_prior_price_tables,
         )
     ]
     group_outputs = [
@@ -2375,7 +2246,6 @@ def run_generation_groups(
             selected_candidate=[],
             target_reward=[],
             balance_residual=[],
-            area_prior_logit=[],
             feature_batches=[],
         )
         for _ in groups
@@ -2516,9 +2386,6 @@ def run_generation_groups(
                             ),
                             balance_residual=torch.stack(
                                 group_outputs[group_index].balance_residual, dim=1
-                            ),
-                            area_prior_logit=torch.stack(
-                                group_outputs[group_index].area_prior_logit, dim=1
                             ),
                         )
                         if group_outputs[group_index].proposal_frontier_idx

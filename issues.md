@@ -95,9 +95,9 @@ completion note remain open.
    fallback candidates remain selectable and retain reward-based supervision;
    they are not also inserted as contradictory negative examples.
 
-5. **[P2, sampling flaw] Applying the area prior in both sampling stages distorts its intended probabilities.**
+5. **[P2, completed] Applying the area prior in both sampling stages distorts its intended probabilities.**
 
-   The prior biases which candidates enter the shortlist, then biases selection
+   The fixed prior previously biased which candidates entered the shortlist, then biased selection
    within that shortlist again, without accounting for the first selection. In
    an isolated test with all candidates valid, zero rewards/prices, and eight
    shortlisted candidates, an area target of **50% produced approximately 80.5%
@@ -105,8 +105,34 @@ completion note remain open.
    candidate-selection settings and gives the balance controller additional bias
    to counteract.
 
-   References: [proposal sampling, python/generate.py:1689](python/generate.py#L1689),
-   [final sampling, python/generate.py:1115](python/generate.py#L1115).
+   **Completed 2026-09-04.** Removed the fixed area prior from both sampling stages
+   and proposal-training offsets, along with its candidate-record fields and
+   price-table plumbing. Area probabilities remain targets for the balance
+   controller, which learns the entire adjustment. Both model scores and learned
+   balance adjustments are divided by the corresponding sampling temperature.
+   There is no longer a fixed area preference that remains active at arbitrarily
+   high temperatures.
+
+   Repeated preference in proposal and final sampling is not intrinsically wrong;
+   the controller must learn its effect through the full generation process.
+   This resolves the fixed-prior design concern, but does not establish that the
+   learned controller converges to its targets under all sampling settings.
+
+   Price-table construction now has one implementation. Aim's
+   `balance_area_price_rms` and `balance_area_price_max` report learned prices;
+   the redundant `balance_area_correction_price_rms` / `_max` metrics were removed.
+   Observed and effective target area-count metrics remain unchanged.
+
+   Validation: focused tests cover no fixed prices for nonuniform targets,
+   balance gradients toward those targets, temperature scaling at both sampling
+   stages, and recorded-logit diagnostics. Reduced CPU debug/Zebes generation and
+   training passed with outcome verification enabled. Two training rounds also
+   completed metric calculation, checkpoint save, and reload; the documented
+   unplaced-room coordinate warnings recurred. CUDA and long-run convergence
+   were not tested.
+
+   References: [python/generate.py](python/generate.py),
+   [python/learn.py](python/learn.py), [python/loss.py](python/loss.py).
 
 6. **[P2, completed] Save/refill rewards include predictions that failed episodes never supervise.**
 

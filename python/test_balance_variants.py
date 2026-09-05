@@ -233,7 +233,7 @@ def test_area_targets_apply_preferences_and_mask_forced_rooms() -> None:
     assert targets.effective_area_rooms[0, 2] > target_rooms[0, 2]
 
 
-def test_prices_are_centered_masked_and_include_area_prior() -> None:
+def test_prices_are_centered_masked_and_have_no_fixed_prior() -> None:
     preds = example_predictions()
     area_probability, area_mask = uniform_area_targets()
     area_probability[0, 0] = torch.tensor([0.5, 0.1, 0.1, 0.1, 0.1, 0.1])
@@ -250,7 +250,7 @@ def test_prices_are_centered_masked_and_include_area_prior() -> None:
     assert torch.count_nonzero(tables.left[:, ~left_compatibility]) == 0
     torch.testing.assert_close(tables.left[0, 2].mean(), torch.tensor(0.0))
     assert tables.toilet_crossed_room[0, 1] == 0.0
-    assert tables.room_area[0, 0, 0] < tables.room_area[0, 0, 1]
+    torch.testing.assert_close(tables.room_area, torch.zeros_like(tables.room_area))
     assert torch.count_nonzero(tables.room_area[0, 1]) == 0
     torch.testing.assert_close(
         torch.sum(tables.room_area[0, 0] * area_probability[0, 0]),
@@ -287,6 +287,7 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     door_matches.left[0, 2] = 0
     area_probability, area_mask = uniform_area_targets()
     area_mask[0, 1] = False
+    area_probability[0, 0] = torch.tensor([0.5, 0.1, 0.1, 0.1, 0.1, 0.1])
 
     loss = compute_balance_loss(
         preds=preds,
@@ -306,11 +307,11 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     torch.testing.assert_close(preds.toilet_crossed_room.grad[0], torch.tensor([-0.5, 0.5]))
     torch.testing.assert_close(
         preds.room_area.grad[0, 0],
-        torch.tensor([-5.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0]),
+        torch.tensor([-0.5, 0.1, 0.1, 0.1, 0.1, 0.1]),
     )
 
 
-def test_area_beta_does_not_regularize_fixed_prior() -> None:
+def test_zero_area_prices_have_zero_regularization_gradient() -> None:
     preds = example_predictions(requires_grad=True)
     area_probability, area_mask = uniform_area_targets()
     area_probability[0, 0] = torch.tensor([0.5, 0.1, 0.1, 0.1, 0.1, 0.1])
@@ -422,10 +423,10 @@ def main() -> None:
     test_concrete_door_masks_exclude_same_room_and_preserve_other_instances()
     test_toilet_compatibility_uses_crossing_columns()
     test_area_targets_apply_preferences_and_mask_forced_rooms()
-    test_prices_are_centered_masked_and_include_area_prior()
+    test_prices_are_centered_masked_and_have_no_fixed_prior()
     test_forced_one_hot_area_target_has_finite_zero_price()
     test_dual_gradient_uses_probability_error_scale()
-    test_area_beta_does_not_regularize_fixed_prior()
+    test_zero_area_prices_have_zero_regularization_gradient()
     test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero()
     test_infeasible_toilet_observation_is_rejected()
     test_proposal_price_residual_is_negative_price_without_gain()

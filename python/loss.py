@@ -446,7 +446,7 @@ def compute_balance_loss(
     toilet_beta: float,
     area_beta: float,
 ) -> torch.Tensor:
-    tables = compute_balance_correction_tables(
+    tables = compute_balance_price_tables(
         preds,
         area_probability,
         area_dual_mask,
@@ -632,19 +632,7 @@ def center_area_balance_prices(
     )
 
 
-def compute_area_balance_prior(
-    area_probability: torch.Tensor,
-    area_dual_mask: torch.Tensor,
-) -> torch.Tensor:
-    safe_probability = area_probability.clamp_min(torch.finfo(torch.float32).tiny)
-    return center_area_balance_prices(
-        -safe_probability.log(),
-        area_probability,
-        area_dual_mask,
-    )
-
-
-def compute_balance_correction_tables(
+def compute_balance_price_tables(
     preds: BalancePredictions,
     area_probability: torch.Tensor,
     area_dual_mask: torch.Tensor,
@@ -698,30 +686,6 @@ def compute_balance_correction_tables(
         down=down,
         toilet_crossed_room=toilet,
         room_area=room_area,
-    )
-
-
-def compute_balance_price_tables(
-    preds: BalancePredictions,
-    area_probability: torch.Tensor,
-    area_dual_mask: torch.Tensor,
-) -> BalancePriceTables:
-    corrections = compute_balance_correction_tables(
-        preds,
-        area_probability,
-        area_dual_mask,
-    )
-    area_prior = compute_area_balance_prior(
-        area_probability,
-        area_dual_mask,
-    )
-    return BalancePriceTables(
-        left=corrections.left,
-        right=corrections.right,
-        up=corrections.up,
-        down=corrections.down,
-        toilet_crossed_room=corrections.toilet_crossed_room,
-        room_area=corrections.room_area + area_prior,
     )
 
 

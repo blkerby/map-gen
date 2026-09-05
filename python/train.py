@@ -51,7 +51,6 @@ from learn import (
 )
 from loss import (
     LossConfig,
-    compute_area_balance_prior,
     compute_balance_price_tables,
 )
 from model import FrontierModel
@@ -459,8 +458,6 @@ class BalanceMetricValues:
     toilet_price_max: torch.Tensor
     area_price_rms: torch.Tensor
     area_price_max: torch.Tensor
-    area_correction_price_rms: torch.Tensor
-    area_correction_price_max: torch.Tensor
 
 
 def compute_balance_metric_values(
@@ -477,7 +474,7 @@ def compute_balance_metric_values(
 
     totals = {
         family: {"squares": 0.0, "count": 0, "max": 0.0}
-        for family in ("door", "toilet", "area", "area_correction")
+        for family in ("door", "toilet", "area")
     }
     with torch.no_grad():
         for start in range(0, episode_count, batch_size):
@@ -487,10 +484,6 @@ def compute_balance_metric_values(
             preds = balance_model(variables)
             tables = compute_balance_price_tables(
                 preds,
-                area_targets.probability,
-                area_targets.dual_mask,
-            )
-            area_prior = compute_area_balance_prior(
                 area_targets.probability,
                 area_targets.dual_mask,
             )
@@ -509,9 +502,6 @@ def compute_balance_metric_values(
                 ),
                 "toilet": tables.toilet_crossed_room[:, preds.toilet_compatibility].flatten(),
                 "area": tables.room_area[area_targets.dual_mask].flatten(),
-                "area_correction": (tables.room_area - area_prior)[
-                    area_targets.dual_mask
-                ].flatten(),
             }
             for family, values in values_by_family.items():
                 if values.numel() == 0:
@@ -1514,9 +1504,6 @@ class TrainingSession:
                 balance_residual=torch.cat(
                     [proposal_data.balance_residual for proposal_data in proposal_data_iterations]
                 ),
-                area_prior_logit=torch.cat(
-                    [proposal_data.area_prior_logit for proposal_data in proposal_data_iterations]
-                ),
             ),
             GeneratedFeatureData(
                 [
@@ -2098,8 +2085,6 @@ class TrainingSession:
             "balance_toilet_price_max": balance_metrics.toilet_price_max,
             "balance_area_price_rms": balance_metrics.area_price_rms,
             "balance_area_price_max": balance_metrics.area_price_max,
-            "balance_area_correction_price_rms": balance_metrics.area_correction_price_rms,
-            "balance_area_correction_price_max": balance_metrics.area_correction_price_max,
             **generation_stats,
         }
         for name, value in metrics.items():
