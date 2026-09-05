@@ -191,7 +191,7 @@ class BalanceTrainConfig(StrictBaseModel):
 
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
-    active_probability: float
+    active_probability: ScheduleableFloat
     tier_max: TierProbabilities
 
 
@@ -705,10 +705,11 @@ def validate_config(config: Config) -> None:
     )
     for family in HEAT_WATER_FAMILIES:
         preference = getattr(config.generation, f"{family}_preferred_probability")
-        if not 0.0 <= preference.active_probability <= 1.0:
-            raise ValueError(
-                f"generation.{family}_preferred_probability.active_probability must be between zero and one"
-            )
+        validate_probability_config(
+            preference.active_probability,
+            f"generation.{family}_preferred_probability.active_probability",
+            config.knot_episodes,
+        )
         for tier, value in enumerate(preference.tier_max, start=1):
             if not math.isfinite(value) or not 0.0 < value < 1.0:
                 raise ValueError(

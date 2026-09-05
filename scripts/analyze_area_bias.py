@@ -13,14 +13,14 @@ sys.path.insert(0, str(REPO_ROOT / "python"))
 
 from train_config import (  # noqa: E402
     GENERATION_VARIABLE_FLOAT_FIELDS,
-    HEAT_WATER_REWARD_FIELDS,
+    HEAT_WATER_PROBABILITY_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
 )
 
 
 EXPERIENCE_FORMAT = "map-gen-experience-v2"
 ROOM_DEFINITIONS_PATH = REPO_ROOT / "room_definitions" / "zebes.json"
-REWARD_BIN_COUNT = 5
+PROBABILITY_BIN_COUNT = 5
 AREA_COUNT = 6
 SPECIAL_ROOMS = (
     ("Ship", "ship"),
@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_experience(paths: list[Path]) -> tuple[np.ndarray, np.ndarray]:
+def load_experience(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     room_indices = []
     room_areas = []
     generation_variables = []
@@ -93,14 +93,16 @@ def equal_count_bins(values: np.ndarray, count: int) -> list[np.ndarray]:
     return bins
 
 
-def reward_bins(values: np.ndarray, count: int) -> list[tuple[int, np.ndarray]]:
-    assert (values >= 0).all()
-    zero = np.flatnonzero(values == 0)
-    positive = np.flatnonzero(values > 0)
-    bins = [(0, zero)] if len(zero) else []
+def probability_bins(
+    values: np.ndarray, baseline: np.ndarray, count: int
+) -> list[tuple[int, np.ndarray]]:
+    neutral = values == baseline
+    baseline_episodes = np.flatnonzero(neutral)
+    active = np.flatnonzero(~neutral)
+    bins = [(0, baseline_episodes)] if len(baseline_episodes) else []
     bins.extend(
-        (bin_idx, positive[indices])
-        for bin_idx, indices in enumerate(equal_count_bins(values[positive], count), 1)
+        (bin_idx, active[indices])
+        for bin_idx, indices in enumerate(equal_count_bins(values[active], count), 1)
     )
     assert sum(len(indices) for _, indices in bins) == len(values)
     return bins
@@ -123,8 +125,13 @@ def print_table(rows: list[tuple[str, ...]], left_columns: int) -> None:
         )
 
 
-def print_heat_water(assignments: np.ndarray, variables: np.ndarray, rooms: list[dict]) -> None:
-    print("heat_water_reward_response")
+def print_heat_water(
+    assignments: np.ndarray,
+    variables: np.ndarray,
+    rooms: list[dict],
+    baseline: np.ndarray,
+) -> None:
+    print("heat_water_probability_response")
     rows = [
         (
             "family",
@@ -132,21 +139,24 @@ def print_heat_water(assignments: np.ndarray, variables: np.ndarray, rooms: list
             "bin",
             "episodes",
             "rooms",
-            "reward_min",
-            "reward_mean",
-            "reward_max",
+            "probability_min",
+            "probability_mean",
+            "probability_max",
             "preferred_pct",
         )
     ]
-    for label, room_field, reward_family, preferred_area in HEAT_WATER:
+    for label, room_field, family, preferred_area in HEAT_WATER:
         for tier in range(1, 4):
             room_idx = np.array(
-                [i for i, room in enumerate(rooms) if room.get(room_field, 0) == tier]
+                [i for i, room in enumerate(rooms) if room.get(room_field, 0) == tier],
+                dtype=np.intp,
             )
-            reward_name = f"reward_{reward_family}_{tier}"
-            assert reward_name in HEAT_WATER_REWARD_FIELDS
-            rewards = variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(reward_name)]
-            for bin_idx, episodes in reward_bins(rewards, REWARD_BIN_COUNT):
+            probability_name = f"{family}_preferred_probability_{tier}"
+            assert probability_name in HEAT_WATER_PROBABILITY_FIELDS
+            probabilities = variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(probability_name)]
+            for bin_idx, episodes in probability_bins(
+                probabilities, baseline[:, preferred_area], PROBABILITY_BIN_COUNT
+            ):
                 selected = assignments[episodes][:, room_idx]
                 preferred = selected == preferred_area
                 total = selected.size
@@ -157,9 +167,9 @@ def print_heat_water(assignments: np.ndarray, variables: np.ndarray, rooms: list
                         str(bin_idx),
                         str(len(episodes)),
                         str(len(room_idx)),
-                        f"{rewards[episodes].min():.6g}",
-                        f"{rewards[episodes].mean():.6g}",
-                        f"{rewards[episodes].max():.6g}",
+                        f"{probabilities[episodes].min():.6g}",
+                        f"{probabilities[episodes].mean():.6g}",
+                        f"{probabilities[episodes].max():.6g}",
                         f"{percent(preferred.sum(), total):.3f}",
                     )
                 )
@@ -202,12 +212,18 @@ def main() -> None:
             f"{variables.shape[1]} fields; expected {len(GENERATION_VARIABLE_FLOAT_FIELDS)}"
         )
     assignments = reconstruct_assignments(room_indices, room_areas, len(rooms))
+    # Match the baseline used when training samples preferred-area probabilities.
+    baseline = variables[
+        :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_rooms_{area}")
+            for area in range(AREA_COUNT)]
+    ] / len(rooms)
     print_table(
         [("files", str(len(args.experience))), ("episodes", str(len(assignments)))],
         1,
     )
     print()
-    print_heat_water(assignments, variables, rooms)
+    print("Bin 0: baseline probability; bins 1-5: equal-count preferred-probability bins.")
+    print_heat_water(assignments, variables, rooms, baseline)
     print_unforced_special(
         assignments,
         variables,
@@ -215,15 +231,19 @@ def main() -> None:
         np.ones(len(assignments), dtype=bool),
         "unforced_special_room_preferences",
     )
-    heat_water_rewards = variables[
-        :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(field) for field in HEAT_WATER_REWARD_FIELDS]
-    ]
+    neutral_heat_water = np.ones(len(assignments), dtype=bool)
+    for _, _, family, preferred_area in HEAT_WATER:
+        probabilities = variables[
+            :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(f"{family}_preferred_probability_{tier}")
+                for tier in range(1, 4)]
+        ]
+        neutral_heat_water &= (probabilities == baseline[:, preferred_area, None]).all(axis=1)
     print_unforced_special(
         assignments,
         variables,
         rooms,
-        (heat_water_rewards == 0).all(axis=1),
-        "unforced_special_room_preferences_zero_heat_water_rewards",
+        neutral_heat_water,
+        "unforced_special_room_preferences_neutral_heat_water_probabilities",
     )
 
 

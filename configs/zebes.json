@@ -77,20 +77,20 @@
     "reward_phantoon_in_wrecked_ship": 1.0,
     "reward_draygon_in_maridia": 1.0,
     "reward_mother_brain_in_tourian": 1.0,
-    "force_ship_in_crateria_probability": 0.5,
-    "force_kraid_in_brinstar_probability": 0.5,
-    "force_ridley_in_norfair_probability": 0.5,
-    "force_phantoon_in_wrecked_ship_probability": 0.5,
-    "force_draygon_in_maridia_probability": 0.5,
-    "force_mother_brain_in_tourian_probability": 0.5,
+    "force_ship_in_crateria_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
+    "force_kraid_in_brinstar_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
+    "force_ridley_in_norfair_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
+    "force_phantoon_in_wrecked_ship_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
+    "force_draygon_in_maridia_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
+    "force_mother_brain_in_tourian_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
     "maridia_water_preferred_probability": {
-      "active_probability": 0.5,
+      "active_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
       "tier_max": [0.75, 0.75, 0.75]
     },
     "norfair_heat_preferred_probability": {
-      "active_probability": 0.5,
+      "active_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
       "tier_max": [0.75, 0.75, 0.75]
     },
     "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},
