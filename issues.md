@@ -164,11 +164,28 @@ per round carried **219 lookahead negatives and 93 fallback candidates** through
 the pipeline; the resulting checkpoint was verified and reloaded. CUDA was not
 available for this validation. The Rust bindings were rebuilt locally.
 
-Untriaged observation from issue 9 validation: the second CPU training round
-reported 84 mismatched feature values (42 each in `room_x` and `room_y`, at
-step 2) before checkpointing. The checkpoint checks passed; the cause and
-training impact of these feature-verification warnings remain uninvestigated.
-They recurred during the multi-group validation of issues 4 and 10.
+Investigated observation from issue 9 validation (2026-09-04): the second CPU
+training round originally reported 84 mismatched feature values in `room_x`
+and `room_y`. These warnings recurred during issues 4/10 validation. The cause
+is stale coordinates for **unplaced rooms**, not inconsistent room placements:
+[environment reset](src/environment.rs#L1899) clears `room_used` but retains
+`room_x`/`room_y`, and [feature extraction](src/environment.rs#L5654) copies
+those coordinates unchanged. Generation and training environments can have
+different prior placements, so their unused coordinates differ after reset.
+[Feature verification](python/learn.py#L628) compares these unused values too.
+
+An instrumented repeat of the issue 9 two-round CPU run reproduced 111 coordinate
+mismatches (56 x, 55 y) at step 2. All were for rooms unplaced in both snapshots;
+placement masks and all placed-room coordinates matched. The
+[room-position feature](python/features.py#L437) masks out unplaced rooms:
+its outputs and parameter gradients were exactly equal for the generated and
+replayed features. Both training rounds and checkpoint save/reload passed.
+This observation is a false-positive diagnostic, with no model-quality effect
+from the differing coordinates in the reproduced run. CUDA was not tested.
+
+Proposed follow-up, not yet implemented: clear both coordinate arrays alongside
+the placement flags in `Environment::clear`, giving unplaced rooms deterministic
+zero coordinates, and add a regression test for reset/replay consistency.
 
 Validation: **99 Rust tests passed; 64 of 66 Python tests passed** using a direct
 runner because `pytest` was unavailable. The two failures are outdated

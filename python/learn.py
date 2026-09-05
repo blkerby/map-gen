@@ -641,6 +641,10 @@ def collect_feature_mismatches(
             compared_tensors += 1
             if generated_value.shape == replayed_value.shape:
                 compared_values += generated_value.numel()
+            # Known false positive: Environment::clear retains room_x/room_y for
+            # unplaced rooms, so generation and replay may carry different stale
+            # coordinates. GlobalRoomPositionFeature masks these out; coordinate
+            # differences are harmless only where both room_placed masks are zero.
             mismatch = verify_feature_tensor(generated_value, replayed_value, field_path, step)
             if mismatch is not None:
                 mismatches.append(mismatch)
