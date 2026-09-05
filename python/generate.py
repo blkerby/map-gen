@@ -4,7 +4,7 @@ from env import (
     AREA_COUNT,
     VANILLA_AREA_CONSTRAINT_COUNT,
     Actions,
-    CandidateStats,
+    CandidateBatch,
     CandidateSlot,
     DoorMatchCounts,
     Engine,
@@ -15,7 +15,6 @@ from env import (
     GenerateConfig,
     StepOutcomes,
     ProposalData,
-    FeatureRequirements,
     FeatureSlot,
     Features,
     GeneratedFeatureData,
@@ -325,35 +324,12 @@ class ProposalCache:
 
 
 @dataclass
-class CandidateBatch:
-    candidates: Actions
-    proposal_frontier_idx: torch.Tensor
-    proposal_action_idx: torch.Tensor
-    scored_invalid_frontier_idx: torch.Tensor
-    scored_invalid_proposal_action_idx: torch.Tensor
-    reward_outcomes: StepOutcomes
-    post_candidate_outcomes: StepOutcomes
-    feature_requirements: FeatureRequirements
-    stats: CandidateStats
-
-    def to(self, device: torch.device, non_blocking: bool = False) -> "CandidateBatch":
-        return CandidateBatch(
-            candidates=self.candidates.to(device, non_blocking=non_blocking),
-            proposal_frontier_idx=self.proposal_frontier_idx.to(device, non_blocking=non_blocking),
-            proposal_action_idx=self.proposal_action_idx.to(device, non_blocking=non_blocking),
-            scored_invalid_frontier_idx=self.scored_invalid_frontier_idx.to(
-                device, non_blocking=non_blocking
-            ),
-            scored_invalid_proposal_action_idx=(
-                self.scored_invalid_proposal_action_idx.to(device, non_blocking=non_blocking)
-            ),
-            reward_outcomes=self.reward_outcomes.to(device, non_blocking=non_blocking),
-            post_candidate_outcomes=self.post_candidate_outcomes.to(
-                device, non_blocking=non_blocking
-            ),
-            feature_requirements=self.feature_requirements,
-            stats=self.stats.to(device, non_blocking=non_blocking),
-        )
+class CandidateSelection:
+    action_index: torch.Tensor
+    selected_actions: Actions
+    expected_reward: torch.Tensor
+    sampling_logits: torch.Tensor
+    selected_proposal_scores: ProposalCache | None
 
 
 @dataclass
@@ -365,6 +341,8 @@ class CandidateScoreSuccess:
     proposal_frontier_idx: torch.Tensor
     proposal_action_idx: torch.Tensor
     proposal_invalid: torch.Tensor
+    proposal_rejected: torch.Tensor
+    sampling_logits: torch.Tensor
     selected_candidate: torch.Tensor
     target_reward: torch.Tensor
     balance_residual: torch.Tensor
@@ -438,6 +416,8 @@ class GroupPipelineOutput:
     proposal_frontier_idx: list[torch.Tensor]
     proposal_action_idx: list[torch.Tensor]
     proposal_invalid: list[torch.Tensor]
+    proposal_rejected: list[torch.Tensor]
+    sampling_logits: list[torch.Tensor]
     selected_candidate: list[torch.Tensor]
     target_reward: list[torch.Tensor]
     balance_residual: list[torch.Tensor]
@@ -511,17 +491,7 @@ def get_shortlist_candidate_batch(
     sampled_proposal_action_idx: torch.Tensor,
     proposal_possible_counts: torch.Tensor,
 ) -> CandidateBatch:
-    (
-        candidates,
-        proposal_frontier_idx,
-        proposal_action_idx,
-        scored_invalid_frontier_idx,
-        scored_invalid_proposal_action_idx,
-        reward_outcomes,
-        post_candidate_outcomes,
-        feature_requirements,
-        stats,
-    ) = group.env.extract_candidates_from_proposals(
+    return group.env.extract_candidates_from_proposals(
         group.candidate_slot,
         False,
         sampled_frontier_idx,
@@ -533,34 +503,13 @@ def get_shortlist_candidate_batch(
         group.config.max_candidate_areas_per_placement,
         group.config.recommended_candidates_same_frontier,
     )
-    return CandidateBatch(
-        candidates=candidates,
-        proposal_frontier_idx=proposal_frontier_idx,
-        proposal_action_idx=proposal_action_idx,
-        scored_invalid_frontier_idx=scored_invalid_frontier_idx,
-        scored_invalid_proposal_action_idx=scored_invalid_proposal_action_idx,
-        reward_outcomes=reward_outcomes,
-        post_candidate_outcomes=post_candidate_outcomes,
-        feature_requirements=feature_requirements,
-        stats=stats,
-    )
 
 
 def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
     environment_count = group.config.temperature.shape[0]
     empty_shortlist = torch.empty([environment_count, 0], dtype=torch.int16)
     candidate_slot = CandidateSlot(group.env, pin_memory=group.candidate_slot.pin_memory)
-    (
-        candidates,
-        proposal_frontier_idx,
-        proposal_action_idx,
-        scored_invalid_frontier_idx,
-        scored_invalid_proposal_action_idx,
-        reward_outcomes,
-        post_candidate_outcomes,
-        feature_requirements,
-        stats,
-    ) = group.env.extract_candidates_from_proposals(
+    return group.env.extract_candidates_from_proposals(
         candidate_slot,
         True,
         empty_shortlist,
@@ -571,17 +520,6 @@ def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
         0,
         AREA_COUNT,
         False,
-    )
-    return CandidateBatch(
-        candidates=candidates,
-        proposal_frontier_idx=proposal_frontier_idx,
-        proposal_action_idx=proposal_action_idx,
-        scored_invalid_frontier_idx=scored_invalid_frontier_idx,
-        scored_invalid_proposal_action_idx=scored_invalid_proposal_action_idx,
-        reward_outcomes=reward_outcomes,
-        post_candidate_outcomes=post_candidate_outcomes,
-        feature_requirements=feature_requirements,
-        stats=stats,
     )
 
 
@@ -974,7 +912,7 @@ def select_candidate_actions(
     device: torch.device,
     num_rooms: int,
     profiler: GenerationProfiler,
-) -> tuple[torch.Tensor, Actions, torch.Tensor, ProposalCache | None]:
+) -> CandidateSelection:
     environment_count, candidate_count = candidates.room_idx.shape
     profile = profiler.enabled
     sync_profile_device(device, profile)
@@ -1157,11 +1095,12 @@ def select_candidate_actions(
         )
         sync_profile_device(device, profile)
     profiler.add("python.score.cache_proposal", profile_time)
-    return (
-        action_index,
-        selected_actions,
-        expected_reward,
-        selected_proposal_scores,
+    return CandidateSelection(
+        action_index=action_index,
+        selected_actions=selected_actions,
+        expected_reward=expected_reward,
+        sampling_logits=candidate_logits,
+        selected_proposal_scores=selected_proposal_scores,
     )
 
 
@@ -1268,7 +1207,7 @@ def stage_candidate_score_request(
     profile = profiler.enabled
     profile_time = profile_start(profile)
     if transfer_stream is None or device.type != "cuda":
-        candidate_batch = request.prepared_step.candidate_batch.to(device)
+        candidate_batch = request.prepared_step.candidate_batch.to(device, non_blocking=False)
         features = (
             None
             if request.prepared_step.features is None
@@ -1339,13 +1278,13 @@ def score_staged_candidate_request(
             device=device,
         )
         selected_proposal_scores = None
-    else:
-        (
-            action_index,
-            selected_actions,
+        candidate_sampling_logits = torch.where(
+            candidates.room_idx == num_rooms,
+            torch.full_like(candidate_rewards, float("-inf")),
             candidate_rewards,
-            selected_proposal_scores,
-        ) = select_candidate_actions(
+        )
+    else:
+        selection = select_candidate_actions(
             group,
             model,
             candidates,
@@ -1356,11 +1295,31 @@ def score_staged_candidate_request(
             num_rooms,
             profiler,
         )
+        action_index = selection.action_index
+        selected_actions = selection.selected_actions
+        candidate_rewards = selection.expected_reward
+        candidate_sampling_logits = selection.sampling_logits
+        selected_proposal_scores = selection.selected_proposal_scores
     profile = profiler.enabled
     profile_time = profile_start(profile)
     max_candidates = group.config.recommended_candidates
     candidate_frontier_idx = candidate_batch.proposal_frontier_idx
     recorded_candidate_count = min(candidate_frontier_idx.shape[1], max_candidates)
+    proposal_rejected = torch.zeros(
+        (candidates.room_idx.shape[0], max_candidates), dtype=torch.bool, device=device
+    )
+    proposal_rejected[:, :recorded_candidate_count] = candidate_batch.proposal_rejected[
+        :, :recorded_candidate_count
+    ]
+    sampling_logits = torch.full(
+        (candidates.room_idx.shape[0], max_candidates),
+        float("-inf"),
+        dtype=torch.float32,
+        device=device,
+    )
+    sampling_logits[:, :recorded_candidate_count] = candidate_sampling_logits[
+        :, :recorded_candidate_count
+    ]
     if candidate_frontier_idx.shape[1] == max_candidates:
         frontier_idx = candidate_frontier_idx
     else:
@@ -1448,6 +1407,12 @@ def score_staged_candidate_request(
         [torch.zeros_like(frontier_idx[:, :max_candidates], dtype=torch.bool), scored_invalid],
         dim=1,
     )
+    proposal_rejected = torch.cat(
+        [proposal_rejected, candidate_batch.scored_invalid_rejected], dim=1
+    )
+    sampling_logits = torch.cat(
+        [sampling_logits, torch.full_like(invalid_target_reward, float("-inf"))], dim=1
+    )
     target_reward = torch.cat([target_reward, invalid_target_reward], dim=1)
     balance_residual = torch.cat(
         [
@@ -1480,6 +1445,8 @@ def score_staged_candidate_request(
         proposal_frontier_idx=frontier_idx.to(device="cpu", copy=True),
         proposal_action_idx=proposal_action_idx.to(device="cpu", copy=True),
         proposal_invalid=proposal_invalid.to(device="cpu", copy=True),
+        proposal_rejected=proposal_rejected.to(device="cpu", copy=True),
+        sampling_logits=sampling_logits.to(device="cpu", copy=True),
         selected_candidate=action_index.to(device="cpu", copy=True),
         target_reward=target_reward.to(device="cpu", copy=True),
         balance_residual=balance_residual,
@@ -1907,6 +1874,8 @@ def run_group_producer(
             output.proposal_frontier_idx.append(result.proposal_frontier_idx)
             output.proposal_action_idx.append(result.proposal_action_idx)
             output.proposal_invalid.append(result.proposal_invalid)
+            output.proposal_rejected.append(result.proposal_rejected)
+            output.sampling_logits.append(result.sampling_logits)
             output.selected_candidate.append(result.selected_candidate)
             output.target_reward.append(result.target_reward)
             output.balance_residual.append(result.balance_residual)
@@ -2207,6 +2176,10 @@ def merge_generation_results(
             frontier_idx=torch.cat([proposal.frontier_idx for _, _, _, proposal, _ in results]),
             action_idx=torch.cat([proposal.action_idx for _, _, _, proposal, _ in results]),
             invalid=torch.cat([proposal.invalid for _, _, _, proposal, _ in results]),
+            rejected=torch.cat([proposal.rejected for _, _, _, proposal, _ in results]),
+            sampling_logits=torch.cat(
+                [proposal.sampling_logits for _, _, _, proposal, _ in results]
+            ),
             selected_candidate=torch.cat(
                 [proposal.selected_candidate for _, _, _, proposal, _ in results]
             ),
@@ -2245,6 +2218,12 @@ def empty_proposal_data(
         ),
         invalid=torch.empty(
             (environment_count, 0, max_candidates), dtype=torch.bool, device=device
+        ),
+        rejected=torch.empty(
+            (environment_count, 0, max_candidates), dtype=torch.bool, device=device
+        ),
+        sampling_logits=torch.empty(
+            (environment_count, 0, max_candidates), dtype=torch.float32, device=device
         ),
         selected_candidate=torch.empty((environment_count, 0), dtype=torch.int64, device=device),
         target_reward=torch.empty(
@@ -2394,6 +2373,8 @@ def run_generation_groups(
             proposal_frontier_idx=[],
             proposal_action_idx=[],
             proposal_invalid=[],
+            proposal_rejected=[],
+            sampling_logits=[],
             selected_candidate=[],
             target_reward=[],
             balance_residual=[],
@@ -2523,6 +2504,12 @@ def run_generation_groups(
                             ),
                             invalid=torch.stack(
                                 group_outputs[group_index].proposal_invalid, dim=1
+                            ),
+                            rejected=torch.stack(
+                                group_outputs[group_index].proposal_rejected, dim=1
+                            ),
+                            sampling_logits=torch.stack(
+                                group_outputs[group_index].sampling_logits, dim=1
                             ),
                             selected_candidate=torch.stack(
                                 group_outputs[group_index].selected_candidate, dim=1

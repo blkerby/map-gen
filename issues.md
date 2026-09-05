@@ -45,17 +45,24 @@ completion note remain open.
 
    Reference: [python/learn.py:1126](python/learn.py#L1126).
 
-4. **[P2] Lookahead-rejected proposals usually provide no negative supervision.**
+4. **[P2, completed] Lookahead-rejected proposals usually provide no negative supervision.**
 
-   Geometrically impossible proposals enter the invalid-example buffers.
+   Proposals failing action resolution entered the invalid-example buffers.
    Proposals rejected for breaking door, connectivity, area, or special-room
-   constraints only enter the fallback list. When clean alternatives exist,
-   these rejected proposals disappear from training. The proposal model
-   consequently receives no direct signal to stop wasting its shortlist on
-   those known failures. Preserve them as negative examples when clean
-   alternatives are available.
+   constraints during lookahead only entered the fallback list. When clean
+   alternatives existed, these rejected proposals disappeared from training.
+   The proposal model consequently received no direct signal to stop wasting
+   its shortlist on those known failures.
 
-   Reference: [src/environment.rs:3798](src/environment.rs#L3798).
+   Reference: [src/environment.rs:3691](src/environment.rs#L3691).
+
+   **Completed 2026-09-04.** When clean choices exist, action-resolution failures
+   and lookahead rejections now share the `num_scored_invalid_candidates` budget
+   in evaluation order, including rejections from postponed candidates. The
+   shared candidate record carries explicit lookahead-rejection flags through
+   Rust packing, Python generation, and training. When no clean choices exist,
+   fallback candidates remain selectable and retain reward-based supervision;
+   they are not also inserted as contradictory negative examples.
 
 5. **[P2, sampling flaw] Applying the area prior in both sampling stages distorts its intended probabilities.**
 
@@ -126,21 +133,42 @@ completion note remain open.
    a forced exit during writing can leave an incomplete `.tmp` file. Failed
    partial rounds are not saved as completed checkpoints.
 
-10. **[P3] The selected-candidate probability metric uses different logits from generation.**
+10. **[P3, completed] The selected-candidate probability metric uses different logits from generation.**
 
-    Diagnostics reconstruct probabilities using the proposal's immediate balance
+    Diagnostics reconstructed probabilities using the proposal's immediate balance
     adjustment. Actual selection includes the complete door, future-area, and
     Toilet balance terms. Consequently, `candidate_selected_probability` can
-    misrepresent sampling sharpness and mislead tuning. Record the actual
-    sampling logits instead of reconstructing them.
+    misrepresent sampling sharpness and mislead tuning.
 
-    References: [diagnostics, python/learn.py:495](python/learn.py#L495),
-    [actual scoring, python/generate.py:1088](python/generate.py#L1088).
+    References: [diagnostics, python/learn.py:469](python/learn.py#L469),
+    [actual scoring, python/generate.py:905](python/generate.py#L905).
+
+    **Completed 2026-09-04.** Generation now records the final sampling logits,
+    including temperature, all balance terms, and the area prior. Diagnostics
+    use those recorded logits independently of proposal-training targets.
+    Negative-only examples and dummy candidates have `-inf` sampling logits;
+    selectable fallback candidates retain their actual logits and probabilities.
+
+The shared-candidate refactor for issues 4 and 10 is complete. Named
+`CandidateBatch` and `CandidateSelection` results replace positional unpacking;
+`ProposalData` carries rejection flags and sampling logits through transfers,
+slicing, and aggregation. `invalid` marks negative-only training examples;
+`rejected` records lookahead failures, including selectable fallbacks.
+
+Validation of issues 4 and 10: **101 Rust tests and 21 focused Python tests
+passed**. Tests cover the shared budget, postponed rejections, fallback handling,
+actual sampler probabilities, and downward gradients for rejected negatives.
+Reduced debug/Zebes generation and training runs produced finite losses and
+gradients. Two CPU training rounds with two generation groups and two iterations
+per round carried **219 lookahead negatives and 93 fallback candidates** through
+the pipeline; the resulting checkpoint was verified and reloaded. CUDA was not
+available for this validation. The Rust bindings were rebuilt locally.
 
 Untriaged observation from issue 9 validation: the second CPU training round
 reported 84 mismatched feature values (42 each in `room_x` and `room_y`, at
 step 2) before checkpointing. The checkpoint checks passed; the cause and
 training impact of these feature-verification warnings remain uninvestigated.
+They recurred during the multi-group validation of issues 4 and 10.
 
 Validation: **99 Rust tests passed; 64 of 66 Python tests passed** using a direct
 runner because `pytest` was unavailable. The two failures are outdated
@@ -151,7 +179,3 @@ captured feature mismatches; Zebes required disabling the broken
 outcome-verification flag. GPU and compiled execution remain untested. The
 reduced runs do not establish the magnitude of these issues in a full training
 run.
-
-A useful refactor would extend the existing candidate result with rejection
-status and actual sampling logits, so generation, supervision, and diagnostics
-share the same recorded decisions.

@@ -306,8 +306,10 @@ enum WorkerCommand {
         room_area: OutputShard<AreaIdx>,
         proposal_frontier_idx: OutputShard<FrontierIdx>,
         proposal_action_idx: OutputShard<ProposalActionIdx>,
+        proposal_rejected: OutputShard<u8>,
         scored_invalid_frontier_idx: OutputShard<FrontierIdx>,
         scored_invalid_proposal_action_idx: OutputShard<ProposalActionIdx>,
+        scored_invalid_rejected: OutputShard<u8>,
         door_outcome_count: usize,
         connection_outcome_count: usize,
         pre_door_valid: OutputShard<i8>,
@@ -647,8 +649,10 @@ fn worker_loop(
                 room_area,
                 proposal_frontier_idx,
                 proposal_action_idx,
+                proposal_rejected,
                 scored_invalid_frontier_idx,
                 scored_invalid_proposal_action_idx,
+                scored_invalid_rejected,
                 door_outcome_count,
                 connection_outcome_count,
                 pre_door_valid,
@@ -689,6 +693,8 @@ fn worker_loop(
                 let room_area = unsafe { room_area.into_mut_slice() };
                 let proposal_frontier_idx = unsafe { proposal_frontier_idx.into_mut_slice() };
                 let proposal_action_idx = unsafe { proposal_action_idx.into_mut_slice() };
+                let proposal_rejected = unsafe { proposal_rejected.into_mut_slice() };
+                let scored_invalid_rejected = unsafe { scored_invalid_rejected.into_mut_slice() };
                 let scored_invalid_frontier_idx =
                     unsafe { scored_invalid_frontier_idx.into_mut_slice() };
                 let scored_invalid_proposal_action_idx =
@@ -745,6 +751,14 @@ fn worker_loop(
                 debug_assert_eq!(
                     proposal_action_idx.len(),
                     environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    proposal_rejected.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    scored_invalid_rejected.len(),
+                    environments.len() * num_scored_invalid_candidates
                 );
                 debug_assert_eq!(
                     scored_invalid_frontier_idx.len(),
@@ -885,6 +899,9 @@ fn worker_loop(
                     scored_invalid_proposal_action_idx[invalid_start..invalid_end]
                         [..proposal_candidates.scored_invalid_proposal_action_idx.len()]
                         .copy_from_slice(&proposal_candidates.scored_invalid_proposal_action_idx);
+                    scored_invalid_rejected[invalid_start..invalid_end]
+                        [..proposal_candidates.scored_invalid_rejected.len()]
+                        .copy_from_slice(&proposal_candidates.scored_invalid_rejected);
                     let pre_candidate_outcomes = proposal_candidates.pre_candidate_outcomes;
                     let candidates = proposal_candidates.candidates;
                     let candidate_frontier_idx = proposal_candidates.frontier_idx;
@@ -945,6 +962,7 @@ fn worker_loop(
                     for candidate_idx in 0..recommended_candidates {
                         let idx = row_start + candidate_idx;
                         if let Some(candidate) = candidates.get(candidate_idx) {
+                            proposal_rejected[idx] = proposal_candidates.rejected[candidate_idx];
                             room_idx[idx] = candidate.room_idx;
                             room_x[idx] = candidate.x;
                             room_y[idx] = candidate.y;
@@ -1949,8 +1967,10 @@ pub struct ProposalCandidateBuffers {
     room_area: Py<PyArray2<AreaIdx>>,
     proposal_frontier_idx: Py<PyArray2<FrontierIdx>>,
     proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
+    proposal_rejected: Py<PyArray2<u8>>,
     scored_invalid_frontier_idx: Py<PyArray2<FrontierIdx>>,
     scored_invalid_proposal_action_idx: Py<PyArray2<ProposalActionIdx>>,
+    scored_invalid_rejected: Py<PyArray2<u8>>,
     pre_door_valid: Py<PyArray2<i8>>,
     pre_connections_valid: Py<PyArray2<i8>>,
     pre_toilet_valid: Py<PyArray1<i8>>,
@@ -2084,6 +2104,8 @@ impl ProposalCandidateBuffers {
             room_area: required_py_field!(fields, "room_area"),
             proposal_frontier_idx: required_py_field!(fields, "proposal_frontier_idx"),
             proposal_action_idx: required_py_field!(fields, "proposal_action_idx"),
+            proposal_rejected: required_py_field!(fields, "proposal_rejected"),
+            scored_invalid_rejected: required_py_field!(fields, "scored_invalid_rejected"),
             scored_invalid_frontier_idx: required_py_field!(fields, "scored_invalid_frontier_idx"),
             scored_invalid_proposal_action_idx: required_py_field!(
                 fields,
@@ -4634,6 +4656,8 @@ impl EnvironmentGroup {
         let mut room_area = buffers.room_area.bind(py).readwrite();
         let mut proposal_frontier_idx = buffers.proposal_frontier_idx.bind(py).readwrite();
         let mut proposal_action_idx = buffers.proposal_action_idx.bind(py).readwrite();
+        let mut proposal_rejected = buffers.proposal_rejected.bind(py).readwrite();
+        let mut scored_invalid_rejected = buffers.scored_invalid_rejected.bind(py).readwrite();
         let mut scored_invalid_frontier_idx =
             buffers.scored_invalid_frontier_idx.bind(py).readwrite();
         let mut scored_invalid_proposal_action_idx = buffers
@@ -4760,6 +4784,16 @@ impl EnvironmentGroup {
             "proposal_action_idx",
             proposal_action_idx.as_array().shape(),
             &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "proposal_rejected",
+            proposal_rejected.as_array().shape(),
+            &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "scored_invalid_rejected",
+            scored_invalid_rejected.as_array().shape(),
+            &[self.num_environments, num_scored_invalid_candidates],
         )?;
         check_shape(
             "scored_invalid_frontier_idx",
@@ -4945,6 +4979,12 @@ impl EnvironmentGroup {
         let proposal_action_idx = proposal_action_idx
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("proposal_action_idx must be contiguous"))?;
+        let proposal_rejected = proposal_rejected
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("proposal_rejected must be contiguous"))?;
+        let scored_invalid_rejected = scored_invalid_rejected
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("scored_invalid_rejected must be contiguous"))?;
         let scored_invalid_frontier_idx = scored_invalid_frontier_idx
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("scored_invalid_frontier_idx must be contiguous"))?;
@@ -5038,6 +5078,8 @@ impl EnvironmentGroup {
         room_area.fill(dummy_candidate.area);
         proposal_frontier_idx.fill(-1);
         proposal_action_idx.fill(-1);
+        proposal_rejected.fill(0);
+        scored_invalid_rejected.fill(0);
         scored_invalid_frontier_idx.fill(-1);
         scored_invalid_proposal_action_idx.fill(-1);
         pre_door_valid.fill(DoorValidOutcome::Unknown as i8);
@@ -5130,6 +5172,12 @@ impl EnvironmentGroup {
                     ),
                     proposal_action_idx: OutputShard::from_slice(
                         &mut proposal_action_idx[output_start..output_end],
+                    ),
+                    proposal_rejected: OutputShard::from_slice(
+                        &mut proposal_rejected[output_start..output_end],
+                    ),
+                    scored_invalid_rejected: OutputShard::from_slice(
+                        &mut scored_invalid_rejected[invalid_output_start..invalid_output_end],
                     ),
                     scored_invalid_frontier_idx: OutputShard::from_slice(
                         &mut scored_invalid_frontier_idx[invalid_output_start..invalid_output_end],

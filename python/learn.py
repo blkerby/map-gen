@@ -466,11 +466,27 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
     )
 
 
+def recorded_selected_probability(proposal_data: ProposalData) -> torch.Tensor:
+    logits = proposal_data.sampling_logits.to(torch.float32)
+    if logits.numel() == 0:
+        return logits.new_zeros(())
+    candidate_count = logits.shape[-1]
+    logits = logits.reshape(-1, candidate_count)
+    selected = proposal_data.selected_candidate.reshape(-1).to(torch.int64)
+    in_range = (selected >= 0) & (selected < candidate_count)
+    safe_selected = selected.clamp(0, candidate_count - 1)
+    valid = in_range & torch.isfinite(logits.gather(1, safe_selected.unsqueeze(1)).squeeze(1))
+    if not torch.any(valid):
+        return logits.new_zeros(())
+    probabilities = torch.softmax(logits[valid], dim=1)
+    return probabilities.gather(1, selected[valid].unsqueeze(1)).mean()
+
+
 def compute_candidate_diagnostics(
     proposal_data: ProposalData,
     proposal_target_temperature: float,
-    generation_temperature: torch.Tensor,
 ) -> CandidateDiagnostics:
+    selected_probability = recorded_selected_probability(proposal_data)
     target_reward = proposal_data.target_reward.to(torch.float32)
     balance_residual = proposal_data.balance_residual.to(torch.float32)
     area_prior_logit = proposal_data.area_prior_logit.to(torch.float32)
@@ -490,17 +506,12 @@ def compute_candidate_diagnostics(
     )
     resolved = present & ~proposal_data.invalid
     candidate_count = target_logits.shape[-1]
+    if target_logits.numel() == 0:
+        zero = target_logits.new_zeros(())
+        return CandidateDiagnostics(
+            target_entropy=zero, uniform_kl=zero, selected_probability=selected_probability
+        )
     flat_logits = target_logits.reshape(-1, candidate_count)
-    temperature_shape = (-1,) + (1,) * (target_reward.ndim - 1)
-    sampling_logits = (
-        (target_reward + balance_residual)
-        / generation_temperature.to(
-            device=target_reward.device,
-            dtype=torch.float32,
-        ).view(temperature_shape)
-        + area_prior_logit
-    )
-    flat_sampling_logits = sampling_logits.reshape(-1, candidate_count)
     flat_present = present.reshape(-1, candidate_count)
     flat_resolved = resolved.reshape(-1, candidate_count)
     row_valid = torch.any(flat_resolved, dim=1)
@@ -509,7 +520,7 @@ def compute_candidate_diagnostics(
         return CandidateDiagnostics(
             target_entropy=zero,
             uniform_kl=zero,
-            selected_probability=zero,
+            selected_probability=selected_probability,
         )
 
     row_logits = torch.where(
@@ -534,30 +545,6 @@ def compute_candidate_diagnostics(
     valid_counts = torch.sum(row_mask, dim=1).to(torch.float32)
     uniform_kl = torch.mean(torch.log(valid_counts) - entropy_per_row)
 
-    selected_candidate = proposal_data.selected_candidate.reshape(-1)[row_valid].to(torch.int64)
-    selected_in_range = (selected_candidate >= 0) & (selected_candidate < candidate_count)
-    safe_selected_candidate = selected_candidate.clamp_min(0).clamp_max(candidate_count - 1)
-    selected_valid = selected_in_range & torch.gather(
-        flat_resolved[row_valid],
-        1,
-        safe_selected_candidate.unsqueeze(1),
-    ).squeeze(1)
-    if torch.any(selected_valid):
-        row_sampling_logits = torch.where(
-            flat_resolved[row_valid],
-            flat_sampling_logits[row_valid],
-            torch.full_like(flat_sampling_logits[row_valid], float("-inf")),
-        )
-        sampling_probs = torch.softmax(row_sampling_logits, dim=1)
-        selected_probability = torch.mean(
-            torch.gather(
-                sampling_probs[selected_valid],
-                1,
-                selected_candidate[selected_valid].unsqueeze(1),
-            ).squeeze(1)
-        )
-    else:
-        selected_probability = target_logits.new_zeros(())
     return CandidateDiagnostics(
         target_entropy=target_entropy,
         uniform_kl=uniform_kl,

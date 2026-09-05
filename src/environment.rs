@@ -264,16 +264,25 @@ enum ProposalEvaluation {
     Clean(CandidateWithOutcomes),
 }
 
+#[derive(Clone, Copy)]
+struct ScoredProposalFailure {
+    frontier_idx: FrontierIdx,
+    proposal_action_idx: ProposalActionIdx,
+    rejected: bool,
+}
+
 pub struct ProposalCandidates {
     pub pre_candidate_outcomes: StepOutcomes,
     pub candidates: Vec<Action>,
     pub frontier_idx: Vec<FrontierIdx>,
     pub proposal_action_idx: Vec<ProposalActionIdx>,
+    pub rejected: Vec<u8>,
     pub post_candidate_outcomes: Vec<StepOutcomes>,
     pub door_matches: Vec<Vec<i16>>,
     pub feature_plans: Vec<FeaturePlan>,
     pub scored_invalid_frontier_idx: Vec<FrontierIdx>,
     pub scored_invalid_proposal_action_idx: Vec<ProposalActionIdx>,
+    pub scored_invalid_rejected: Vec<u8>,
     pub clean_count: usize,
     pub evaluated_count: usize,
     pub rejected_count: usize,
@@ -2000,11 +2009,13 @@ impl Environment {
             candidates,
             frontier_idx: vec![-1; AREA_COUNT],
             proposal_action_idx: vec![-1; AREA_COUNT],
+            rejected: vec![0; clean_count],
             post_candidate_outcomes,
             door_matches,
             feature_plans,
             scored_invalid_frontier_idx: Vec::new(),
             scored_invalid_proposal_action_idx: Vec::new(),
+            scored_invalid_rejected: Vec::new(),
             clean_count,
             evaluated_count: AREA_COUNT,
             rejected_count: AREA_COUNT - clean_count,
@@ -3712,11 +3723,13 @@ impl Environment {
                 candidates: Vec::new(),
                 frontier_idx: Vec::new(),
                 proposal_action_idx: Vec::new(),
+                rejected: Vec::new(),
                 post_candidate_outcomes: Vec::new(),
                 door_matches: Vec::new(),
                 feature_plans: Vec::new(),
                 scored_invalid_frontier_idx: Vec::new(),
                 scored_invalid_proposal_action_idx: Vec::new(),
+                scored_invalid_rejected: Vec::new(),
                 clean_count: 0,
                 evaluated_count: 0,
                 rejected_count: 0,
@@ -3736,9 +3749,8 @@ impl Environment {
         let mut evaluated_count = 0;
         let mut rejected_count = 0;
         let mut invalid_count = 0;
-        let mut scored_invalid_frontier_idx = Vec::with_capacity(num_scored_invalid_candidates);
-        let mut scored_invalid_proposal_action_idx =
-            Vec::with_capacity(num_scored_invalid_candidates);
+        let mut unresolved = Vec::with_capacity(num_scored_invalid_candidates);
+        let mut scored_failures = Vec::with_capacity(num_scored_invalid_candidates);
         for (&frontier_idx, &proposal_action_idx) in
             sampled_frontier_idx.iter().zip(sampled_proposal_action_idx)
         {
@@ -3760,9 +3772,18 @@ impl Environment {
                 proposal_action_idx,
             ) else {
                 invalid_count += 1;
-                if scored_invalid_frontier_idx.len() < num_scored_invalid_candidates {
-                    scored_invalid_frontier_idx.push(frontier_idx);
-                    scored_invalid_proposal_action_idx.push(proposal_action_idx);
+                let failure = ScoredProposalFailure {
+                    frontier_idx,
+                    proposal_action_idx,
+                    rejected: false,
+                };
+                // Keep unresolved proposals separately for fallback-only rows, where
+                // lookahead-rejected actions still receive reward-based supervision.
+                if unresolved.len() < num_scored_invalid_candidates {
+                    unresolved.push(failure);
+                }
+                if scored_failures.len() < num_scored_invalid_candidates {
+                    scored_failures.push(failure);
                 }
                 continue;
             };
@@ -3798,6 +3819,13 @@ impl Environment {
                 ProposalEvaluation::Rejected(candidate) => {
                     evaluated_count += 1;
                     rejected_count += 1;
+                    if scored_failures.len() < num_scored_invalid_candidates {
+                        scored_failures.push(ScoredProposalFailure {
+                            frontier_idx: candidate.frontier_idx,
+                            proposal_action_idx: candidate.proposal_action_idx,
+                            rejected: true,
+                        });
+                    }
                     rejected.push(candidate);
                 }
                 ProposalEvaluation::Clean(candidate) => {
@@ -3850,9 +3878,16 @@ impl Environment {
                     frontier_window_size,
                     scratch,
                 )? {
-                    ProposalEvaluation::Rejected(_) => {
+                    ProposalEvaluation::Rejected(candidate) => {
                         evaluated_count += 1;
                         rejected_count += 1;
+                        if scored_failures.len() < num_scored_invalid_candidates {
+                            scored_failures.push(ScoredProposalFailure {
+                                frontier_idx: candidate.frontier_idx,
+                                proposal_action_idx: candidate.proposal_action_idx,
+                                rejected: true,
+                            });
+                        }
                     }
                     ProposalEvaluation::Clean(candidate) => {
                         evaluated_count += 1;
@@ -3900,6 +3935,11 @@ impl Environment {
             clean
         };
         let output_candidate_count = candidates_with_outcomes.len();
+        let scored_failures = if clean_count == 0 {
+            unresolved
+        } else {
+            scored_failures
+        };
         record_profile_count(
             ProfileMetric::EnvCounterProposalEvaluatedCandidates,
             evaluated_count as u64,
@@ -3940,11 +3980,19 @@ impl Environment {
             candidates,
             frontier_idx: proposal_frontier_idx,
             proposal_action_idx,
+            rejected: vec![u8::from(clean_count == 0); output_candidate_count],
             post_candidate_outcomes,
             door_matches,
             feature_plans: features,
-            scored_invalid_frontier_idx,
-            scored_invalid_proposal_action_idx,
+            scored_invalid_frontier_idx: scored_failures.iter().map(|v| v.frontier_idx).collect(),
+            scored_invalid_proposal_action_idx: scored_failures
+                .iter()
+                .map(|v| v.proposal_action_idx)
+                .collect(),
+            scored_invalid_rejected: scored_failures
+                .iter()
+                .map(|v| u8::from(v.rejected))
+                .collect(),
             clean_count,
             evaluated_count,
             rejected_count,
@@ -8063,6 +8111,8 @@ mod tests {
         );
         assert_eq!(result.candidates.len(), 1);
         assert_eq!(result.candidates[0].area, sampled_area);
+        assert_eq!(result.rejected, [1]);
+        assert_eq!(result.scored_invalid_rejected, [0]);
         assert_eq!(result.frontier_idx.len(), result.candidates.len());
         assert_eq!(result.proposal_action_idx.len(), result.candidates.len());
         assert_eq!(
@@ -8228,6 +8278,85 @@ mod tests {
         assert_eq!(result.clean_count, 2);
         assert_eq!(result.evaluated_count, 3);
         assert_eq!(result.rejected_count, 1);
+        assert_eq!(result.rejected, [0, 0]);
+        assert_eq!(result.scored_invalid_frontier_idx, [0]);
+        assert_eq!(
+            result.scored_invalid_proposal_action_idx,
+            [proposal_action_idx(door_variant_idx, 0)]
+        );
+        assert_eq!(result.scored_invalid_rejected, [1]);
+    }
+
+    #[test]
+    fn proposal_negatives_share_budget_in_encounter_order() {
+        for budget in [0, 1, 2] {
+            let (common, mut env, variant) = two_clean_proposal_frontier_env(1);
+            let wrong_variant = common
+                .door_variant_direction
+                .iter()
+                .position(|&direction| direction != common.door_variant_direction[variant as usize])
+                .unwrap() as DoorVariantIdx;
+            let rejected_action = proposal_action_idx(variant, 0);
+            let invalid_action = proposal_action_idx(wrong_variant, 1);
+            let result = env
+                .get_proposal_candidates_with_outcomes(
+                    &common,
+                    &[0, 0, 1, 1],
+                    &[
+                        rejected_action,
+                        invalid_action,
+                        proposal_action_idx(variant, 1),
+                        proposal_action_idx(variant, 2),
+                    ],
+                    &NO_VANILLA_AREA_CONSTRAINTS,
+                    2,
+                    budget,
+                    2,
+                    false,
+                    &FeatureConfig::all_disabled(),
+                    FrontierNeighborAlgorithm::Nearest,
+                    1,
+                    4,
+                    &mut FeatureScratch::default(),
+                )
+                .unwrap();
+            assert_eq!(result.clean_count, 2);
+            assert_eq!(result.invalid_count, 1);
+            assert_eq!(result.rejected_count, 1);
+            assert_eq!(result.scored_invalid_frontier_idx.len(), budget);
+            assert_eq!(
+                result.scored_invalid_proposal_action_idx,
+                [rejected_action, invalid_action][..budget]
+            );
+            assert_eq!(result.scored_invalid_rejected, [1, 0][..budget]);
+        }
+    }
+
+    #[test]
+    fn postponed_lookahead_rejection_is_a_proposal_negative() {
+        let (common, mut env, variant) = two_clean_proposal_frontier_env(1);
+        let rejected_action = proposal_action_idx(variant, 0);
+        let result = env
+            .get_proposal_candidates_with_outcomes(
+                &common,
+                &[0, 0],
+                &[proposal_action_idx(variant, 1), rejected_action],
+                &NO_VANILLA_AREA_CONSTRAINTS,
+                2,
+                1,
+                1,
+                false,
+                &FeatureConfig::all_disabled(),
+                FrontierNeighborAlgorithm::Nearest,
+                1,
+                4,
+                &mut FeatureScratch::default(),
+            )
+            .unwrap();
+        assert_eq!(result.clean_count, 1);
+        assert_eq!(result.rejected_count, 1);
+        assert_eq!(result.scored_invalid_proposal_action_idx, [rejected_action]);
+        assert_eq!(result.scored_invalid_rejected, [1]);
     }
 
     #[test]

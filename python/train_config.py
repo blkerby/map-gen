@@ -203,6 +203,8 @@ class GenerationConfig(StrictBaseModel):
     gpu_prefetch_batches: int
     recommended_candidates: ScheduleableInt
     shortlist_candidates: ScheduleableInt
+    # Shared per-step budget for resolution failures and lookahead rejections
+    # used as proposal negatives; selectable fallbacks retain reward-based targets.
     num_scored_invalid_candidates: int
     max_candidate_areas_per_placement: int
     recommended_candidates_same_frontier: bool

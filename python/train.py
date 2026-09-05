@@ -1536,6 +1536,12 @@ class TrainingSession:
                 invalid=torch.cat(
                     [proposal_data.invalid for proposal_data in proposal_data_iterations]
                 ),
+                rejected=torch.cat(
+                    [proposal_data.rejected for proposal_data in proposal_data_iterations]
+                ),
+                sampling_logits=torch.cat(
+                    [proposal_data.sampling_logits for proposal_data in proposal_data_iterations]
+                ),
                 selected_candidate=torch.cat(
                     [
                         proposal_data.selected_candidate
@@ -2262,7 +2268,6 @@ class TrainingSession:
                 candidate_diagnostics = compute_candidate_diagnostics(
                     proposal_data,
                     step_config.train.proposal_target_temperature,
-                    episode_data.temperature,
                 )
                 avg_loss, avg_balance_loss = self.train_round(
                     episode_data,

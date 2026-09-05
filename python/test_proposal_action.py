@@ -144,11 +144,13 @@ def test_proposal_target_temperature_scales_student_and_target_logits() -> None:
     torch.testing.assert_close(temperature_loss, explicitly_scaled_loss)
 
 
-def test_selected_probability_uses_generation_temperature() -> None:
+def test_selected_probability_uses_recorded_sampling_logits() -> None:
     proposal_data = ProposalData(
         frontier_idx=torch.tensor([[[0, 0]]], dtype=torch.int16),
         action_idx=torch.tensor([[[0, 1]]], dtype=torch.int16),
         invalid=torch.zeros((1, 1, 2), dtype=torch.bool),
+        rejected=torch.zeros((1, 1, 2), dtype=torch.bool),
+        sampling_logits=torch.tensor([[[0.0, 4.0]]]),
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
         target_reward=torch.tensor([[[0.0, 1.0]]]),
         balance_residual=torch.zeros((1, 1, 2)),
@@ -157,15 +159,13 @@ def test_selected_probability_uses_generation_temperature() -> None:
     soft_target = compute_candidate_diagnostics(
         proposal_data,
         proposal_target_temperature=1.0,
-        generation_temperature=torch.tensor([0.5]),
     )
     sharp_target = compute_candidate_diagnostics(
         proposal_data,
         proposal_target_temperature=0.1,
-        generation_temperature=torch.tensor([0.5]),
     )
 
-    expected_selected_probability = torch.softmax(torch.tensor([0.0, 2.0]), dim=0)[1]
+    expected_selected_probability = torch.softmax(torch.tensor([0.0, 4.0]), dim=0)[1]
     torch.testing.assert_close(
         soft_target.selected_probability,
         expected_selected_probability,
@@ -182,6 +182,8 @@ def test_candidate_diagnostics_scale_balance_with_temperature() -> None:
         frontier_idx=torch.tensor([[[0, 0]]], dtype=torch.int16),
         action_idx=torch.tensor([[[0, 1]]], dtype=torch.int16),
         invalid=torch.zeros((1, 1, 2), dtype=torch.bool),
+        rejected=torch.zeros((1, 1, 2), dtype=torch.bool),
+        sampling_logits=torch.tensor([[[0.0, 4.0]]]),
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
         target_reward=torch.tensor([[[0.0, 1.0]]]),
         balance_residual=torch.tensor([[[1.0, 0.0]]]),
@@ -191,12 +193,11 @@ def test_candidate_diagnostics_scale_balance_with_temperature() -> None:
     diagnostics = compute_candidate_diagnostics(
         proposal_data,
         proposal_target_temperature=0.1,
-        generation_temperature=torch.tensor([0.01]),
     )
 
     torch.testing.assert_close(
         diagnostics.selected_probability,
-        torch.softmax(torch.tensor([100.0, 101.0]), dim=0)[1],
+        torch.softmax(torch.tensor([0.0, 4.0]), dim=0)[1],
     )
 
 
@@ -402,7 +403,7 @@ def main() -> None:
     test_all_invalid_row_has_zero_proposal_loss()
     test_proposal_target_temperature_preserves_reward_score_scale()
     test_proposal_target_temperature_scales_student_and_target_logits()
-    test_selected_probability_uses_generation_temperature()
+    test_selected_probability_uses_recorded_sampling_logits()
     test_candidate_diagnostics_scale_balance_with_temperature()
     test_candidate_area_prior_preserves_target_odds()
     test_proposal_scores_gather_candidates_across_frontiers()

@@ -234,7 +234,12 @@ class EpisodeData:
 class ProposalData:
     frontier_idx: torch.Tensor
     action_idx: torch.Tensor
+    # Negative-only examples, never selectable. Includes recorded lookahead rejections.
     invalid: torch.Tensor
+    # Lookahead rejection, including selectable fallback candidates.
+    rejected: torch.Tensor
+    # Final selection logits; -inf for candidates not offered to the sampler.
+    sampling_logits: torch.Tensor
     selected_candidate: torch.Tensor
     target_reward: torch.Tensor
     balance_residual: torch.Tensor
@@ -245,6 +250,8 @@ class ProposalData:
             frontier_idx=self.frontier_idx.to(device),
             action_idx=self.action_idx.to(device),
             invalid=self.invalid.to(device),
+            rejected=self.rejected.to(device),
+            sampling_logits=self.sampling_logits.to(device),
             selected_candidate=self.selected_candidate.to(device),
             target_reward=self.target_reward.to(device),
             balance_residual=self.balance_residual.to(device),
@@ -256,6 +263,8 @@ class ProposalData:
             frontier_idx=self.frontier_idx[start:end],
             action_idx=self.action_idx[start:end],
             invalid=self.invalid[start:end],
+            rejected=self.rejected[start:end],
+            sampling_logits=self.sampling_logits[start:end],
             selected_candidate=self.selected_candidate[start:end],
             target_reward=self.target_reward[start:end],
             balance_residual=self.balance_residual[start:end],
@@ -463,6 +472,44 @@ class CandidateStats:
         )
 
 
+@dataclass
+class CandidateBatch:
+    candidates: Actions
+    proposal_frontier_idx: torch.Tensor
+    proposal_action_idx: torch.Tensor
+    proposal_rejected: torch.Tensor
+    scored_invalid_frontier_idx: torch.Tensor
+    scored_invalid_proposal_action_idx: torch.Tensor
+    scored_invalid_rejected: torch.Tensor
+    reward_outcomes: StepOutcomes
+    post_candidate_outcomes: StepOutcomes
+    feature_requirements: FeatureRequirements
+    stats: CandidateStats
+
+    def to(self, device: torch.device, non_blocking: bool) -> "CandidateBatch":
+        return CandidateBatch(
+            candidates=self.candidates.to(device, non_blocking=non_blocking),
+            proposal_frontier_idx=self.proposal_frontier_idx.to(device, non_blocking=non_blocking),
+            proposal_action_idx=self.proposal_action_idx.to(device, non_blocking=non_blocking),
+            proposal_rejected=self.proposal_rejected.to(device, non_blocking=non_blocking),
+            scored_invalid_frontier_idx=self.scored_invalid_frontier_idx.to(
+                device, non_blocking=non_blocking
+            ),
+            scored_invalid_proposal_action_idx=self.scored_invalid_proposal_action_idx.to(
+                device, non_blocking=non_blocking
+            ),
+            scored_invalid_rejected=self.scored_invalid_rejected.to(
+                device, non_blocking=non_blocking
+            ),
+            reward_outcomes=self.reward_outcomes.to(device, non_blocking=non_blocking),
+            post_candidate_outcomes=self.post_candidate_outcomes.to(
+                device, non_blocking=non_blocking
+            ),
+            feature_requirements=self.feature_requirements,
+            stats=self.stats.to(device, non_blocking=non_blocking),
+        )
+
+
 class CandidateSlot:
     def __init__(self, env: "EnvironmentGroup", pin_memory: bool):
         door_count, connection_count = env.engine.get_output_sizes()
@@ -480,6 +527,8 @@ class CandidateSlot:
         self.room_area = None
         self.proposal_frontier_idx = None
         self.proposal_action_idx = None
+        self.proposal_rejected = None
+        self.scored_invalid_rejected = None
         self.scored_invalid_frontier_idx = None
         self.scored_invalid_proposal_action_idx = None
         self.pre_door_invalid = None
@@ -537,7 +586,9 @@ class CandidateSlot:
         self.room_area = self._empty(candidate_shape, torch.uint8)
         self.proposal_frontier_idx = self._empty(candidate_shape, torch.int16)
         self.proposal_action_idx = self._empty(candidate_shape, torch.int16)
+        self.proposal_rejected = self._empty(candidate_shape, torch.uint8)
         invalid_shape = (self.environment_capacity, self.invalid_capacity)
+        self.scored_invalid_rejected = self._empty(invalid_shape, torch.uint8)
         self.scored_invalid_frontier_idx = self._empty(invalid_shape, torch.int16)
         self.scored_invalid_proposal_action_idx = self._empty(invalid_shape, torch.int16)
         self.pre_door_invalid = self._empty(
@@ -1422,17 +1473,7 @@ class EnvironmentGroup:
         num_scored_invalid_candidates: int,
         max_candidate_areas_per_placement: int,
         recommended_candidates_same_frontier: bool,
-    ) -> tuple[
-        Actions,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        StepOutcomes,
-        StepOutcomes,
-        FeatureRequirements,
-        CandidateStats,
-    ]:
+    ) -> CandidateBatch:
         candidate_count = recommended_candidates
         candidate_slot.ensure(
             self.num_envs,
@@ -1456,6 +1497,12 @@ class EnvironmentGroup:
                     .contiguous()
                     .cpu()
                     .numpy(),
+                    "proposal_rejected": candidate_slot.proposal_rejected[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "scored_invalid_rejected": candidate_slot.scored_invalid_rejected[
+                        : self.num_envs, :num_scored_invalid_candidates
+                    ].numpy(),
                     "recommended_candidates": recommended_candidates,
                     "num_scored_invalid_candidates": num_scored_invalid_candidates,
                     "max_candidate_areas_per_placement": max_candidate_areas_per_placement,
@@ -1559,30 +1606,28 @@ class EnvironmentGroup:
         candidate_count: int,
         num_scored_invalid_candidates: int,
         feature_requirements,
-    ) -> tuple[
-        Actions,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        StepOutcomes,
-        StepOutcomes,
-        FeatureRequirements,
-        CandidateStats,
-    ]:
-        return (
-            candidate_slot.actions(self.num_envs, candidate_count),
-            candidate_slot.proposal_frontiers(self.num_envs, candidate_count),
-            candidate_slot.proposal_actions(self.num_envs, candidate_count),
-            candidate_slot.scored_invalid_frontier_idx[
+    ) -> CandidateBatch:
+        return CandidateBatch(
+            proposal_rejected=candidate_slot.proposal_rejected[
+                : self.num_envs, :candidate_count
+            ].bool(),
+            scored_invalid_rejected=candidate_slot.scored_invalid_rejected[
+                : self.num_envs, :num_scored_invalid_candidates
+            ].bool(),
+            candidates=candidate_slot.actions(self.num_envs, candidate_count),
+            proposal_frontier_idx=candidate_slot.proposal_frontiers(self.num_envs, candidate_count),
+            proposal_action_idx=candidate_slot.proposal_actions(self.num_envs, candidate_count),
+            scored_invalid_frontier_idx=candidate_slot.scored_invalid_frontier_idx[
                 : self.num_envs, :num_scored_invalid_candidates
             ],
-            candidate_slot.scored_invalid_proposal_action_idx[
+            scored_invalid_proposal_action_idx=candidate_slot.scored_invalid_proposal_action_idx[
                 : self.num_envs, :num_scored_invalid_candidates
             ],
-            candidate_slot.reward_outcomes(self.num_envs),
-            candidate_slot.post_candidate_outcomes(self.num_envs, candidate_count),
-            FeatureRequirements(
+            reward_outcomes=candidate_slot.reward_outcomes(self.num_envs),
+            post_candidate_outcomes=candidate_slot.post_candidate_outcomes(
+                self.num_envs, candidate_count
+            ),
+            feature_requirements=FeatureRequirements(
                 frontier_row_count=feature_requirements.frontier_row_count,
                 worker_frontier_row_counts=feature_requirements.worker_frontier_row_counts,
                 missing_connect_query_row_count=(
@@ -1598,7 +1643,7 @@ class EnvironmentGroup:
                     feature_requirements.worker_save_refill_utility_query_row_counts
                 ),
             ),
-            candidate_slot.stats(self.num_envs),
+            stats=candidate_slot.stats(self.num_envs),
         )
 
     def get_outcomes(self, device: torch.device, verify_consistency: bool) -> EpisodeOutcomes:
