@@ -11,6 +11,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 import safetensors.torch
@@ -944,6 +945,8 @@ def initialize_generation_process(
     ignore_scores: bool,
 ) -> None:
     global GENERATION_PROCESS_STATE
+    # The parent handles terminal interrupts and lets the current round finish.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     config = Config.model_validate_json(config_json)
     rooms = json.loads(rooms_json)
     device = torch.device(device_text)
@@ -1139,9 +1142,19 @@ class TrainingSession:
             )
         return "; ".join(pairs)
 
-    def request_stop(self) -> None:
+    def request_stop(self, signum: int, _frame: FrameType | None) -> None:
+        if self.stop_requested:
+            # Skip finally/atexit handlers, including executor waits and checkpointing.
+            try:
+                for process in multiprocessing.active_children():
+                    process.kill()
+            finally:
+                os._exit(128 + signum)
         self.stop_requested = True
-        logging.info("Stop signal received; training will stop after the current round finishes.")
+        logging.info(
+            "Stop signal received; finishing the current round and saving a checkpoint. "
+            "Interrupt again to exit immediately without saving."
+        )
 
     def checkpoint_path(self, completed_round: int) -> Path:
         return Path(self.run_path) / "checkpoints" / f"round_{completed_round}.safetensors"
@@ -2217,7 +2230,10 @@ class TrainingSession:
         try:
             total_episodes = self.config.knot_episodes[-1]
             start_round = self.num_episodes // self.episodes_per_round
+            last_saved_round = None
             for round_idx in range(start_round, total_episodes // self.episodes_per_round):
+                if self.stop_requested:
+                    break
                 if self.args.profile:
                     map_gen.reset_profile()
                 (
@@ -2281,10 +2297,16 @@ class TrainingSession:
                 completed_round = round_idx + 1
                 if completed_round % self.config.checkpoint_period == 0:
                     self.save_checkpoint(self.checkpoint_path(completed_round))
+                    last_saved_round = completed_round
 
                 if self.stop_requested:
-                    logging.info("Stopping training after completing round %s.", round_idx)
+                    logging.info("Stopping training after completing round %s.", completed_round)
                     break
+
+            # Save only after a normal or requested stop, not after a failed partial round.
+            completed_round = self.num_episodes // self.episodes_per_round
+            if last_saved_round != completed_round:
+                self.save_checkpoint(self.checkpoint_path(completed_round))
         finally:
             self.train_batch_prefetcher.close()
             for generation_executor in self.generation_executors:
@@ -2664,8 +2686,8 @@ def build_session(args: Args) -> TrainingSession:
 def main() -> None:
     args = parse_args()
     session = build_session(args)
-    signal.signal(signal.SIGINT, lambda _signum, _frame: session.request_stop())
-    signal.signal(signal.SIGTERM, lambda _signum, _frame: session.request_stop())
+    signal.signal(signal.SIGINT, session.request_stop)
+    signal.signal(signal.SIGTERM, session.request_stop)
     session.run()
 
 

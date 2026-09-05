@@ -107,14 +107,24 @@ completion note remain open.
    References: [python/generate.py:1219](python/generate.py#L1219),
    [src/engine.rs:1279](src/engine.rs#L1279).
 
-9. **[P2] A clean training stop does not save the latest model.**
+9. **[P2, completed] A clean training stop does not save the latest model.**
 
-   Checkpoints are saved only on the periodic boundary. Neither normal
-   completion nor the handled SIGINT/SIGTERM stop saves the remaining updates.
-   With the checked-in period of 100 rounds, a clean stop can discard **up to 99
+   Checkpoints were saved only on the periodic boundary. Neither normal
+   completion nor the handled SIGINT/SIGTERM stop saved the remaining updates.
+   With the checked-in period of 100 rounds, a clean stop could discard **up to 99
    rounds of trained model state**.
 
-   Reference: [python/train.py:2281](python/train.py#L2281).
+   Reference: [python/train.py:2229](python/train.py#L2229).
+
+   **Completed 2026-09-04.** Normal completion and the first SIGINT/SIGTERM now
+   save the latest completed round before cleanup, without repeating a periodic
+   checkpoint already saved for that round. The first interrupt lets the current
+   round finish; generation workers ignore terminal SIGINT so they can finish
+   their work. A second stop signal kills child processes and exits immediately
+   without checkpointing or waiting for cleanup, including during a save.
+   Existing checkpoints retain the temporary-file/atomic-replace protection;
+   a forced exit during writing can leave an incomplete `.tmp` file. Failed
+   partial rounds are not saved as completed checkpoints.
 
 10. **[P3] The selected-candidate probability metric uses different logits from generation.**
 
@@ -126,6 +136,11 @@ completion note remain open.
 
     References: [diagnostics, python/learn.py:495](python/learn.py#L495),
     [actual scoring, python/generate.py:1088](python/generate.py#L1088).
+
+Untriaged observation from issue 9 validation: the second CPU training round
+reported 84 mismatched feature values (42 each in `room_x` and `room_y`, at
+step 2) before checkpointing. The checkpoint checks passed; the cause and
+training impact of these feature-verification warnings remain uninvestigated.
 
 Validation: **99 Rust tests passed; 64 of 66 Python tests passed** using a direct
 runner because `pytest` was unavailable. The two failures are outdated
