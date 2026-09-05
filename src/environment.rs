@@ -1904,6 +1904,10 @@ impl Environment {
             .iter_mut()
             .for_each(|matches| matches.fill(DirDoorIdx::MAX));
         self.room_used.fill(false);
+        // Unplaced coordinates are masked by the model, but feature verification
+        // compares them too. Keep resets independent of prior episode placements.
+        self.room_x.fill(0);
+        self.room_y.fill(0);
         self.room_area.fill(DUMMY_AREA);
         self.area_used = [false; AREA_COUNT];
         self.area_min_x = [0; AREA_COUNT];
@@ -6934,6 +6938,44 @@ mod tests {
             assert_eq!(candidate.x, first.x);
             assert_eq!(candidate.y, first.y);
             assert_eq!(candidate.area as usize, area);
+        }
+    }
+
+    #[test]
+    fn reset_room_coordinates_match_fresh_environment_during_replay() {
+        let common = spatial_index_test_common();
+        let mut reused = Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+        let mut fresh = Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+        reused.step(
+            Action {
+                room_idx: 0,
+                x: 3,
+                y: 4,
+                area: 0,
+            },
+            &common,
+        );
+        assert_eq!(reused.room_x[0], 3);
+        assert_eq!(reused.room_y[0], 4);
+
+        for room_idx in [1, 0] {
+            reused.clear(&common);
+            fresh.clear(&common);
+            assert_eq!(reused.room_x, [0, 0]);
+            assert_eq!(reused.room_y, [0, 0]);
+            let action = Action {
+                room_idx,
+                x: 2,
+                y: 5,
+                area: 0,
+            };
+            reused.step_known(action, &common);
+            fresh.step(action, &common);
+            assert_eq!(reused.room_used, fresh.room_used);
+            assert_eq!(reused.room_x, fresh.room_x);
+            assert_eq!(reused.room_y, fresh.room_y);
+            assert_eq!(reused.room_x[1 - room_idx as usize], 0);
+            assert_eq!(reused.room_y[1 - room_idx as usize], 0);
         }
     }
 

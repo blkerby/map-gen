@@ -51,7 +51,7 @@
     "batch_size": 2048,
     "door_beta": {"log": [0.05, 0.1, 0.2, 0.4, 0.4]},
     "toilet_beta": {"log": [0.05, 0.1, 0.2, 0.4, 0.4]},
-    "area_beta": {"log": [0.05, 0.1, 0.2, 0.4, 0.4]}
+    "area_beta": {"log": [0.1, 0.2, 0.4, 0.8, 0.8]}
   },
   "generation": {
     "num_environments": 8192,

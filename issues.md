@@ -256,8 +256,8 @@ available for this validation. The Rust bindings were rebuilt locally.
 Investigated observation from issue 9 validation (2026-09-04): the second CPU
 training round originally reported 84 mismatched feature values in `room_x`
 and `room_y`. These warnings recurred during issues 4/10 validation. The cause
-is stale coordinates for **unplaced rooms**, not inconsistent room placements:
-[environment reset](src/environment.rs#L1899) clears `room_used` but retains
+was stale coordinates for **unplaced rooms**, not inconsistent room placements:
+[environment reset](src/environment.rs#L1899) cleared `room_used` but retained
 `room_x`/`room_y`, and [feature extraction](src/environment.rs#L5654) copies
 those coordinates unchanged. Generation and training environments can have
 different prior placements, so their unused coordinates differ after reset.
@@ -272,9 +272,18 @@ replayed features. Both training rounds and checkpoint save/reload passed.
 This observation is a false-positive diagnostic, with no model-quality effect
 from the differing coordinates in the reproduced run. CUDA was not tested.
 
-Proposed follow-up, not yet implemented: clear both coordinate arrays alongside
-the placement flags in `Environment::clear`, giving unplaced rooms deterministic
-zero coordinates, and add a regression test for reset/replay consistency.
+**Completed 2026-09-04.** `Environment::clear` now zeros both coordinate arrays
+alongside the placement flags, making unplaced-room features independent of
+prior episodes. Construction already initializes them to zero; speculative
+placement rollback restores the saved coordinates, so no additional clearing
+is needed there. The verifier still compares coordinates exactly, and its code
+comment now documents the reset invariant instead of an expected false positive.
+A regression test covers repeated reset and normal-step versus replay-step
+coordinate equality, including rooms omitted from the next episode.
+All 103 Rust tests passed. Two CPU training rounds completed with **zero feature
+mismatches** (28,799 and 30,674 compared values), and checkpoint save/reload
+passed. Rust bindings were rebuilt locally; other training environments need
+a rebuild.
 
 Validation: **99 Rust tests passed; 64 of 66 Python tests passed** using a direct
 runner because `pytest` was unavailable. The two failures are outdated

@@ -2,7 +2,7 @@
   "experiment_name": "zebes-testing",
   "room_set": "room_definitions/zebes.json",
   "map_size": [72, 72],
-  "knot_episodes": [0, 300000, 1200000, 16000000, 32000000],
+  "knot_episodes": [0, 200000, 400000, 8000000, 32000000],
   "checkpoint_period": 100,
   "visualize": 0,
   "distance_proximity_scale": 5.0,
@@ -39,19 +39,19 @@
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": 0.001,
-    "beta1": 0.0,
-    "beta2": 0.99
+    "lr": {"log": [0.0005, 0.0003, 0.0002, 0.0001, 0.00005]},
+    "beta1": 0.9,
+    "beta2": 0.95
   },
   "balance_model": {
     "hidden_width": 512,
     "num_layers": 2
   },
   "balance_train": {
-    "batch_size": {"step": [256, 512, 2048, 2048, 2048]},
-    "door_beta": 1.0,
-    "toilet_beta": 1.0,
-    "area_beta": 1.0
+    "batch_size": 2048,
+    "door_beta": {"log": [0.1, 0.2, 0.3, 0.3, 0.3]},
+    "toilet_beta": {"log": [0.1, 0.2, 0.3, 0.3, 0.3]},
+    "area_beta": {"log": [0.1, 0.2, 0.3, 0.3, 0.3]}
   },
   "generation": {
     "num_environments": 4096,
