@@ -37,6 +37,7 @@ from env import (
     compute_area_balance_targets,
 )
 from experience import ExperienceStorage
+from features import GenerationVariableFloatsFeature
 from generate import GenerationStats, run_generation_groups
 from learn import (
     CandidateDiagnostics,
@@ -95,7 +96,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v14"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v15"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -789,11 +790,12 @@ def create_generate_config(
         generation_variable_floats_by_name.update(
             {f"{field_name}_{area}": values[:, area] for area in range(6)}
         )
-    generation_variable_floats = torch.stack(
-        [generation_variable_floats_by_name[name] for name in GENERATION_VARIABLE_FLOAT_FIELDS],
-        dim=1,
+    generation_variable_floats = GenerationVariableFloatsFeature.construct_tensor(
+        generation_variable_floats_by_name, num_rooms=len(rooms)
     )
-    log_temperature_model = temperature.detach().log()
+    log_temperature_model = generation_variable_floats[
+        :, GENERATION_VARIABLE_FLOAT_FIELDS.index("log_temperature")
+    ].detach().contiguous()
     log_recommended_candidates_model = torch.full(
         [num_envs],
         math.log(config.generation.recommended_candidates + 1),

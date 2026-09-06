@@ -107,8 +107,8 @@ HEAT_WATER_PROBABILITY_FIELDS = tuple(
 )
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
-    "temperature",
-    "proposal_temperature",
+    "log_temperature",
+    "log_proposal_temperature",
     "reward_door",
     "reward_connection",
     "reward_toilet",
@@ -126,7 +126,8 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_area_map_station",
     "reward_area_x",
     "reward_area_y",
-    *(f"{field}_{area}" for field in AREA_TARGET_FIELDS for area in range(6)),
+    *(f"target_area_probability_{area}" for area in range(6)),
+    *(f"{field}_{area}" for field in ("target_area_x", "target_area_y") for area in range(6)),
     *VANILLA_AREA_CONDITION_FIELDS,
 )
 

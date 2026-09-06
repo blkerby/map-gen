@@ -34,7 +34,7 @@ class FakeBalanceEngine:
 def example_episode_data() -> EpisodeData:
     variables = torch.zeros((4, len(GENERATION_VARIABLE_FLOAT_FIELDS)))
     for area in range(AREA_COUNT):
-        variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_rooms_{area}")] = (
+        variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_probability_{area}")] = (
             1.0 / AREA_COUNT
         )
     for family in HEAT_WATER_FAMILIES:

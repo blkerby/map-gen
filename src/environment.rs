@@ -777,7 +777,7 @@ pub struct FeatureScratch {
     feature_pool: Vec<Features>,
     frontier_locations: Vec<DoorLocation>,
     nearest_neighbor_indices: Vec<usize>,
-    nearest_neighbor_keys: Vec<(Coord, usize, usize)>,
+    nearest_neighbor_keys: Vec<(i16, usize, usize)>,
     delaunay_midpoints: Vec<(i16, i16)>,
     delaunay_points: Vec<Point>,
     delaunay_edges: Vec<FrontierEdge>,
@@ -1049,12 +1049,12 @@ fn write_frontier_nearest_neighbors(
     scratch.nearest_neighbor_keys.clear();
     scratch
         .nearest_neighbor_keys
-        .resize(neighbor_count, (Coord::MAX, usize::MAX, usize::MAX));
+        .resize(neighbor_count, (i16::MAX, usize::MAX, usize::MAX));
     let neighbors = &mut scratch.nearest_neighbor_indices;
     let neighbor_keys = &mut scratch.nearest_neighbor_keys;
     for (src_idx, src) in locations.iter().enumerate() {
         neighbors.fill(usize::MAX);
-        neighbor_keys.fill((Coord::MAX, usize::MAX, usize::MAX));
+        neighbor_keys.fill((i16::MAX, usize::MAX, usize::MAX));
         let mut count = 0;
         for dst_idx in 0..locations.len() {
             if !include_self && dst_idx == src_idx {
@@ -1063,7 +1063,7 @@ fn write_frontier_nearest_neighbors(
             let dst_key = {
                 let dst = locations[dst_idx];
                 (
-                    (src.x() - dst.x()).abs() + (src.y() - dst.y()).abs(),
+                    frontier_manhattan_distance(*src, dst),
                     usize::from(dst_idx != src_idx),
                     dst_idx,
                 )
@@ -1089,6 +1089,12 @@ fn write_frontier_nearest_neighbors(
     }
 }
 
+fn frontier_manhattan_distance(src: DoorLocation, dst: DoorLocation) -> i16 {
+    // A coordinate difference can reach 255, and their sum can reach 510.
+    (i16::from(src.x()) - i16::from(dst.x())).abs()
+        + (i16::from(src.y()) - i16::from(dst.y())).abs()
+}
+
 fn write_single_frontier_nearest_neighbor(
     locations: &[DoorLocation],
     include_self: bool,
@@ -1096,14 +1102,14 @@ fn write_single_frontier_nearest_neighbor(
 ) {
     debug_assert_eq!(locations.len(), output.len());
     for (src_idx, src) in locations.iter().enumerate() {
-        let mut best_key = (Coord::MAX, usize::MAX, usize::MAX);
+        let mut best_key = (i16::MAX, usize::MAX, usize::MAX);
         let mut best_idx = -1;
         for (dst_idx, dst) in locations.iter().enumerate() {
             if !include_self && dst_idx == src_idx {
                 continue;
             }
             let key = (
-                (src.x() - dst.x()).abs() + (src.y() - dst.y()).abs(),
+                frontier_manhattan_distance(*src, *dst),
                 usize::from(dst_idx != src_idx),
                 dst_idx,
             );
@@ -8725,6 +8731,43 @@ mod tests {
 
         write_single_frontier_nearest_neighbor(&locations[..1], false, &mut single[..1]);
         assert_eq!(single[0], -1);
+    }
+
+    #[test]
+    fn nearest_neighbors_handle_distances_larger_than_signed_bytes() {
+        for locations in [
+            [door_location(0, 0, false), door_location(71, 71, false)],
+            [
+                door_location(-128, -128, false),
+                door_location(127, 127, false),
+            ],
+        ] {
+            let mut single = [-1; 2];
+            write_single_frontier_nearest_neighbor(&locations, false, &mut single);
+            assert_eq!(single, [1, 0]);
+            assert_eq!(
+                frontier_nearest_neighbors(&locations, 1, false),
+                vec![vec![1], vec![0]]
+            );
+            write_single_frontier_nearest_neighbor(&locations, true, &mut single);
+            assert_eq!(single, [0, 1]);
+            assert_eq!(
+                frontier_nearest_neighbors(&locations, 2, true),
+                vec![vec![0, 1], vec![1, 0]]
+            );
+        }
+        let locations = [
+            door_location(0, 0, false),
+            door_location(71, 71, false),
+            door_location(1, 0, false),
+        ];
+        assert_eq!(
+            frontier_nearest_neighbors(&locations, 2, false)[0],
+            vec![2, 1]
+        );
+        let mut single = [-1; 3];
+        write_single_frontier_nearest_neighbor(&locations, false, &mut single);
+        assert_eq!(single[0], 2);
     }
 
     #[test]

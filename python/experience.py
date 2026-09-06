@@ -8,7 +8,7 @@ from env import Actions, EpisodeData
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v2"
+EXPERIENCE_FORMAT = "map-gen-experience-v3"
 REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
     "room_idx",
     "room_x",

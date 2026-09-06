@@ -7,8 +7,8 @@ import safetensors.torch
 from safetensors import safe_open
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v14"
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v7"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v15"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v8"
 MODEL_PREFIX_MAP = {
     "ema_model": "ema_model",
     "balance_model": "balance_model",

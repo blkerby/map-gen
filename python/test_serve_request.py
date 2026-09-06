@@ -118,12 +118,14 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         | {
             "small_map": False,
             "target_area_rooms": [1.0, 2.0, 3.0, 4.0, 5.0, 9.0],
+            "temperature": 0.03,
+            "proposal_temperature": 100.0,
             "target_area_x": [5.0] * 6,
             "target_area_y": [10.0] * 6,
         }
     )
     state = SimpleNamespace(
-        rooms=[{"map": [[1] * 6]}],
+        rooms=[{"map": [[1] * 6]} for _ in range(3)],
         serving_config=SimpleNamespace(gpu_prefetch_batches=0, autocast=False),
         training_config=SimpleNamespace(
             map_size=(10, 20),
@@ -138,16 +140,21 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         torch.device("cpu"),
     )[0]
     expected_area_rooms = (
-        torch.tensor([1, 2, 3, 4, 5, 9], dtype=torch.float32).div(24).expand(2, 6)
+        torch.tensor([1, 2, 3, 4, 5, 9], dtype=torch.float32).div(8).expand(2, 6)
     )
     assert torch.equal(config.target_area_rooms, expected_area_rooms)
     assert torch.equal(config.target_area_x, torch.full([2, 6], 0.5))
     assert torch.equal(config.target_area_y, torch.full([2, 6], 0.5))
-    target_rooms_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_rooms_0")
+    target_rooms_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_probability_0")
     assert torch.equal(
         config.generation_variable_floats[:, target_rooms_index : target_rooms_index + 6],
-        expected_area_rooms,
+        expected_area_rooms / 3,
     )
+    for field, value in (("log_temperature", 0.03), ("log_proposal_temperature", 100.0)):
+        torch.testing.assert_close(
+            config.generation_variable_floats[:, GENERATION_VARIABLE_FLOAT_FIELDS.index(field)],
+            torch.full((2,), value).log(),
+        )
     target_x_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_x_0")
     assert torch.equal(
         config.generation_variable_floats[:, target_x_index],

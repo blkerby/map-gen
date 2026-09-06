@@ -38,6 +38,7 @@ from env import (
     compute_area_balance_targets,
 )
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
+from features import GenerationVariableFloatsFeature
 from model import FrontierModel
 from small_map import (
     DoorData,
@@ -60,8 +61,8 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v7"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v14"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v8"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v15"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -579,12 +580,6 @@ def create_generate_configs(
     )
     generation_variable_float_values.update(
         {
-            f"target_area_rooms_{area}": normalized_targets["target_area_rooms"][area]
-            for area in range(AREA_COUNT)
-        }
-    )
-    generation_variable_float_values.update(
-        {
             field_name: float(getattr(generate_request, field_name))
             for field_name in VANILLA_AREA_CONDITION_FIELDS
         }
@@ -598,6 +593,13 @@ def create_generate_configs(
             for name, values in normalized_targets.items()
             for area in range(6)
         }
+    )
+    generation_variable_tensor = GenerationVariableFloatsFeature.construct_tensor(
+        {
+            name: torch.tensor([value], dtype=torch.float32, device=device)
+            for name, value in generation_variable_float_values.items()
+        },
+        num_rooms=len(state.rooms),
     )
     configs = []
     for env in envs:
@@ -614,20 +616,12 @@ def create_generate_configs(
             device=device,
         )
         generation_variable_floats_model = (
-            torch.tensor(
-                [
-                    [
-                        generation_variable_float_values[name]
-                        for name in GENERATION_VARIABLE_FLOAT_FIELDS
-                    ]
-                ],
-                dtype=torch.float32,
-                device=device,
-            )
-            .expand(env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))
+            generation_variable_tensor.expand(env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))
             .contiguous()
         )
-        log_temperature_model = temperature.detach().log()
+        log_temperature_model = generation_variable_floats_model[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("log_temperature")
+        ].detach().contiguous()
         log_recommended_candidates_model = torch.full(
             [env.num_envs],
             math.log(generate_request.recommended_candidates + 1),

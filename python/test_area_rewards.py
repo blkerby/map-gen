@@ -11,6 +11,7 @@ from generate import (
     compute_expected_reward,
 )
 from model import Predictions
+from learn import generation_area_balance_targets
 from train import (
     VANILLA_AREA_SPECIAL_ROOM_TYPES,
     compute_unforced_special_room_area_ss,
@@ -214,6 +215,8 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
     config = instantiate_scheduleable_config(
         Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
     )
+    config.generation.maridia_water_preferred_probability.active_probability = 0.5
+    config.generation.norfair_heat_preferred_probability.active_probability = 0.5
     generate_config = create_generate_config(
         config=config,
         rooms=rooms,
@@ -224,6 +227,29 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
     )
 
     baseline = generate_config.target_area_rooms / len(rooms)
+    probability_indices = [
+        GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_probability_{area}")
+        for area in range(AREA_COUNT)
+    ]
+    torch.testing.assert_close(
+        generate_config.generation_variable_floats[:, probability_indices], baseline
+    )
+    for field, value in (
+        ("log_temperature", generate_config.temperature),
+        ("log_proposal_temperature", generate_config.proposal_temperature),
+    ):
+        torch.testing.assert_close(
+            generate_config.generation_variable_floats[
+                :, GENERATION_VARIABLE_FLOAT_FIELDS.index(field)
+            ],
+            value.log(),
+        )
+    replay_targets = generation_area_balance_targets(
+        rooms, generate_config.generation_variable_floats
+    )
+    torch.testing.assert_close(
+        replay_targets.probability, generate_config.area_balance_probability
+    )
     for family_idx, (family, preferred_area) in enumerate(
         zip(HEAT_WATER_FAMILIES, HEAT_WATER_TARGET_AREAS, strict=True)
     ):

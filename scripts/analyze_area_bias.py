@@ -18,7 +18,7 @@ from train_config import (  # noqa: E402
 )
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v2"
+EXPERIENCE_FORMAT = "map-gen-experience-v3"
 ROOM_DEFINITIONS_PATH = REPO_ROOT / "room_definitions" / "zebes.json"
 PROBABILITY_BIN_COUNT = 5
 AREA_COUNT = 6
@@ -214,9 +214,9 @@ def main() -> None:
     assignments = reconstruct_assignments(room_indices, room_areas, len(rooms))
     # Match the baseline used when training samples preferred-area probabilities.
     baseline = variables[
-        :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_rooms_{area}")
+        :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_probability_{area}")
             for area in range(AREA_COUNT)]
-    ] / len(rooms)
+    ]
     print_table(
         [("files", str(len(args.experience))), ("episodes", str(len(assignments)))],
         1,

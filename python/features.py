@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING
 import torch
 
 from env import AREA_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, Features, OutputMetadata
-from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
+from train_config import (
+    GENERATION_VARIABLE_FLOAT_FIELDS,
+    HEAT_WATER_PROBABILITY_FIELDS,
+    VANILLA_AREA_CONDITION_FIELDS,
+    VANILLA_AREA_REWARD_FIELDS,
+)
 
 if TYPE_CHECKING:
     from train_config import FeatureConfig
@@ -151,6 +156,57 @@ class RecommendedCandidatesFeature(GlobalFeature):
 
 
 class GenerationVariableFloatsFeature(GlobalFeature):
+    @staticmethod
+    def construct_tensor(values: dict[str, torch.Tensor], num_rooms: int) -> torch.Tensor:
+        """Construct stored model inputs from required float32 generation values.
+
+        Room targets are counts summing to num_rooms. Coordinate targets have
+        already been divided by map dimensions by the request/config sampler.
+        Every output column is defined here, including intentionally unscaled
+        inputs; adding a schema field without defining its encoding is an error.
+        """
+        if num_rooms <= 0:
+            raise ValueError("num_rooms must be positive")
+        columns = {
+            "log_temperature": values["temperature"].log(),
+            "log_proposal_temperature": values["proposal_temperature"].log(),
+            "reward_door": values["reward_door"],
+            "reward_connection": values["reward_connection"],
+            "reward_toilet": values["reward_toilet"],
+            "reward_phantoon_pair": values["reward_phantoon_pair"],
+            "reward_phantoon_area": values["reward_phantoon_area"],
+            **{name: values[name] for name in VANILLA_AREA_REWARD_FIELDS},
+            "reward_frontier": values["reward_frontier"],
+            "reward_graph_diameter": values["reward_graph_diameter"],
+            **{name: values[name] for name in HEAT_WATER_PROBABILITY_FIELDS},
+            "reward_save_distance": values["reward_save_distance"],
+            "reward_refill_distance": values["reward_refill_distance"],
+            "reward_missing_connect_utility": values["reward_missing_connect_utility"],
+            "reward_area_crossing": values["reward_area_crossing"],
+            "reward_area_size_valid": values["reward_area_size_valid"],
+            "reward_area_map_station": values["reward_area_map_station"],
+            "reward_area_x": values["reward_area_x"],
+            "reward_area_y": values["reward_area_y"],
+            **{
+                f"target_area_probability_{area}": values[f"target_area_rooms_{area}"] / num_rooms
+                for area in range(AREA_COUNT)
+            },
+            **{
+                f"target_area_x_{area}": values[f"target_area_x_{area}"]
+                for area in range(AREA_COUNT)
+            },
+            **{
+                f"target_area_y_{area}": values[f"target_area_y_{area}"]
+                for area in range(AREA_COUNT)
+            },
+            **{name: values[name] for name in VANILLA_AREA_CONDITION_FIELDS},
+        }
+        if tuple(columns) != GENERATION_VARIABLE_FLOAT_FIELDS:
+            raise RuntimeError(
+                "generation feature construction must define every schema field in order"
+            )
+        return torch.stack(list(columns.values()), dim=-1)
+
     @classmethod
     def is_enabled(cls, config: FeatureConfig) -> bool:
         return config.generation_variable_floats

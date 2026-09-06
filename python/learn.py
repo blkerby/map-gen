@@ -46,8 +46,8 @@ INVALID_PROPOSAL_TARGET_LOGIT = -1_000_000.0
 VANILLA_AREA_CONDITION_INDICES = [
     GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_CONDITION_FIELDS
 ]
-TARGET_AREA_ROOM_INDICES = [
-    GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_rooms_{area}")
+TARGET_AREA_PROBABILITY_INDICES = [
+    GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_probability_{area}")
     for area in range(AREA_COUNT)
 ]
 HEAT_WATER_PROBABILITY_INDICES = [
@@ -65,7 +65,7 @@ def generation_area_balance_targets(
 ) -> AreaBalanceTargets:
     return compute_area_balance_targets(
         rooms,
-        generation_variable_floats[:, TARGET_AREA_ROOM_INDICES],
+        generation_variable_floats[:, TARGET_AREA_PROBABILITY_INDICES] * len(rooms),
         generation_variable_floats[:, VANILLA_AREA_CONDITION_INDICES].to(torch.bool),
         generation_variable_floats[:, HEAT_WATER_PROBABILITY_INDICES],
     )
