@@ -797,7 +797,7 @@ class FrontierModel(torch.nn.Module):
         self.area_x_output = torch.nn.Linear(embedding_width, AREA_COUNT)
         self.area_y_output = torch.nn.Linear(embedding_width, AREA_COUNT)
         self.proposal_output = ProposalOutput(
-            embedding_width,
+            embedding_width + global_embedding_width,
             proposal_hidden_widths,
             output_metadata.num_door_variants * AREA_COUNT,
         )
@@ -877,6 +877,7 @@ class FrontierModel(torch.nn.Module):
             global_state = self.global_mlp(torch.cat(global_inputs, dim=-1))
         else:
             global_state = X.new_zeros([snapshot_count, self.global_embedding_width])
+        global_rows = global_state[row_snapshot_idx]
         if row_count == 0:
             mean_pool = max_pool = X.new_zeros([snapshot_count, self.embedding_width])
         else:
@@ -896,7 +897,6 @@ class FrontierModel(torch.nn.Module):
                     pair = pair[:, 0]
             else:
                 pair_count = pair_mask.sum(1).clamp_min(1)
-            global_rows = global_state[row_snapshot_idx]
             for source_layer, pair_layer, output_layer, update_layer in zip(
                 self.source_message_layers,
                 self.pair_message_layers,
@@ -947,7 +947,12 @@ class FrontierModel(torch.nn.Module):
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
         frontier_door_invalid = self.frontier_door_invalid_output(X)
         frontier_balance_score = self.frontier_balance_score_output(X)
-        proposal_state = X if return_proposal_state else X.new_empty([row_count, 0])
+        # Let proposal preferences depend directly on configuration and global state.
+        proposal_state = (
+            torch.cat([X, global_rows], dim=-1)
+            if return_proposal_state
+            else X.new_empty([row_count, 0])
+        )
         frontier_state = X
         # mean_pool, max_pool, pooled_state: [s, e]
         pooled_inputs = [global_state]
