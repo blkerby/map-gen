@@ -9,6 +9,7 @@ import torch
 import json
 
 import map_gen
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, VANILLA_AREA_CONDITION_FIELDS
 
 if TYPE_CHECKING:
     from train_config import EngineFeatureConfig, FeatureConfig
@@ -16,6 +17,9 @@ if TYPE_CHECKING:
 AREA_COUNT = 6
 DUMMY_AREA = AREA_COUNT
 VANILLA_AREA_CONSTRAINT_COUNT = 6
+VANILLA_AREA_CONDITION_INDICES = [
+    GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in VANILLA_AREA_CONDITION_FIELDS
+]
 SPECIAL_ROOM_AREA_CONSTRAINT_IDX = {
     "ship": 0,
     "kraid_boss": 1,
@@ -33,6 +37,15 @@ class AreaBalanceTargets:
     probability: torch.Tensor
     dual_mask: torch.Tensor
     effective_area_rooms: torch.Tensor
+
+
+def mask_unforced_vanilla_area_features(
+    vanilla_area_invalid: torch.Tensor,
+    generation_variable_floats: torch.Tensor,
+) -> torch.Tensor:
+    """Hide inactive constraints from model inputs without changing outcome targets."""
+    forced = generation_variable_floats[..., VANILLA_AREA_CONDITION_INDICES].to(torch.bool)
+    return torch.where(forced, vanilla_area_invalid.to(forced.device), -1)
 
 
 def compute_area_balance_targets(
@@ -2314,6 +2327,11 @@ class FeatureSlot:
         missing_connect_query_row_count: int,
         save_refill_utility_query_row_count: int,
     ) -> Features:
+        lookahead_vanilla_area_invalid = lookahead_outcomes.vanilla_area_invalid
+        if include_lookahead_outcomes:
+            lookahead_vanilla_area_invalid = mask_unforced_vanilla_area_features(
+                lookahead_vanilla_area_invalid, generation_variable_floats
+            )
         if not include_temperature:
             log_temperature = log_temperature.new_empty([*log_temperature.shape, 0])
         if not include_recommended_candidates:
@@ -2333,7 +2351,6 @@ class FeatureSlot:
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
-        lookahead_vanilla_area_invalid = lookahead_outcomes.vanilla_area_invalid
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
         lookahead_maridia_water = lookahead_outcomes.maridia_water
@@ -2540,6 +2557,11 @@ class FeatureSlot:
         save_refill_utility_query_row_count: int,
     ) -> Features:
         snapshot_count = environment_count * candidate_count
+        lookahead_vanilla_area_invalid = lookahead_outcomes.vanilla_area_invalid
+        if include_lookahead_outcomes:
+            lookahead_vanilla_area_invalid = mask_unforced_vanilla_area_features(
+                lookahead_vanilla_area_invalid, generation_variable_floats
+            )
         if not include_temperature:
             log_temperature = log_temperature.new_empty([environment_count, candidate_count, 0])
         if not include_recommended_candidates:
@@ -2556,7 +2578,6 @@ class FeatureSlot:
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
-        lookahead_vanilla_area_invalid = lookahead_outcomes.vanilla_area_invalid
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
         lookahead_maridia_water = lookahead_outcomes.maridia_water

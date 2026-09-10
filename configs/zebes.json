@@ -25,22 +25,22 @@
   "optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0005, 0.0005, 0.0002, 0.00005, 0.00005]},
+      "lr": {"log": [0.0005, 0.0003, 0.0001, 0.00003, 0.00003]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.001, 0.001, 0.0005, 0.0001, 0.0001]},
+      "lr": {"log": [0.001, 0.0005, 0.0002, 0.00005, 0.00005]},
       "beta1": 0.95,
       "beta2": 0.99
     }
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.0003, 0.0002, 0.0001, 0.00005, 0.00005]},
-    "beta1": 0.9,
+    "lr": {"log": [0.0001, 0.00005, 0.00003, 0.00002, 0.00002]},
+    "beta1": 0.5,
     "beta2": 0.95
   },
   "balance_model": {
@@ -49,9 +49,9 @@
   },
   "balance_train": {
     "batch_size": 2048,
-    "door_beta": {"log": [0.03, 0.05, 0.1, 0.1, 0.1]},
-    "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.15, 0.15]},
-    "area_beta": {"log": [0.1, 0.2, 0.3, 0.3, 0.3]}
+    "door_beta": {"log": [0.01, 0.02, 0.03, 0.15, 0.15]},
+    "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
+    "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]}
   },
   "generation": {
     "num_environments": 4096,
@@ -77,12 +77,12 @@
     "reward_phantoon_in_wrecked_ship": 1.0,
     "reward_draygon_in_maridia": 1.0,
     "reward_mother_brain_in_tourian": 1.0,
-    "force_ship_in_crateria_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
-    "force_kraid_in_brinstar_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
-    "force_ridley_in_norfair_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
-    "force_phantoon_in_wrecked_ship_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
-    "force_draygon_in_maridia_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
-    "force_mother_brain_in_tourian_probability": {"linear": [0.0, 0.1, 0.5, 0.5, 0.5]},
+    "force_ship_in_crateria_probability": {"linear": [0.01, 0.1, 0.5, 0.5, 0.5]},
+    "force_kraid_in_brinstar_probability": {"linear": [0.01, 0.1, 0.5, 0.5, 0.5]},
+    "force_ridley_in_norfair_probability": {"linear": [0.01, 0.1, 0.5, 0.5, 0.5]},
+    "force_phantoon_in_wrecked_ship_probability": {"linear": [0.01, 0.1, 0.5, 0.5, 0.5]},
+    "force_draygon_in_maridia_probability": {"linear": [0.01, 0.1, 0.5, 0.5, 0.5]},
+    "force_mother_brain_in_tourian_probability": {"linear": [0.01, 0.1, 0.5, 0.5, 0.5]},
     "reward_frontier": 0.0,
     "reward_graph_diameter": {"linear": {"min": 0.0, "max": 0.2}},
     "maridia_water_preferred_probability": {
@@ -172,7 +172,7 @@
     "replay_pass_factor": 2.0,
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_half_life_episodes": {"log": [10000, 40000, 80000, 80000, 80000]},
+    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 1280000, 320000]},
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,
@@ -193,7 +193,7 @@
     "area_map_station_weight": 1.0,
     "area_x_weight": 10.0,
     "area_y_weight": 10.0,
-    "proposal_weight": 0.005,
+    "proposal_weight": 0.02,
     "proposal_target_temperature": {"log": [100, 6.66, 1.66, 0.01, 0.01]},
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 1,
