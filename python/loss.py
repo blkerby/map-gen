@@ -758,29 +758,6 @@ def compute_step_balance_score_target_logits(
     )
 
 
-def add_direction_proposal_balance_score_table(
-    proposal_score_table: torch.Tensor,
-    forward_score_table: torch.Tensor,
-    reverse_score_table: torch.Tensor,
-    source_representative_door_idx: torch.Tensor,
-    target_representative_door_idx: torch.Tensor,
-    source_global_door_variant_idx: torch.Tensor,
-    target_global_door_variant_idx: torch.Tensor,
-) -> None:
-    if source_global_door_variant_idx.numel() == 0 or target_global_door_variant_idx.numel() == 0:
-        return
-    # A placement fixes both directed sides of its door match.
-    proposal_score_table[
-        :,
-        source_global_door_variant_idx.unsqueeze(1),
-        target_global_door_variant_idx.unsqueeze(0),
-    ] = forward_score_table[:, source_representative_door_idx, :][
-        :, :, target_representative_door_idx
-    ] + reverse_score_table[:, target_representative_door_idx, :][
-        :, :, source_representative_door_idx
-    ].transpose(1, 2)
-
-
 def first_concrete_door_idx_by_variant(
     door_variant_idx: torch.Tensor,
     variant_count: int,
@@ -815,73 +792,41 @@ def compute_proposal_balance_score_table(
         dtype=torch.float32,
         device=tables.left.device,
     )
-    left_representative_door_idx = first_concrete_door_idx_by_variant(
-        preds.left_door_variant_idx,
-        preds.left_global_door_variant_idx.numel(),
-    )
-    right_representative_door_idx = first_concrete_door_idx_by_variant(
-        preds.right_door_variant_idx,
-        preds.right_global_door_variant_idx.numel(),
-    )
-    up_representative_door_idx = first_concrete_door_idx_by_variant(
-        preds.up_door_variant_idx,
-        preds.up_global_door_variant_idx.numel(),
-    )
-    down_representative_door_idx = first_concrete_door_idx_by_variant(
-        preds.down_door_variant_idx,
-        preds.down_global_door_variant_idx.numel(),
-    )
-    direction_inputs = (
-        (
-            tables.left,
-            tables.right,
-            left_representative_door_idx,
-            right_representative_door_idx,
-            preds.left_global_door_variant_idx,
-            preds.right_global_door_variant_idx,
-        ),
-        (
-            tables.right,
-            tables.left,
-            right_representative_door_idx,
-            left_representative_door_idx,
-            preds.right_global_door_variant_idx,
-            preds.left_global_door_variant_idx,
-        ),
-        (
-            tables.up,
-            tables.down,
-            up_representative_door_idx,
-            down_representative_door_idx,
-            preds.up_global_door_variant_idx,
-            preds.down_global_door_variant_idx,
-        ),
-        (
-            tables.down,
-            tables.up,
-            down_representative_door_idx,
-            up_representative_door_idx,
-            preds.down_global_door_variant_idx,
-            preds.up_global_door_variant_idx,
-        ),
-    )
     for (
-        forward_score_table,
-        reverse_score_table,
-        source_representative_door_idx,
-        target_representative_door_idx,
-        source_global_door_variant_idx,
-        target_global_door_variant_idx,
-    ) in direction_inputs:
-        add_direction_proposal_balance_score_table(
-            proposal_score_table,
-            forward_score_table,
-            reverse_score_table,
-            source_representative_door_idx,
-            target_representative_door_idx,
-            source_global_door_variant_idx,
-            target_global_door_variant_idx,
-        )
+        forward,
+        reverse,
+        pairs,
+        source_variants,
+        target_variants,
+        source_global,
+        target_global,
+    ) in (
+        (
+            tables.left,
+            tables.right,
+            preds.horizontal_proposal_door_pairs,
+            preds.left_door_variant_idx,
+            preds.right_door_variant_idx,
+            preds.left_global_door_variant_idx,
+            preds.right_global_door_variant_idx,
+        ),
+        (
+            tables.up,
+            tables.down,
+            preds.vertical_proposal_door_pairs,
+            preds.up_door_variant_idx,
+            preds.down_door_variant_idx,
+            preds.up_global_door_variant_idx,
+            preds.down_global_door_variant_idx,
+        ),
+    ):
+        source_idx, target_idx = pairs.unbind(0)
+        source_variant = source_global[source_variants[source_idx]]
+        target_variant = target_global[target_variants[target_idx]]
+        # A placement fixes both directed sides of the same compatible door pair.
+        prices = forward[:, source_idx, target_idx] + reverse[:, target_idx, source_idx]
+        proposal_score_table[:, source_variant, target_variant] = prices
+        proposal_score_table[:, target_variant, source_variant] = prices
     return proposal_score_table
 
 

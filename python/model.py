@@ -89,6 +89,8 @@ class BalancePredictions:
     up_compatibility: torch.Tensor
     down_compatibility: torch.Tensor
     toilet_compatibility: torch.Tensor
+    horizontal_proposal_door_pairs: torch.Tensor
+    vertical_proposal_door_pairs: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -1158,6 +1160,34 @@ class FrontierModel(torch.nn.Module):
         )
 
 
+def compatible_proposal_door_pairs(
+    source_variant_idx: torch.Tensor,
+    target_variant_idx: torch.Tensor,
+    compatibility: torch.Tensor,
+    source_variant_count: int,
+    target_variant_count: int,
+) -> torch.Tensor:
+    """Choose the first compatible concrete pair for each realizable variant pair."""
+    source_idx, target_idx = compatibility.nonzero(as_tuple=True)
+    pair_idx = source_idx * compatibility.shape[1] + target_idx
+    variant_pair_idx = (
+        source_variant_idx[source_idx] * target_variant_count + target_variant_idx[target_idx]
+    )
+    first_pair_idx = torch.full(
+        (source_variant_count * target_variant_count,),
+        compatibility.numel(),
+        dtype=torch.int64,
+        device=compatibility.device,
+    )
+    first_pair_idx.scatter_reduce_(0, variant_pair_idx, pair_idx, reduce="amin")
+    first_pair_idx = first_pair_idx[first_pair_idx < compatibility.numel()]
+    if compatibility.shape[1] == 0:
+        return torch.empty((2, 0), dtype=torch.int64, device=compatibility.device)
+    return torch.stack(
+        (first_pair_idx // compatibility.shape[1], first_pair_idx % compatibility.shape[1])
+    )
+
+
 class BalanceModel(torch.nn.Module):
     def __init__(
         self,
@@ -1193,7 +1223,10 @@ class BalanceModel(torch.nn.Module):
             raise ValueError("room_connection_variant_idx contains an out-of-range variant")
         self.num_rooms = room_connection_variant_idx.numel()
         self.num_room_connection_variants = num_room_connection_variants
-        if toilet_compatibility.shape != (self.num_rooms,) or toilet_compatibility.dtype != torch.bool:
+        if (
+            toilet_compatibility.shape != (self.num_rooms,)
+            or toilet_compatibility.dtype != torch.bool
+        ):
             raise ValueError("toilet_compatibility must contain one boolean per room")
         self.register_buffer("toilet_compatibility", toilet_compatibility, persistent=False)
         self.register_buffer(
@@ -1275,6 +1308,36 @@ class BalanceModel(torch.nn.Module):
         self.right_variant_count = right_variants.numel()
         self.up_variant_count = up_variants.numel()
         self.down_variant_count = down_variants.numel()
+        # Derived static indices move with the model but need no checkpoint storage.
+        for name, source_idx, target_idx, compatibility, source_count, target_count in (
+            (
+                "horizontal",
+                left_door_variant_idx,
+                right_door_variant_idx,
+                self.left_compatibility,
+                self.left_variant_count,
+                self.right_variant_count,
+            ),
+            (
+                "vertical",
+                up_door_variant_idx,
+                down_door_variant_idx,
+                self.up_compatibility,
+                self.up_variant_count,
+                self.down_variant_count,
+            ),
+        ):
+            self.register_buffer(
+                f"{name}_proposal_door_pairs",
+                compatible_proposal_door_pairs(
+                    source_idx,
+                    target_idx,
+                    compatibility,
+                    source_count,
+                    target_count,
+                ),
+                persistent=False,
+            )
         self.output_width = (
             self.left_variant_count * self.right_variant_count
             + self.right_variant_count * self.left_variant_count
@@ -1364,4 +1427,6 @@ class BalanceModel(torch.nn.Module):
             up_compatibility=self.up_compatibility,
             down_compatibility=self.down_compatibility,
             toilet_compatibility=self.toilet_compatibility,
+            horizontal_proposal_door_pairs=self.horizontal_proposal_door_pairs,
+            vertical_proposal_door_pairs=self.vertical_proposal_door_pairs,
         )

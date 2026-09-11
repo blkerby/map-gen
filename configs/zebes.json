@@ -40,7 +40,7 @@
   "balance_optimizer": {
     "type": "adam",
     "lr": {"log": [0.0001, 0.00005, 0.00003, 0.00002, 0.00002]},
-    "beta1": 0.5,
+    "beta1": 0.9,
     "beta2": 0.95
   },
   "balance_model": {
