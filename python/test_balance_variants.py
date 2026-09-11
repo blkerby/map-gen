@@ -7,6 +7,7 @@ from env import AREA_COUNT, DoorMatches, compute_area_balance_targets
 from loss import (
     compute_balance_loss,
     compute_balance_price_tables,
+    compute_room_area_balance_score_target_logits,
     compute_proposal_area_balance_score_residual,
     compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
@@ -388,6 +389,19 @@ def test_infeasible_toilet_observation_is_rejected() -> None:
         raise AssertionError("the Toilet room itself must not be a balance target")
 
 
+def test_room_area_targets_use_zero_for_terminal_absence() -> None:
+    preds = example_predictions()
+    probability, mask = uniform_area_targets()
+    tables = compute_balance_price_tables(preds, probability, mask)
+    tables.room_area = torch.tensor(
+        [[[7.0, 2.0, -4.0, 1.0, 3.0, 5.0], [-8.0, 3.0, 2.0, 4.0, 6.0, 9.0]]],
+        requires_grad=True,
+    )
+    targets = compute_room_area_balance_score_target_logits(tables, torch.tensor([[-1, 2]]))
+    torch.testing.assert_close(targets, torch.tensor([[0.0, 2.0]]))
+    assert not targets.requires_grad
+
+
 def test_proposal_prices_use_compatible_instances_in_both_directions() -> None:
     model = BalanceModel(
         left_count=3,
@@ -492,6 +506,7 @@ def main() -> None:
     test_zero_area_prices_have_zero_regularization_gradient()
     test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero()
     test_infeasible_toilet_observation_is_rejected()
+    test_room_area_targets_use_zero_for_terminal_absence()
     test_proposal_prices_use_compatible_instances_in_both_directions()
     test_compatible_proposal_door_pairs_with_empty_directions()
     test_proposal_price_residual_is_negative_price_without_gain()

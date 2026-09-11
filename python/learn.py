@@ -1241,11 +1241,9 @@ def train_feature_batch_backward(
                 balance_score_tables,
                 prepared_batch.door_matches,
             )
-            area_balance_score_target, area_balance_score_mask = (
-                compute_room_area_balance_score_target_logits(
-                    balance_score_tables,
-                    prepared_batch.room_area,
-                )
+            area_balance_score_target = compute_room_area_balance_score_target_logits(
+                balance_score_tables,
+                prepared_batch.room_area,
             )
             toilet_balance_score_target, toilet_balance_score_mask = (
                 compute_toilet_balance_score_target_logits(
@@ -1377,8 +1375,7 @@ def train_feature_batch_backward(
                     features.global_features.lookahead_door_match < 0
                 )
             prefix_area_balance_score_mask = (
-                area_balance_score_mask
-                & ~features.global_features.room_placed.to(
+                ~features.global_features.room_placed.to(
                     device=context.device,
                     dtype=torch.bool,
                 )

@@ -692,15 +692,16 @@ def compute_balance_price_tables(
 def compute_room_area_balance_score_target_logits(
     tables: BalancePriceTables,
     room_area: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = room_area >= 0
+) -> torch.Tensor:
+    """Terminal area price, with no contribution from rooms that are never placed."""
+    placed = room_area >= 0
     safe_room_area = room_area.clamp_min(0).to(torch.int64)
     target_logits = torch.gather(
         tables.room_area,
         -1,
         safe_room_area.unsqueeze(-1),
     ).squeeze(-1)
-    return target_logits.detach(), mask
+    return torch.where(placed, target_logits, 0.0).detach()
 
 
 def compute_balance_score_target_logits(

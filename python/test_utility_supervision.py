@@ -11,7 +11,12 @@ import torch
 
 from env import Engine
 from generate import run_generation_groups
-from learn import distance_proximity_utility, prepare_feature_batch, train_feature_batch_backward
+from learn import (
+    distance_proximity_utility,
+    generation_area_balance_targets,
+    prepare_feature_batch,
+    train_feature_batch_backward,
+)
 from loss import LossConfig, compute_loss_breakdown
 from model import FrontierModel
 from model_loading import create_balance_model, frontier_model_kwargs
@@ -24,10 +29,19 @@ LOSS_SIGNATURE = inspect.signature(compute_loss_breakdown)
 
 
 class CheckUtilitySupervision:
-    def __init__(self, active: torch.Tensor, expected: dict[str, torch.Tensor]):
+    def __init__(
+        self,
+        active: torch.Tensor,
+        expected: dict[str, torch.Tensor],
+        area_masks: list[torch.Tensor],
+        absent_rooms: torch.Tensor,
+    ):
         self.active = active.unsqueeze(1)
         self.expected = expected
         self.checked = 0
+        self.area_masks = area_masks
+        self.absent_rooms = absent_rooms.unsqueeze(1)
+        self.absent_area_gradients_checked = 0
 
     def __call__(self, *args, **kwargs):
         bound = LOSS_SIGNATURE.bind(*args, **kwargs)
@@ -40,14 +54,25 @@ class CheckUtilitySupervision:
             torch.testing.assert_close(target, self.expected[family])
             assert torch.count_nonzero(target[~self.active]) == 0
             predictions[f"{family}_utility"] = torch.full_like(target, 0.5, requires_grad=True)
+        area_mask = values["area_balance_score_mask"]
+        torch.testing.assert_close(area_mask, self.area_masks[self.checked])
+        area_target = values["area_balance_score_target"]
+        assert torch.count_nonzero(area_target[self.absent_rooms]) == 0
+        area_prediction = torch.full_like(area_target, -4.0, requires_grad=True)
+        predictions["area_balance_score"] = area_prediction
         # Use known positive predictions to verify the actual combined loss's
         # gradient direction, independent of random model initialization.
         values["preds"] = replace(values["preds"], **predictions)
         loss = compute_loss_breakdown(**values)
         gradients = torch.autograd.grad(loss.total, tuple(predictions.values()), retain_graph=True)
-        for gradient in gradients:
+        for gradient in gradients[:-1]:
             assert torch.isfinite(gradient).all()
             assert (gradient[~self.active] > 0).all()
+        area_gradient = gradients[-1]
+        assert torch.count_nonzero(area_gradient[~area_mask]) == 0
+        absent_supervised = self.absent_rooms & area_mask
+        assert (area_gradient[absent_supervised] < 0).all()
+        self.absent_area_gradients_checked += int(absent_supervised.sum())
         self.checked += 1
         return loss
 
@@ -91,6 +116,7 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
     config.generation.gpu_prefetch_batches = 0
     config.train.save_distance_weight = 1.0
     config.train.refill_distance_weight = 1.0
+    config.train.area_balance_weight = 1.0
     config.train.batch_size = 8
     config.balance_train.batch_size = 8
     rooms = json.loads(config.room_set.read_text())
@@ -172,7 +198,19 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         ).unsqueeze(1)
         for family in UTILITY_FAMILIES
     }
-    checker = CheckUtilitySupervision(active, expected)
+    area_dual_mask = generation_area_balance_targets(
+        rooms, episode_data.generation_variable_floats
+    ).dual_mask
+    area_masks = [
+        (~batch.features.global_features.room_placed.bool() & area_dual_mask).unsqueeze(1)
+        for batch in prepared.feature_batches
+    ]
+    checker = CheckUtilitySupervision(
+        active=active,
+        expected=expected,
+        area_masks=area_masks + [torch.zeros_like(mask) for mask in area_masks],
+        absent_rooms=prepared.room_area < 0,
+    )
     # Deliberately give absent parts reachable distances: terminal absence must
     # override these values, independently of the engine's distance convention.
     for family in UTILITY_FAMILIES:
@@ -184,6 +222,7 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
             result = train_feature_batch_backward(context, prepared, 1.0)
         assert math.isfinite(result.total)
     assert checker.checked > 0
+    assert checker.absent_area_gradients_checked > 0
 
 
 if __name__ == "__main__":
