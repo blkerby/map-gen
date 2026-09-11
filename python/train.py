@@ -47,6 +47,7 @@ from learn import (
     distance_proximity_utility,
     ema_decay_for_batch,
     generation_area_balance_targets,
+    set_optimizer_hyperparameters,
     train_round as run_train_round,
     update_ema_parameters,
 )
@@ -210,6 +211,20 @@ def load_optimizer_checkpoint_state(
     scalar_state: dict[str, dict[str, Any]],
     prefix: str,
 ) -> None:
+    """Restore accumulated state while keeping the current optimizer hyperparameters."""
+    current_param_groups = optimizer.state_dict()["param_groups"]
+    if len(param_groups) != len(current_param_groups):
+        raise ValueError(
+            f"checkpoint has {len(param_groups)} {prefix} parameter group(s), "
+            f"but the current optimizer has {len(current_param_groups)}"
+        )
+    # Saved parameter IDs map the state to the current parameters. Every other
+    # group setting comes from the optimizer constructed for this run. Apply
+    # these settings before loading so PyTorch also uses the current device policy.
+    restored_param_groups = [
+        {**current_group, "params": saved_group["params"]}
+        for current_group, saved_group in zip(current_param_groups, param_groups, strict=True)
+    ]
     state: dict[int, dict[str, Any]] = {}
     state_prefix = f"{prefix}.state."
     for key, value in tensors.items():
@@ -223,7 +238,7 @@ def load_optimizer_checkpoint_state(
     optimizer.load_state_dict(
         {
             "state": state,
-            "param_groups": param_groups,
+            "param_groups": restored_param_groups,
         }
     )
 
@@ -241,11 +256,13 @@ class MainOptimizerBundle:
         self.adam_optimizer.step()
         self.muon_optimizer.step()
 
-    def set_lrs(self, config: OptimizerConfig) -> None:
+    def set_hyperparameters(self, config: OptimizerConfig) -> None:
         if not isinstance(config, MuonOptimizerConfig):
             raise TypeError("Muon optimizer bundle requires a Muon optimizer config")
-        self.adam_optimizer.param_groups[0]["lr"] = config.adam.lr
-        self.muon_optimizer.param_groups[0]["lr"] = config.muon.lr
+        set_optimizer_hyperparameters(self.adam_optimizer, config.adam)
+        for group in self.muon_optimizer.param_groups:
+            group["lr"] = config.muon.lr
+            group["momentum"] = config.muon.momentum
 
     def named_optimizers(self) -> dict[str, torch.optim.Optimizer]:
         return {
@@ -320,11 +337,11 @@ def validate_checkpoint_metadata(path: Path, metadata: dict[str, str] | None) ->
 def create_adam_optimizer(
     parameters,
     config: AdamOptimizerConfig | AdamParamsConfig,
-    initial_config: AdamOptimizerConfig | AdamParamsConfig,
 ) -> torch.optim.Optimizer:
+    """Construct Adam from a config with schedules already resolved."""
     return torch.optim.Adam(
         parameters,
-        lr=initial_config.lr,
+        lr=config.lr,
         betas=(config.beta1, config.beta2),
     )
 
@@ -367,11 +384,9 @@ def split_muon_parameters(
 def create_main_optimizer(
     model: torch.nn.Module,
     config: OptimizerConfig,
-    initial_config: OptimizerConfig,
 ) -> Any:
+    """Construct the main optimizer from a config with schedules already resolved."""
     if isinstance(config, MuonOptimizerConfig):
-        if not isinstance(initial_config, MuonOptimizerConfig):
-            raise TypeError("initial optimizer config must have the same type as optimizer config")
         adam_params, muon_params = split_muon_parameters(model)
         logging.info(
             "Using Muon for %s Linear weight parameter tensor(s) and Adam for %s other parameter tensor(s).",
@@ -379,10 +394,10 @@ def create_main_optimizer(
             len(adam_params),
         )
         return MainOptimizerBundle(
-            create_adam_optimizer(adam_params, config.adam, initial_config.adam),
+            create_adam_optimizer(adam_params, config.adam),
             Muon(
                 muon_params,
-                lr=initial_config.muon.lr,
+                lr=config.muon.lr,
                 momentum=config.muon.momentum,
                 nesterov=config.muon.nesterov,
                 backend=config.muon.backend,
@@ -392,7 +407,6 @@ def create_main_optimizer(
     return create_adam_optimizer(
         model.parameters(),
         config,
-        initial_config,
     )
 
 
@@ -1174,6 +1188,9 @@ class TrainingSession:
                 f"{self.episodes_per_round}"
             )
         self.experience.num_files = int(metadata["experience_num_files"])
+        step_config = instantiate_scheduleable_config(self.config, self.num_episodes)
+        set_optimizer_hyperparameters(self.main_optimizer, step_config.optimizer)
+        set_optimizer_hyperparameters(self.balance_optimizer, step_config.balance_optimizer)
         logging.info(
             "Loaded checkpoint %s at %s episode(s) with %s replay file(s).",
             path,
@@ -2567,12 +2584,10 @@ def build_session(args: Args) -> TrainingSession:
     )
     main_optimizer = create_main_optimizer(
         main_model,
-        config.optimizer,
         initial_config.optimizer,
     )
     balance_optimizer = create_adam_optimizer(
         balance_model.parameters(),
-        config.balance_optimizer,
         initial_config.balance_optimizer,
     )
     session = TrainingSession(

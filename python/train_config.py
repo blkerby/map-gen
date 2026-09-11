@@ -152,19 +152,19 @@ class ModelConfig(StrictBaseModel):
 class AdamOptimizerConfig(StrictBaseModel):
     type: Literal["adam"]
     lr: ScheduleableFloat
-    beta1: float
-    beta2: float
+    beta1: ScheduleableFloat
+    beta2: ScheduleableFloat
 
 
 class AdamParamsConfig(StrictBaseModel):
     lr: ScheduleableFloat
-    beta1: float
-    beta2: float
+    beta1: ScheduleableFloat
+    beta2: ScheduleableFloat
 
 
 class MuonParamsConfig(StrictBaseModel):
     lr: ScheduleableFloat
-    momentum: float
+    momentum: ScheduleableFloat
     nesterov: bool
     backend: Literal["newtonschulz5"]
     backend_steps: int
@@ -870,15 +870,19 @@ def validate_adam_params(config: AdamOptimizerConfig | AdamParamsConfig, path: s
 
 
 def validate_muon_params(config: MuonParamsConfig, path: str) -> None:
-    if config.momentum < 0.0 or config.momentum >= 1.0:
-        raise ValueError(
-            f"{path}.momentum must be greater than or equal to zero and less than one"
-        )
+    validate_beta(config.momentum, f"{path}.momentum")
     if config.backend_steps <= 0:
         raise ValueError(f"{path}.backend_steps must be greater than zero")
 
 
-def validate_beta(value: float, path: str) -> None:
+def validate_beta(value: ScheduleableFloat, path: str) -> None:
+    if isinstance(value, Schedule):
+        kind, values = schedule_kind_and_values(value, path)
+        for index, item in enumerate(values):
+            validate_beta(item, f"{path}[{index}]")
+            if kind == "log" and item == 0:
+                raise ValueError(f"{path}[{index}] must be greater than zero for a log schedule")
+        return
     if not math.isfinite(value) or value < 0.0 or value >= 1.0:
         raise ValueError(f"{path} must be greater than or equal to zero and less than one")
 

@@ -1,249 +1,147 @@
-# Neural dual-price balancing cutover
+A list of issues that we may want to address, relating to balance model:
 
-## Goal
+1. **The uniform door target is incompatible with matching every door.**
 
-Replace the delayed probability-estimation controller with a conditional neural
-dual-price controller for all three balance families:
+   Each door is trained toward uniform partner choices among its compatible partners. But the pairings must be reciprocal, and each concrete door can only participate in one connection.
 
-- compatible door pairings;
-- Toilet crossing rooms;
-- room-to-area assignments.
+   Let \(d_i\) be the number of compatible partners for left door \(i\), and \(e_j\) the equivalent count for right door \(j\). If every door is matched, the two directional uniform targets require the same connection to have both probabilities
 
-The generator will combine prices with ordinary rewards before dividing by
-sampling temperature. This keeps their relative strength constant as temperature
-changes. The balance model remains conditional on the full generation-configuration
-vector and emits every price in one forward pass.
+   \[
+   P(i\leftrightarrow j)=1/d_i
+   \quad\text{and}\quad
+   P(i\leftrightarrow j)=1/e_j.
+   \]
 
-This is one backward-incompatible cutover. There will be no compatibility mode,
-old/new feature flag, or fallback for old configs and checkpoints.
+   These disagree whenever \(d_i\ne e_j\).
 
-## Mathematical contract
+   This occurs extensively in the actual Zebes metadata:
 
-For a categorical balance group with target distribution `q`, observed outcome
-`y`, and learned price vector `lambda_theta(z)`, use the probability-error sampled
-residual
+   | Compatibility matrix | Compatible pairs | Pairs with unequal endpoint degrees | Largest implied use of one target door per map* |
+   |---|---:|---:|---:|
+   | Horizontal, 245 × 245 | 52,156 | 50,385 | 1.196 |
+   | Vertical, 44 × 44 | 724 | 557 | 1.447 |
 
-```
-r_k = 1[y = k] - q_k.
-```
+   *Assuming every source door matches and chooses uniformly among compatible partners.*
 
-The stochastic dual objective for one observation is
+   A target door cannot be used 1.447 times per map. Thus exact balancing and complete matching cannot both satisfy these targets, even before considering whole-map geometry.
 
-```
-D(theta) = sum_k r_k * lambda_theta(z)_k.
-```
+   Positive regularization permits a compromise, so this does not imply training must diverge. It does mean that some persistent imbalance is structurally unavoidable, and balancing can compete with validity. Because unmatched outcomes are excluded from the observed-price term, changing which doors get matched is also one way the system can change its conditional partner distributions.
 
-The optimizer minimizes `-D`. It raises the price of an overrepresented outcome
-and lowers the alternatives. Each sampled coordinate residual is bounded
-independently of category count and target probability, so the three families
-have comparable loss scales.
+   I would reconsider the target as a **joint distribution over feasible pairings with consistent endpoint usage**, rather than independently uniform rows in both directions. The current target construction is in [door price centering](/home/kerby/map-gen/python/loss.py:598); observed matches explicitly populate both directions in [Rust](/home/kerby/map-gen/src/environment.rs:6399).
 
-Prices have an arbitrary common offset. Before use, center each group:
+2. **The area head is trained conditional on eventual placement but used without that condition.**
 
-- door and Toilet prices: arithmetic mean over feasible outcomes;
-- area prices: `q`-weighted mean.
+   Area targets exclude rooms with terminal area `-1`. The prefix mask further excludes already placed and forced rooms. Consequently, an unplaced room’s head learns approximately
 
-Regularize each learned correction with `beta * lambda^2 / 2`. In expectation
-under a fixed observed distribution `p`, the objective's stationary point is
-`lambda = (p - q) / beta`. The fixed area prior is a reference-distribution
-logit, not a learned correction, so beta does not regularize it. Incompatible
-outcomes are excluded from targets, centering, updates, metrics, and generation.
-Encountering an observed incompatible outcome is an error.
+   \[
+   E[b_{\text{area}}\mid\text{partial map},\text{room eventually placed}].
+   \]
 
-The area target distribution is applied as a temperature-independent base
-measure. With `a = -log(q)`, final generation logits become
+   Generation sums that prediction directly. It has no corresponding placement-probability multiplier, and failed continuations provide no zero target for the omitted room. This differs from the door and Toilet treatment. See [area target mask](/home/kerby/map-gen/python/loss.py:692), [prefix supervision](/home/kerby/map-gen/python/learn.py:1379), and [area scoring](/home/kerby/map-gen/python/generate.py:168).
 
-```
-(ordinary_reward - learned_price) / temperature - a
-```
+   I reproduced a simple case where an eventually absent room’s prediction of `-4` receives **zero training gradient**, yet contributes **+4 generation reward**.
 
-and proposal logits use the analogous expression with `proposal_temperature`.
-Equivalently, an area price table used inside the numerator contains
-`learned_price + temperature * a`. Door and Toilet prices have no non-uniform
-prior and remain
+   This is relevant to actual data: in the 8,192 episodes following checkpoint 1300, only **54.2% placed all 253 rooms**. Most omissions were small—the mean was 252.14 rooms—but the condition is common.
 
-```
-(ordinary_reward - learned_price) / temperature.
-```
+   The cleanest interpretation would be an unconditional expected terminal area penalty, with zero target when the room is never placed. Alternatively, the conditional interpretation needs an explicit placement-probability estimate.
 
-Thus temperature changes sampling sharpness without changing either the
-price-to-reward ratio or the intended area target distribution `q`.
+3. **Proposal prices incorrectly vanish for some distinct rooms sharing a variant.**
 
-## Configuration schema
+   Proposal-table construction independently chooses the first concrete representative of each door variant. Sometimes both representatives belong to the same room. The concrete compatibility mask correctly makes that same-room entry zero—but the proposal can actually connect two different instances sharing those variants.
 
-### Balance controller
+   The resulting zero is therefore incorrect for the real proposal. See [representative selection](/home/kerby/map-gen/python/loss.py:784) and [proposal price construction](/home/kerby/map-gen/python/loss.py:761).
 
-Keep `balance_model.hidden_width` and `balance_model.num_layers`. Add a required
-Adam `balance_optimizer` with `lr`, `beta1`, and `beta2`. Keep these required
-fields in `balance_train`:
+   Comparing proposal prices with exact concrete-pair prices on Zebes reproduced **260 affected directed entries**:
 
-```
-batch_size
-door_beta
-toilet_beta
-area_beta
-```
+   - 128 left and 128 right entries.
+   - Two up and two down entries.
 
-Checked-in optimizer values are `lr = 0.001`, `beta1 = 0`, and `beta2 = 0.99`;
-the existing family beta values are retained. A zero optimizer learning rate
-freezes all learned balance corrections. Take one Adam step per balance
-minibatch, so `batch_size` controls the optimizer update frequency.
+   Examples include Crateria Tube versus Green Brinstar Beetom Room, and West versus East Aqueduct Quicksand Room.
 
-Remove generation-time `reward_balance`, `reward_toilet_balance`, and
-`reward_area_balance`; their role is now intrinsic to the dual prices.
+   This persists with trained weights. Across 32 configurations from the saved run, the missing vertical penalty reached **0.79 reward units**, while proposal temperature was approximately **0.064**. That is a substantial change to shortlist probabilities.
 
-### Area targets
+   Final candidate scoring uses the correct concrete price, so the two sampling stages disagree. Proposal construction should obtain its value from a compatible concrete pair rather than independently selected representatives.
 
-Replace `target_area_tiles` with six required `target_area_rooms` values. Sample
-the six values with the existing variable-float mechanism, require them to be
-finite and positive, and normalize each sampled row
-to sum to the room count. The normalized values are the baseline expected room
-counts; their division by the room count gives baseline area probabilities `b`.
+4. **Your current Adam `beta1` change will be ignored when resuming the inspected checkpoint.**
 
-Remove `reward_area_tiles` and the main model's `area_tiles` regression output
-and loss. Retain hard area-size validity, area bounding-box targets, and their
-existing prediction/reward paths. The new balance target controls expected room
-counts, not the variance of per-map counts; log actual count error/variance so a
-quota mechanism is added only if a run demonstrates it is necessary.
+   The current working config specifies `balance_optimizer.beta1 = 0.5`. Checkpoint 1300 stores actual optimizer betas `(0.9, 0.95)`.
 
-### Heat/water preferences
+   Loading restores the complete saved optimizer parameter groups, including those betas. Subsequent rounds only reapply the learning rate. I reproduced:
 
-Replace the heat/water rewards and tile-floor scales with these required objects:
+   ```text
+   Config beta1:        0.5
+   Actual resumed beta1: 0.9
+   Learning rate:      updated from the config
+   ```
 
-```
-"maridia_water_preferred_probability": {
-  "active_probability": 0.5,
-  "tier_max": [0.75, 0.75, 0.75]
-},
-"norfair_heat_preferred_probability": {
-  "active_probability": 0.5,
-  "tier_max": [0.75, 0.75, 0.75]
-}
-```
+   Moreover, logging reports betas from the config, so it would report `0.5` while Adam actually uses `0.9`. See [optimizer restoration](/home/kerby/map-gen/python/train.py:206), [runtime updates](/home/kerby/map-gen/python/learn.py:1728), and [logging](/home/kerby/map-gen/python/train.py:2002).
 
-For preferred-area baseline probability `b`:
+   This is especially relevant if recent balance tuning involved resuming existing checkpoints. A fresh run uses the configured betas correctly.
 
-1. Draw one active Bernoulli per environment and family.
-2. If inactive, set every tier probability to `b`.
-3. If active, draw tier 3 uniformly from `[b, tier_max[2]]`, tier 2 from
-   `[b, min(tier3, tier_max[1])]`, and tier 1 from
-   `[b, min(tier2, tier_max[0])]`.
-4. Fail if a configured tier maximum is below `b`; do not silently reinterpret
-   a maximum.
+5. **Regularization means the requested probabilities are soft targets, and its exact meaning differs from the written mathematical contract.**
 
-Put the six sampled probabilities into the generation-configuration vector so
-both neural models can condition on them. Remove heat/water reward fields,
-reward counts, main-model heads, auxiliary losses, and target-area floor logic.
+   Even with a perfectly functioning generator and controller, positive beta generally leaves residual imbalance. If the observed distribution equals the target, the observed-price gradient vanishes, while regularization continues pulling any nonzero corrective prices toward zero. Maintaining prices that counteract the generator’s natural bias therefore requires some persistent error.
 
-For a tagged room with preferred area `a*` and sampled probability `rho`, build
-its area target row as
+   There is an additional distinction for nonuniform area targets. The code regularizes the **centered** prices, whereas `plan.md` states the stationary relationship \((p-q)/\beta\).
 
-```
-q[a*] = rho
-q[a]  = (1 - rho) * b[a] / (1 - b[a*])  for a != a*.
-```
+   For an independently parameterized area row, ignoring the family averaging factors, the implemented constraint is \(q^\mathsf{T}b=0\), giving
 
-Untagged rooms use `q = b`. Effective target area counts are `sum_room q`; they
-may grow in Norfair or Maridia in response to heat/water preferences while the
-total remains the number of rooms.
+   \[
+   b^*=
+   \frac{1}{\beta}
+   \left(p-q\frac{p^\mathsf{T}q}{q^\mathsf{T}q}\right).
+   \]
 
-### Forced special rooms
+   This generally differs from centering \((p-q)/\beta\). I verified a nonzero gradient at the documented solution for a nonuniform target.
 
-When a vanilla-area force flag is active, use a one-hot area row only when
-computing effective target counts. Mask that room out of the area dual loss and
-apply zero area-balance price to it. The existing validity objective remains
-responsible for satisfying the hard placement request. When the flag is
-inactive, use the ordinary baseline/preference target and enable its dual row.
-This prevents price drift when a forced placement fails.
+   The implemented objective is mathematically coherent, but beta does not have precisely the documented interpretation. Also, door and area observed terms divide by the number of observed outcomes, whereas their regularizers divide by the number of eligible groups. Incomplete episodes consequently change the effective strength of the data term. See [normalization and regularization](/home/kerby/map-gen/python/loss.py:530) and [the mathematical contract](/home/kerby/map-gen/plan.md:46).
 
-## Milestone 1: target construction and config plumbing
+6. **The scalar balance heads must continually chase a moving price function.**
 
-1. Add strict Pydantic types and validation for the new balance fields,
-   `target_area_rooms`, and the two tiered preference objects.
-2. Update `GENERATION_VARIABLE_FLOAT_FIELDS` to contain normalized target room
-   counts and six sampled preferred probabilities, and remove obsolete reward
-   and tile-target fields.
-3. Implement one pure tensor helper that constructs per-room `q`, the forced
-   dual mask, and effective target counts from room metadata and sampled config.
-4. Mask the Toilet room itself from Toilet crossing targets while keeping the
-   existing output indexing; assert that every observed crossing is feasible.
-5. Update Norfair and Zebes configs. Norfair has no tagged rooms, but still uses
-   the same schema; Zebes exercises preference and forced-room paths.
-6. Add focused tests for normalization, tier ordering/ranges, heat/water rows,
-   effective-count growth, forced rows, and invalid inputs.
+   The controller updates immediately; the main heads learn its newly updated prices; generation uses an EMA of those heads. The actual price tables are not supplied to the main model as inputs.
 
-Gate: config tests and target-construction tests pass before modifying the
-controller or generator.
+   Thus generation combines current exact prices with predictions learned under recent historical prices. If a price changes sharply, placing a room can replace an outdated expected price with a different current exact price, distorting candidate comparisons.
 
-## Milestone 2: dual controller and generation cutover
+   This is a tracking risk rather than proof of an unstable run. My saved-checkpoint checks did not establish that EMA lag is the dominant source of error. Ordinary future-outcome uncertainty also contributes to price-regression MSE.
 
-1. Reinterpret `BalanceModel` outputs as residual prices, retaining its compact
-   direction-local door-variant representation and single-pass output layout.
-2. Replace probability/log-odds table construction with centered price
-   tables. Add the `-log(q)` area prior before the learned residual so a new
-   controller initially represents the requested area distribution.
-3. Replace cross-entropy balance-model fitting with three quadratically
-   regularized linear dual objectives. Shuffle the fresh samples, form
-   minibatches, apply family-specific betas, validate finite gradients, and
-   take one Adam step per minibatch without hidden gradient clipping.
-4. Remove the balance EMA. Generation and main-model price supervision use the
-   current balance model; retain the main model EMA unchanged.
-5. Change main-model balance supervision from probability log-odds KL losses to
-   price regression for doors, Toilet, and areas, preserving masks for known
-   outcomes and already placed rooms. The area output predicts only the learned
-   correction; the exactly known `log(q)` prior is not regressed.
-6. Combine learned prices before temperature in final-candidate and proposal
-   sampling, while adding the area `log(q)` prior afterward. Keep immediate
-   known door/area substitutions so the exact value is used when an action
-   determines an outcome.
-7. Remove obsolete heat/water and area-tile model outputs, losses, rewards, and
-   metrics. Add controller metrics for price RMS/max, target-vs-observed area
-   counts, and main-model price tracking error.
-8. Bump training-checkpoint and model-export formats. Store only the main model,
-   main EMA, balance model, main optimizer, and the balance Adam optimizer;
-   reject old formats as intended.
-9. Update serving request/config construction and exports to use direct target
-   room counts and preferred probabilities.
+   One architectural alternative is to predict outcome distributions and compute their expectation against the current price tables. That would separate uncertainty about the future from changes in prices, although full door-partner distributions would be expensive. Supplying a compact representation of current prices is another possibility.
 
-Gate: all unit tests pass, checkpoint save/load/export round-trips pass, and a
-single debug round has finite losses/prices.
+   A related detail: EMA half-life is counted in **processed training episodes**, including replay and repeated passes. With fresh/replay pass factors both 2, an 80,000-example half-life corresponds to roughly 20,000 newly generated episodes once replay is active. See [EMA updates](/home/kerby/map-gen/python/learn.py:1557).
 
-## Milestone 3: cheap integration validation
+7. **The proposal head learns a narrower objective than final candidate selection.**
 
-1. Run formatting, Python tests in the `map-gen` conda environment, Rust tests,
-   and static/import checks.
-2. Run the debug config long enough to exercise generation followed by a dual
-   update and a main-model update.
-3. Run a reduced Norfair-shaped smoke test to exercise its real room/door output
-   dimensions without paying for a full training run.
-4. Run one small Zebes batch to cover tagged-room `q`, forced special-room masks,
-   and incompatible door masks.
-5. Verify these invariants from logs/tests:
-   - each `q` row sums to one and is strictly positive on active outcomes;
-   - incompatible/forced entries receive neither gradient nor applied price;
-   - effective area counts sum to the room count;
-   - one dual optimizer step occurs per balance minibatch;
-   - the balance-price-to-ordinary-reward ratio is independent of temperature;
-   - checkpoint reload reproduces model outputs.
+   Its teacher contains ordinary expected reward plus the immediate door/area price adjustment. Final selection additionally considers future door prices, future room-area prices, and Toilet prices.
 
-## Expensive-run protocol
+   The recorded proposal target deliberately omits those additional balance terms: [recording](/home/kerby/map-gen/python/generate.py:1293), [proposal training](/home/kerby/map-gen/python/learn.py:1516).
 
-Use Norfair for the first full run. Inspect controller and generation metrics at
-roughly rounds 10 and 25, and treat checkpoint 100 as the continuation gate.
-Continue toward at least eight million episodes only if prices remain finite,
-main-model price tracking is improving, and door,
-Toilet, and area distributions move toward their targets without a growing
-alternating mode. Run Zebes only after that gate because it adds heat/water and
-forced-special interactions.
+   This can be a reasonable shortlist approximation, but it limits what the main balance heads can accomplish. A candidate with favorable future balance may never reach final scoring, particularly at low proposal temperatures.
 
-## Explicitly deferred
+   If that becomes a bottleneck, a useful experiment would teach the proposal head the full candidate value, accounting explicitly for the immediate correction that is already added externally.
 
-- No family loss weights, replay training, alternating inner optimization, or
-  statistical fallback table.
-- No hard per-map area quota; expected counts are the initial contract.
-- No separate exact tier-collapse branch; equal `0.75` maxima already allow
-  arbitrarily close tier targets.
-- No backward compatibility for configs, checkpoints, or serving requests.
+8. **The training population and metrics do not establish balance among delivered valid maps.**
 
-Add any deferred mechanism only in response to a measured failure of the
-minimal dual controller.
+   Balance training uses all fresh episodes, with masks for individual usable outcomes. It does not require the overall map to succeed. Serving subsequently filters maps for validity. Balancing the first population does not guarantee balance in the accepted population. See [fresh training weights](/home/kerby/map-gen/python/learn.py:189) and [serving’s validity filter](/home/kerby/map-gen/python/serve.py:769).
+
+   Several metrics also need careful interpretation:
+
+   - `balance_loss` measures the controller objective, not distance from the requested distribution.
+   - Main balance losses include zero-valued replay batches in their round averages, so changing replay proportions changes the reported averages.
+   - `avg_area_rooms` is a squared count error, despite its name.
+   - Aggregate concentration scores can look good while the model responds poorly to individual requested probabilities.
+
+   I would measure conditional target-versus-observed frequencies, distinguish all generated maps from accepted maps, and evaluate the generation EMA separately from the online training model.
+
+**The saved run shows that preferences influence generation, but strong preferences are substantially underfulfilled.** Using [experience file 1300](/home/kerby/map-gen/runs/2026-09-06T14:27:50.485558-zebes-testing/experience/1300.safetensors), I examined the strongest fifth of active preference settings. Observed rates below are conditional on the tagged room being placed.
+
+| Preference | Mean requested probability | Observed preferred-area rate |
+|---|---:|---:|
+| Water tier 2 → Maridia | 52.2% | 40.1% |
+| Water tier 3 → Maridia | 69.0% | 45.0% |
+| Heat tier 2 → Norfair | 52.9% | 44.5% |
+| Heat tier 3 → Norfair | 69.2% | 56.9% |
+
+These measurements demonstrate a gap, but do not assign its cause among regularization, competing constraints, approximation errors, and the bugs above. They describe the saved run’s settings; its Adam `beta1` was `0.9`, not the current working config’s `0.5`.
+
+I also found a separate serving regression: [the serving caller](/home/kerby/map-gen/python/serve.py:1095) unpacks six values from `run_generation_groups`, which [returns seven](/home/kerby/map-gen/python/generate.py:2428). A focused reproduction raises `ValueError: too many values to unpack (expected 6)`. This prevents that serving path from completing generation.
+
+My recommended order is to correct optimizer restoration, the missing proposal prices, and unconditional area-head supervision; decide what feasible door balance should mean; then evaluate price tracking and conditional balance with clearer metrics. The 36 existing focused tests passed, but the additional probes reproduced the implementation problems above.

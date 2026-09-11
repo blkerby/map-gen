@@ -1635,8 +1635,8 @@ def train_round(
     proposal_data: ProposalData,
     generated_feature_data: GeneratedFeatureData,
 ) -> tuple[MainLossBreakdown, float]:
-    set_optimizer_lrs(context.main_optimizer, context.step_config.optimizer)
-    set_optimizer_lrs(context.balance_optimizer, context.step_config.balance_optimizer)
+    set_optimizer_hyperparameters(context.main_optimizer, context.step_config.optimizer)
+    set_optimizer_hyperparameters(context.balance_optimizer, context.step_config.balance_optimizer)
     balance_loss = train_balance_fresh(context, episode_data)
 
     total_loss = empty_main_loss_breakdown()
@@ -1725,8 +1725,11 @@ def log_feature_mismatch_summary(context: TrainRoundContext) -> None:
         )
 
 
-def set_optimizer_lrs(optimizer, config) -> None:
-    if hasattr(optimizer, "set_lrs"):
-        optimizer.set_lrs(config)
+def set_optimizer_hyperparameters(optimizer, config) -> None:
+    """Apply optimizer schedules resolved for the current episode count."""
+    if hasattr(optimizer, "set_hyperparameters"):
+        optimizer.set_hyperparameters(config)
     else:
-        optimizer.param_groups[0]["lr"] = config.lr
+        for group in optimizer.param_groups:
+            group["lr"] = config.lr
+            group["betas"] = (config.beta1, config.beta2)
