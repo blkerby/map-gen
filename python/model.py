@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from door_balance import sinkhorn_door_target
 from env import AREA_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, OutputMetadata, Features
 from features import (
     FRONTIER_NODE_FEATURES,
@@ -89,6 +90,10 @@ class BalancePredictions:
     up_compatibility: torch.Tensor
     down_compatibility: torch.Tensor
     toilet_compatibility: torch.Tensor
+    left_probability: torch.Tensor
+    right_probability: torch.Tensor
+    up_probability: torch.Tensor
+    down_probability: torch.Tensor
     horizontal_proposal_door_pairs: torch.Tensor
     vertical_proposal_door_pairs: torch.Tensor
 
@@ -1270,6 +1275,14 @@ class BalanceModel(torch.nn.Module):
                 direction_rooms[source].unsqueeze(1) != direction_rooms[target].unsqueeze(0)
             )
             self.register_buffer(f"{name}_compatibility", compatibility)
+        # Static complete-matching marginals are shared by both directions.
+        for forward, reverse in (("left", "right"), ("up", "down")):
+            try:
+                probability = sinkhorn_door_target(getattr(self, f"{forward}_compatibility"))
+            except (ValueError, RuntimeError) as error:
+                raise ValueError(f"{forward}/{reverse} door balance target: {error}") from error
+            self.register_buffer(f"{forward}_probability", probability, persistent=False)
+            self.register_buffer(f"{reverse}_probability", probability.T, persistent=False)
         (
             left_output_variant_idx,
             right_output_variant_idx,
@@ -1427,6 +1440,10 @@ class BalanceModel(torch.nn.Module):
             up_compatibility=self.up_compatibility,
             down_compatibility=self.down_compatibility,
             toilet_compatibility=self.toilet_compatibility,
+            left_probability=self.left_probability,
+            right_probability=self.right_probability,
+            up_probability=self.up_probability,
+            down_probability=self.down_probability,
             horizontal_proposal_door_pairs=self.horizontal_proposal_door_pairs,
             vertical_proposal_door_pairs=self.vertical_proposal_door_pairs,
         )

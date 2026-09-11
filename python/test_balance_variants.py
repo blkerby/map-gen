@@ -35,15 +35,19 @@ def example_predictions(requires_grad: bool = False) -> BalancePredictions:
         up_global_door_variant_idx=torch.tensor([4]),
         down_global_door_variant_idx=torch.tensor([5]),
         left_compatibility=torch.tensor(
-            [[True, False, False], [True, False, False], [True, True, True]]
+            [[True, True, False], [True, True, False], [True, True, True]]
         ),
         right_compatibility=torch.tensor(
-            [[True, True, True], [False, False, True], [False, False, True]]
+            [[True, True, True], [True, True, True], [False, False, True]]
         ),
         up_compatibility=torch.ones((1, 1), dtype=torch.bool),
         down_compatibility=torch.ones((1, 1), dtype=torch.bool),
         toilet_compatibility=torch.tensor([True, False]),
-        horizontal_proposal_door_pairs=torch.tensor([[0, 2, 2], [0, 0, 1]]),
+        left_probability=torch.tensor([[0.5, 0.5, 0.0], [0.5, 0.5, 0.0], [0.0, 0.0, 1.0]]),
+        right_probability=torch.tensor([[0.5, 0.5, 0.0], [0.5, 0.5, 0.0], [0.0, 0.0, 1.0]]),
+        up_probability=torch.ones((1, 1)),
+        down_probability=torch.ones((1, 1)),
+        horizontal_proposal_door_pairs=torch.tensor([[0, 0, 2, 2], [0, 1, 0, 1]]),
         vertical_proposal_door_pairs=torch.tensor([[0], [0]]),
     )
 
@@ -102,11 +106,11 @@ def test_balance_model_outputs_direction_local_variant_pairs() -> None:
 def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() -> None:
     model = BalanceModel(
         left_count=3,
-        right_count=2,
+        right_count=3,
         up_count=1,
         down_count=1,
-        door_output_variant_idx=torch.tensor([0, 0, 1, 2, 3, 4, 5]),
-        door_room_idx=torch.tensor([0, 1, 2, 0, 1, 2, 2]),
+        door_output_variant_idx=torch.tensor([0, 0, 1, 2, 2, 3, 4, 5]),
+        door_room_idx=torch.tensor([0, 1, 2, 0, 1, 2, 0, 1]),
         door_variant_compatibility=torch.ones((6, 6), dtype=torch.bool),
         room_connection_variant_idx=torch.tensor([0, 0, 1]),
         num_room_connection_variants=2,
@@ -115,11 +119,11 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
         num_layers=1,
     )
     preds = model(torch.zeros((1, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
-    expected = torch.tensor([[False, True], [True, False], [True, True]])
+    expected = ~torch.eye(3, dtype=torch.bool)
     assert torch.equal(preds.left_compatibility, expected)
     assert torch.equal(preds.right_compatibility, expected.T)
-    assert not preds.up_compatibility.any()
-    assert not preds.down_compatibility.any()
+    assert preds.up_compatibility.all()
+    assert preds.down_compatibility.all()
     assert "door_variant_compatibility" not in dict(model.named_buffers())
     for direction in ("left", "right", "up", "down"):
         assert f"{direction}_compatibility" in model.state_dict()
@@ -128,13 +132,15 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     area_probability = torch.full((1, 3, AREA_COUNT), 1.0 / AREA_COUNT)
     area_mask = torch.ones((1, 3), dtype=torch.bool)
     tables = compute_balance_price_tables(preds, area_probability, area_mask)
-    # Each of the first two doors has one real partner; the third has two.
-    torch.testing.assert_close(tables.left, torch.tensor([[[0.0, 0.0], [0.0, 0.0], [-2.0, 2.0]]]))
+    # Each door has two real partners with equal target probability.
+    torch.testing.assert_close(
+        tables.left, torch.tensor([[[0.0, 45.0, -45.0], [45.0, 0.0, -45.0], [0.0, 0.0, 0.0]]])
+    )
     assert torch.count_nonzero(tables.up) == 0
     assert torch.count_nonzero(tables.down) == 0
     door_matches = DoorMatches(
         left=torch.tensor([[1, 0, 0]]),
-        right=torch.full((1, 2), -1),
+        right=torch.full((1, 3), -1),
         up=torch.full((1, 1), -1),
         down=torch.full((1, 1), -1),
     )
@@ -154,7 +160,7 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     loss.backward()
     assert torch.isfinite(preds.left.grad).all()
     torch.testing.assert_close(
-        preds.left.grad, torch.tensor([[[0.0, 0.0], [-1.0 / 6.0, 1.0 / 6.0]]])
+        preds.left.grad, torch.tensor([[[-1.0 / 3.0, 1.0 / 3.0], [0.0, 0.0]]])
     )
 
     door_matches.left[0, 0] = 0
@@ -246,10 +252,10 @@ def test_prices_are_centered_masked_and_have_no_fixed_prior() -> None:
     )
 
     left_compatibility = torch.tensor(
-        [[True, False, False], [True, False, False], [True, True, True]]
+        [[True, True, False], [True, True, False], [True, True, True]]
     )
     assert torch.count_nonzero(tables.left[:, ~left_compatibility]) == 0
-    torch.testing.assert_close(tables.left[0, 2].mean(), torch.tensor(0.0))
+    torch.testing.assert_close((tables.left * preds.left_probability).sum(-1), torch.zeros((1, 3)))
     assert tables.toilet_crossed_room[0, 1] == 0.0
     torch.testing.assert_close(tables.room_area, torch.zeros_like(tables.room_area))
     assert torch.count_nonzero(tables.room_area[0, 1]) == 0
@@ -304,7 +310,8 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     )
     loss.backward()
 
-    torch.testing.assert_close(preds.left.grad[0, 1], torch.tensor([-2.0 / 3.0, 2.0 / 3.0]))
+    # This row's only partner in a complete matching has target probability 1.
+    torch.testing.assert_close(preds.left.grad[0, 1], torch.tensor([-1.0, 1.0]))
     torch.testing.assert_close(preds.toilet_crossed_room.grad[0], torch.tensor([-0.5, 0.5]))
     torch.testing.assert_close(
         preds.room_area.grad[0, 0],

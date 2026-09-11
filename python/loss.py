@@ -600,17 +600,17 @@ def direction_balance_price_table(
     source_door_variant_idx: torch.Tensor,
     target_door_variant_idx: torch.Tensor,
     compatibility: torch.Tensor,
+    probability: torch.Tensor,
 ) -> torch.Tensor:
     concrete_prices = materialize_direction_balance_logits(
         prices,
         source_door_variant_idx,
         target_door_variant_idx,
     ).to(torch.float32)
-    counts = compatibility.sum(dim=-1).clamp_min(1)
     means = torch.sum(
-        concrete_prices * compatibility.unsqueeze(0),
+        concrete_prices * probability.unsqueeze(0),
         dim=-1,
-    ) / counts.unsqueeze(0)
+    )
     centered = concrete_prices - means.unsqueeze(-1)
     return torch.where(
         compatibility.unsqueeze(0),
@@ -643,24 +643,33 @@ def compute_balance_price_tables(
             preds.left_door_variant_idx,
             preds.right_door_variant_idx,
             preds.left_compatibility,
+            preds.left_probability,
         ),
         (
             preds.right,
             preds.right_door_variant_idx,
             preds.left_door_variant_idx,
             preds.right_compatibility,
+            preds.right_probability,
         ),
-        (preds.up, preds.up_door_variant_idx, preds.down_door_variant_idx, preds.up_compatibility),
+        (
+            preds.up,
+            preds.up_door_variant_idx,
+            preds.down_door_variant_idx,
+            preds.up_compatibility,
+            preds.up_probability,
+        ),
         (
             preds.down,
             preds.down_door_variant_idx,
             preds.up_door_variant_idx,
             preds.down_compatibility,
+            preds.down_probability,
         ),
     )
     left, right, up, down = (
-        direction_balance_price_table(prices, source_idx, target_idx, compatibility)
-        for prices, source_idx, target_idx, compatibility in direction_inputs
+        direction_balance_price_table(prices, source_idx, target_idx, compatibility, probability)
+        for prices, source_idx, target_idx, compatibility, probability in direction_inputs
     )
     toilet_mask = preds.toilet_compatibility.unsqueeze(0)
     toilet_count = toilet_mask.sum(dim=-1).clamp_min(1)
