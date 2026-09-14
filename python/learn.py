@@ -28,9 +28,9 @@ from loss import (
     LossConfig,
     compute_balance_price_tables,
     compute_balance_loss,
-    compute_balance_score_target_logits,
-    compute_room_area_balance_score_target_logits,
-    compute_toilet_balance_score_target_logits,
+    compute_balance_score_targets,
+    compute_room_area_balance_score_targets,
+    compute_toilet_balance_score_targets,
     compute_loss_breakdown,
 )
 from train_config import (
@@ -1238,19 +1238,21 @@ def train_feature_batch_backward(
                 area_targets.probability,
                 area_targets.dual_mask,
             )
-            balance_score_target, balance_score_mask = compute_balance_score_target_logits(
+            balance_score_target = compute_balance_score_targets(
                 balance_score_tables,
                 prepared_batch.door_matches,
             )
-            area_balance_score_target = compute_room_area_balance_score_target_logits(
+            balance_score_mask = torch.ones_like(balance_score_target, dtype=torch.bool)
+            area_balance_score_target = compute_room_area_balance_score_targets(
                 balance_score_tables,
                 prepared_batch.room_area,
             )
-            toilet_balance_score_target, toilet_balance_score_mask = (
-                compute_toilet_balance_score_target_logits(
-                    balance_score_tables,
-                    end_outcomes.toilet_crossed_room_idx,
-                )
+            toilet_balance_score_target = compute_toilet_balance_score_targets(
+                balance_score_tables,
+                end_outcomes.toilet_crossed_room_idx,
+            )
+            toilet_balance_score_mask = torch.ones_like(
+                toilet_balance_score_target, dtype=torch.bool
             )
         repeated_balance_score_target = balance_score_target.unsqueeze(1)
         repeated_area_balance_score_target = area_balance_score_target.unsqueeze(1)

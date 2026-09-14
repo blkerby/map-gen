@@ -30,7 +30,7 @@ from loss import (
     compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
-    compute_step_balance_score_target_logits,
+    compute_step_balance_score_targets,
 )
 from model import BalancePredictions, Predictions
 from concurrent.futures import ThreadPoolExecutor
@@ -102,62 +102,24 @@ def outcome_reward(model_logprobs: torch.Tensor, known_invalid: torch.Tensor) ->
     return torch.where(known_invalid < 0, model_logprobs, known_reward)
 
 
-def balance_reward(
-    balance_score: torch.Tensor,
-    door_invalid: torch.Tensor,
-    known_invalid: torch.Tensor,
-) -> torch.Tensor:
-    if known_invalid.ndim == balance_score.ndim - 1:
-        known_invalid = known_invalid.unsqueeze(1)
-    match_probability = torch.sigmoid(-door_invalid)
-    known_match_probability = torch.where(
-        known_invalid == 0,
-        torch.ones_like(match_probability),
-        torch.zeros_like(match_probability),
-    )
-    match_probability = torch.where(
-        known_invalid < 0,
-        match_probability,
-        known_match_probability,
-    )
-    return -balance_score * match_probability
-
-
-def toilet_balance_reward(
-    toilet_balance_score: torch.Tensor,
-    toilet_invalid: torch.Tensor,
-    known_invalid: torch.Tensor,
-) -> torch.Tensor:
-    if known_invalid.ndim == toilet_balance_score.ndim - 1:
-        known_invalid = known_invalid.unsqueeze(1)
-    valid_probability = torch.sigmoid(-toilet_invalid)
-    known_valid_probability = torch.where(
-        known_invalid == 0,
-        torch.ones_like(valid_probability),
-        torch.zeros_like(valid_probability),
-    )
-    valid_probability = torch.where(
-        known_invalid < 0,
-        valid_probability,
-        known_valid_probability,
-    )
-    return -toilet_balance_score * valid_probability
-
-
 def apply_candidate_toilet_balance_score(
     predicted_score: torch.Tensor,
     crossed_room_idx: torch.Tensor,
+    known_invalid: torch.Tensor,
     score_table: torch.Tensor,
+    failure_price: torch.Tensor,
 ) -> torch.Tensor:
     if torch.any(crossed_room_idx >= score_table.shape[1]):
         raise RuntimeError("candidate Toilet crossing room index is out of range")
-    known = crossed_room_idx >= 0
     exact_score = torch.gather(
         score_table,
         1,
         crossed_room_idx.clamp_min(0).to(torch.int64),
     )
-    return torch.where(known, exact_score, predicted_score.to(torch.float32))
+    # A visible crossing can still become invalid later in construction.
+    exact_score = torch.where(crossed_room_idx >= 0, exact_score, 0.0)
+    terminal_score = torch.where(known_invalid == 0, exact_score, failure_price.unsqueeze(1))
+    return torch.where(known_invalid < 0, predicted_score.to(torch.float32), terminal_score)
 
 
 def area_balance_reward(area_balance_score: torch.Tensor) -> torch.Tensor:
@@ -861,7 +823,7 @@ def select_candidate_actions(
     model,
     candidates: Actions,
     outcomes: StepOutcomes,
-    post_candidate_door_match: torch.Tensor,
+    post_candidate_outcomes: StepOutcomes,
     features: Features,
     device: torch.device,
     num_rooms: int,
@@ -886,9 +848,9 @@ def select_candidate_actions(
 
     profile_time = profile_start(profile)
     balance_score = preds.balance_score.view(environment_count, candidate_count, -1)
-    actual_balance_score, actual_balance_score_mask = compute_step_balance_score_target_logits(
+    actual_balance_score, actual_balance_score_mask = compute_step_balance_score_targets(
         group.balance_score_tables,
-        post_candidate_door_match,
+        post_candidate_outcomes.door_match,
     )
     balance_score = torch.where(
         actual_balance_score_mask,
@@ -908,7 +870,9 @@ def select_candidate_actions(
             environment_count,
             candidate_count,
         ),
+        post_candidate_outcomes.toilet_invalid,
         group.balance_score_tables.toilet_crossed_room,
+        group.balance_score_tables.toilet_failure,
     )
     expected_reward = compute_expected_reward(
         Predictions(
@@ -978,20 +942,9 @@ def select_candidate_actions(
         group.config,
     )
     balance_logit = (
-        torch.sum(
-            balance_reward(
-                balance_score,
-                preds.door_invalid.view(environment_count, candidate_count, -1),
-                outcomes.door_invalid,
-            ),
-            dim=2,
-        )
+        -balance_score.float().sum(dim=2)
         + area_balance_reward(area_balance_score)
-        + toilet_balance_reward(
-            toilet_balance_score,
-            preds.toilet_invalid.view(environment_count, candidate_count),
-            outcomes.toilet_invalid,
-        )
+        - toilet_balance_score
     )
     sync_profile_device(device, profile)
     profiler.add("python.score.reward", profile_time)
@@ -1238,7 +1191,7 @@ def score_staged_candidate_request(
             model,
             candidates,
             candidate_batch.reward_outcomes,
-            candidate_batch.post_candidate_outcomes.door_match,
+            candidate_batch.post_candidate_outcomes,
             staged.features,
             device,
             num_rooms,

@@ -39,11 +39,11 @@ class Predictions:
     # log-odds of invalid Phantoon area assignment:
     phantoon_area_invalid: torch.Tensor
     vanilla_area_invalid: torch.Tensor
-    # Predicted learned balance price for the matched target door:
+    # Unconditional expected terminal door price, including unmatched doors:
     balance_score: torch.Tensor
-    # Predicted centered learned balance correction for each room's final area:
+    # Unconditional expected terminal area price, including unplaced rooms:
     area_balance_score: torch.Tensor
-    # Predicted learned balance price for the room crossed by the Toilet:
+    # Unconditional expected terminal Toilet price, including failure:
     toilet_balance_score: torch.Tensor
     # Predicted average live frontier count across the full episode:
     avg_frontiers: torch.Tensor
@@ -76,8 +76,12 @@ class BalancePredictions:
     right: torch.Tensor
     up: torch.Tensor
     down: torch.Tensor
+    # Failure prices are relative to the target-weighted zero of successful prices.
+    door_failure: torch.Tensor
     toilet_crossed_room: torch.Tensor
+    toilet_failure: torch.Tensor
     room_area: torch.Tensor
+    room_area_failure: torch.Tensor
     left_door_variant_idx: torch.Tensor
     right_door_variant_idx: torch.Tensor
     up_door_variant_idx: torch.Tensor
@@ -1194,6 +1198,22 @@ def compatible_proposal_door_pairs(
     )
 
 
+def balance_price_network(
+    hidden_width: int,
+    num_layers: int,
+    output_width: int,
+) -> torch.nn.Sequential:
+    layers: list[torch.nn.Module] = []
+    input_width = len(GENERATION_VARIABLE_FLOAT_FIELDS)
+    for _ in range(num_layers):
+        layers.extend([torch.nn.Linear(input_width, hidden_width), torch.nn.GELU()])
+        input_width = hidden_width
+    output_layer = torch.nn.Linear(input_width, output_width)
+    zero_init_output_layer(output_layer)
+    layers.append(output_layer)
+    return torch.nn.Sequential(*layers)
+
+
 class BalanceModel(torch.nn.Module):
     def __init__(
         self,
@@ -1352,82 +1372,105 @@ class BalanceModel(torch.nn.Module):
                 ),
                 persistent=False,
             )
-        self.output_width = (
+        door_width = (
             self.left_variant_count * self.right_variant_count
             + self.right_variant_count * self.left_variant_count
             + self.up_variant_count * self.down_variant_count
             + self.down_variant_count * self.up_variant_count
-            + self.num_rooms
-            + num_room_connection_variants * AREA_COUNT
         )
-
-        layers: list[torch.nn.Module] = []
-        input_width = len(GENERATION_VARIABLE_FLOAT_FIELDS)
-        for _ in range(num_layers):
-            layers.extend(
-                [
-                    torch.nn.Linear(input_width, hidden_width),
-                    torch.nn.GELU(),
-                ]
-            )
-            input_width = hidden_width
-        output_layer = torch.nn.Linear(input_width, self.output_width)
-        output_layer.weight.data.zero_()
-        output_layer.bias.data.zero_()
-        layers.append(output_layer)
-        self.net = torch.nn.Sequential(*layers)
+        variant_counts = (
+            self.left_variant_count, self.right_variant_count,
+            self.up_variant_count, self.down_variant_count,
+        )
+        variant_offsets = (0, *torch.tensor(variant_counts).cumsum(0).tolist())
+        self.register_buffer(
+            "door_failure_variant_idx",
+            torch.cat([
+                indices + offset for indices, offset in zip(
+                    (left_door_variant_idx, right_door_variant_idx,
+                     up_door_variant_idx, down_door_variant_idx),
+                    variant_offsets[:-1], strict=True,
+                )
+            ]),
+            persistent=False,
+        )
+        # Independent parameters prevent one controller's updates from moving
+        # the other families' prices through shared hidden representations.
+        self.door_net = balance_price_network(
+            hidden_width, num_layers, door_width + sum(variant_counts)
+        )
+        self.toilet_net = balance_price_network(hidden_width, num_layers, self.num_rooms + 1)
+        self.area_net = balance_price_network(
+            hidden_width, num_layers, num_room_connection_variants * (AREA_COUNT + 1)
+        )
 
     def forward(self, generation_variable_floats: torch.Tensor) -> BalancePredictions:
         parameter_dtype = next(self.parameters()).dtype
-        raw = self.net(
-            generation_variable_floats.to(
-                activation_dtype(generation_variable_floats.device, parameter_dtype)
-            )
-        ).to(torch.float32)
+        inputs = generation_variable_floats.to(
+            activation_dtype(generation_variable_floats.device, parameter_dtype)
+        )
+        raw = self.door_net(inputs).to(torch.float32)
+        toilet_raw = self.toilet_net(inputs).to(torch.float32)
+        area_raw = self.area_net(inputs).to(torch.float32)
+        return self.decode_prices(raw, toilet_raw, area_raw)
+
+    def decode_prices(
+        self,
+        raw: torch.Tensor,
+        toilet_raw: torch.Tensor,
+        area_raw: torch.Tensor,
+    ) -> BalancePredictions:
+        batch_size = raw.shape[0]
         offset = 0
         left_size = self.left_variant_count * self.right_variant_count
         right_size = self.right_variant_count * self.left_variant_count
         up_size = self.up_variant_count * self.down_variant_count
         down_size = self.down_variant_count * self.up_variant_count
         left = raw[:, offset : offset + left_size].reshape(
-            generation_variable_floats.shape[0],
+            batch_size,
             self.left_variant_count,
             self.right_variant_count,
         )
         offset += left_size
         right = raw[:, offset : offset + right_size].reshape(
-            generation_variable_floats.shape[0],
+            batch_size,
             self.right_variant_count,
             self.left_variant_count,
         )
         offset += right_size
         up = raw[:, offset : offset + up_size].reshape(
-            generation_variable_floats.shape[0],
+            batch_size,
             self.up_variant_count,
             self.down_variant_count,
         )
         offset += up_size
         down = raw[:, offset : offset + down_size].reshape(
-            generation_variable_floats.shape[0],
+            batch_size,
             self.down_variant_count,
             self.up_variant_count,
         )
         offset += down_size
-        toilet_crossed_room = raw[:, offset : offset + self.num_rooms]
-        offset += self.num_rooms
-        room_area_by_variant = raw[:, offset:].reshape(
-            generation_variable_floats.shape[0],
+        door_failure = raw[:, offset:][:, self.door_failure_variant_idx]
+        toilet_crossed_room = toilet_raw[:, : self.num_rooms]
+        area_width = self.num_room_connection_variants * AREA_COUNT
+        room_area_by_variant = area_raw[:, :area_width].reshape(
+            batch_size,
             self.num_room_connection_variants,
             AREA_COUNT,
         )
         room_area = room_area_by_variant[:, self.room_connection_variant_idx]
+        room_area_failure = area_raw[:, area_width:][:, self.room_connection_variant_idx]
+        toilet_failure = toilet_raw[:, self.num_rooms]
         return BalancePredictions(
             left=left,
             right=right,
             up=up,
             down=down,
+            door_failure=door_failure,
             toilet_crossed_room=toilet_crossed_room,
+            toilet_failure=toilet_failure,
             room_area=room_area,
+            room_area_failure=room_area_failure,
             left_door_variant_idx=self.left_door_variant_idx,
             right_door_variant_idx=self.right_door_variant_idx,
             up_door_variant_idx=self.up_door_variant_idx,

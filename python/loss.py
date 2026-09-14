@@ -81,8 +81,11 @@ class BalancePriceTables:
     right: torch.Tensor
     up: torch.Tensor
     down: torch.Tensor
+    door_failure: torch.Tensor
     toilet_crossed_room: torch.Tensor
+    toilet_failure: torch.Tensor
     room_area: torch.Tensor
+    room_area_failure: torch.Tensor
 
 
 def masked_binary_cross_entropy_loss(
@@ -434,6 +437,59 @@ def materialize_direction_balance_logits(
     return logits[:, source_door_variant_idx, :][:, :, target_door_variant_idx]
 
 
+@dataclass
+class BalanceObjectiveTerms:
+    observed_price: torch.Tensor
+    squared_prices: torch.Tensor
+    group_count: torch.Tensor
+
+
+def terminal_balance_cost(
+    success_prices: torch.Tensor,
+    failure_price: torch.Tensor,
+    outcome: torch.Tensor,
+) -> torch.Tensor:
+    """Select a terminal price; -1 denotes failure, including absent rooms/doors."""
+    if torch.any((outcome < -1) | (outcome >= success_prices.shape[-1])):
+        raise ValueError("terminal balance outcome is out of range")
+    prices = torch.cat((success_prices, failure_price.unsqueeze(-1)), dim=-1)
+    while prices.ndim < outcome.ndim + 1:
+        prices = prices.unsqueeze(1)
+    prices = prices.expand(*outcome.shape, prices.shape[-1])
+    index = torch.where(outcome < 0, success_prices.shape[-1], outcome).to(torch.int64)
+    return torch.gather(prices, -1, index.unsqueeze(-1)).squeeze(-1)
+
+
+def balance_objective_terms(
+    success_prices: torch.Tensor,
+    failure_price: torch.Tensor,
+    outcome: torch.Tensor,
+    enabled: torch.Tensor,
+) -> BalanceObjectiveTerms:
+    enabled = enabled.expand_as(failure_price)
+    selected = terminal_balance_cost(success_prices, failure_price, outcome)
+    return BalanceObjectiveTerms(
+        observed_price=(selected * enabled).sum(-1),
+        squared_prices=((success_prices.square().sum(-1) + failure_price.square()) * enabled).sum(-1),
+        group_count=enabled.sum(-1),
+    )
+
+
+def balance_family_loss(
+    terms: list[BalanceObjectiveTerms],
+    beta: float,
+    record_weight: torch.Tensor,
+) -> torch.Tensor:
+    # The target's expected price is zero: successful prices are target-centered,
+    # and failure has target probability zero. Every enabled group contributes,
+    # so failures cannot change the denominator of the observed-price term.
+    observed = torch.stack([term.observed_price for term in terms]).sum(0)
+    regularizer = torch.stack([term.squared_prices for term in terms]).sum(0)
+    count = torch.stack([term.group_count for term in terms]).sum(0).clamp_min(1)
+    per_record = (0.5 * beta * regularizer - observed) / count
+    return (per_record * record_weight).sum() / record_weight.sum().clamp_min(1.0)
+
+
 def compute_balance_loss(
     preds: BalancePredictions,
     door_matches: DoorMatches,
@@ -446,153 +502,55 @@ def compute_balance_loss(
     toilet_beta: float,
     area_beta: float,
 ) -> torch.Tensor:
-    tables = compute_balance_price_tables(
-        preds,
-        area_probability,
-        area_dual_mask,
+    tables = compute_balance_price_tables(preds, area_probability, area_dual_mask)
+    failures = tables.door_failure.split(
+        [tables.left.shape[1], tables.right.shape[1], tables.up.shape[1], tables.down.shape[1]],
+        dim=-1,
     )
-    door_residual_per_record = tables.left.new_zeros(record_weight.shape)
-    door_regularizer_per_record = tables.left.new_zeros(record_weight.shape)
-    door_count_per_record = tables.left.new_zeros(record_weight.shape)
-    door_regularizer_group_count = tables.left.new_zeros(())
-    for prices, targets, compatibility in (
-        (
-            tables.left,
-            door_matches.left,
-            preds.left_compatibility,
-        ),
-        (
-            tables.right,
-            door_matches.right,
-            preds.right_compatibility,
-        ),
-        (
-            tables.up,
-            door_matches.up,
-            preds.up_compatibility,
-        ),
-        (
-            tables.down,
-            door_matches.down,
-            preds.down_compatibility,
-        ),
+    door_terms = []
+    for prices, failure, targets, compatibility in zip(
+        (tables.left, tables.right, tables.up, tables.down),
+        failures,
+        (door_matches.left, door_matches.right, door_matches.up, door_matches.down),
+        (preds.left_compatibility, preds.right_compatibility,
+         preds.up_compatibility, preds.down_compatibility),
+        strict=True,
     ):
-        regularized_group = compatibility.any(dim=-1)
-        door_regularizer_per_record += torch.sum(
-            torch.sum(prices.square(), dim=-1) * regularized_group.unsqueeze(0),
-            dim=1,
-        )
-        door_regularizer_group_count += regularized_group.sum()
         mask = targets >= 0
-        if not torch.any(mask):
-            continue
-        if torch.any(targets[mask] >= prices.shape[-1]):
-            raise ValueError("door balance target is out of range")
-        safe_targets = targets.clamp(0, prices.shape[-1] - 1).to(torch.int64)
-        observed_compatible = torch.gather(
-            compatibility.unsqueeze(0).expand(targets.shape[0], -1, -1),
-            -1,
-            safe_targets.unsqueeze(-1),
-        ).squeeze(-1)
-        if torch.any(mask & ~observed_compatible):
-            raise ValueError("observed door pairing is incompatible")
-        selected = torch.gather(prices, -1, safe_targets.unsqueeze(-1)).squeeze(-1)
-        door_residual_per_record += torch.sum(selected * mask, dim=1)
-        door_count_per_record += torch.sum(mask, dim=1)
-
+        if mask.any():
+            if torch.any(targets[mask] >= prices.shape[-1]):
+                raise ValueError("door balance target is out of range")
+            source = torch.arange(targets.shape[-1], device=targets.device).expand_as(targets)
+            if not compatibility[source[mask], targets[mask]].all():
+                raise ValueError("observed door pairing is incompatible")
+        door_terms.append(balance_objective_terms(
+            prices, failure, targets, compatibility.any(-1),
+        ))
     toilet_mask = toilet_crossed_room_idx >= 0
-    safe_toilet = toilet_crossed_room_idx.clamp(0, tables.toilet_crossed_room.shape[-1] - 1)
-    if torch.any(toilet_mask & ~preds.toilet_compatibility[safe_toilet]):
+    if torch.any(toilet_crossed_room_idx[toilet_mask] >= preds.toilet_compatibility.numel()):
+        raise ValueError("observed Toilet crossing room is out of range")
+    if not preds.toilet_compatibility[toilet_crossed_room_idx[toilet_mask]].all():
         raise ValueError("observed Toilet crossing room is infeasible")
-    toilet_selected = torch.gather(
-        tables.toilet_crossed_room,
-        -1,
-        safe_toilet.unsqueeze(-1),
+    toilet_terms = balance_objective_terms(
+        tables.toilet_crossed_room.unsqueeze(1), tables.toilet_failure.unsqueeze(1),
+        toilet_crossed_room_idx.unsqueeze(1), preds.toilet_compatibility.any().reshape(1, 1),
+    )
+    placed = (room_area >= 0) & area_dual_mask
+    if torch.any(room_area[placed] >= AREA_COUNT):
+        raise ValueError("observed room-area assignment is out of range")
+    selected_probability = area_probability.gather(
+        -1, room_area.clamp(0, AREA_COUNT - 1).long().unsqueeze(-1),
     ).squeeze(-1)
-    toilet_residual = toilet_selected
-    toilet_regularizer = torch.sum(tables.toilet_crossed_room.square(), dim=-1)
-    area_mask = (room_area >= 0) & area_dual_mask
-    safe_area = room_area.clamp(0, AREA_COUNT - 1).to(torch.int64)
-    selected_area_price = torch.gather(
-        tables.room_area,
-        -1,
-        safe_area.unsqueeze(-1),
-    ).squeeze(-1)
-    selected_area_probability = torch.gather(
-        area_probability,
-        -1,
-        safe_area.unsqueeze(-1),
-    ).squeeze(-1)
-    if torch.any(area_mask & (selected_area_probability <= 0.0)):
+    if torch.any(placed & (selected_probability <= 0.0)):
         raise ValueError("observed room-area assignment has zero target probability")
-    area_residual = selected_area_price
-    area_regularizer = torch.sum(tables.room_area.square(), dim=-1)
-    total_record_weight = record_weight.sum().clamp_min(1.0)
-    door_objective = (
-        torch.sum(door_residual_per_record / door_count_per_record.clamp_min(1.0) * record_weight)
-        / total_record_weight
-    )
-    door_regularizer_objective = (
-        torch.sum(
-            door_regularizer_per_record
-            / door_regularizer_group_count.clamp_min(1.0)
-            * record_weight
-        )
-        / total_record_weight
-    )
-    toilet_objective = (
-        torch.sum(toilet_residual * toilet_mask * record_weight) / total_record_weight
-    )
-    toilet_regularizer_objective = (
-        torch.sum(toilet_regularizer * record_weight) / total_record_weight
-    )
-    area_objective = (
-        torch.sum(
-            torch.sum(area_residual * area_mask, dim=1)
-            / torch.sum(area_mask, dim=1).clamp_min(1.0)
-            * record_weight
-        )
-        / total_record_weight
-    )
-    area_regularizer_objective = (
-        torch.sum(
-            torch.sum(area_regularizer * area_dual_mask, dim=1)
-            / torch.sum(area_dual_mask, dim=1).clamp_min(1.0)
-            * record_weight
-        )
-        / total_record_weight
+    area_terms = balance_objective_terms(
+        tables.room_area, tables.room_area_failure, room_area, area_dual_mask,
     )
     return (
-        0.5 * door_beta * door_regularizer_objective
-        - door_objective
-        + 0.5 * toilet_beta * toilet_regularizer_objective
-        - toilet_objective
-        + 0.5 * area_beta * area_regularizer_objective
-        - area_objective
+        balance_family_loss(door_terms, door_beta, record_weight)
+        + balance_family_loss([toilet_terms], toilet_beta, record_weight)
+        + balance_family_loss([area_terms], area_beta, record_weight)
     )
-
-
-def direction_valid_match_balance_score_target_logits(
-    logit_table: torch.Tensor,
-    targets: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = (targets >= 0) & (targets < logit_table.shape[-1])
-    if logit_table.shape[-1] == 0:
-        return logit_table.new_empty(targets.shape, dtype=torch.float32), mask
-    safe_targets = targets.clamp(0, logit_table.shape[-1] - 1).to(torch.int64)
-    concrete_logit_table = logit_table
-    while concrete_logit_table.ndim < safe_targets.ndim + 1:
-        concrete_logit_table = concrete_logit_table.unsqueeze(1)
-    concrete_logit_table = concrete_logit_table.expand(
-        *safe_targets.shape,
-        concrete_logit_table.shape[-1],
-    )
-    target_logits = torch.gather(
-        concrete_logit_table,
-        -1,
-        safe_targets.unsqueeze(-1),
-    ).squeeze(-1)
-    return target_logits.detach(), mask
 
 
 def direction_balance_price_table(
@@ -679,6 +637,11 @@ def compute_balance_price_tables(
         preds.toilet_crossed_room - toilet_mean.unsqueeze(-1),
         0.0,
     )
+    toilet_failure = torch.where(
+        toilet_mask.any(dim=-1),
+        preds.toilet_failure,
+        0.0,
+    )
     if area_probability.shape != preds.room_area.shape:
         raise ValueError("area_probability shape must match balance room-area prices")
     if area_dual_mask.shape != preds.room_area.shape[:2]:
@@ -693,79 +656,56 @@ def compute_balance_price_tables(
         right=right,
         up=up,
         down=down,
+        door_failure=torch.where(
+            torch.cat([getattr(preds, name + "_compatibility").any(-1)
+                       for name in ("left", "right", "up", "down")]),
+            preds.door_failure, 0.0,
+        ),
         toilet_crossed_room=toilet,
+        toilet_failure=toilet_failure,
         room_area=room_area,
+        room_area_failure=torch.where(area_dual_mask, preds.room_area_failure, 0.0),
     )
 
 
-def compute_room_area_balance_score_target_logits(
+def compute_room_area_balance_score_targets(
     tables: BalancePriceTables,
     room_area: torch.Tensor,
 ) -> torch.Tensor:
-    """Terminal area price, with no contribution from rooms that are never placed."""
-    placed = room_area >= 0
-    safe_room_area = room_area.clamp_min(0).to(torch.int64)
-    target_logits = torch.gather(
-        tables.room_area,
-        -1,
-        safe_room_area.unsqueeze(-1),
-    ).squeeze(-1)
-    return torch.where(placed, target_logits, 0.0).detach()
+    return terminal_balance_cost(tables.room_area, tables.room_area_failure, room_area).detach()
 
 
-def compute_balance_score_target_logits(
+def compute_balance_score_targets(
     tables: BalancePriceTables,
     door_matches: DoorMatches,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    values_and_masks = tuple(
-        direction_valid_match_balance_score_target_logits(table, targets)
-        for table, targets in (
-            (tables.left, door_matches.left),
-            (tables.right, door_matches.right),
-            (tables.up, door_matches.up),
-            (tables.down, door_matches.down),
+) -> torch.Tensor:
+    prices = (tables.left, tables.right, tables.up, tables.down)
+    failures = tables.door_failure.split([table.shape[1] for table in prices], dim=-1)
+    return torch.cat([
+        terminal_balance_cost(table, failure, targets)
+        for table, failure, targets in zip(
+            prices, failures,
+            (door_matches.left, door_matches.right, door_matches.up, door_matches.down),
+            strict=True,
         )
-    )
-    return (
-        torch.cat([values for values, _ in values_and_masks], dim=-1),
-        torch.cat([mask for _, mask in values_and_masks], dim=-1),
-    )
+    ], dim=-1).detach()
 
 
-def compute_step_balance_score_target_logits(
+def compute_step_balance_score_targets(
     tables: BalancePriceTables,
     door_match: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    left, right, up, down = torch.split(
-        door_match,
-        [
-            tables.left.shape[-2],
-            tables.right.shape[-2],
-            tables.up.shape[-2],
-            tables.down.shape[-2],
-        ],
-        dim=-1,
-    )
-    left_values, left_mask = direction_valid_match_balance_score_target_logits(
-        tables.left,
-        left,
-    )
-    right_values, right_mask = direction_valid_match_balance_score_target_logits(
-        tables.right,
-        right,
-    )
-    up_values, up_mask = direction_valid_match_balance_score_target_logits(
-        tables.up,
-        up,
-    )
-    down_values, down_mask = direction_valid_match_balance_score_target_logits(
-        tables.down,
-        down,
-    )
-    return (
-        torch.cat([left_values, right_values, up_values, down_values], dim=-1),
-        torch.cat([left_mask, right_mask, up_mask, down_mask], dim=-1),
-    )
+    """Known matches and known failures override the unconditional prediction."""
+    prices = (tables.left, tables.right, tables.up, tables.down)
+    sizes = [table.shape[1] for table in prices]
+    failures = tables.door_failure.split(sizes, dim=-1)
+    matches = door_match.split(sizes, dim=-1)
+    values = []
+    for table, failure, match in zip(prices, failures, matches, strict=True):
+        # StepOutcomes uses the opposite-door count as the known-failure sentinel.
+        terminal = torch.where(match == table.shape[-1], -1, match)
+        values.append(terminal_balance_cost(table, failure, terminal))
+    return torch.cat(values, dim=-1).detach(), door_match >= 0
 
 
 def first_concrete_door_idx_by_variant(
@@ -888,17 +828,10 @@ def compute_proposal_area_balance_score_residual(
     return -proposal_score_table[row_snapshot_idx]
 
 
-def compute_toilet_balance_score_target_logits(
+def compute_toilet_balance_score_targets(
     tables: BalancePriceTables,
     toilet_crossed_room_idx: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    mask = toilet_crossed_room_idx >= 0
-    safe_target = toilet_crossed_room_idx.clamp(0, tables.toilet_crossed_room.shape[-1] - 1).to(
-        torch.int64
-    )
-    target = torch.gather(
-        tables.toilet_crossed_room,
-        -1,
-        safe_target.unsqueeze(-1),
-    ).squeeze(-1)
-    return target.detach(), mask
+) -> torch.Tensor:
+    return terminal_balance_cost(
+        tables.toilet_crossed_room, tables.toilet_failure, toilet_crossed_room_idx,
+    ).detach()

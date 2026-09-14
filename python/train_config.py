@@ -180,6 +180,8 @@ type OptimizerConfig = AdamOptimizerConfig | MuonOptimizerConfig
 
 
 class BalanceModelConfig(StrictBaseModel):
+    """Width and depth of each independent door, Toilet, and area price network."""
+
     hidden_width: int
     num_layers: int
 

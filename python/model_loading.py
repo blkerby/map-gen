@@ -70,14 +70,25 @@ def count_room_doors_by_direction(rooms: list[dict], direction: str) -> int:
     )
 
 
-def create_balance_model(
+def balance_model_kwargs(
     config: Config,
     rooms: list[dict],
     engine: Engine,
-    device: torch.device,
-) -> torch.nn.Module:
+) -> dict[str, Any]:
     output_metadata = engine.get_output_metadata()
-    return BalanceModel(
+    has_toilet = any(room.get("special_type") == "toilet" for room in rooms)
+    toilet_compatibility = torch.tensor(
+        [
+            has_toilet
+            and bool(room["toilet_crossing_x"])
+            and room.get("special_type") != "toilet"
+            for room in rooms
+        ],
+        dtype=torch.bool,
+    )
+    if has_toilet and not torch.any(toilet_compatibility):
+        raise ValueError("Toilet balancing requires at least one compatible crossing room")
+    return dict(
         left_count=count_room_doors_by_direction(rooms, "left"),
         right_count=count_room_doors_by_direction(rooms, "right"),
         up_count=count_room_doors_by_direction(rooms, "up"),
@@ -96,13 +107,16 @@ def create_balance_model(
             dtype=torch.int64,
         ),
         num_room_connection_variants=output_metadata.num_room_connection_variants,
-        toilet_compatibility=torch.tensor(
-            [
-                bool(room["toilet_crossing_x"]) and room.get("special_type") != "toilet"
-                for room in rooms
-            ],
-            dtype=torch.bool,
-        ),
+        toilet_compatibility=toilet_compatibility,
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,
-    ).to(device)
+    )
+
+
+def create_balance_model(
+    config: Config,
+    rooms: list[dict],
+    engine: Engine,
+    device: torch.device,
+) -> BalanceModel:
+    return BalanceModel(**balance_model_kwargs(config, rooms, engine)).to(device)

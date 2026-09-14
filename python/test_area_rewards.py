@@ -7,7 +7,6 @@ from env import AREA_COUNT, Actions, GenerateConfig, StepOutcomes
 from generate import (
     apply_candidate_area_balance_scores,
     apply_candidate_toilet_balance_score,
-    balance_reward,
     compute_expected_reward,
 )
 from model import Predictions
@@ -191,22 +190,14 @@ def test_candidate_area_balance_uses_exact_placed_room_price() -> None:
 
 def test_candidate_toilet_balance_uses_exact_known_crossing_price() -> None:
     scores = apply_candidate_toilet_balance_score(
-        predicted_score=torch.tensor([[10.0, 20.0, 30.0]]),
-        crossed_room_idx=torch.tensor([[-1, 2, 0]]),
+        predicted_score=torch.tensor([[10.0, 20.0, 30.0, 40.0, 50.0]]),
+        crossed_room_idx=torch.tensor([[-1, 2, 0, 2, -1]]),
+        known_invalid=torch.tensor([[-1, -1, 0, 1, 0]]),
+        failure_price=torch.tensor([7.0]),
         score_table=torch.tensor([[1.0, 2.0, 3.0]]),
     )
 
-    assert torch.equal(scores, torch.tensor([[10.0, 3.0, 1.0]]))
-
-
-def test_known_valid_door_match_uses_exact_price() -> None:
-    reward = balance_reward(
-        balance_score=torch.tensor([[[3.0, 5.0]]]),
-        door_invalid=torch.zeros([1, 1, 2]),
-        known_invalid=torch.tensor([[[0.0, 1.0]]]),
-    )
-
-    assert torch.equal(reward, torch.tensor([[[-3.0, 0.0]]]))
+    assert torch.equal(scores, torch.tensor([[10.0, 20.0, 1.0, 7.0, 0.0]]))
 
 
 def test_training_samples_tiered_preferred_probabilities() -> None:
@@ -299,7 +290,6 @@ def main() -> None:
     test_ordinary_area_rewards_are_unchanged()
     test_candidate_area_balance_uses_exact_placed_room_price()
     test_candidate_toilet_balance_uses_exact_known_crossing_price()
-    test_known_valid_door_match_uses_exact_price()
     test_training_samples_tiered_preferred_probabilities()
     test_unforced_special_room_area_ss_excludes_forced_episodes()
 

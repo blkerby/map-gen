@@ -28,7 +28,9 @@ class CandidateRecordsTest(unittest.TestCase):
             config=SimpleNamespace(
                 autocast=False, recommended_candidates=0, temperature=torch.tensor([0.5, 1.0])
             ),
-            balance_score_tables=SimpleNamespace(room_area=Mock(), toilet_crossed_room=Mock()),
+            balance_score_tables=SimpleNamespace(
+                room_area=Mock(), toilet_crossed_room=Mock(), toilet_failure=Mock()
+            ),
             area_balance_dual_mask=torch.zeros(2, 1, dtype=torch.bool),
         )
         self.features = SimpleNamespace(
@@ -75,30 +77,26 @@ class CandidateRecordsTest(unittest.TestCase):
             proposal_row_snapshot_idx=None,
             proposal_row_frontier_idx=None,
         )
+        predictions.balance_score = torch.tensor([-1.0, -3.0, 0.0, 0.0])
         with (
             patch(
-                "generate.compute_step_balance_score_target_logits",
+                "generate.compute_step_balance_score_targets",
                 return_value=(torch.zeros(2, 2, 1), torch.zeros(2, 2, 1, dtype=torch.bool)),
             ),
             patch(
                 "generate.apply_candidate_area_balance_scores", return_value=torch.zeros(2, 2, 1)
             ),
-            patch("generate.apply_candidate_toilet_balance_score", return_value=torch.zeros(2, 2)),
+            patch(
+                "generate.apply_candidate_toilet_balance_score",
+                return_value=torch.tensor([[2.0, -1.0], [0.0, 0.0]]),
+            ),
             patch(
                 "generate.compute_expected_reward",
                 return_value=torch.tensor([[0.0, 1.0], [0.0, 0.0]]),
             ),
             patch(
-                "generate.balance_reward",
-                return_value=torch.tensor([[[1.0], [3.0]], [[0.0], [0.0]]]),
-            ),
-            patch(
                 "generate.area_balance_reward",
                 return_value=torch.tensor([[2.0, -1.0], [0.0, 0.0]]),
-            ),
-            patch(
-                "generate.toilet_balance_reward",
-                return_value=torch.tensor([[-2.0, 1.0], [0.0, 0.0]]),
             ),
             patch("generate.rand_choice", return_value=torch.tensor([1, 0])) as sampler,
         ):
@@ -107,7 +105,9 @@ class CandidateRecordsTest(unittest.TestCase):
                 Mock(return_value=predictions),
                 self.candidates,
                 self.outcomes,
-                torch.zeros(2, 2, 1),
+                SimpleNamespace(
+                    door_match=torch.zeros(2, 2, 1), toilet_invalid=torch.zeros(2, 2)
+                ),
                 self.features,
                 self.device,
                 1,

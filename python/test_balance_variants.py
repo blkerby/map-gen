@@ -7,7 +7,8 @@ from env import AREA_COUNT, DoorMatches, compute_area_balance_targets
 from loss import (
     compute_balance_loss,
     compute_balance_price_tables,
-    compute_room_area_balance_score_target_logits,
+    compute_toilet_balance_score_targets,
+    compute_room_area_balance_score_targets,
     compute_proposal_area_balance_score_residual,
     compute_proposal_area_balance_score_table,
     compute_proposal_balance_score_residual,
@@ -25,6 +26,9 @@ def example_predictions(requires_grad: bool = False) -> BalancePredictions:
         up=torch.zeros((1, 1, 1), requires_grad=requires_grad),
         down=torch.zeros((1, 1, 1), requires_grad=requires_grad),
         toilet_crossed_room=torch.zeros((1, 2), requires_grad=requires_grad),
+        toilet_failure=torch.zeros(1, requires_grad=requires_grad),
+        door_failure=torch.zeros((1, 8), requires_grad=requires_grad),
+        room_area_failure=torch.zeros((1, 2), requires_grad=requires_grad),
         room_area=torch.zeros((1, 2, AREA_COUNT), requires_grad=requires_grad),
         left_door_variant_idx=torch.tensor([0, 0, 1]),
         right_door_variant_idx=torch.tensor([0, 1, 1]),
@@ -84,7 +88,7 @@ def test_balance_model_outputs_direction_local_variant_pairs() -> None:
         num_layers=1,
     )
     with torch.no_grad():
-        model.net[-1].bias[-2 * AREA_COUNT :] = torch.arange(2 * AREA_COUNT)
+        model.area_net[-1].bias[:2 * AREA_COUNT] = torch.arange(2 * AREA_COUNT)
     preds = model(torch.zeros((1, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
 
     assert preds.left.shape == (1, 2, 2)
@@ -160,7 +164,7 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     loss.backward()
     assert torch.isfinite(preds.left.grad).all()
     torch.testing.assert_close(
-        preds.left.grad, torch.tensor([[[-1.0 / 3.0, 1.0 / 3.0], [0.0, 0.0]]])
+        preds.left.grad, torch.tensor([[[-1.0 / 8.0, 1.0 / 8.0], [0.0, 0.0]]])
     )
 
     door_matches.left[0, 0] = 0
@@ -311,7 +315,7 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     loss.backward()
 
     # This row's only partner in a complete matching has target probability 1.
-    torch.testing.assert_close(preds.left.grad[0, 1], torch.tensor([-1.0, 1.0]))
+    torch.testing.assert_close(preds.left.grad[0, 1], torch.tensor([-1.0 / 8.0, 1.0 / 8.0]))
     torch.testing.assert_close(preds.toilet_crossed_room.grad[0], torch.tensor([-0.5, 0.5]))
     torch.testing.assert_close(
         preds.room_area.grad[0, 0],
@@ -404,7 +408,7 @@ def test_room_area_targets_use_zero_for_terminal_absence() -> None:
         [[[7.0, 2.0, -4.0, 1.0, 3.0, 5.0], [-8.0, 3.0, 2.0, 4.0, 6.0, 9.0]]],
         requires_grad=True,
     )
-    targets = compute_room_area_balance_score_target_logits(tables, torch.tensor([[-1, 2]]))
+    targets = compute_room_area_balance_score_targets(tables, torch.tensor([[-1, 2]]))
     torch.testing.assert_close(targets, torch.tensor([[0.0, 2.0]]))
     assert not targets.requires_grad
 
@@ -502,7 +506,78 @@ def test_proposal_price_residual_is_negative_price_without_gain() -> None:
     torch.testing.assert_close(area_residual, -area_proposal)
 
 
+def test_toilet_failure_drives_dual_and_has_unconditional_target() -> None:
+    preds = example_predictions(requires_grad=True)
+    preds.toilet_compatibility[:] = True
+    area_probability, area_mask = uniform_area_targets()
+    loss = compute_balance_loss(
+        preds=preds,
+        door_matches=empty_door_matches(),
+        toilet_crossed_room_idx=torch.tensor([-1]),
+        room_area=torch.full((1, 2), -1),
+        area_probability=area_probability,
+        area_dual_mask=area_mask,
+        record_weight=torch.ones(1),
+        door_beta=1.0,
+        toilet_beta=1.0,
+        area_beta=1.0,
+    )
+    loss.backward()
+    # Gradient descent raises failure relative to the mean successful price.
+    torch.testing.assert_close(preds.toilet_failure.grad, torch.tensor([-1.0]))
+    torch.testing.assert_close(preds.toilet_crossed_room.grad, torch.zeros((1, 2)))
+    preds.toilet_crossed_room = torch.tensor([[2.0, 4.0]])
+    preds.toilet_failure = torch.tensor([8.0], requires_grad=True)
+    tables = compute_balance_price_tables(preds, area_probability, area_mask)
+    torch.testing.assert_close(tables.toilet_crossed_room, torch.tensor([[-1.0, 1.0]]))
+    torch.testing.assert_close(tables.toilet_failure, torch.tensor([8.0]))
+    failed_target = compute_toilet_balance_score_targets(tables, torch.tensor([-1]))
+    assert not failed_target.requires_grad
+    torch.testing.assert_close(failed_target, torch.tensor([8.0]))
+    torch.testing.assert_close(
+        compute_toilet_balance_score_targets(tables, torch.tensor([1])), torch.tensor([1.0])
+    )
+    # Failure's zero target does not dilute the successful-outcome centering.
+    preds.toilet_crossed_room += 10.0
+    shifted = compute_balance_price_tables(preds, area_probability, area_mask)
+    torch.testing.assert_close(shifted.toilet_failure, tables.toilet_failure)
+    torch.testing.assert_close(shifted.toilet_crossed_room, tables.toilet_crossed_room)
+    preds.toilet_compatibility[:] = False
+    disabled = compute_balance_price_tables(preds, area_probability, area_mask)
+    assert torch.count_nonzero(disabled.toilet_failure) == 0
+    assert torch.count_nonzero(disabled.toilet_crossed_room) == 0
+
+
+def test_toilet_failure_price_has_regularized_equilibrium() -> None:
+    preds = example_predictions(requires_grad=True)
+    preds.toilet_compatibility[:] = True
+    with torch.no_grad():
+        preds.toilet_failure.fill_(0.7 / 2.0)
+    area_probability, area_mask = uniform_area_targets()
+    # With 70% failure and equally frequent successful rooms, beta=2 gives f=0.35.
+    for outcome, probability in ((-1, 0.7), (0, 0.15), (1, 0.15)):
+        loss = compute_balance_loss(
+            preds=preds,
+            door_matches=empty_door_matches(),
+            toilet_crossed_room_idx=torch.tensor([outcome]),
+            room_area=torch.full((1, 2), -1),
+            area_probability=area_probability,
+            area_dual_mask=area_mask,
+            record_weight=torch.ones(1),
+            door_beta=1.0,
+            toilet_beta=2.0,
+            area_beta=1.0,
+        )
+        (probability * loss).backward()
+    torch.testing.assert_close(preds.toilet_failure.grad, torch.zeros(1), atol=1e-7, rtol=0)
+    torch.testing.assert_close(
+        preds.toilet_crossed_room.grad, torch.zeros((1, 2)), atol=1e-7, rtol=0
+    )
+
+
 def main() -> None:
+    test_toilet_failure_drives_dual_and_has_unconditional_target()
+    test_toilet_failure_price_has_regularized_equilibrium()
     test_balance_model_outputs_direction_local_variant_pairs()
     test_concrete_door_masks_exclude_same_room_and_preserve_other_instances()
     test_toilet_compatibility_uses_crossing_columns()

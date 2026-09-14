@@ -104,7 +104,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v16"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v19"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -481,6 +481,16 @@ class BalanceMetricValues:
     area_price_rms: torch.Tensor
     area_price_max: torch.Tensor
 
+    door_failure_price_mean: torch.Tensor
+    door_failure_price_rms: torch.Tensor
+    door_failure_price_max: torch.Tensor
+    toilet_failure_price_mean: torch.Tensor
+    toilet_failure_price_rms: torch.Tensor
+    toilet_failure_price_max: torch.Tensor
+    area_failure_price_mean: torch.Tensor
+    area_failure_price_rms: torch.Tensor
+    area_failure_price_max: torch.Tensor
+
 
 def compute_balance_metric_values(
     balance_model: torch.nn.Module,
@@ -495,8 +505,8 @@ def compute_balance_metric_values(
         raise ValueError("balance metric batch size must be greater than zero")
 
     totals = {
-        family: {"squares": 0.0, "count": 0, "max": 0.0}
-        for family in ("door", "toilet", "area")
+        family: {"squares": 0.0, "sum": 0.0, "count": 0, "max": 0.0}
+        for family in ("door", "toilet", "area", "door_failure", "toilet_failure", "area_failure")
     }
     with torch.no_grad():
         for start in range(0, episode_count, batch_size):
@@ -524,11 +534,17 @@ def compute_balance_metric_values(
                 ),
                 "toilet": tables.toilet_crossed_room[:, preds.toilet_compatibility].flatten(),
                 "area": tables.room_area[area_targets.dual_mask].flatten(),
+                "door_failure": tables.door_failure[:, torch.cat([
+                    compatibility.any(-1) for _, compatibility in direction_metrics
+                ])].flatten(),
+                "toilet_failure": tables.toilet_failure.flatten(),
+                "area_failure": tables.room_area_failure[area_targets.dual_mask].flatten(),
             }
             for family, values in values_by_family.items():
                 if values.numel() == 0:
                     continue
                 totals[family]["squares"] += float(torch.sum(values.square()).item())
+                totals[family]["sum"] += float(values.sum().item())
                 totals[family]["count"] += values.numel()
                 totals[family]["max"] = max(
                     totals[family]["max"], float(values.abs().max().item())
@@ -539,6 +555,8 @@ def compute_balance_metric_values(
         count = max(total["count"], 1)
         metrics[f"{family}_price_rms"] = torch.tensor(math.sqrt(total["squares"] / count))
         metrics[f"{family}_price_max"] = torch.tensor(total["max"])
+        if family.endswith("_failure"):
+            metrics[f"{family}_price_mean"] = torch.tensor(total["sum"] / count)
     return BalanceMetricValues(
         **metrics,
     )
@@ -2109,6 +2127,13 @@ class TrainingSession:
             "unforced_special_room_area_ss": unforced_special_room_area_ss,
             "balance_toilet_price_rms": balance_metrics.toilet_price_rms,
             "balance_toilet_price_max": balance_metrics.toilet_price_max,
+            **{
+                f"balance_{family}_failure_price_{stat}": getattr(
+                    balance_metrics, f"{family}_failure_price_{stat}"
+                )
+                for family in ("door", "toilet", "area")
+                for stat in ("mean", "rms", "max")
+            },
             "balance_area_price_rms": balance_metrics.area_price_rms,
             "balance_area_price_max": balance_metrics.area_price_max,
             **generation_stats,
