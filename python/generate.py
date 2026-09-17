@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from device_util import gpu_backend, is_gpu
 from env import (
     AREA_COUNT,
     VANILLA_AREA_CONSTRAINT_COUNT,
@@ -52,7 +53,7 @@ type GenerationStats = dict[str, float]
 #
 # Generation runs several environment groups per generation device. Each group
 # has a CPU producer that owns environment mutation and feature extraction. A
-# transfer coordinator stages completed candidate batches onto a CUDA transfer
+# transfer coordinator stages completed candidate batches onto a GPU transfer
 # stream, and a GPU scorer consumes those staged batches. The scorer returns
 # selected actions through a per-group queue so the owning CPU producer can step
 # its environment and continue.
@@ -90,8 +91,8 @@ def profile_start(enabled: bool) -> int:
 
 
 def sync_profile_device(device: torch.device, enabled: bool) -> None:
-    if enabled and device.type == "cuda":
-        torch.cuda.current_stream(device).synchronize()
+    if enabled and is_gpu(device):
+        gpu_backend(device).current_stream(device).synchronize()
 
 
 def outcome_reward(model_logprobs: torch.Tensor, known_invalid: torch.Tensor) -> torch.Tensor:
@@ -279,16 +280,17 @@ def compute_expected_reward(
 def transfer_features(
     features: Features,
     device: torch.device,
-    transfer_stream: torch.cuda.Stream | None = None,
+    transfer_stream: torch.Stream | None = None,
 ) -> Features:
-    if transfer_stream is None or device.type != "cuda":
+    if transfer_stream is None or not is_gpu(device):
         result = features.to(device)
         result.mark_dynamic()
         return result
-    current_stream = torch.cuda.current_stream(device)
-    with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
+    backend = gpu_backend(device)
+    current_stream = backend.current_stream(device)
+    with backend.device(device), backend.stream(transfer_stream):
         result = features.to(device, non_blocking=True)
-        ready = torch.cuda.Event()
+        ready = backend.Event()
         ready.record(transfer_stream)
     current_stream.wait_event(ready)
     result.mark_dynamic()
@@ -377,7 +379,7 @@ class StagedCandidateScoreRequest:
     request: CandidateScoreRequest
     candidate_batch: CandidateBatch
     features: Features | None
-    ready_event: torch.cuda.Event | None
+    ready_event: torch.Event | None
 
 
 @dataclass
@@ -870,9 +872,9 @@ def select_candidate_actions(
     sync_profile_device(device, profile)
     profile_time = profile_start(profile)
     with torch.amp.autocast(
-        "cuda",
+        device.type,
         dtype=torch.bfloat16,
-        enabled=device.type == "cuda" and group.config.autocast,
+        enabled=is_gpu(device) and group.config.autocast,
     ):
         return_proposal_state = group.config.recommended_candidates > 0
         preds = model(
@@ -1147,12 +1149,12 @@ def broadcast_pipeline_failure(
 def stage_candidate_score_request(
     request: CandidateScoreRequest,
     device: torch.device,
-    transfer_stream: torch.cuda.Stream | None,
+    transfer_stream: torch.Stream | None,
     profiler: GenerationProfiler,
 ) -> StagedCandidateScoreRequest:
     profile = profiler.enabled
     profile_time = profile_start(profile)
-    if transfer_stream is None or device.type != "cuda":
+    if transfer_stream is None or not is_gpu(device):
         candidate_batch = request.prepared_step.candidate_batch.to(device, non_blocking=False)
         features = (
             None
@@ -1168,7 +1170,8 @@ def stage_candidate_score_request(
             features=features,
             ready_event=None,
         )
-    with torch.cuda.device(device), torch.cuda.stream(transfer_stream):
+    backend = gpu_backend(device)
+    with backend.device(device), backend.stream(transfer_stream):
         candidate_batch = request.prepared_step.candidate_batch.to(
             device,
             non_blocking=True,
@@ -1180,7 +1183,7 @@ def stage_candidate_score_request(
         )
         if features is not None:
             features.mark_dynamic()
-        ready_event = torch.cuda.Event()
+        ready_event = backend.Event()
         ready_event.record(transfer_stream)
     profiler.add("python.transfer.stage_candidate", profile_time)
     return StagedCandidateScoreRequest(
@@ -1195,9 +1198,9 @@ def wait_for_staged_candidate(
     staged: StagedCandidateScoreRequest,
     device: torch.device,
 ) -> None:
-    if staged.ready_event is None or device.type != "cuda":
+    if staged.ready_event is None or not is_gpu(device):
         return
-    torch.cuda.current_stream(device).wait_event(staged.ready_event)
+    gpu_backend(device).current_stream(device).wait_event(staged.ready_event)
 
 
 def score_staged_candidate_request(
@@ -1385,7 +1388,7 @@ def run_transfer_coordinator(
     cpu_ready_queue: Queue[CpuReadyMessage],
     gpu_ready_queue: Queue[GpuReadyMessage],
     device: torch.device,
-    transfer_stream: torch.cuda.Stream | None,
+    transfer_stream: torch.Stream | None,
     shared: PipelineSharedState,
 ) -> None:
     try:
@@ -1418,8 +1421,8 @@ def run_gpu_scorer(
     shared: PipelineSharedState,
 ) -> None:
     try:
-        if device.type == "cuda":
-            torch.cuda.set_device(device)
+        if is_gpu(device):
+            gpu_backend(device).set_device(device)
         with torch.no_grad():
             while not shared.cancellation_event.is_set():
                 message = get_queue_until_done(gpu_ready_queue, shared.cancellation_event)
@@ -1456,8 +1459,8 @@ def run_direct_gpu_scorer(
     shared: PipelineSharedState,
 ) -> None:
     try:
-        if device.type == "cuda":
-            torch.cuda.set_device(device)
+        if is_gpu(device):
+            gpu_backend(device).set_device(device)
         with torch.no_grad():
             while not shared.cancellation_event.is_set():
                 message = get_queue_until_done(cpu_ready_queue, shared.cancellation_event)
@@ -1532,9 +1535,9 @@ def compute_group_proposal_shortlist(
                 device,
             )
             with torch.amp.autocast(
-                "cuda",
+                device.type,
                 dtype=torch.bfloat16,
-                enabled=device.type == "cuda" and group.config.autocast,
+                enabled=is_gpu(device) and group.config.autocast,
             ):
                 proposal_scores = model.proposal_output(
                     proposal_state.to(model.proposal_output.output_dtype)
@@ -1547,9 +1550,9 @@ def compute_group_proposal_shortlist(
             profile_time = profile_start(profile)
             env_features = transfer_features(proposal_inputs.features, device, None)
             with torch.amp.autocast(
-                "cuda",
+                device.type,
                 dtype=torch.bfloat16,
-                enabled=device.type == "cuda" and group.config.autocast,
+                enabled=is_gpu(device) and group.config.autocast,
             ):
                 preds = model(
                     env_features,
@@ -2155,7 +2158,7 @@ def run_generation_groups(
     if not envs or len(envs) != len(configs):
         raise ValueError("generation groups require one config per environment group")
     profiler = GenerationProfiler(profile)
-    transfer_stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
+    transfer_stream = gpu_backend(device).Stream(device=device) if is_gpu(device) else None
     num_rooms = len(envs[0].engine.rooms)
     output_metadata = envs[0].engine.get_output_metadata()
     gpu_prefetch_batches = configs[0].gpu_prefetch_batches
@@ -2207,8 +2210,8 @@ def run_generation_groups(
             env=env,
             config=config,
             step=0,
-            feature_slot=FeatureSlot(env, pin_memory=device.type == "cuda"),
-            candidate_slot=CandidateSlot(env, pin_memory=device.type == "cuda"),
+            feature_slot=FeatureSlot(env, pin_memory=is_gpu(device)),
+            candidate_slot=CandidateSlot(env, pin_memory=is_gpu(device)),
             balance_preds=balance_preds,
             balance_score_tables=score_tables,
             area_balance_dual_mask=dual_mask,
