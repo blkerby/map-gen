@@ -271,10 +271,16 @@ class ProposalCache:
 
 
 @dataclass
+class CandidateValues:
+    predictions: Predictions
+    full_value: torch.Tensor
+
+
+@dataclass
 class CandidateSelection:
     action_index: torch.Tensor
     selected_actions: Actions
-    expected_reward: torch.Tensor
+    full_value: torch.Tensor
     sampling_logits: torch.Tensor
     selected_proposal_scores: ProposalCache | None
 
@@ -818,7 +824,7 @@ def prepare_shortlist_generation_step(
     )
 
 
-def select_candidate_actions(
+def compute_candidate_values(
     group: GenerationGroup,
     model,
     candidates: Actions,
@@ -826,9 +832,8 @@ def select_candidate_actions(
     post_candidate_outcomes: StepOutcomes,
     features: Features,
     device: torch.device,
-    num_rooms: int,
     profiler: GenerationProfiler,
-) -> CandidateSelection:
+) -> CandidateValues:
     environment_count, candidate_count = candidates.room_idx.shape
     profile = profiler.enabled
     sync_profile_device(device, profile)
@@ -948,11 +953,32 @@ def select_candidate_actions(
     )
     sync_profile_device(device, profile)
     profiler.add("python.score.reward", profile_time)
+    return CandidateValues(predictions=preds, full_value=expected_reward + balance_logit)
+
+
+def select_candidate_actions(
+    group: GenerationGroup,
+    model,
+    candidates: Actions,
+    outcomes: StepOutcomes,
+    post_candidate_outcomes: StepOutcomes,
+    features: Features,
+    device: torch.device,
+    num_rooms: int,
+    profiler: GenerationProfiler,
+) -> CandidateSelection:
+    values = compute_candidate_values(
+        group, model, candidates, outcomes, post_candidate_outcomes, features, device, profiler,
+    )
+    preds = values.predictions
+    environment_count, candidate_count = candidates.room_idx.shape
+    profile = profiler.enabled
+    return_proposal_state = group.config.recommended_candidates > 0
 
     profile_time = profile_start(profile)
     # Replace dummy candidates to have -inf reward, so they are never selected unless there are no other candidates.
     dummy_candidate = candidates.room_idx == num_rooms
-    candidate_logits = (expected_reward + balance_logit) / torch.unsqueeze(
+    candidate_logits = values.full_value / torch.unsqueeze(
         group.config.temperature,
         1,
     )
@@ -1000,7 +1026,7 @@ def select_candidate_actions(
     return CandidateSelection(
         action_index=action_index,
         selected_actions=selected_actions,
-        expected_reward=expected_reward,
+        full_value=values.full_value,
         sampling_logits=candidate_logits,
         selected_proposal_scores=selected_proposal_scores,
     )
@@ -1199,7 +1225,7 @@ def score_staged_candidate_request(
         )
         action_index = selection.action_index
         selected_actions = selection.selected_actions
-        candidate_rewards = selection.expected_reward
+        candidate_rewards = selection.full_value
         candidate_sampling_logits = selection.sampling_logits
         selected_proposal_scores = selection.selected_proposal_scores
     profile = profiler.enabled

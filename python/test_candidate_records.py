@@ -245,6 +245,7 @@ class CandidateRecordsTest(unittest.TestCase):
         )
         torch.testing.assert_close(data.invalid, torch.tensor([[[False, False, True]]]))
         torch.testing.assert_close(data.rejected, data.invalid)
+        torch.testing.assert_close(data.target_reward[0, 0, :2], torch.tensor([1.0, 4.0]))
         torch.testing.assert_close(
             data.sampling_logits, torch.tensor([[[2.0, 8.0, float("-inf")]]])
         )

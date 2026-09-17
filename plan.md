@@ -108,15 +108,15 @@ A list of issues that we may want to address, relating to balance model:
 
    A related detail: EMA half-life is counted in **processed training episodes**, including replay and repeated passes. With fresh/replay pass factors both 2, an 80,000-example half-life corresponds to roughly 20,000 newly generated episodes once replay is active. See [EMA updates](/home/kerby/map-gen/python/learn.py:1557).
 
-7. **The proposal head learns a narrower objective than final candidate selection.**
+7. **Align the proposal head with full candidate selection (implemented; evaluation pending).**
 
-   Its teacher contains ordinary expected reward plus the immediate door/area price adjustment. Final selection additionally considers future door prices, future room-area prices, and Toilet prices.
+   Previously its teacher contained ordinary expected reward plus the immediate door/area price adjustment. Final selection additionally considered future door prices, future room-area prices, and Toilet prices.
 
-   The recorded proposal target deliberately omits those additional balance terms: [recording](/home/kerby/map-gen/python/generate.py:1293), [proposal training](/home/kerby/map-gen/python/learn.py:1516).
+   The proposal target now uses the full final-selection value. The student retains its external immediate correction; that correction is not added to the teacher a second time. Both distributions use the same target temperature, and KL is multiplied by temperature squared with a cancellation-resistant calculation.
 
-   This can be a reasonable shortlist approximation, but it limits what the main balance heads can accomplish. A candidate with favorable future balance may never reach final scoring, particularly at low proposal temperatures.
+   The motivation is that a candidate with favorable future balance may never reach final scoring, particularly at low proposal temperatures.
 
-   If that becomes a bottleneck, a useful experiment would teach the proposal head the full candidate value, accounting explicitly for the immediate correction that is already added externally.
+   [Offline retraining instructions](scripts/retrain_proposal.md) describe replay distillation of both proposal heads with frozen encoders and balance model, using every episode in the selected rounds. Each replay batch is prepared and trained immediately. Frozen copies of the original heads provide baseline metrics on the same samples, and training agreement metrics reuse the optimization forward passes. The output can be installed into the stopped run. Whether this improves generation still needs evaluation on RTX.
 
 8. **The training population and metrics do not establish balance among delivered valid maps.**
 

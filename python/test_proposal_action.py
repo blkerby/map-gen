@@ -83,11 +83,11 @@ def test_low_temperature_negative_reward_preserves_proposal_gradients() -> None:
         device=torch.device("cpu"),
     )
 
-    torch.testing.assert_close(loss, torch.tensor(2.0).log())
+    torch.testing.assert_close(loss, torch.tensor(2.0).log() * 0.01**2)
     loss.backward()
     assert candidate_score.grad is not None
     assert torch.isfinite(candidate_score.grad).all()
-    torch.testing.assert_close(candidate_score.grad, torch.tensor([[-50.0, 50.0]]))
+    torch.testing.assert_close(candidate_score.grad, torch.tensor([[-0.005, 0.005]]))
 
 
 def test_all_invalid_row_has_zero_proposal_loss() -> None:
@@ -147,7 +147,7 @@ def test_proposal_target_temperature_scales_student_and_target_logits() -> None:
         torch.device("cpu"),
     )
 
-    torch.testing.assert_close(temperature_loss, explicitly_scaled_loss)
+    torch.testing.assert_close(temperature_loss, explicitly_scaled_loss * 0.5**2)
 
 
 def test_selected_probability_uses_recorded_sampling_logits() -> None:
@@ -182,7 +182,7 @@ def test_selected_probability_uses_recorded_sampling_logits() -> None:
     assert sharp_target.target_entropy < soft_target.target_entropy
 
 
-def test_candidate_diagnostics_scale_balance_with_temperature() -> None:
+def test_candidate_diagnostics_do_not_add_external_correction_to_full_value() -> None:
     proposal_data = ProposalData(
         frontier_idx=torch.tensor([[[0, 0]]], dtype=torch.int16),
         action_idx=torch.tensor([[[0, 1]]], dtype=torch.int16),
@@ -203,6 +203,7 @@ def test_candidate_diagnostics_scale_balance_with_temperature() -> None:
         diagnostics.selected_probability,
         torch.softmax(torch.tensor([0.0, 4.0]), dim=0)[1],
     )
+    assert diagnostics.target_entropy < 0.001
 
 
 def test_proposal_scores_gather_candidates_across_frontiers() -> None:
@@ -389,7 +390,7 @@ def main() -> None:
     test_proposal_target_temperature_preserves_reward_score_scale()
     test_proposal_target_temperature_scales_student_and_target_logits()
     test_selected_probability_uses_recorded_sampling_logits()
-    test_candidate_diagnostics_scale_balance_with_temperature()
+    test_candidate_diagnostics_do_not_add_external_correction_to_full_value()
     test_proposal_scores_gather_candidates_across_frontiers()
     test_proposal_residual_values_follow_sampled_candidates()
     test_proposal_shortlist_ranks_all_frontiers_per_environment()

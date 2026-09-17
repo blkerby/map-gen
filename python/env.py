@@ -254,7 +254,9 @@ class ProposalData:
     # Final selection logits; -inf for candidates not offered to the sampler.
     sampling_logits: torch.Tensor
     selected_candidate: torch.Tensor
+    # Full final-selection value before temperature scaling; already includes balance.
     target_reward: torch.Tensor
+    # Immediate correction added externally to the student's proposal score only.
     balance_residual: torch.Tensor
 
     def to(self, device: torch.device) -> "ProposalData":

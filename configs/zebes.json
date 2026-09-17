@@ -193,7 +193,7 @@
     "area_map_station_weight": 1.0,
     "area_x_weight": 10.0,
     "area_y_weight": 10.0,
-    "proposal_weight": 0.005,
+    "proposal_weight": 0.5,
     "proposal_target_temperature": {"log": [900, 60.0, 15.0, 0.09, 0.09]},
     "pipeline_groups": 4,
     "gradient_accumulation_steps": 1,

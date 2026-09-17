@@ -490,8 +490,7 @@ def compute_candidate_diagnostics(
 ) -> CandidateDiagnostics:
     selected_probability = recorded_selected_probability(proposal_data)
     target_reward = proposal_data.target_reward.to(torch.float32)
-    balance_residual = proposal_data.balance_residual.to(torch.float32)
-    target_logits = (target_reward + balance_residual) / proposal_target_temperature
+    target_logits = target_reward / proposal_target_temperature
     target_logits = torch.where(
         proposal_data.invalid,
         torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
@@ -1092,61 +1091,41 @@ def proposal_batch_loss(
     proposal_target_temperature: float,
     device: torch.device,
 ) -> torch.Tensor:
-    target_reward = target_reward.to(device, dtype=torch.float32)
+    """T² KL(full candidate value || externally corrected proposal score).
+
+    Center in float64 before scaling. The generalized KL expression avoids
+    cancellation of first-order terms near the high-temperature MSE limit.
+    """
+    target_reward = target_reward.to(device, dtype=torch.float64)
     invalid = invalid.to(device=device, dtype=torch.bool)
     present = torch.isfinite(candidate_score) & torch.isfinite(target_reward)
     valid = present & ~invalid
     row_valid = torch.any(valid, dim=1)
     if not torch.any(row_valid):
         return candidate_score.new_zeros(())
-    invalid_logit = torch.finfo(candidate_score.dtype).min
-    candidate_score = torch.where(
-        present,
-        candidate_score,
-        torch.full_like(candidate_score, invalid_logit),
-    ).to(torch.float32)
-    target_logits = target_reward / proposal_target_temperature
-    target_logits = torch.where(
-        invalid,
-        torch.full_like(target_logits, INVALID_PROPOSAL_TARGET_LOGIT),
-        target_logits,
+    present = present[row_valid]
+    valid = valid[row_valid]
+    student = torch.where(present, candidate_score[row_valid].double(), 0.0)
+    teacher = torch.where(valid, target_reward[row_valid], 0.0)
+    student_mean = student.sum(1, keepdim=True) / present.sum(1, keepdim=True)
+    teacher_mean = teacher.sum(1, keepdim=True) / valid.sum(1, keepdim=True)
+    student_logits = ((student - student_mean) / proposal_target_temperature).masked_fill(
+        ~present, float("-inf")
     )
-    target_logits = torch.where(
-        present,
-        target_logits,
-        torch.full_like(target_logits, invalid_logit),
+    teacher_logits = ((teacher - teacher_mean) / proposal_target_temperature).masked_fill(
+        ~valid, float("-inf")
     )
-    row_candidate_logits = candidate_score[row_valid] / proposal_target_temperature
-    row_target_logits = target_logits[row_valid]
-    row_mask = valid[row_valid]
-    proposal_log_probs = torch.nn.functional.log_softmax(
-        row_candidate_logits,
-        dim=1,
-    )
-    target_log_probs = torch.nn.functional.log_softmax(
-        row_target_logits,
-        dim=1,
-    )
-    safe_target_log_probs = torch.where(
-        row_mask,
-        target_log_probs,
-        torch.zeros_like(target_log_probs),
-    )
-    safe_proposal_log_probs = torch.where(
-        row_mask,
-        proposal_log_probs,
-        torch.zeros_like(proposal_log_probs),
-    )
-    target_probs = torch.where(
-        row_mask,
-        torch.exp(target_log_probs),
-        torch.zeros_like(target_log_probs),
-    )
-    kl_terms = target_probs * (safe_target_log_probs - safe_proposal_log_probs)
-    proposal_loss = (
-        torch.sum(torch.where(row_mask, kl_terms, torch.zeros_like(kl_terms))) / row_mask.shape[0]
-    )
-    return proposal_loss
+    log_q = torch.log_softmax(student_logits, dim=1)
+    log_p = torch.log_softmax(teacher_logits, dim=1)
+    p, q = log_p.exp(), log_q.exp()
+    log_ratio = torch.where(valid, log_q, 0.0) - torch.where(valid, log_p, 0.0)
+    small = valid & (log_ratio.abs() < 0.01)
+    # expm1(x) - x, without subtracting two nearly equal numbers. The series
+    # through x^6 has relative error below 4e-14 for |x| < 0.01.
+    x = torch.where(small, log_ratio, 0.0)
+    remainder = x.square() * (0.5 + x * (1 / 6 + x * (1 / 24 + x * (1 / 120 + x / 720))))
+    terms = torch.where(small, p * remainder, -p * log_ratio + q - p)
+    return (terms.sum(1).mean() * proposal_target_temperature**2).float()
 
 
 def proposal_scores_for_candidates(
@@ -1518,12 +1497,9 @@ def train_feature_batch_backward(
                 dtype=torch.float32,
             )
             proposal_score = proposal_score + proposal_balance_residual
-            proposal_target_reward = (
-                feature_batch.proposal_target_reward.to(
-                    device=context.device,
-                    dtype=torch.float32,
-                )
-                + proposal_balance_residual
+            proposal_target_reward = feature_batch.proposal_target_reward.to(
+                device=context.device,
+                dtype=torch.float32,
             )
             batch_proposal_loss = proposal_batch_loss(
                 proposal_score,
