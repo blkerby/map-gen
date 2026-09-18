@@ -1545,6 +1545,9 @@ class TrainingSession:
                 target_reward=torch.cat(
                     [proposal_data.target_reward for proposal_data in proposal_data_iterations]
                 ),
+                top1_agreement=torch.cat(
+                    [proposal_data.top1_agreement for proposal_data in proposal_data_iterations]
+                ),
                 balance_residual=torch.cat(
                     [proposal_data.balance_residual for proposal_data in proposal_data_iterations]
                 ),
@@ -1943,6 +1946,7 @@ class TrainingSession:
             "candidate_target_entropy": candidate_diagnostics.target_entropy,
             "candidate_uniform_kl": candidate_diagnostics.uniform_kl,
             "candidate_selected_probability": candidate_diagnostics.selected_probability,
+            "candidate_top1_agreement": candidate_diagnostics.top1_agreement,
             "balance_loss": balance_loss,
             "success_rate": success_rate,
             "success_door": success_door,

@@ -7,6 +7,8 @@ import torch
 
 from env import Actions, CandidateBatch, ProposalData
 from generate import (
+    ProposalShortlist,
+    candidate_top1_agreement,
     compute_group_proposal_shortlist,
     empty_proposal_data,
     score_staged_candidate_request,
@@ -184,8 +186,62 @@ class CandidateRecordsTest(unittest.TestCase):
             ) as sampler,
             patch("generate.add_stat_totals"),
         ):
-            compute_group_proposal_shortlist(group, model, self.device, shared)
+            shortlist = compute_group_proposal_shortlist(group, model, self.device, shared)
         torch.testing.assert_close(sampler.call_args.args[0], torch.tensor([[3.0, 2.0]]))
+        torch.testing.assert_close(shortlist.scores, torch.tensor([[3.0, 2.0]]))
+        torch.testing.assert_close(shortlist.balance_residual, torch.tensor([[5.0, 2.0]]))
+
+    def test_top1_agreement_matches_candidates_and_excludes_nonchoices(self) -> None:
+        shortlist = ProposalShortlist(
+            frontier_idx=torch.zeros(7, 3, dtype=torch.int16),
+            action_idx=torch.tensor([[0, 1, 2]]).expand(7, -1),
+            scores=torch.tensor([
+                [0.0, 5.0, 100.0],  # Agreement after reordering.
+                [5.0, 0.0, 100.0],  # Disagreement.
+                [0.0, 5.0, 100.0],  # Only one clean candidate.
+                [0.0, 5.0, 100.0],  # Only fallback candidates.
+                [2.0, 2.0, 100.0],  # Proposal tie: first candidate wins.
+                [5.0, 0.0, 100.0],  # Full-score tie: first candidate wins.
+                [0.0, 5.0, 100.0],  # Nonfinite full score leaves one choice.
+            ]),
+            balance_residual=torch.zeros(7, 3),
+            possible_counts=torch.full((7,), 3),
+            limited=torch.zeros(7, dtype=torch.bool),
+        )
+        result = SimpleNamespace(
+            proposal_frontier_idx=torch.tensor([[0, 0, 0, -1]]).expand(7, -1),
+            proposal_action_idx=torch.tensor([[1, 0, 2, -1]]).expand(7, -1),
+            proposal_invalid=torch.tensor([[False, False, True, False]]).expand(7, -1),
+            proposal_rejected=torch.zeros(7, 4, dtype=torch.bool),
+            target_reward=torch.tensor([[5.0, 0.0, 100.0, 200.0]]).repeat(7, 1),
+        )
+        result.proposal_rejected[2, 1] = True
+        result.proposal_rejected[3, :2] = True
+        result.target_reward[5, :2] = 1.0
+        result.target_reward[6, 1] = float("nan")
+        agreement = candidate_top1_agreement(result, shortlist)
+        torch.testing.assert_close(
+            agreement, torch.tensor([1, 0, -1, -1, 1, 0, -1], dtype=torch.int8)
+        )
+
+        data = ProposalData(
+            frontier_idx=result.proposal_frontier_idx.unsqueeze(1),
+            action_idx=result.proposal_action_idx.unsqueeze(1),
+            invalid=result.proposal_invalid.unsqueeze(1),
+            rejected=result.proposal_rejected.unsqueeze(1),
+            sampling_logits=torch.zeros(7, 1, 4),
+            selected_candidate=torch.ones(7, 1, dtype=torch.int64),
+            top1_agreement=agreement.unsqueeze(1),
+            target_reward=result.target_reward.unsqueeze(1),
+            balance_residual=torch.zeros(7, 1, 4),
+        )
+        for temperature in (0.01, 100.0):
+            diagnostics = compute_candidate_diagnostics(data.to(self.device), temperature)
+            torch.testing.assert_close(diagnostics.top1_agreement, torch.tensor(0.5))
+        torch.testing.assert_close(
+            compute_candidate_diagnostics(data.slice(2, 4), 1.0).top1_agreement,
+            torch.tensor(0.0),
+        )
 
     def test_empty_candidate_records_have_zero_diagnostics(self) -> None:
         for candidate_count in (0, 3):
@@ -195,6 +251,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 diagnostics.selected_probability,
                 diagnostics.target_entropy,
                 diagnostics.uniform_kl,
+                diagnostics.top1_agreement,
             ):
                 torch.testing.assert_close(value, torch.tensor(0.0))
 
@@ -237,6 +294,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 rejected=result.proposal_rejected.unsqueeze(1),
                 sampling_logits=result.sampling_logits.unsqueeze(1),
                 selected_candidate=result.selected_candidate.unsqueeze(1),
+                top1_agreement=torch.tensor([[1], [-1]], dtype=torch.int8),
                 target_reward=result.target_reward.unsqueeze(1),
                 balance_residual=result.balance_residual.unsqueeze(1),
             )
@@ -272,6 +330,7 @@ class CandidateRecordsTest(unittest.TestCase):
             rejected=torch.tensor([[[True, True]], [[False, False]]]),
             sampling_logits=torch.tensor([[[0.0, 2.0]], [[float("-inf"), float("-inf")]]]),
             selected_candidate=torch.tensor([[1], [0]]),
+            top1_agreement=torch.full((2, 1), -1, dtype=torch.int8),
             target_reward=torch.zeros(2, 1, 2),
             balance_residual=torch.zeros(2, 1, 2),
         )

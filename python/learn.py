@@ -307,6 +307,7 @@ class CandidateDiagnostics:
     target_entropy: torch.Tensor
     uniform_kl: torch.Tensor
     selected_probability: torch.Tensor
+    top1_agreement: torch.Tensor
 
 
 @dataclass
@@ -489,6 +490,10 @@ def compute_candidate_diagnostics(
     proposal_target_temperature: float,
 ) -> CandidateDiagnostics:
     selected_probability = recorded_selected_probability(proposal_data)
+    comparisons = proposal_data.top1_agreement >= 0
+    top1_agreement = proposal_data.top1_agreement.clamp_min(0).float().sum() / (
+        comparisons.sum().clamp_min(1)
+    )
     target_reward = proposal_data.target_reward.to(torch.float32)
     target_logits = target_reward / proposal_target_temperature
     target_logits = torch.where(
@@ -506,7 +511,10 @@ def compute_candidate_diagnostics(
     if target_logits.numel() == 0:
         zero = target_logits.new_zeros(())
         return CandidateDiagnostics(
-            target_entropy=zero, uniform_kl=zero, selected_probability=selected_probability
+            target_entropy=zero,
+            uniform_kl=zero,
+            selected_probability=selected_probability,
+            top1_agreement=top1_agreement,
         )
     flat_logits = target_logits.reshape(-1, candidate_count)
     flat_present = present.reshape(-1, candidate_count)
@@ -518,6 +526,7 @@ def compute_candidate_diagnostics(
             target_entropy=zero,
             uniform_kl=zero,
             selected_probability=selected_probability,
+            top1_agreement=top1_agreement,
         )
 
     row_logits = torch.where(
@@ -546,6 +555,7 @@ def compute_candidate_diagnostics(
         target_entropy=target_entropy,
         uniform_kl=uniform_kl,
         selected_probability=selected_probability,
+        top1_agreement=top1_agreement,
     )
 
 

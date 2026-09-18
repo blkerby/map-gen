@@ -158,6 +158,7 @@ def test_selected_probability_uses_recorded_sampling_logits() -> None:
         rejected=torch.zeros((1, 1, 2), dtype=torch.bool),
         sampling_logits=torch.tensor([[[0.0, 4.0]]]),
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
+        top1_agreement=torch.ones((1, 1), dtype=torch.int8),
         target_reward=torch.tensor([[[0.0, 1.0]]]),
         balance_residual=torch.zeros((1, 1, 2)),
     )
@@ -190,6 +191,7 @@ def test_candidate_diagnostics_do_not_add_external_correction_to_full_value() ->
         rejected=torch.zeros((1, 1, 2), dtype=torch.bool),
         sampling_logits=torch.tensor([[[0.0, 4.0]]]),
         selected_candidate=torch.ones((1, 1), dtype=torch.int64),
+        top1_agreement=torch.ones((1, 1), dtype=torch.int8),
         target_reward=torch.tensor([[[0.0, 1.0]]]),
         balance_residual=torch.tensor([[[1.0, 0.0]]]),
     )

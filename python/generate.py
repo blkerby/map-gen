@@ -367,6 +367,7 @@ class GroupPipelineOutput:
     proposal_rejected: list[torch.Tensor]
     sampling_logits: list[torch.Tensor]
     selected_candidate: list[torch.Tensor]
+    top1_agreement: list[torch.Tensor]
     target_reward: list[torch.Tensor]
     balance_residual: list[torch.Tensor]
     feature_batches: list[Features | None]
@@ -392,6 +393,16 @@ class PipelineThreadFailure:
 @dataclass
 class ProposalInputs:
     features: Features | None
+
+
+@dataclass
+class ProposalShortlist:
+    frontier_idx: torch.Tensor
+    action_idx: torch.Tensor
+    scores: torch.Tensor
+    balance_residual: torch.Tensor
+    possible_counts: torch.Tensor
+    limited: torch.Tensor
 
 
 def create_generation_environment_groups(
@@ -1486,14 +1497,7 @@ def compute_group_proposal_shortlist(
     model,
     device: torch.device,
     shared: PipelineSharedState,
-) -> tuple[
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    torch.Tensor,
-    Features | None,
-]:
+) -> ProposalShortlist:
     profile = shared.profiler.enabled
     profile_time = profile_start(profile)
     proposal_inputs = prepare_proposal_inputs(group)
@@ -1585,6 +1589,14 @@ def compute_group_proposal_shortlist(
             sampled_proposal_action_idx,
             group.config.temperature.shape[0],
         )
+        sampled_proposal_scores = gather_proposal_row_values(
+            proposal_scores,
+            row_snapshot_idx,
+            row_frontier_idx,
+            sampled_frontier_idx,
+            sampled_proposal_action_idx,
+            group.config.temperature.shape[0],
+        )
         shortlist_limited = proposal_possible_counts > group.config.shortlist_candidates
         add_stat_totals(
             shared,
@@ -1605,14 +1617,46 @@ def compute_group_proposal_shortlist(
         )
         sync_profile_device(device, profile)
         shared.profiler.add("python.proposal.sample_shortlist", profile_time)
-    return (
-        sampled_frontier_idx.to(torch.device("cpu")),
-        sampled_proposal_action_idx.to(torch.device("cpu")),
-        sampled_proposal_balance_residual.to(torch.device("cpu")),
-        proposal_possible_counts.to(torch.device("cpu")),
-        shortlist_limited.to(torch.device("cpu")),
-        proposal_inputs.features,
+    return ProposalShortlist(
+        frontier_idx=sampled_frontier_idx.to(torch.device("cpu")),
+        action_idx=sampled_proposal_action_idx.to(torch.device("cpu")),
+        scores=sampled_proposal_scores.to(torch.device("cpu")),
+        balance_residual=sampled_proposal_balance_residual.to(torch.device("cpu")),
+        possible_counts=proposal_possible_counts.to(torch.device("cpu")),
+        limited=shortlist_limited.to(torch.device("cpu")),
     )
+
+
+def candidate_top1_agreement(
+    result: CandidateScoreSuccess,
+    shortlist: ProposalShortlist,
+) -> torch.Tensor:
+    """Compare greedy choices among clean candidates, using first-index tie breaking.
+
+    Return -1 for steps without two comparable choices. Scores come from generation,
+    including the proposal's external balance correction, before random sampling.
+    """
+    scores = match_sampled_proposal_values(
+        shortlist.frontier_idx,
+        shortlist.action_idx,
+        shortlist.scores,
+        result.proposal_frontier_idx,
+        result.proposal_action_idx,
+    )
+    valid = (
+        (result.proposal_frontier_idx >= 0)
+        & (result.proposal_action_idx >= 0)
+        & ~result.proposal_invalid
+        & ~result.proposal_rejected
+        & torch.isfinite(result.target_reward)
+        & torch.isfinite(scores)
+    )
+    if scores.shape[1] == 0:
+        return torch.full(scores.shape[:1], -1, dtype=torch.int8, device=scores.device)
+    full_best = result.target_reward.masked_fill(~valid, float("-inf")).argmax(dim=1)
+    proposal_best = scores.masked_fill(~valid, float("-inf")).argmax(dim=1)
+    agreement = (full_best == proposal_best).to(torch.int8)
+    return torch.where(valid.sum(dim=1) >= 2, agreement, -1)
 
 
 def record_candidate_stats(
@@ -1718,14 +1762,7 @@ def run_group_producer(
         )
         group.step = 1
         while group.step < group.config.episode_length and not shared.cancellation_event.is_set():
-            (
-                sampled_frontier_idx,
-                sampled_proposal_action_idx,
-                sampled_proposal_balance_residual,
-                proposal_possible_counts,
-                shortlist_limited,
-                _proposal_features,
-            ) = compute_group_proposal_shortlist(
+            shortlist = compute_group_proposal_shortlist(
                 group,
                 model,
                 device,
@@ -1734,17 +1771,17 @@ def run_group_producer(
             profile_time = profile_start(shared.profiler.enabled)
             prepared_step = prepare_shortlist_generation_step(
                 group,
-                sampled_frontier_idx,
-                sampled_proposal_action_idx,
-                sampled_proposal_balance_residual,
-                proposal_possible_counts,
+                shortlist.frontier_idx,
+                shortlist.action_idx,
+                shortlist.balance_residual,
+                shortlist.possible_counts,
             )
             shared.profiler.add("python.wait_candidate_features", profile_time)
             request = CandidateScoreRequest(
                 group=group,
                 group_index=group_index,
                 prepared_step=prepared_step,
-                shortlist_limited=shortlist_limited,
+                shortlist_limited=shortlist.limited,
             )
             profile_time = profile_start(shared.profiler.enabled)
             if not put_queue_until_done(cpu_ready_queue, request, shared.cancellation_event):
@@ -1763,6 +1800,7 @@ def run_group_producer(
             output.proposal_rejected.append(result.proposal_rejected)
             output.sampling_logits.append(result.sampling_logits)
             output.selected_candidate.append(result.selected_candidate)
+            output.top1_agreement.append(candidate_top1_agreement(result, shortlist))
             output.target_reward.append(result.target_reward)
             output.balance_residual.append(result.balance_residual)
             if capture_generated_features:
@@ -2067,6 +2105,9 @@ def merge_generation_results(
             selected_candidate=torch.cat(
                 [proposal.selected_candidate for _, _, _, proposal, _ in results]
             ),
+            top1_agreement=torch.cat(
+                [proposal.top1_agreement for _, _, _, proposal, _ in results]
+            ),
             target_reward=torch.cat([proposal.target_reward for _, _, _, proposal, _ in results]),
             balance_residual=torch.cat(
                 [proposal.balance_residual for _, _, _, proposal, _ in results]
@@ -2107,6 +2148,7 @@ def empty_proposal_data(
             (environment_count, 0, max_candidates), dtype=torch.float32, device=device
         ),
         selected_candidate=torch.empty((environment_count, 0), dtype=torch.int64, device=device),
+        top1_agreement=torch.empty((environment_count, 0), dtype=torch.int8, device=device),
         target_reward=torch.empty(
             (environment_count, 0, max_candidates), dtype=torch.float32, device=device
         ),
@@ -2226,6 +2268,7 @@ def run_generation_groups(
             proposal_rejected=[],
             sampling_logits=[],
             selected_candidate=[],
+            top1_agreement=[],
             target_reward=[],
             balance_residual=[],
             feature_batches=[],
@@ -2362,6 +2405,9 @@ def run_generation_groups(
                             ),
                             selected_candidate=torch.stack(
                                 group_outputs[group_index].selected_candidate, dim=1
+                            ),
+                            top1_agreement=torch.stack(
+                                group_outputs[group_index].top1_agreement, dim=1
                             ),
                             target_reward=torch.stack(
                                 group_outputs[group_index].target_reward, dim=1

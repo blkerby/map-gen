@@ -254,6 +254,8 @@ class ProposalData:
     # Final selection logits; -inf for candidates not offered to the sampler.
     sampling_logits: torch.Tensor
     selected_candidate: torch.Tensor
+    # Per step: 0/1 for top-choice disagreement/agreement, -1 if fewer than two clean choices.
+    top1_agreement: torch.Tensor
     # Full final-selection value before temperature scaling; already includes balance.
     target_reward: torch.Tensor
     # Immediate correction added externally to the student's proposal score only.
@@ -267,6 +269,7 @@ class ProposalData:
             rejected=self.rejected.to(device),
             sampling_logits=self.sampling_logits.to(device),
             selected_candidate=self.selected_candidate.to(device),
+            top1_agreement=self.top1_agreement.to(device),
             target_reward=self.target_reward.to(device),
             balance_residual=self.balance_residual.to(device),
         )
@@ -279,6 +282,7 @@ class ProposalData:
             rejected=self.rejected[start:end],
             sampling_logits=self.sampling_logits[start:end],
             selected_candidate=self.selected_candidate[start:end],
+            top1_agreement=self.top1_agreement[start:end],
             target_reward=self.target_reward[start:end],
             balance_residual=self.balance_residual[start:end],
         )
