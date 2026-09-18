@@ -234,6 +234,14 @@ def zero_init_output_layer(layer: torch.nn.Linear) -> None:
             layer.bias.zero_()
 
 
+class Float32Linear(torch.nn.Linear):
+    """Keep prediction computation in float32 inside an autocast model."""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.amp.autocast(x.device.type, enabled=False):
+            return torch.nn.functional.linear(x.to(torch.float32), self.weight, self.bias)
+
+
 class ProposalOutput(torch.nn.Module):
     def __init__(
         self,
@@ -261,7 +269,8 @@ class ProposalOutput(torch.nn.Module):
         return self.layers[-1].weight.dtype
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.layers(x)
+        with torch.amp.autocast(x.device.type, enabled=False):
+            return self.layers(x.to(torch.float32))
 
 
 class MissingConnectQueryHead(torch.nn.Module):
@@ -318,6 +327,25 @@ class MissingConnectQueryHead(torch.nn.Module):
         return self.frontier_projection(frontier_state[packed_frontier])
 
     def forward(
+        self,
+        frontier_state: torch.Tensor,
+        snapshot_count: int,
+        row_count_by_snapshot: torch.Tensor,
+        row_start_by_snapshot: torch.Tensor,
+        query,
+        connection_output_count: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        with torch.amp.autocast(frontier_state.device.type, enabled=False):
+            return self._forward_float32(
+                frontier_state.to(torch.float32),
+                snapshot_count,
+                row_count_by_snapshot,
+                row_start_by_snapshot,
+                query,
+                connection_output_count,
+            )
+
+    def _forward_float32(
         self,
         frontier_state: torch.Tensor,
         snapshot_count: int,
@@ -448,6 +476,23 @@ class SaveRefillUtilityQueryHead(torch.nn.Module):
         return frontier_state[packed_frontier], valid
 
     def forward(
+        self,
+        frontier_state: torch.Tensor,
+        row_count_by_snapshot: torch.Tensor,
+        row_start_by_snapshot: torch.Tensor,
+        query,
+        room_part_count: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.amp.autocast(frontier_state.device.type, enabled=False):
+            return self._forward_float32(
+                frontier_state.to(torch.float32),
+                row_count_by_snapshot,
+                row_start_by_snapshot,
+                query,
+                room_part_count,
+            )
+
+    def _forward_float32(
         self,
         frontier_state: torch.Tensor,
         row_count_by_snapshot: torch.Tensor,
@@ -746,9 +791,9 @@ class FrontierModel(torch.nn.Module):
             2,
         )
         self.register_buffer("door_variant_outcome_idx", door_output_metadata[:, 1])
-        self.door_output = torch.nn.Linear(embedding_width, output_metadata.num_door_variants)
-        self.frontier_door_invalid_output = torch.nn.Linear(embedding_width, 1)
-        self.frontier_balance_score_output = torch.nn.Linear(embedding_width, 1)
+        self.door_output = Float32Linear(embedding_width, output_metadata.num_door_variants)
+        self.frontier_door_invalid_output = Float32Linear(embedding_width, 1)
+        self.frontier_balance_score_output = Float32Linear(embedding_width, 1)
         connection_output_metadata = torch.tensor(
             output_metadata.connection,
             dtype=torch.int64,
@@ -757,7 +802,7 @@ class FrontierModel(torch.nn.Module):
             "connection_variant_outcome_idx",
             connection_output_metadata[:, 1],
         )
-        self.connection_output = torch.nn.Linear(
+        self.connection_output = Float32Linear(
             embedding_width,
             output_metadata.num_connection_variants,
         )
@@ -771,22 +816,22 @@ class FrontierModel(torch.nn.Module):
             if self.features.missing_connect_query
             else None
         )
-        self.toilet_output = torch.nn.Linear(embedding_width, 1)
-        self.phantoon_pair_output = torch.nn.Linear(embedding_width, 1)
-        self.phantoon_area_output = torch.nn.Linear(embedding_width, 1)
-        self.vanilla_area_output = torch.nn.Linear(embedding_width, VANILLA_AREA_CONSTRAINT_COUNT)
-        self.balance_score_output = torch.nn.Linear(
+        self.toilet_output = Float32Linear(embedding_width, 1)
+        self.phantoon_pair_output = Float32Linear(embedding_width, 1)
+        self.phantoon_area_output = Float32Linear(embedding_width, 1)
+        self.vanilla_area_output = Float32Linear(embedding_width, VANILLA_AREA_CONSTRAINT_COUNT)
+        self.balance_score_output = Float32Linear(
             embedding_width,
             output_metadata.num_door_variants,
         )
-        self.area_balance_score_output = torch.nn.Linear(embedding_width, self.num_rooms)
-        self.toilet_balance_score_output = torch.nn.Linear(embedding_width, 1)
-        self.avg_frontiers_output = torch.nn.Linear(embedding_width, 1)
-        self.graph_diameter_output = torch.nn.Linear(embedding_width, 1)
-        self.save_to_room_utility_output = torch.nn.Linear(embedding_width, self.num_room_parts)
-        self.save_from_room_utility_output = torch.nn.Linear(embedding_width, self.num_room_parts)
-        self.refill_to_room_utility_output = torch.nn.Linear(embedding_width, self.num_room_parts)
-        self.refill_from_room_utility_output = torch.nn.Linear(
+        self.area_balance_score_output = Float32Linear(embedding_width, self.num_rooms)
+        self.toilet_balance_score_output = Float32Linear(embedding_width, 1)
+        self.avg_frontiers_output = Float32Linear(embedding_width, 1)
+        self.graph_diameter_output = Float32Linear(embedding_width, 1)
+        self.save_to_room_utility_output = Float32Linear(embedding_width, self.num_room_parts)
+        self.save_from_room_utility_output = Float32Linear(embedding_width, self.num_room_parts)
+        self.refill_to_room_utility_output = Float32Linear(embedding_width, self.num_room_parts)
+        self.refill_from_room_utility_output = Float32Linear(
             embedding_width,
             self.num_room_parts,
         )
@@ -799,15 +844,15 @@ class FrontierModel(torch.nn.Module):
             if self.features.save_utility_query or self.features.refill_utility_query
             else None
         )
-        self.missing_connect_utility_output = torch.nn.Linear(
+        self.missing_connect_utility_output = Float32Linear(
             embedding_width,
             self.num_connection_outputs,
         )
-        self.area_crossings_output = torch.nn.Linear(embedding_width, 1)
-        self.area_size_output = torch.nn.Linear(embedding_width, AREA_COUNT * 3)
-        self.area_map_station_count_output = torch.nn.Linear(embedding_width, AREA_COUNT * 3)
-        self.area_x_output = torch.nn.Linear(embedding_width, AREA_COUNT)
-        self.area_y_output = torch.nn.Linear(embedding_width, AREA_COUNT)
+        self.area_crossings_output = Float32Linear(embedding_width, 1)
+        self.area_size_output = Float32Linear(embedding_width, AREA_COUNT * 3)
+        self.area_map_station_count_output = Float32Linear(embedding_width, AREA_COUNT * 3)
+        self.area_x_output = Float32Linear(embedding_width, AREA_COUNT)
+        self.area_y_output = Float32Linear(embedding_width, AREA_COUNT)
         self.proposal_output = ProposalOutput(
             embedding_width + global_embedding_width,
             proposal_hidden_widths,
@@ -926,11 +971,11 @@ class FrontierModel(torch.nn.Module):
                     messages = messages.sum(1) / pair_count
                 # messages [r, e]
                 X = X + update_layer(torch.cat([X, messages, global_rows], dim=-1))
+            # Accumulate and normalize in float32, then restore the activation dtype.
+            pool_input = X.to(torch.float32)
             if is_gpu(X.device):
-                mean_pool = X.new_zeros([snapshot_count, self.embedding_width])
-                mean_pool.index_add_(0, row_snapshot_idx, X)
-                count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)
-                mean_pool = mean_pool / count
+                mean_pool = pool_input.new_zeros([snapshot_count, self.embedding_width])
+                mean_pool.index_add_(0, row_snapshot_idx, pool_input)
                 max_pool = X.new_full([snapshot_count, self.embedding_width], -torch.inf)
                 max_pool.scatter_reduce_(
                     0,
@@ -940,15 +985,11 @@ class FrontierModel(torch.nn.Module):
                     include_self=True,
                 )
             else:
-                count = row_count_by_snapshot.to(X.dtype).unsqueeze(1).clamp_min(1)
-                mean_pool = (
-                    torch.segment_reduce(
-                        X,
-                        "sum",
-                        lengths=row_count_by_snapshot,
-                        axis=0,
-                    )
-                    / count
+                mean_pool = torch.segment_reduce(
+                    pool_input,
+                    "sum",
+                    lengths=row_count_by_snapshot,
+                    axis=0,
                 )
                 max_pool = torch.segment_reduce(
                     X,
@@ -956,23 +997,26 @@ class FrontierModel(torch.nn.Module):
                     lengths=row_count_by_snapshot,
                     axis=0,
                 )
+            count = row_count_by_snapshot.to(torch.float32).unsqueeze(1).clamp_min(1)
+            mean_pool = (mean_pool / count).to(X.dtype)
             max_pool = torch.where(torch.isfinite(max_pool), max_pool, 0)
-        frontier_door_invalid = self.frontier_door_invalid_output(X)
-        frontier_balance_score = self.frontier_balance_score_output(X)
+        prediction_state = X.to(torch.float32)
+        frontier_door_invalid = self.frontier_door_invalid_output(prediction_state)
+        frontier_balance_score = self.frontier_balance_score_output(prediction_state)
         # Let proposal preferences depend directly on configuration and global state.
         proposal_state = (
             torch.cat([X, global_rows], dim=-1)
             if return_proposal_state
             else X.new_empty([row_count, 0])
         )
-        frontier_state = X
+        frontier_state = prediction_state
         # mean_pool, max_pool, pooled_state: [s, e]
         pooled_inputs = [global_state]
         if self.features.frontier_mask:
             pooled_inputs.extend([mean_pool, max_pool])
         pooled_state = self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
         # X: [s, 1, e]
-        X = pooled_state.unsqueeze(1)
+        X = pooled_state.unsqueeze(1).to(torch.float32)
         door_variant = self.door_output(X)
         door = door_variant[..., self.door_variant_outcome_idx]
         connection_variant = self.connection_output(X)
@@ -1208,7 +1252,7 @@ def balance_price_network(
     for _ in range(num_layers):
         layers.extend([torch.nn.Linear(input_width, hidden_width), torch.nn.GELU()])
         input_width = hidden_width
-    output_layer = torch.nn.Linear(input_width, output_width)
+    output_layer = Float32Linear(input_width, output_width)
     zero_init_output_layer(output_layer)
     layers.append(output_layer)
     return torch.nn.Sequential(*layers)
