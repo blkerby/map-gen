@@ -49,7 +49,7 @@
   },
   "balance_train": {
     "batch_size": 2048,
-    "door_beta": {"log": [0.01, 0.02, 0.03, 0.15, 0.15]},
+    "door_beta": {"log": [0.01, 0.02, 0.03, 0.2, 0.2]},
     "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
     "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]}
   },
@@ -65,7 +65,7 @@
     "max_candidate_areas_per_placement": 2,
     "recommended_candidates_same_frontier": false,
     "temperature": {"log": [300, 20.0, 5.0, 0.03, 0.03]},
-    "proposal_temperature": {"log": [100, 6.66, 1.66, 0.01, 0.01]},
+    "proposal_temperature": {"log": [300, 20.0, 5.0, 0.03, 0.03]},
     "reward_door": 1.0,
     "reward_connection": 1.0,
     "reward_toilet": 1.0,

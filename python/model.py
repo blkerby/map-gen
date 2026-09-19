@@ -1014,9 +1014,11 @@ class FrontierModel(torch.nn.Module):
         pooled_inputs = [global_state]
         if self.features.frontier_mask:
             pooled_inputs.extend([mean_pool, max_pool])
-        pooled_state = self.pooled_mlp(torch.cat(pooled_inputs, dim=-1))
+        # Preserve precision in the shared representation supplied to prediction heads.
+        with torch.amp.autocast(global_state.device.type, enabled=False):
+            pooled_state = self.pooled_mlp(torch.cat(pooled_inputs, dim=-1).to(torch.float32))
         # X: [s, 1, e]
-        X = pooled_state.unsqueeze(1).to(torch.float32)
+        X = pooled_state.unsqueeze(1)
         door_variant = self.door_output(X)
         door = door_variant[..., self.door_variant_outcome_idx]
         connection_variant = self.connection_output(X)
