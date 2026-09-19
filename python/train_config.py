@@ -187,6 +187,7 @@ class BalanceModelConfig(StrictBaseModel):
 
 
 class BalanceTrainConfig(StrictBaseModel):
+    enabled: bool
     batch_size: ScheduleableInt
     door_beta: ScheduleableFloat
     toilet_beta: ScheduleableFloat
@@ -644,7 +645,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("balance_train.batch_size must be greater than zero")
     round_episodes = config.generation.num_iterations * config.generation.num_environments
     if (
-        isinstance(config.balance_train.batch_size, int)
+        config.balance_train.enabled
+        and isinstance(config.balance_train.batch_size, int)
         and round_episodes % config.balance_train.batch_size != 0
     ):
         raise ValueError(

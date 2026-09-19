@@ -48,6 +48,7 @@
     "num_layers": 1
   },
   "balance_train": {
+    "enabled": false,
     "batch_size": 32,
     "door_beta": 1.0,
     "toilet_beta": 1.0,

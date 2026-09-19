@@ -115,6 +115,15 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train should be required")
 
     config_data = load_debug_config()
+    del config_data["balance_train"]["enabled"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError as err:
+        assert "balance_train.enabled" in str(err)
+    else:
+        raise AssertionError("balance_train.enabled should be required")
+
+    config_data = load_debug_config()
     config_data["balance_train"]["batch_size"] = 3
     try:
         validate_config(Config.model_validate(config_data))
@@ -122,6 +131,9 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         assert "balance_train.batch_size" in str(err)
     else:
         raise AssertionError("balance_train.batch_size should evenly divide a round")
+
+    config_data["balance_train"]["enabled"] = False
+    validate_config(Config.model_validate(config_data))
 
     config_data = load_debug_config()
     del config_data["balance_optimizer"]

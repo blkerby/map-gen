@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import torch
 
 from env import AREA_COUNT, Actions, DoorMatches, EpisodeData
-from learn import train_balance_fresh
+from learn import train_round
 from train_config import (
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_FAMILIES,
@@ -58,43 +58,68 @@ def example_episode_data() -> EpisodeData:
     )
 
 
-def test_balance_training_steps_each_minibatch() -> None:
+def check_balance_training_round(enabled: bool) -> None:
     engine = FakeBalanceEngine()
     optimizer = Mock()
     balance_model = torch.nn.Linear(1, 1, bias=False)
     context = SimpleNamespace(
         step_config=SimpleNamespace(
             balance_train=SimpleNamespace(
+                enabled=enabled,
                 batch_size=2,
                 door_beta=1.0,
                 toilet_beta=1.0,
                 area_beta=1.0,
             ),
             generation=SimpleNamespace(num_iterations=1, num_environments=4),
-            train=SimpleNamespace(fresh_pass_factor=0.0, batch_size=1),
+            train=SimpleNamespace(fresh_pass_factor=0.0, replay_pass_factor=0.0, batch_size=1),
+            optimizer=Mock(),
+            balance_optimizer=Mock(),
         ),
+        config=SimpleNamespace(train=SimpleNamespace(shuffle_buffer_batches=1)),
         train_batch_envs=[SimpleNamespace(engine=engine)],
+        train_batch_prefetcher=Mock(),
+        experience=SimpleNamespace(num_files=1),
+        feature_compared_tensors=0,
         device=torch.device("cpu"),
         num_rooms=1,
         balance_model=balance_model,
         balance_optimizer=optimizer,
+        main_optimizer=Mock(),
     )
+    context.train_batch_prefetcher.map.return_value = iter(())
 
     with (
         patch("learn.torch.randperm", return_value=torch.arange(4)),
         patch("learn.train_balance_batch", return_value=1.0) as train_batch,
     ):
-        loss = train_balance_fresh(context, example_episode_data())
+        _, loss = train_round(context, example_episode_data(), Mock(), Mock(), Mock())
 
-    assert loss == 1.0
-    assert engine.batch_sizes == [2, 2]
-    assert train_batch.call_count == 2
-    assert "loss_scale" not in train_batch.call_args.kwargs
-    assert train_batch.call_args.kwargs["area_dual_mask"].all()
-    assert optimizer.zero_grad.call_count == 2
-    optimizer.zero_grad.assert_called_with(set_to_none=True)
-    assert optimizer.step.call_count == 2
+    context.main_optimizer.step.assert_not_called()
+    if enabled:
+        assert loss == 1.0
+        assert engine.batch_sizes == [2, 2]
+        assert train_batch.call_count == 2
+        assert "loss_scale" not in train_batch.call_args.kwargs
+        assert train_batch.call_args.kwargs["area_dual_mask"].all()
+        assert optimizer.zero_grad.call_count == 2
+        optimizer.zero_grad.assert_called_with(set_to_none=True)
+        assert optimizer.step.call_count == 2
+    else:
+        assert loss == 0.0
+        assert engine.batch_sizes == []
+        train_batch.assert_not_called()
+        assert optimizer.mock_calls == []
+
+
+def test_balance_training_steps_each_minibatch() -> None:
+    check_balance_training_round(enabled=True)
+
+
+def test_disabled_balance_training_skips_targets_and_optimizer() -> None:
+    check_balance_training_round(enabled=False)
 
 
 if __name__ == "__main__":
     test_balance_training_steps_each_minibatch()
+    test_disabled_balance_training_skips_targets_and_optimizer()

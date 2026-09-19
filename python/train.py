@@ -2013,6 +2013,7 @@ class TrainingSession:
             ),
             "proposal_target_temperature": step_config.train.proposal_target_temperature,
             "batch_size": step_config.train.batch_size,
+            "balance_training_enabled": step_config.balance_train.enabled,
             "balance_batch_size": step_config.balance_train.batch_size,
             "reward_door": variable_float_metric_value(
                 step_config.generation.reward_door,

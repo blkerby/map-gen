@@ -1622,8 +1622,10 @@ def train_round(
     generated_feature_data: GeneratedFeatureData,
 ) -> tuple[MainLossBreakdown, float]:
     set_optimizer_hyperparameters(context.main_optimizer, context.step_config.optimizer)
-    set_optimizer_hyperparameters(context.balance_optimizer, context.step_config.balance_optimizer)
-    balance_loss = train_balance_fresh(context, episode_data)
+    balance_loss = 0.0
+    if context.step_config.balance_train.enabled:
+        set_optimizer_hyperparameters(context.balance_optimizer, context.step_config.balance_optimizer)
+        balance_loss = train_balance_fresh(context, episode_data)
 
     total_loss = empty_main_loss_breakdown()
     train_batch_count = 0
