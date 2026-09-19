@@ -88,10 +88,12 @@
     "reward_graph_diameter": 0.2,
     "maridia_water_preferred_probability": {
       "active_probability": 0.5,
+      "tier_min": [0.0, 0.0, 0.0],
       "tier_max": [0.75, 0.75, 0.75]
     },
     "norfair_heat_preferred_probability": {
       "active_probability": 0.5,
+      "tier_min": [0.0, 0.0, 0.0],
       "tier_max": [0.75, 0.75, 0.75]
     },
     "reward_save_distance": 20.0,

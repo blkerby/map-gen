@@ -208,6 +208,9 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
     )
     config.generation.maridia_water_preferred_probability.active_probability = 0.5
     config.generation.norfair_heat_preferred_probability.active_probability = 0.5
+    for family in HEAT_WATER_FAMILIES:
+        preference = getattr(config.generation, f"{family}_preferred_probability")
+        preference.tier_min = [0.25, 0.5, 0.7]
     generate_config = create_generate_config(
         config=config,
         rooms=rooms,
@@ -251,6 +254,7 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
         assert torch.all(probabilities >= family_baseline.unsqueeze(1))
         active = probabilities[:, 2] > family_baseline
         assert 0.47 < active.to(torch.float32).mean() < 0.53
+        assert torch.all(probabilities[active] >= torch.tensor([0.25, 0.5, 0.7]))
         indices = [
             GENERATION_VARIABLE_FLOAT_FIELDS.index(f"{family}_preferred_probability_{tier}")
             for tier in range(1, 4)
@@ -266,6 +270,66 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
         generate_config.effective_target_area_rooms.sum(dim=-1),
         torch.full((4096,), float(len(rooms))),
     )
+
+
+def test_equal_preferred_probability_bounds_and_inactive_baseline() -> None:
+    rooms = json.loads(Path("room_definitions/zebes.json").read_text())
+    config = instantiate_scheduleable_config(
+        Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
+    )
+    config.generation.target_area_rooms = [1.0] * AREA_COUNT
+    for family, values in zip(
+        HEAT_WATER_FAMILIES, ([0.25, 0.5, 0.75], [0.4, 0.6, 0.8]), strict=True
+    ):
+        preference = getattr(config.generation, f"{family}_preferred_probability")
+        preference.tier_min = values
+        preference.tier_max = values
+    for active_probability in (1.0, 0.0):
+        for family in HEAT_WATER_FAMILIES:
+            getattr(config.generation, f"{family}_preferred_probability").active_probability = (
+                active_probability
+            )
+        generated = create_generate_config(
+            config=config,
+            rooms=rooms,
+            episode_length=4,
+            num_envs=32,
+            device=torch.device("cpu"),
+            ignore_scores=False,
+        )
+        for family_idx, area in enumerate(HEAT_WATER_TARGET_AREAS):
+            if active_probability == 1.0:
+                preference = getattr(
+                    config.generation, f"{HEAT_WATER_FAMILIES[family_idx]}_preferred_probability"
+                )
+                expected = torch.tensor(preference.tier_min).expand(32, -1)
+            else:
+                expected = (generated.target_area_rooms[:, area] / len(rooms)).unsqueeze(1)
+                expected = expected.expand(-1, 3)
+            assert torch.equal(generated.preferred_area_probability[:, family_idx], expected)
+
+
+def test_preferred_probability_minima_preserve_tier_order() -> None:
+    rooms = json.loads(Path("room_definitions/zebes.json").read_text())
+    config = instantiate_scheduleable_config(
+        Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
+    )
+    for family in HEAT_WATER_FAMILIES:
+        preference = getattr(config.generation, f"{family}_preferred_probability")
+        preference.active_probability = 1.0
+        preference.tier_min = [0.7, 0.2, 0.4]
+    generated = create_generate_config(
+        config=config,
+        rooms=rooms,
+        episode_length=4,
+        num_envs=128,
+        device=torch.device("cpu"),
+        ignore_scores=False,
+    )
+    probabilities = generated.preferred_area_probability
+    assert torch.all(probabilities >= 0.7)
+    assert torch.all(probabilities <= 0.75)
+    assert torch.all(probabilities[:, :, 1:] >= probabilities[:, :, :-1])
 
 
 def test_unforced_special_room_area_ss_excludes_forced_episodes() -> None:
@@ -291,6 +355,8 @@ def main() -> None:
     test_candidate_area_balance_uses_exact_placed_room_price()
     test_candidate_toilet_balance_uses_exact_known_crossing_price()
     test_training_samples_tiered_preferred_probabilities()
+    test_equal_preferred_probability_bounds_and_inactive_baseline()
+    test_preferred_probability_minima_preserve_tier_order()
     test_unforced_special_room_area_ss_excludes_forced_episodes()
 
 

@@ -196,6 +196,7 @@ class BalanceTrainConfig(StrictBaseModel):
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
     active_probability: ScheduleableFloat
+    tier_min: TierProbabilities
     tier_max: TierProbabilities
 
 
@@ -715,11 +716,22 @@ def validate_config(config: Config) -> None:
             f"generation.{family}_preferred_probability.active_probability",
             config.knot_episodes,
         )
-        for tier, value in enumerate(preference.tier_max, start=1):
-            if not math.isfinite(value) or not 0.0 < value < 1.0:
+        for field in ("tier_min", "tier_max"):
+            for tier, value in enumerate(getattr(preference, field)):
+                if not math.isfinite(value) or not 0.0 <= value < 1.0:
+                    raise ValueError(
+                        f"generation.{family}_preferred_probability.{field}[{tier}] "
+                        "must be finite, nonnegative, and below one"
+                    )
+        minimum = 0.0
+        for tier, (lower, upper) in enumerate(
+            zip(preference.tier_min, preference.tier_max, strict=True)
+        ):
+            minimum = max(minimum, lower)
+            if upper < minimum or upper == 0.0:
                 raise ValueError(
-                    f"generation.{family}_preferred_probability.tier_max[{tier - 1}] "
-                    "must be finite and strictly between zero and one"
+                    f"generation.{family}_preferred_probability.tier_max[{tier}] "
+                    "must be positive and at least tier_min for this and all lower tiers"
                 )
     validate_nonnegative_variable_float(
         config.generation.reward_save_distance,

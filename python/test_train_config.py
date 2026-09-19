@@ -357,6 +357,36 @@ def test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values(
         raise AssertionError("mixture weights should reject negative values")
 
 
+def test_preferred_probability_tier_min_is_required_and_bounds_are_feasible() -> None:
+    for family in ("maridia_water", "norfair_heat"):
+        field = f"{family}_preferred_probability"
+        config_data = load_debug_config()
+        del config_data["generation"][field]["tier_min"]
+        try:
+            Config.model_validate(config_data)
+        except ValidationError as err:
+            assert "tier_min" in str(err)
+        else:
+            raise AssertionError("tier_min should be required")
+
+        for minima in (
+            [-0.1, 0.0, 0.0],
+            [0.0, float("nan"), 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.8],
+            [0.7, 0.0, 0.0],
+        ):
+            config_data = load_debug_config()
+            config_data["generation"][field]["tier_min"] = minima
+            config_data["generation"][field]["tier_max"] = [0.75, 0.6, 0.75]
+            try:
+                validate_config(Config.model_validate(config_data))
+            except ValueError as err:
+                assert field in str(err)
+            else:
+                raise AssertionError(f"invalid tier bounds should be rejected: {minima}")
+
+
 def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
     test_vanilla_area_probability_is_required_and_bounded()
@@ -370,6 +400,7 @@ def main() -> None:
     test_num_scored_invalid_candidates_must_fit_shortlist()
     test_area_targets_require_six_finite_values_and_instantiate_schedules()
     test_variable_float_mixture_instantiates_weights_and_rejects_invalid_values()
+    test_preferred_probability_tier_min_is_required_and_bounds_are_feasible()
 
 
 if __name__ == "__main__":

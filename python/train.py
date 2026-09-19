@@ -780,18 +780,21 @@ def create_generate_config(
     ):
         preference = getattr(config.generation, f"{family}_preferred_probability")
         baseline = baseline_area_probability[:, preferred_area]
+        minima = torch.maximum(baseline.unsqueeze(1), baseline.new_tensor(preference.tier_min))
+        # Higher tiers must also accommodate every lower tier's minimum.
+        minima = minima.cummax(dim=1).values
         maxima = baseline.new_tensor(preference.tier_max).unsqueeze(0).expand(num_envs, -1)
-        if torch.any(maxima < baseline.unsqueeze(1)):
+        if torch.any(maxima < minima):
             raise ValueError(
                 f"generation.{family}_preferred_probability.tier_max must be at least the "
-                "sampled baseline preferred-area probability"
+                "sampled baseline preferred-area probability and the ordered tier_min bounds"
             )
         active = torch.rand([num_envs], device=device) < preference.active_probability
-        tier_3 = baseline + torch.rand([num_envs], device=device) * (maxima[:, 2] - baseline)
+        tier_3 = minima[:, 2] + torch.rand([num_envs], device=device) * (maxima[:, 2] - minima[:, 2])
         tier_2_max = torch.minimum(tier_3, maxima[:, 1])
-        tier_2 = baseline + torch.rand([num_envs], device=device) * (tier_2_max - baseline)
+        tier_2 = minima[:, 1] + torch.rand([num_envs], device=device) * (tier_2_max - minima[:, 1])
         tier_1_max = torch.minimum(tier_2, maxima[:, 0])
-        tier_1 = baseline + torch.rand([num_envs], device=device) * (tier_1_max - baseline)
+        tier_1 = minima[:, 0] + torch.rand([num_envs], device=device) * (tier_1_max - minima[:, 0])
         probabilities = torch.stack([tier_1, tier_2, tier_3], dim=1)
         probabilities = torch.where(active.unsqueeze(1), probabilities, baseline.unsqueeze(1))
         preferred_area_probability.append(probabilities)
