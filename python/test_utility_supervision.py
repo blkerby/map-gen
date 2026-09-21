@@ -35,6 +35,8 @@ class CheckUtilitySupervision:
         expected: dict[str, torch.Tensor],
         area_masks: list[torch.Tensor],
         absent_rooms: torch.Tensor,
+        order_targets: list[torch.Tensor],
+        order_masks: list[torch.Tensor],
     ):
         self.active = active.unsqueeze(1)
         self.expected = expected
@@ -42,10 +44,18 @@ class CheckUtilitySupervision:
         self.area_masks = area_masks
         self.absent_rooms = absent_rooms.unsqueeze(1)
         self.absent_area_gradients_checked = 0
+        self.order_targets = order_targets
+        self.order_masks = order_masks
 
     def __call__(self, *args, **kwargs):
         bound = LOSS_SIGNATURE.bind(*args, **kwargs)
         values = bound.arguments
+        torch.testing.assert_close(
+            values["order_balance_score_target"], self.order_targets[self.checked]
+        )
+        torch.testing.assert_close(
+            values["order_balance_score_mask"], self.order_masks[self.checked]
+        )
         assert values["save_utility_mask"].all()
         assert values["refill_utility_mask"].all()
         predictions = {}
@@ -153,6 +163,9 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         verify_outcome_consistency=True,
         capture_generated_features=True,
     )
+    # Distinct nonzero prices expose incorrect rank masks and omitted failures.
+    with torch.no_grad():
+        balance.order_net[-1].bias.copy_(torch.arange(42.0))
     loss_config = LossConfig(
         **{
             name: getattr(config.train, name)
@@ -205,11 +218,33 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         (~batch.features.global_features.room_placed.bool() & area_dual_mask).unsqueeze(1)
         for batch in prepared.feature_batches
     ]
+    terminal_order_costs = []
+    for room_indices, areas in zip(
+        episode_data.actions.room_idx.tolist(), episode_data.actions.room_area.tolist(), strict=True
+    ):
+        order = []
+        for room, area in zip(room_indices, areas, strict=True):
+            if room < len(rooms) and area < 6 and area not in order:
+                order.append(area)
+        terminal_order_costs.append(
+            [order[rank] - 2.5 if rank < len(order) else 36.0 + rank for rank in range(6)]
+        )
+    order_targets = []
+    order_masks = []
+    for batch in prepared.feature_batches:
+        started = batch.features.global_features.area_used.long().sum(-1).tolist()
+        order_targets.append(torch.tensor(
+            [[sum(costs[count:])] for costs, count in zip(terminal_order_costs, started, strict=True)],
+            dtype=torch.float32,
+        ))
+        order_masks.append(torch.tensor([[count < 6] for count in started]))
     checker = CheckUtilitySupervision(
         active=active,
         expected=expected,
         area_masks=area_masks + [torch.zeros_like(mask) for mask in area_masks],
         absent_rooms=prepared.room_area < 0,
+        order_targets=order_targets + [torch.zeros_like(target) for target in order_targets],
+        order_masks=order_masks + [torch.zeros_like(mask) for mask in order_masks],
     )
     # Deliberately give absent parts reachable distances: terminal absence must
     # override these values, independently of the engine's distance convention.

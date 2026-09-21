@@ -16,7 +16,7 @@ from loss import (
     compute_step_balance_score_targets,
     terminal_balance_cost,
 )
-from model import BalanceModel
+from scripts.balance_v18 import BalanceModelV19 as BalanceModel
 from scripts.balance_v18 import BalanceModelV18
 from scripts.migrate_toilet_balance import migrate_optimizer_state
 from scripts.unconditional_balance import fit_cost_head, migrate_controller
@@ -29,6 +29,8 @@ def test_terminal_failures_train_all_families() -> None:
     preds = example_predictions(requires_grad=True)
     probability, mask = uniform_area_targets()
     loss = compute_balance_loss(
+        area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        order_beta=1.0,
         preds=preds, door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]), room_area=torch.tensor([[-1, -1]]),
         area_probability=probability, area_dual_mask=mask, record_weight=torch.ones(1),

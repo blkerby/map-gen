@@ -90,6 +90,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
 def area_predictions() -> Predictions:
     batch, candidate, door, connection, room_part = 1, 2, 3, 4, 5
     return Predictions(
+        order_balance_score=torch.zeros([batch, candidate]),
         door_invalid=torch.zeros([batch, candidate, door]),
         connection_invalid=torch.zeros([batch, candidate, connection]),
         toilet_invalid=torch.zeros([batch, candidate]),

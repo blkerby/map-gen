@@ -6,7 +6,24 @@ from model import BalanceModel, activation_dtype, zero_init_output_layer
 from model_loading import balance_model_kwargs
 
 
-class BalanceModelV18(BalanceModel):
+class BalanceModelV19(BalanceModel):
+    """Pre-order-controller parameter layout for historical migrations."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        del self.order_net
+
+    def forward(self, generation_variable_floats):
+        inputs = generation_variable_floats.to(activation_dtype(
+            generation_variable_floats.device, next(self.parameters()).dtype,
+        ))
+        return self.decode_prices(
+            self.door_net(inputs).float(), self.toilet_net(inputs).float(),
+            self.area_net(inputs).float(), inputs.new_zeros((len(inputs), 6 * 7)),
+        )
+
+
+class BalanceModelV18(BalanceModelV19):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         failure_count = (
@@ -43,6 +60,7 @@ class BalanceModelV18(BalanceModel):
             torch.cat((door, door.new_zeros((len(door), failure_count))), dim=1),
             toilet,
             torch.cat((area, area.new_zeros((len(area), self.num_room_connection_variants))), dim=1),
+            area.new_zeros((len(area), 6 * 7)),
         )
 
 

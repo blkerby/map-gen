@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from area_order import candidate_order_balance_score, proposal_order_price
 from device_util import gpu_backend, is_gpu
 from env import (
     AREA_COUNT,
@@ -264,6 +265,7 @@ class ProposalCache:
     state: torch.Tensor
     frontier_door_variant: torch.Tensor
     inventory: torch.Tensor
+    area_used: torch.Tensor
     row_start_idx: torch.Tensor
     row_count: torch.Tensor
     action_index: torch.Tensor
@@ -319,6 +321,7 @@ class GenerationGroup:
     balance_preds: BalancePredictions
     balance_score_tables: BalancePriceTables
     area_balance_dual_mask: torch.Tensor
+    room_tile_count: torch.Tensor
     proposal_balance_score_table: torch.Tensor
     proposal_area_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
@@ -912,6 +915,7 @@ def compute_candidate_values(
             ),
             balance_score=balance_score,
             area_balance_score=area_balance_score,
+            order_balance_score=preds.order_balance_score.view(environment_count, candidate_count),
             toilet_balance_score=toilet_balance_score,
             avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
             graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
@@ -957,8 +961,18 @@ def compute_candidate_values(
         outcomes,
         group.config,
     )
+    order_balance_score = candidate_order_balance_score(
+        preds.order_balance_score.view(environment_count, candidate_count),
+        group.balance_score_tables.area_order,
+        group.balance_score_tables.area_order_failure,
+        features.global_features.area_size.view(environment_count, candidate_count, AREA_COUNT),
+        features.global_features.room_placed.view(environment_count, candidate_count, -1),
+        candidates,
+        group.room_tile_count,
+    )
     balance_logit = (
-        -balance_score.float().sum(dim=2)
+        -order_balance_score
+        - balance_score.float().sum(dim=2)
         + area_balance_reward(area_balance_score)
         - toilet_balance_score
     )
@@ -1027,6 +1041,7 @@ def select_candidate_actions(
             state=preds.proposal_state,
             frontier_door_variant=features.frontier_features.frontier_door_variant,
             inventory=features.global_features.inventory,
+            area_used=features.global_features.area_used,
             row_start_idx=row_start_idx,
             row_count=row_count_by_snapshot,
             action_index=action_index,
@@ -1517,6 +1532,12 @@ def compute_group_proposal_shortlist(
                 group.config.temperature.shape[0],
                 device,
             )
+            cache = group.previous_proposal_scores
+            selected_snapshot = (
+                torch.arange(group.config.temperature.shape[0], device=device)
+                * cache.candidate_count + cache.action_index
+            )
+            area_used = cache.area_used[selected_snapshot]
             with torch.amp.autocast(
                 device.type,
                 dtype=torch.bfloat16,
@@ -1548,6 +1569,7 @@ def compute_group_proposal_shortlist(
             row_frontier_idx = preds.proposal_row_frontier_idx
             frontier_door_variant = env_features.frontier_features.frontier_door_variant
             inventory = env_features.global_features.inventory
+            area_used = env_features.global_features.area_used
             sync_profile_device(device, profile)
             shared.profiler.add("python.proposal.compute_fresh_scores", profile_time)
         proposal_balance_residual = compute_proposal_balance_score_residual(
@@ -1558,6 +1580,10 @@ def compute_group_proposal_shortlist(
         proposal_balance_residual += compute_proposal_area_balance_score_residual(
             group.proposal_area_balance_score_table,
             row_snapshot_idx,
+        )
+        order_prices = proposal_order_price(group.balance_score_tables.area_order, area_used)
+        proposal_balance_residual -= order_prices[row_snapshot_idx.long()].repeat(
+            1, proposal_scores.shape[1] // AREA_COUNT,
         )
         proposal_scores = (
             proposal_scores.to(torch.float32) + proposal_balance_residual
@@ -2236,6 +2262,10 @@ def run_generation_groups(
             balance_preds=balance_preds,
             balance_score_tables=score_tables,
             area_balance_dual_mask=dual_mask,
+            room_tile_count=torch.tensor(
+                [sum(tile != 0 for row in room["map"] for tile in row) for room in env.engine.rooms],
+                device=device, dtype=torch.int64,
+            ),
             proposal_balance_score_table=proposal_score_table,
             proposal_area_balance_score_table=proposal_area_score_table,
             previous_lookahead_outcomes=None,

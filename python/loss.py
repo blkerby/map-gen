@@ -16,6 +16,7 @@ class LossConfig:
     vanilla_area_weight: float
     balance_weight: float
     area_balance_weight: float
+    order_balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
@@ -43,6 +44,7 @@ class LossBreakdown:
     vanilla_area: torch.Tensor
     balance: torch.Tensor
     area_balance: torch.Tensor
+    order_balance: torch.Tensor
     toilet_balance: torch.Tensor
     avg_frontiers: torch.Tensor
     graph_diameter: torch.Tensor
@@ -62,6 +64,7 @@ class LossBreakdown:
     vanilla_area_contribution: torch.Tensor
     balance_contribution: torch.Tensor
     area_balance_contribution: torch.Tensor
+    order_balance_contribution: torch.Tensor
     toilet_balance_contribution: torch.Tensor
     avg_frontiers_contribution: torch.Tensor
     graph_diameter_contribution: torch.Tensor
@@ -86,6 +89,8 @@ class BalancePriceTables:
     toilet_failure: torch.Tensor
     room_area: torch.Tensor
     room_area_failure: torch.Tensor
+    area_order: torch.Tensor
+    area_order_failure: torch.Tensor
 
 
 def masked_binary_cross_entropy_loss(
@@ -175,6 +180,8 @@ def compute_loss_breakdown(
     balance_score_mask: torch.Tensor,
     area_balance_score_target: torch.Tensor,
     area_balance_score_mask: torch.Tensor,
+    order_balance_score_target: torch.Tensor,
+    order_balance_score_mask: torch.Tensor,
     toilet_balance_score_target: torch.Tensor,
     toilet_balance_score_mask: torch.Tensor,
     avg_frontiers_target: torch.Tensor,
@@ -237,6 +244,10 @@ def compute_loss_breakdown(
         area_balance_score_target,
         mask & area_balance_score_mask,
         config.area_balance_weight,
+    )
+    order_balance_loss, order_balance_wt = masked_mse_loss(
+        preds.order_balance_score, order_balance_score_target,
+        order_balance_score_mask, config.order_balance_weight,
     )
     toilet_balance_loss, toilet_balance_wt = masked_mse_loss(
         preds.toilet_balance_score,
@@ -331,6 +342,7 @@ def compute_loss_breakdown(
         + vanilla_area_wt
         + balance_wt
         + area_balance_wt
+        + order_balance_wt
         + toilet_balance_wt
         + avg_frontiers_wt
         + graph_diameter_wt
@@ -352,6 +364,7 @@ def compute_loss_breakdown(
     vanilla_area_contribution = vanilla_area_loss / total_weight
     balance_contribution = balance_loss / total_weight
     area_balance_contribution = area_balance_loss / total_weight
+    order_balance_contribution = order_balance_loss / total_weight
     toilet_balance_contribution = toilet_balance_loss / total_weight
     avg_frontiers_contribution = avg_frontiers_loss / total_weight
     graph_diameter_contribution = graph_diameter_loss / total_weight
@@ -372,6 +385,7 @@ def compute_loss_breakdown(
         + vanilla_area_contribution
         + balance_contribution
         + area_balance_contribution
+        + order_balance_contribution
         + toilet_balance_contribution
         + avg_frontiers_contribution
         + graph_diameter_contribution
@@ -394,6 +408,7 @@ def compute_loss_breakdown(
         vanilla_area=vanilla_area_loss / (vanilla_area_wt + 1e-15),
         balance=balance_loss / (balance_wt + 1e-15),
         area_balance=area_balance_loss / (area_balance_wt + 1e-15),
+        order_balance=order_balance_loss / (order_balance_wt + 1e-15),
         toilet_balance=toilet_balance_loss / (toilet_balance_wt + 1e-15),
         avg_frontiers=avg_frontiers_loss / (avg_frontiers_wt + 1e-15),
         graph_diameter=graph_diameter_loss / (graph_diameter_wt + 1e-15),
@@ -415,6 +430,7 @@ def compute_loss_breakdown(
         vanilla_area_contribution=vanilla_area_contribution,
         balance_contribution=balance_contribution,
         area_balance_contribution=area_balance_contribution,
+        order_balance_contribution=order_balance_contribution,
         toilet_balance_contribution=toilet_balance_contribution,
         avg_frontiers_contribution=avg_frontiers_contribution,
         graph_diameter_contribution=graph_diameter_contribution,
@@ -495,12 +511,14 @@ def compute_balance_loss(
     door_matches: DoorMatches,
     toilet_crossed_room_idx: torch.Tensor,
     room_area: torch.Tensor,
+    area_order: torch.Tensor,
     area_probability: torch.Tensor,
     area_dual_mask: torch.Tensor,
     record_weight: torch.Tensor,
     door_beta: float,
     toilet_beta: float,
     area_beta: float,
+    order_beta: float,
 ) -> torch.Tensor:
     tables = compute_balance_price_tables(preds, area_probability, area_dual_mask)
     failures = tables.door_failure.split(
@@ -550,6 +568,10 @@ def compute_balance_loss(
         balance_family_loss(door_terms, door_beta, record_weight)
         + balance_family_loss([toilet_terms], toilet_beta, record_weight)
         + balance_family_loss([area_terms], area_beta, record_weight)
+        + balance_family_loss([balance_objective_terms(
+            tables.area_order, tables.area_order_failure, area_order,
+            torch.ones_like(area_order, dtype=torch.bool),
+        )], order_beta, record_weight)
     )
 
 
@@ -665,6 +687,9 @@ def compute_balance_price_tables(
         toilet_failure=toilet_failure,
         room_area=room_area,
         room_area_failure=torch.where(area_dual_mask, preds.room_area_failure, 0.0),
+        # Uniform target over the six areas at every start rank.
+        area_order=preds.area_order - preds.area_order.mean(-1, keepdim=True),
+        area_order_failure=preds.area_order_failure,
     )
 
 

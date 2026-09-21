@@ -180,7 +180,7 @@ type OptimizerConfig = AdamOptimizerConfig | MuonOptimizerConfig
 
 
 class BalanceModelConfig(StrictBaseModel):
-    """Width and depth of each independent door, Toilet, and area price network."""
+    """Width and depth of each independent door, Toilet, area, and order price network."""
 
     hidden_width: int
     num_layers: int
@@ -192,6 +192,7 @@ class BalanceTrainConfig(StrictBaseModel):
     door_beta: ScheduleableFloat
     toilet_beta: ScheduleableFloat
     area_beta: ScheduleableFloat
+    order_beta: ScheduleableFloat
 
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
@@ -368,6 +369,7 @@ class TrainConfig(StrictBaseModel):
     vanilla_area_weight: float
     balance_weight: float
     area_balance_weight: float
+    order_balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
@@ -653,7 +655,9 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "balance_train.batch_size must evenly divide the number of episodes generated per round"
         )
-    for field_name in ("door_beta", "toilet_beta", "area_beta"):
+    if not config.features.area_state:
+        raise ValueError("features.area_state must be enabled for order balancing")
+    for field_name in ("door_beta", "toilet_beta", "area_beta", "order_beta"):
         validate_positive_scheduleable_float(
             getattr(config.balance_train, field_name),
             f"balance_train.{field_name}",
@@ -797,6 +801,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.vanilla_area_weight must be greater than or equal to zero")
     if config.train.toilet_balance_weight < 0:
         raise ValueError("train.toilet_balance_weight must be greater than or equal to zero")
+    if not math.isfinite(config.train.order_balance_weight) or config.train.order_balance_weight < 0:
+        raise ValueError("train.order_balance_weight must be finite and greater than or equal to zero")
     if config.train.area_balance_weight < 0:
         raise ValueError("train.area_balance_weight must be greater than or equal to zero")
     if config.train.avg_frontiers_weight < 0:

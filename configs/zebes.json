@@ -25,14 +25,14 @@
   "optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.00005, 0.00005]},
+      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.0001, 0.0001]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0001, 0.0001]},
+      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0002, 0.0002]},
       "beta1": 0.95,
       "beta2": 0.99
     }
@@ -52,7 +52,8 @@
     "batch_size": 2048,
     "door_beta": {"log": [0.01, 0.02, 0.03, 0.2, 0.2]},
     "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
-    "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]}
+    "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
+    "order_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]}
   },
   "generation": {
     "num_environments": 4096,
@@ -65,7 +66,7 @@
     "num_scored_invalid_candidates": 0,
     "max_candidate_areas_per_placement": 2,
     "recommended_candidates_same_frontier": false,
-    "temperature": {"log": [300, 20.0, 5.0, 0.03, 0.03]},
+    "temperature": {"log": [300, 20.0, 5.0, 0.04, 0.04]},
     "proposal_temperature": {"log": [300, 20.0, 5.0, 0.03, 0.03]},
     "reward_door": 1.0,
     "reward_connection": 1.0,
@@ -185,6 +186,7 @@
     "vanilla_area_weight": 2.0,
     "balance_weight": 5.0,
     "area_balance_weight": 5.0,
+    "order_balance_weight": 1.0,
     "toilet_balance_weight": 2.0,
     "avg_frontiers_weight": 0.0,
     "graph_diameter_weight": 0.05,

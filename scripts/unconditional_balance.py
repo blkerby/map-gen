@@ -25,10 +25,12 @@ from env import Actions, Engine, FeatureSlot
 from learn import generation_area_balance_targets
 from loss import compute_balance_price_tables
 from model import FrontierModel
-from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
-from scripts.balance_v18 import create_balance_model_v18
+from model_loading import balance_model_kwargs, frontier_model_kwargs, without_prefix
+from scripts.balance_v18 import BalanceModelV19, create_balance_model_v18
 from scripts.migrate_toilet_balance import CaptureHeadInput, migrate_optimizer_state
-from serve import TRAINING_CHECKPOINT_FORMAT, validate_model_input_metadata
+from serve import validate_model_input_metadata
+
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v19"
 from train import create_adam_optimizer, create_main_optimizer
 from train_config import Config, instantiate_scheduleable_config
 
@@ -255,7 +257,7 @@ def main():
     engine = Engine(rooms, config.features, config.generation.min_area_size, config.generation.max_area_size)
     old_controller = create_balance_model_v18(config, rooms, engine, torch.device("cpu")).eval()
     old_controller.load_state_dict(without_prefix(tensors, "balance_model"))
-    controller = create_balance_model(config, rooms, engine, torch.device("cpu")).eval()
+    controller = BalanceModelV19(**balance_model_kwargs(config, rooms, engine)).eval()
     reset, extended = migrate_controller(tensors, controller)
     migrate_optimizer_state(
         tensors, metadata, controller, create_adam_optimizer(controller.parameters(), config.balance_optimizer),

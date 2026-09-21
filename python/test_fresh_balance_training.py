@@ -65,6 +65,7 @@ def check_balance_training_round(enabled: bool) -> None:
     context = SimpleNamespace(
         step_config=SimpleNamespace(
             balance_train=SimpleNamespace(
+                order_beta=1.0,
                 enabled=enabled,
                 batch_size=2,
                 door_beta=1.0,

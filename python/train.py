@@ -15,6 +15,7 @@ from types import FrameType
 from typing import Any
 
 import safetensors.torch
+from area_order import episode_area_order
 import torch
 import map_gen
 from aim import Run
@@ -104,7 +105,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v19"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v20"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -120,6 +121,16 @@ def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
     if torch.any(totals <= 1):
         return counts.new_full((), torch.nan)
     return torch.sum(counts * (counts - 1) / (totals * (totals - 1)))
+
+
+def compute_area_order_ss(area_order: torch.Tensor) -> torch.Tensor:
+    """Estimate each rank's squared proportions among episodes reaching that rank."""
+    rank_ss = []
+    for rank in range(AREA_COUNT):
+        areas = area_order[:, rank]
+        counts = torch.bincount(areas[areas >= 0], minlength=AREA_COUNT).to(torch.float64)
+        rank_ss.append(compute_door_match_count_ss(counts, dim=0))
+    return torch.stack(rank_ss)
 
 
 def compute_unforced_special_room_area_ss(
@@ -480,6 +491,11 @@ class BalanceMetricValues:
     toilet_price_max: torch.Tensor
     area_price_rms: torch.Tensor
     area_price_max: torch.Tensor
+    order_price_rms: torch.Tensor
+    order_price_max: torch.Tensor
+    order_failure_price_mean: torch.Tensor
+    order_failure_price_rms: torch.Tensor
+    order_failure_price_max: torch.Tensor
 
     door_failure_price_mean: torch.Tensor
     door_failure_price_rms: torch.Tensor
@@ -506,7 +522,7 @@ def compute_balance_metric_values(
 
     totals = {
         family: {"squares": 0.0, "sum": 0.0, "count": 0, "max": 0.0}
-        for family in ("door", "toilet", "area", "door_failure", "toilet_failure", "area_failure")
+        for family in ("door", "toilet", "area", "order", "door_failure", "toilet_failure", "area_failure", "order_failure")
     }
     with torch.no_grad():
         for start in range(0, episode_count, batch_size):
@@ -534,6 +550,8 @@ def compute_balance_metric_values(
                 ),
                 "toilet": tables.toilet_crossed_room[:, preds.toilet_compatibility].flatten(),
                 "area": tables.room_area[area_targets.dual_mask].flatten(),
+                "order": tables.area_order.flatten(),
+                "order_failure": tables.area_order_failure.flatten(),
                 "door_failure": tables.door_failure[:, torch.cat([
                     compatibility.any(-1) for _, compatibility in direction_metrics
                 ])].flatten(),
@@ -1797,6 +1815,8 @@ class TrainingSession:
         avg_area_map_station = torch.mean(
             (end_outcomes.area_map_station_count == 1).to(torch.float32)
         )
+        area_order = episode_area_order(episode_data.actions, self.num_rooms)
+        area_order_ss = compute_area_order_ss(area_order)
         valid_action_area = episode_data.actions.room_area < AREA_COUNT
         area_room_counts = torch.nn.functional.one_hot(
             episode_data.actions.room_area.clamp_max(AREA_COUNT - 1).to(torch.int64),
@@ -1875,6 +1895,7 @@ class TrainingSession:
         phantoon_area_loss_pct = 100.0 * loss.phantoon_area_contribution / loss_denominator
         vanilla_area_loss_pct = 100.0 * loss.vanilla_area_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
+        main_order_balance_loss_pct = 100.0 * loss.order_balance_contribution / loss_denominator
         main_area_balance_loss_pct = 100.0 * loss.area_balance_contribution / loss_denominator
         main_toilet_balance_loss_pct = 100.0 * loss.toilet_balance_contribution / loss_denominator
         avg_frontiers_loss_pct = 100.0 * loss.avg_frontiers_contribution / loss_denominator
@@ -1907,6 +1928,8 @@ class TrainingSession:
             "vanilla_area_loss_pct": vanilla_area_loss_pct,
             "main_balance_loss": loss.balance,
             "main_balance_loss_pct": main_balance_loss_pct,
+            "main_order_balance_loss": loss.order_balance,
+            "main_order_balance_loss_pct": main_order_balance_loss_pct,
             "main_area_balance_loss": loss.area_balance,
             "main_area_balance_loss_pct": main_area_balance_loss_pct,
             "main_toilet_balance_loss": loss.toilet_balance,
@@ -1974,6 +1997,19 @@ class TrainingSession:
             "missing_connect_distance_mask_fraction": missing_connect_distance_mask_fraction,
             "missing_connect_utility": missing_connect_utility,
             "avg_area_used": avg_area_used,
+            "area_order_ss": area_order_ss.mean(),
+            **{
+                f"area_order_{rank + 1}_ss": area_order_ss[rank]
+                for rank in range(AREA_COUNT)
+            },
+            **{
+                f"area_order_{rank + 1}_area_{area}": (area_order[:, rank] == area).float().mean()
+                for rank in range(AREA_COUNT) for area in range(AREA_COUNT)
+            },
+            **{
+                f"area_order_{rank + 1}_missing": (area_order[:, rank] < 0).float().mean()
+                for rank in range(AREA_COUNT)
+            },
             "avg_area_crossing": avg_area_crossing,
             "avg_area_size_invalid": avg_area_size_invalid,
             "avg_area_map_station_invalid": avg_area_map_station_invalid,
@@ -2055,6 +2091,7 @@ class TrainingSession:
             "balance_door_beta": step_config.balance_train.door_beta,
             "balance_toilet_beta": step_config.balance_train.toilet_beta,
             "balance_area_beta": step_config.balance_train.area_beta,
+            "balance_order_beta": step_config.balance_train.order_beta,
             "reward_frontier": variable_float_metric_value(
                 step_config.generation.reward_frontier,
                 "generation.reward_frontier",
@@ -2108,6 +2145,7 @@ class TrainingSession:
             "phantoon_area_weight": step_config.train.phantoon_area_weight,
             "toilet_balance_weight": step_config.train.toilet_balance_weight,
             "area_balance_weight": step_config.train.area_balance_weight,
+            "order_balance_weight": step_config.train.order_balance_weight,
             "avg_frontiers_weight": step_config.train.avg_frontiers_weight,
             "graph_diameter_weight": step_config.train.graph_diameter_weight,
             "save_distance_weight": step_config.train.save_distance_weight,
@@ -2139,11 +2177,13 @@ class TrainingSession:
                 f"balance_{family}_failure_price_{stat}": getattr(
                     balance_metrics, f"{family}_failure_price_{stat}"
                 )
-                for family in ("door", "toilet", "area")
+                for family in ("door", "toilet", "area", "order")
                 for stat in ("mean", "rms", "max")
             },
             "balance_area_price_rms": balance_metrics.area_price_rms,
             "balance_area_price_max": balance_metrics.area_price_max,
+            "balance_order_price_rms": balance_metrics.order_price_rms,
+            "balance_order_price_max": balance_metrics.order_price_max,
             **generation_stats,
         }
         for name, value in metrics.items():
@@ -2671,6 +2711,7 @@ def build_session(args: Args) -> TrainingSession:
             vanilla_area_weight=config.train.vanilla_area_weight,
             balance_weight=config.train.balance_weight,
             area_balance_weight=config.train.area_balance_weight,
+            order_balance_weight=config.train.order_balance_weight,
             toilet_balance_weight=config.train.toilet_balance_weight,
             avg_frontiers_weight=config.train.avg_frontiers_weight,
             graph_diameter_weight=config.train.graph_diameter_weight,

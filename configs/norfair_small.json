@@ -52,7 +52,8 @@
     "batch_size": 8192,
     "door_beta": 1.0,
     "toilet_beta": 1.0,
-    "area_beta": 1.0
+    "area_beta": 1.0,
+    "order_beta": 1.0
   },
   "generation": {
     "num_environments": 8192,
@@ -164,6 +165,7 @@
     "vanilla_area_weight": 2.0,
     "balance_weight": 1.0,
     "area_balance_weight": 1.0,
+    "order_balance_weight": 1.0,
     "toilet_balance_weight": 2.0,
     "avg_frontiers_weight": 0.0,
     "graph_diameter_weight": 0.05,

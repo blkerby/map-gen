@@ -30,7 +30,9 @@ class CandidateRecordsTest(unittest.TestCase):
             config=SimpleNamespace(
                 autocast=False, recommended_candidates=0, temperature=torch.tensor([0.5, 1.0])
             ),
+            room_tile_count=torch.ones(1, dtype=torch.int64),
             balance_score_tables=SimpleNamespace(
+                area_order=torch.zeros(2, 6, 6), area_order_failure=torch.zeros(2, 6),
                 room_area=Mock(), toilet_crossed_room=Mock(), toilet_failure=Mock()
             ),
             area_balance_dual_mask=torch.zeros(2, 1, dtype=torch.bool),
@@ -38,6 +40,7 @@ class CandidateRecordsTest(unittest.TestCase):
         self.features = SimpleNamespace(
             global_features=SimpleNamespace(
                 room_placed=torch.zeros(4, 1, dtype=torch.bool),
+                area_size=torch.zeros(4, 6, dtype=torch.int64),
                 toilet_crossed_room_idx=torch.full((4,), -1),
             )
         )
@@ -57,6 +60,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 "phantoon_area_invalid",
                 "balance_score",
                 "area_balance_score",
+                "order_balance_score",
                 "toilet_balance_score",
                 "avg_frontiers",
                 "graph_diameter",
@@ -137,7 +141,11 @@ class CandidateRecordsTest(unittest.TestCase):
 
     def test_proposal_sampling_scales_scores_and_learned_prices_together(self) -> None:
         group = SimpleNamespace(
-            previous_proposal_scores=Mock(),
+            previous_proposal_scores=SimpleNamespace(
+                candidate_count=1, action_index=torch.zeros(1, dtype=torch.int64),
+                area_used=torch.zeros(1, 6),
+            ),
+            balance_score_tables=SimpleNamespace(area_order=torch.zeros(1, 6, 6)),
             config=SimpleNamespace(
                 temperature=torch.ones(1),
                 proposal_temperature=torch.tensor([2.0]),
@@ -154,7 +162,7 @@ class CandidateRecordsTest(unittest.TestCase):
         )
         model = Mock()
         model.proposal_output.output_dtype = torch.float32
-        model.proposal_output.return_value = torch.tensor([[1.0, 2.0]])
+        model.proposal_output.return_value = torch.tensor([[1.0, 2.0]]).repeat(1, 3)
         with (
             patch("generate.prepare_proposal_inputs", return_value=SimpleNamespace(features=None)),
             patch(
@@ -169,11 +177,11 @@ class CandidateRecordsTest(unittest.TestCase):
             ),
             patch(
                 "generate.compute_proposal_balance_score_residual",
-                return_value=torch.tensor([[2.0, 4.0]]),
+                return_value=torch.tensor([[2.0, 4.0]]).repeat(1, 3),
             ),
             patch(
                 "generate.compute_proposal_area_balance_score_residual",
-                return_value=torch.tensor([[3.0, -2.0]]),
+                return_value=torch.tensor([[3.0, -2.0]]).repeat(1, 3),
             ),
             patch(
                 "generate.sample_proposal_shortlist",
@@ -187,7 +195,7 @@ class CandidateRecordsTest(unittest.TestCase):
             patch("generate.add_stat_totals"),
         ):
             shortlist = compute_group_proposal_shortlist(group, model, self.device, shared)
-        torch.testing.assert_close(sampler.call_args.args[0], torch.tensor([[3.0, 2.0]]))
+        torch.testing.assert_close(sampler.call_args.args[0], torch.tensor([[3.0, 2.0]]).repeat(1, 3))
         torch.testing.assert_close(shortlist.scores, torch.tensor([[3.0, 2.0]]))
         torch.testing.assert_close(shortlist.balance_residual, torch.tensor([[5.0, 2.0]]))
 

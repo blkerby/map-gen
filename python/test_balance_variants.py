@@ -30,6 +30,8 @@ def example_predictions(requires_grad: bool = False) -> BalancePredictions:
         door_failure=torch.zeros((1, 8), requires_grad=requires_grad),
         room_area_failure=torch.zeros((1, 2), requires_grad=requires_grad),
         room_area=torch.zeros((1, 2, AREA_COUNT), requires_grad=requires_grad),
+        area_order=torch.zeros((1, AREA_COUNT, AREA_COUNT), requires_grad=requires_grad),
+        area_order_failure=torch.zeros((1, AREA_COUNT), requires_grad=requires_grad),
         left_door_variant_idx=torch.tensor([0, 0, 1]),
         right_door_variant_idx=torch.tensor([0, 1, 1]),
         up_door_variant_idx=torch.tensor([0]),
@@ -149,6 +151,8 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
         down=torch.full((1, 1), -1),
     )
     loss = compute_balance_loss(
+        area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        order_beta=1.0,
         preds=preds,
         door_matches=door_matches,
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -170,6 +174,8 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     door_matches.left[0, 0] = 0
     try:
         compute_balance_loss(
+            area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+            order_beta=1.0,
             preds=preds,
             door_matches=door_matches,
             toilet_crossed_room_idx=torch.tensor([-1]),
@@ -301,6 +307,8 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     area_probability[0, 0] = torch.tensor([0.5, 0.1, 0.1, 0.1, 0.1, 0.1])
 
     loss = compute_balance_loss(
+        area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        order_beta=1.0,
         preds=preds,
         door_matches=door_matches,
         toilet_crossed_room_idx=torch.tensor([0]),
@@ -331,6 +339,8 @@ def test_zero_area_prices_have_zero_regularization_gradient() -> None:
     with torch.no_grad():
         preds.room_area.zero_()
     loss = compute_balance_loss(
+        area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        order_beta=1.0,
         preds=preds,
         door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -361,6 +371,8 @@ def test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero() -> None:
     )
     assert tables.left.abs().max() > 20.0
     loss = compute_balance_loss(
+        area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        order_beta=1.0,
         preds=preds,
         door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -383,6 +395,8 @@ def test_infeasible_toilet_observation_is_rejected() -> None:
     area_mask.zero_()
     try:
         compute_balance_loss(
+            area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+            order_beta=1.0,
             preds=preds,
             door_matches=empty_door_matches(),
             toilet_crossed_room_idx=torch.tensor([1]),
@@ -511,6 +525,8 @@ def test_toilet_failure_drives_dual_and_has_unconditional_target() -> None:
     preds.toilet_compatibility[:] = True
     area_probability, area_mask = uniform_area_targets()
     loss = compute_balance_loss(
+        area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        order_beta=1.0,
         preds=preds,
         door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -557,6 +573,8 @@ def test_toilet_failure_price_has_regularized_equilibrium() -> None:
     # With 70% failure and equally frequent successful rooms, beta=2 gives f=0.35.
     for outcome, probability in ((-1, 0.7), (0, 0.15), (1, 0.15)):
         loss = compute_balance_loss(
+            area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+            order_beta=1.0,
             preds=preds,
             door_matches=empty_door_matches(),
             toilet_crossed_room_idx=torch.tensor([outcome]),

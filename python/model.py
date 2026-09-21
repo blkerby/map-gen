@@ -43,6 +43,8 @@ class Predictions:
     balance_score: torch.Tensor
     # Unconditional expected terminal area price, including unplaced rooms:
     area_balance_score: torch.Tensor
+    # Aggregate terminal order prices for ranks not yet reached in this state:
+    order_balance_score: torch.Tensor
     # Unconditional expected terminal Toilet price, including failure:
     toilet_balance_score: torch.Tensor
     # Predicted average live frontier count across the full episode:
@@ -82,6 +84,10 @@ class BalancePredictions:
     toilet_failure: torch.Tensor
     room_area: torch.Tensor
     room_area_failure: torch.Tensor
+    # One uniformly balanced area choice per start rank: [batch, rank, area].
+    area_order: torch.Tensor
+    # A rank that is never reached has its own terminal failure price.
+    area_order_failure: torch.Tensor
     left_door_variant_idx: torch.Tensor
     right_door_variant_idx: torch.Tensor
     up_door_variant_idx: torch.Tensor
@@ -119,6 +125,7 @@ def get_predictions(raw_preds, output_sizes):
         vanilla_area_invalid=preds[5],
         balance_score=preds[6],
         area_balance_score=preds[7],
+        order_balance_score=raw_preds.new_empty(raw_preds.shape[:2]),
         toilet_balance_score=preds[8].squeeze(-1),
         avg_frontiers=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         graph_diameter=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
@@ -825,6 +832,7 @@ class FrontierModel(torch.nn.Module):
             output_metadata.num_door_variants,
         )
         self.area_balance_score_output = Float32Linear(embedding_width, self.num_rooms)
+        self.order_balance_score_output = Float32Linear(embedding_width, 1)
         self.toilet_balance_score_output = Float32Linear(embedding_width, 1)
         self.avg_frontiers_output = Float32Linear(embedding_width, 1)
         self.graph_diameter_output = Float32Linear(embedding_width, 1)
@@ -869,6 +877,7 @@ class FrontierModel(torch.nn.Module):
             self.vanilla_area_output,
             self.balance_score_output,
             self.area_balance_score_output,
+            self.order_balance_score_output,
             self.toilet_balance_score_output,
             self.avg_frontiers_output,
             self.graph_diameter_output,
@@ -1191,6 +1200,7 @@ class FrontierModel(torch.nn.Module):
             vanilla_area_invalid=preds.vanilla_area_invalid,
             balance_score=balance_score,
             area_balance_score=preds.area_balance_score,
+            order_balance_score=self.order_balance_score_output(X).squeeze(-1).to(torch.float32),
             toilet_balance_score=preds.toilet_balance_score,
             avg_frontiers=avg_frontiers,
             graph_diameter=graph_diameter,
@@ -1450,6 +1460,10 @@ class BalanceModel(torch.nn.Module):
             hidden_width, num_layers, num_room_connection_variants * (AREA_COUNT + 1)
         )
 
+        self.order_net = balance_price_network(
+            hidden_width, num_layers, AREA_COUNT * (AREA_COUNT + 1)
+        )
+
     def forward(self, generation_variable_floats: torch.Tensor) -> BalancePredictions:
         parameter_dtype = next(self.parameters()).dtype
         inputs = generation_variable_floats.to(
@@ -1458,13 +1472,15 @@ class BalanceModel(torch.nn.Module):
         raw = self.door_net(inputs).to(torch.float32)
         toilet_raw = self.toilet_net(inputs).to(torch.float32)
         area_raw = self.area_net(inputs).to(torch.float32)
-        return self.decode_prices(raw, toilet_raw, area_raw)
+        order_raw = self.order_net(inputs).to(torch.float32)
+        return self.decode_prices(raw, toilet_raw, area_raw, order_raw)
 
     def decode_prices(
         self,
         raw: torch.Tensor,
         toilet_raw: torch.Tensor,
         area_raw: torch.Tensor,
+        order_raw: torch.Tensor,
     ) -> BalancePredictions:
         batch_size = raw.shape[0]
         offset = 0
@@ -1517,6 +1533,10 @@ class BalanceModel(torch.nn.Module):
             toilet_failure=toilet_failure,
             room_area=room_area,
             room_area_failure=room_area_failure,
+            area_order=order_raw[:, :AREA_COUNT * AREA_COUNT].reshape(
+                batch_size, AREA_COUNT, AREA_COUNT,
+            ),
+            area_order_failure=order_raw[:, AREA_COUNT * AREA_COUNT:],
             left_door_variant_idx=self.left_door_variant_idx,
             right_door_variant_idx=self.right_door_variant_idx,
             up_door_variant_idx=self.up_door_variant_idx,

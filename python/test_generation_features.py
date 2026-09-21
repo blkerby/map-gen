@@ -76,14 +76,14 @@ def test_main_and_balance_models_consume_stored_features_directly() -> None:
     capture = Mock(return_value=None)
     handles = [
         network.register_forward_pre_hook(capture)
-        for network in (balance.door_net, balance.toilet_net, balance.area_net)
+        for network in (balance.door_net, balance.toilet_net, balance.area_net, balance.order_net)
     ]
     try:
         predictions = balance(encoded)
     finally:
         for handle in handles:
             handle.remove()
-    assert capture.call_count == 3
+    assert capture.call_count == 4
     for call in capture.call_args_list:
         torch.testing.assert_close(call.args[1][0], encoded)
     torch.testing.assert_close(main_feature(features, torch.float32), encoded)
