@@ -570,11 +570,9 @@ def compute_balance_loss(
     placed = (room_area >= 0) & area_dual_mask
     if torch.any(room_area[placed] >= AREA_COUNT):
         raise ValueError("observed room-area assignment is out of range")
-    selected_probability = area_probability.gather(
-        -1, room_area.clamp(0, AREA_COUNT - 1).long().unsqueeze(-1),
-    ).squeeze(-1)
-    if torch.any(placed & (selected_probability <= 0.0)):
-        raise ValueError("observed room-area assignment has zero target probability")
+    # Zero-probability areas can still occur in rejected-candidate fallbacks or
+    # older replay data. Keep their observed prices and regularization so the
+    # controller can discourage these outcomes without assigning them a target.
     area_terms = balance_objective_terms(
         tables.room_area, tables.room_area_failure, room_area, area_dual_mask,
     )

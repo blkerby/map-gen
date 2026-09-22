@@ -40,6 +40,19 @@ pub struct AreaSizeLimits {
     pub max: usize,
 }
 
+fn violates_forced_map_station_area(
+    common: &CommonData,
+    vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
+    candidate: Action,
+) -> bool {
+    vanilla_area_constraint_mask[PHANTOON_AREA_CONSTRAINT_IDX]
+        && candidate.area as usize == PHANTOON_AREA_CONSTRAINT_IDX
+        && common.phantoon_map_room_idx().is_some_and(|map_room_idx| {
+            candidate.room_idx != map_room_idx
+                && common.room[candidate.room_idx as usize].map_station
+        })
+}
+
 fn encode_known_finalized_distance(
     current_distance: GraphDistance,
     frontier_distance: GraphDistance,
@@ -1992,6 +2005,9 @@ impl Environment {
                 area: area as AreaIdx,
                 ..initial_action
             };
+            if violates_forced_map_station_area(common, vanilla_area_constraint_mask, candidate) {
+                continue;
+            }
             let (outcomes, door_match, features) = self.outcomes_and_features_after_candidate(
                 common,
                 candidate,
@@ -4022,6 +4038,9 @@ impl Environment {
         frontier_window_size: usize,
         scratch: &mut FeatureScratch,
     ) -> Result<CandidateOutcome, String> {
+        if violates_forced_map_station_area(common, vanilla_area_constraint_mask, candidate) {
+            return Ok(CandidateOutcome::Rejected);
+        }
         let profile = profile_start();
         let snapshot = self.apply_lookahead_candidate(candidate, common);
         profile_end(ProfileMetric::EnvProposalApplyLookahead, profile);
@@ -11551,6 +11570,89 @@ mod tests {
 
         assert_eq!(outcomes.phantoon_pair_valid, DoorValidOutcome::Valid);
         assert_eq!(outcomes.phantoon_area_valid, DoorValidOutcome::Invalid);
+    }
+
+    #[test]
+    fn forced_phantoon_rejects_other_map_stations_before_its_map_is_placed() {
+        let mut common = phantoon_outcome_test_common();
+        common.room[0].map_station = true;
+        common.room[3].map_station = true;
+        for (forced, room_idx, area, rejected) in [
+            (true, 0, 3, true),
+            (false, 0, 3, false),
+            (true, 0, 2, false),
+            (true, 1, 3, false),
+            (true, 3, 3, false),
+        ] {
+            let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+            let mut constraint_mask = NO_VANILLA_AREA_CONSTRAINTS;
+            constraint_mask[PHANTOON_AREA_CONSTRAINT_IDX] = forced;
+            let before = env.outcomes(&common);
+            let outcome = env
+                .evaluate_candidate_outcome(
+                    &common,
+                    &before,
+                    &constraint_mask,
+                    Action {
+                        room_idx,
+                        x: 2,
+                        y: 1,
+                        area,
+                    },
+                    &FeatureConfig::all_disabled(),
+                    FrontierNeighborAlgorithm::Nearest,
+                    1,
+                    4,
+                    &mut FeatureScratch::default(),
+                )
+                .unwrap();
+            assert_eq!(matches!(outcome, CandidateOutcome::Rejected), rejected);
+            assert!(env.room_used.not_any());
+            assert_eq!(env.area_map_station_count, [0; AREA_COUNT]);
+        }
+    }
+
+    #[test]
+    fn forced_phantoon_excludes_other_map_stations_from_initial_wrecked_ship_candidates() {
+        let mut common = phantoon_outcome_test_common();
+        common.room[0].map_station = true;
+        common.room[3].map_station = true;
+        let mut found_map_station = false;
+        for seed in 0..32 {
+            let mut env =
+                Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, seed);
+            let mut constraint_mask = NO_VANILLA_AREA_CONSTRAINTS;
+            constraint_mask[PHANTOON_AREA_CONSTRAINT_IDX] = true;
+            let result = env.get_initial_candidates_with_outcomes(
+                &common,
+                &constraint_mask,
+                &FeatureConfig::all_disabled(),
+                FrontierNeighborAlgorithm::Nearest,
+                1,
+                4,
+                &mut FeatureScratch::default(),
+            );
+            if result
+                .candidates
+                .iter()
+                .any(|candidate| candidate.room_idx == 0)
+            {
+                found_map_station = true;
+                assert_eq!(result.clean_count, AREA_COUNT - 1);
+                assert_eq!(result.rejected_count, 1);
+                assert!(
+                    result
+                        .candidates
+                        .iter()
+                        .all(|candidate| candidate.area != 3)
+                );
+                assert_eq!(result.post_candidate_outcomes.len(), result.clean_count);
+                assert_eq!(result.feature_plans.len(), result.clean_count);
+                assert!(env.room_used.not_any());
+                break;
+            }
+        }
+        assert!(found_map_station);
     }
 
     #[test]

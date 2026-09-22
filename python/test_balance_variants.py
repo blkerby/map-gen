@@ -283,6 +283,97 @@ def test_prices_are_centered_masked_and_have_no_fixed_prior() -> None:
     )
 
 
+def test_forced_phantoon_makes_other_map_station_targets_uniform_over_remaining_areas() -> None:
+    rooms = [
+        {"map_station": True, "special_type": "phantoon_map"},
+        {"map_station": True, "water": 1},
+        {"map_station": True, "heat": 1},
+        {"map_station": True},
+        {"map_station": True},
+        {"map_station": True},
+        {"water": 1},
+        {"special_type": "phantoon_boss"},
+        {"special_type": "phantoon_save"},
+    ]
+    target_rooms = torch.arange(1, AREA_COUNT + 1, dtype=torch.float32).repeat(2, 1)
+    force_mask = torch.zeros((2, AREA_COUNT), dtype=torch.bool)
+    force_mask[1, 3] = True
+    targets = compute_area_balance_targets(
+        rooms,
+        target_rooms,
+        force_mask,
+        torch.full((2, 2, 3), 0.6),
+    )
+
+    # All six stations ignore area-size and water/heat preferences, including
+    # Phantoon's station when unforced. Ordinary rooms keep those preferences.
+    torch.testing.assert_close(targets.probability[0, :6], torch.full((6, AREA_COUNT), 1 / 6))
+    torch.testing.assert_close(targets.probability[0, 6, 4], torch.tensor(0.6))
+    torch.testing.assert_close(targets.probability[0, :6].sum(0), torch.ones(AREA_COUNT))
+    expected = torch.tensor([0.2, 0.2, 0.2, 0., 0.2, 0.2])
+    torch.testing.assert_close(targets.probability[1, 1:6], expected.expand(5, -1))
+    torch.testing.assert_close(targets.probability[1, :6].sum(0), torch.ones(AREA_COUNT))
+    assert targets.dual_mask[1, 1:6].all()
+    torch.testing.assert_close(targets.probability[1, 6], targets.probability[0, 6])
+    for idx in (0, 7, 8):
+        torch.testing.assert_close(
+            targets.probability[1, idx], torch.tensor([0., 0., 0., 1., 0., 0.])
+        )
+        assert not targets.dual_mask[1, idx]
+    assert targets.dual_mask[0].all()
+    torch.testing.assert_close(targets.probability.sum(-1), torch.ones((2, len(rooms))))
+    torch.testing.assert_close(targets.effective_area_rooms, targets.probability.sum(1))
+
+
+def test_map_station_targets_are_not_reserved_without_phantoon_map_room() -> None:
+    targets = compute_area_balance_targets(
+        rooms=[{"map_station": True, "water": 1}],
+        target_area_rooms=torch.arange(1, AREA_COUNT + 1, dtype=torch.float32).unsqueeze(0),
+        vanilla_area_constraint_mask=torch.ones((1, AREA_COUNT), dtype=torch.bool),
+        preferred_probability=torch.full((1, 2, 3), 1.0 / AREA_COUNT),
+    )
+    torch.testing.assert_close(targets.probability, torch.full((1, 1, AREA_COUNT), 1 / 6))
+    assert targets.dual_mask.all()
+
+
+def test_zero_target_area_observations_remain_trainable_and_regularized() -> None:
+    preds = example_predictions(requires_grad=True)
+    probability = torch.tensor([[[0.2, 0.2, 0.2, 0., 0.2, 0.2], [0., 0., 0., 1., 0., 0.]]])
+    mask = torch.tensor([[True, False]])
+    # A nonzero price on the forbidden area is excluded from centering, but
+    # still receives the same quadratic/quartic penalty as every other price.
+    with torch.no_grad():
+        preds.room_area[0, 0, 3] = 2
+    tables = compute_balance_price_tables(preds, probability, mask)
+    torch.testing.assert_close(tables.room_area[0, 0], torch.tensor([0., 0., 0., 2., 0., 0.]))
+    torch.testing.assert_close((tables.room_area * probability).sum(-1), torch.zeros((1, 2)))
+    assert tables.room_area[0, 1].count_nonzero() == 0
+    assert tables.room_area_failure[0, 1] == 0
+    loss = compute_balance_loss(
+        preds=preds,
+        door_matches=empty_door_matches(),
+        toilet_crossed_room_idx=torch.tensor([-1]),
+        room_area=torch.tensor([[3, 3]]),
+        area_order=torch.full((1, AREA_COUNT), -1, dtype=torch.int64),
+        area_probability=probability,
+        area_dual_mask=mask,
+        record_weight=torch.ones(1),
+        door_beta=0.0,
+        toilet_beta=0.0,
+        area_beta=1.0,
+        order_beta=0.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
+    )
+    # 2^2 / 2 + 2^4 / 4 - 2 = 4; gradient at the observed price: 2 + 2^3 - 1 = 9.
+    torch.testing.assert_close(loss, torch.tensor(4.0))
+    loss.backward()
+    torch.testing.assert_close(preds.room_area.grad[0, 0, 3], torch.tensor(9.0))
+    assert preds.room_area.grad[0, 1].count_nonzero() == 0
+
+
 def test_forced_one_hot_area_target_has_finite_zero_price() -> None:
     targets = compute_area_balance_targets(
         rooms=[{"special_type": "ship"}, {}],
@@ -633,6 +724,9 @@ def main() -> None:
     test_toilet_compatibility_uses_crossing_columns()
     test_area_targets_apply_preferences_and_mask_forced_rooms()
     test_prices_are_centered_masked_and_have_no_fixed_prior()
+    test_forced_phantoon_makes_other_map_station_targets_uniform_over_remaining_areas()
+    test_map_station_targets_are_not_reserved_without_phantoon_map_room()
+    test_zero_target_area_observations_remain_trainable_and_regularized()
     test_forced_one_hot_area_target_has_finite_zero_price()
     test_dual_gradient_uses_probability_error_scale()
     test_zero_area_prices_have_zero_regularization_gradient()

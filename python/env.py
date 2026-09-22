@@ -30,6 +30,7 @@ SPECIAL_ROOM_AREA_CONSTRAINT_IDX = {
     "draygon_boss": 4,
     "mother_brain": 5,
 }
+PHANTOON_AREA_CONSTRAINT_IDX = SPECIAL_ROOM_AREA_CONSTRAINT_IDX["phantoon_boss"]
 
 
 @dataclass
@@ -73,6 +74,13 @@ def compute_area_balance_targets(
     batch_size = target_area_rooms.shape[0]
     probability = baseline.unsqueeze(1).expand(-1, len(rooms), -1).clone()
     dual_mask = torch.ones((batch_size, len(rooms)), dtype=torch.bool, device=baseline.device)
+    map_station = torch.tensor(
+        [room.get("map_station", False) for room in rooms],
+        dtype=torch.bool,
+        device=probability.device,
+    )
+    # Every area needs one map station, independent of its size or climate.
+    probability[:, map_station] = 1.0 / AREA_COUNT
     for family_idx, (room_field, preferred_area) in enumerate(
         zip(("water", "heat"), (4, 2), strict=True)
     ):
@@ -81,7 +89,7 @@ def compute_area_balance_targets(
             dtype=torch.int64,
             device=baseline.device,
         )
-        tagged = tiers > 0
+        tagged = (tiers > 0) & ~map_station
         if not torch.any(tagged):
             continue
         rho = preferred_probability[:, family_idx, tiers[tagged] - 1]
@@ -98,6 +106,29 @@ def compute_area_balance_targets(
         )
         tagged_probability[:, :, preferred_area] = rho
         probability[:, tagged] = tagged_probability
+
+    if any(room.get("special_type") == "phantoon_map" for room in rooms):
+        other_map_station = torch.tensor(
+            [
+                room.get("map_station", False) and room.get("special_type") != "phantoon_map"
+                for room in rooms
+            ],
+            dtype=torch.bool,
+            device=probability.device,
+        )
+        reserved = (
+            vanilla_area_constraint_mask[:, PHANTOON_AREA_CONSTRAINT_IDX].unsqueeze(1)
+            & other_map_station.unsqueeze(0)
+        )
+        # One station is reserved for Wrecked Ship; the other five should each
+        # be uniform over the remaining areas, regardless of size or climate.
+        map_station_probability = probability.new_full((AREA_COUNT,), 1.0 / (AREA_COUNT - 1))
+        map_station_probability[PHANTOON_AREA_CONSTRAINT_IDX] = 0.0
+        probability = torch.where(
+            reserved.unsqueeze(-1),
+            map_station_probability,
+            probability,
+        )
 
     constraint_idx = torch.tensor(
         [SPECIAL_ROOM_AREA_CONSTRAINT_IDX.get(room.get("special_type"), -1) for room in rooms],
@@ -117,8 +148,8 @@ def compute_area_balance_targets(
         torch.ones_like(probability[..., 0]),
     ):
         raise RuntimeError("area balance target rows must sum to one")
-    if torch.any(probability[dual_mask] <= 0.0):
-        raise RuntimeError("active area balance target probabilities must be positive")
+    if torch.any(probability[dual_mask] < 0.0):
+        raise RuntimeError("active area balance target probabilities must be nonnegative")
     return AreaBalanceTargets(
         probability=probability,
         dual_mask=dual_mask,
