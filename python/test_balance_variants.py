@@ -153,6 +153,10 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
         order_beta=1.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
         preds=preds,
         door_matches=door_matches,
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -176,6 +180,10 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
         compute_balance_loss(
             area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
             order_beta=1.0,
+            door_price_scale=1.0,
+            toilet_price_scale=1.0,
+            area_price_scale=1.0,
+            order_price_scale=1.0,
             preds=preds,
             door_matches=door_matches,
             toilet_crossed_room_idx=torch.tensor([-1]),
@@ -309,6 +317,10 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
         order_beta=1.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
         preds=preds,
         door_matches=door_matches,
         toilet_crossed_room_idx=torch.tensor([0]),
@@ -341,6 +353,10 @@ def test_zero_area_prices_have_zero_regularization_gradient() -> None:
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
         order_beta=1.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
         preds=preds,
         door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -373,6 +389,10 @@ def test_prices_are_unbounded_and_beta_pulls_corrections_toward_zero() -> None:
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
         order_beta=1.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
         preds=preds,
         door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -397,6 +417,10 @@ def test_infeasible_toilet_observation_is_rejected() -> None:
         compute_balance_loss(
             area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
             order_beta=1.0,
+            door_price_scale=1.0,
+            toilet_price_scale=1.0,
+            area_price_scale=1.0,
+            order_price_scale=1.0,
             preds=preds,
             door_matches=empty_door_matches(),
             toilet_crossed_room_idx=torch.tensor([1]),
@@ -527,6 +551,10 @@ def test_toilet_failure_drives_dual_and_has_unconditional_target() -> None:
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
         order_beta=1.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
         preds=preds,
         door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]),
@@ -568,13 +596,17 @@ def test_toilet_failure_price_has_regularized_equilibrium() -> None:
     preds = example_predictions(requires_grad=True)
     preds.toilet_compatibility[:] = True
     with torch.no_grad():
-        preds.toilet_failure.fill_(0.7 / 2.0)
+        preds.toilet_failure.fill_(0.3)
     area_probability, area_mask = uniform_area_targets()
-    # With 70% failure and equally frequent successful rooms, beta=2 gives f=0.35.
-    for outcome, probability in ((-1, 0.7), (0, 0.15), (1, 0.15)):
+    # beta=2, c=0.6, f=0.3: beta * f * (1 + (f / c)^2) = 0.75.
+    for outcome, probability in ((-1, 0.75), (0, 0.125), (1, 0.125)):
         loss = compute_balance_loss(
             area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
             order_beta=1.0,
+            door_price_scale=1.0,
+            toilet_price_scale=0.6,
+            area_price_scale=1.0,
+            order_price_scale=1.0,
             preds=preds,
             door_matches=empty_door_matches(),
             toilet_crossed_room_idx=torch.tensor([outcome]),

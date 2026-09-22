@@ -457,6 +457,7 @@ def materialize_direction_balance_logits(
 class BalanceObjectiveTerms:
     observed_price: torch.Tensor
     squared_prices: torch.Tensor
+    fourth_power_prices: torch.Tensor
     group_count: torch.Tensor
 
 
@@ -484,9 +485,14 @@ def balance_objective_terms(
 ) -> BalanceObjectiveTerms:
     enabled = enabled.expand_as(failure_price)
     selected = terminal_balance_cost(success_prices, failure_price, outcome)
+    success_squared = success_prices.square()
+    failure_squared = failure_price.square()
     return BalanceObjectiveTerms(
         observed_price=(selected * enabled).sum(-1),
-        squared_prices=((success_prices.square().sum(-1) + failure_price.square()) * enabled).sum(-1),
+        squared_prices=((success_squared.sum(-1) + failure_squared) * enabled).sum(-1),
+        fourth_power_prices=(
+            (success_squared.square().sum(-1) + failure_squared.square()) * enabled
+        ).sum(-1),
         group_count=enabled.sum(-1),
     )
 
@@ -494,15 +500,19 @@ def balance_objective_terms(
 def balance_family_loss(
     terms: list[BalanceObjectiveTerms],
     beta: float,
+    price_scale: float,
     record_weight: torch.Tensor,
 ) -> torch.Tensor:
     # The target's expected price is zero: successful prices are target-centered,
     # and failure has target probability zero. Every enabled group contributes,
     # so failures cannot change the denominator of the observed-price term.
     observed = torch.stack([term.observed_price for term in terms]).sum(0)
-    regularizer = torch.stack([term.squared_prices for term in terms]).sum(0)
+    squared_prices = torch.stack([term.squared_prices for term in terms]).sum(0)
+    fourth_power_prices = torch.stack([term.fourth_power_prices for term in terms]).sum(0)
+    # beta * (price^2 / 2 + price^4 / (4 * c^2)), for every priced outcome.
+    regularizer = beta * (0.5 * squared_prices + fourth_power_prices / (4 * price_scale**2))
     count = torch.stack([term.group_count for term in terms]).sum(0).clamp_min(1)
-    per_record = (0.5 * beta * regularizer - observed) / count
+    per_record = (regularizer - observed) / count
     return (per_record * record_weight).sum() / record_weight.sum().clamp_min(1.0)
 
 
@@ -519,6 +529,10 @@ def compute_balance_loss(
     toilet_beta: float,
     area_beta: float,
     order_beta: float,
+    door_price_scale: float,
+    toilet_price_scale: float,
+    area_price_scale: float,
+    order_price_scale: float,
 ) -> torch.Tensor:
     tables = compute_balance_price_tables(preds, area_probability, area_dual_mask)
     failures = tables.door_failure.split(
@@ -565,13 +579,13 @@ def compute_balance_loss(
         tables.room_area, tables.room_area_failure, room_area, area_dual_mask,
     )
     return (
-        balance_family_loss(door_terms, door_beta, record_weight)
-        + balance_family_loss([toilet_terms], toilet_beta, record_weight)
-        + balance_family_loss([area_terms], area_beta, record_weight)
+        balance_family_loss(door_terms, door_beta, door_price_scale, record_weight)
+        + balance_family_loss([toilet_terms], toilet_beta, toilet_price_scale, record_weight)
+        + balance_family_loss([area_terms], area_beta, area_price_scale, record_weight)
         + balance_family_loss([balance_objective_terms(
             tables.area_order, tables.area_order_failure, area_order,
             torch.ones_like(area_order, dtype=torch.bool),
-        )], order_beta, record_weight)
+        )], order_beta, order_price_scale, record_weight)
     )
 
 

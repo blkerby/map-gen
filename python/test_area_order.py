@@ -104,8 +104,9 @@ def test_controller_pushes_overrepresented_choices_and_failures_up() -> None:
                 centered, failures, observed, torch.ones(1, 6, dtype=torch.bool)
             )
         ],
-        1.0,
-        torch.ones(1),
+        beta=1.0,
+        price_scale=1.0,
+        record_weight=torch.ones(1),
     )
     loss.backward()
     assert raw.grad[0, 0, 3] < 0  # Gradient descent raises the observed price.

@@ -66,6 +66,10 @@ def check_balance_training_round(enabled: bool) -> None:
         step_config=SimpleNamespace(
             balance_train=SimpleNamespace(
                 order_beta=1.0,
+                door_price_scale=0.5,
+                toilet_price_scale=1.0,
+                area_price_scale=2.0,
+                order_price_scale=4.0,
                 enabled=enabled,
                 batch_size=2,
                 door_beta=1.0,
@@ -103,6 +107,8 @@ def check_balance_training_round(enabled: bool) -> None:
         assert train_batch.call_count == 2
         assert "loss_scale" not in train_batch.call_args.kwargs
         assert train_batch.call_args.kwargs["area_dual_mask"].all()
+        for family, scale in (("door", 0.5), ("toilet", 1.0), ("area", 2.0), ("order", 4.0)):
+            assert train_batch.call_args.kwargs[f"{family}_price_scale"] == scale
         assert optimizer.zero_grad.call_count == 2
         optimizer.zero_grad.assert_called_with(set_to_none=True)
         assert optimizer.step.call_count == 2

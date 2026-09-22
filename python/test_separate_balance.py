@@ -158,6 +158,10 @@ def test_failure_learning_does_not_change_other_controller_updates() -> None:
             loss = compute_balance_loss(
                 area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
                 order_beta=1.0,
+                door_price_scale=1.0,
+                toilet_price_scale=1.0,
+                area_price_scale=1.0,
+                order_price_scale=1.0,
                 preds=preds,
                 door_matches=matches,
                 toilet_crossed_room_idx=torch.tensor([-1, -1, -1, 0]),

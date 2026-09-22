@@ -31,6 +31,10 @@ def test_terminal_failures_train_all_families() -> None:
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
         order_beta=1.0,
+        door_price_scale=1.0,
+        toilet_price_scale=1.0,
+        area_price_scale=1.0,
+        order_price_scale=1.0,
         preds=preds, door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]), room_area=torch.tensor([[-1, -1]]),
         area_probability=probability, area_dual_mask=mask, record_weight=torch.ones(1),
@@ -43,13 +47,14 @@ def test_terminal_failures_train_all_families() -> None:
 
 
 def test_failure_has_zero_target_and_fixed_normalization() -> None:
-    # Two groups, one always fails. Its optimum is p_failure / beta, regardless
-    # of the number of successes in the other group.
+    # Two groups, one always fails. beta=0.5 and c=1 give equilibrium f=1:
+    # beta * f * (1 + (f / c)^2) = p_failure = 1. The other group's success
+    # frequency does not change its denominator.
     successes = torch.zeros((4, 2, 2), requires_grad=True)
-    failure = torch.full((4, 2), 2.0, requires_grad=True)
+    failure = torch.full((4, 2), 1.0, requires_grad=True)
     outcomes = torch.tensor([[-1, 0], [-1, 0], [-1, 0], [-1, -1]])
     terms = balance_objective_terms(successes, failure, outcomes, torch.ones((4, 2), dtype=torch.bool))
-    loss = balance_family_loss([terms], 0.5, torch.ones(4))
+    loss = balance_family_loss([terms], beta=0.5, price_scale=1.0, record_weight=torch.ones(4))
     loss.backward()
     torch.testing.assert_close(failure.grad.sum(0), torch.tensor([0.0, 0.375]))
     assert terms.group_count.tolist() == [2, 2, 2, 2]

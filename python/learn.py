@@ -122,6 +122,10 @@ def train_balance_batch(
     toilet_beta: float,
     area_beta: float,
     order_beta: float,
+    door_price_scale: float,
+    toilet_price_scale: float,
+    area_price_scale: float,
+    order_price_scale: float,
 ) -> float:
     loss = compute_balance_loss(
         balance_model(generation_variable_floats),
@@ -136,6 +140,10 @@ def train_balance_batch(
         toilet_beta,
         area_beta,
         order_beta,
+        door_price_scale,
+        toilet_price_scale,
+        area_price_scale,
+        order_price_scale,
     )
     if not torch.isfinite(loss):
         raise RuntimeError(f"non-finite balance loss: {loss.item()}")
@@ -200,6 +208,10 @@ def train_balance_fresh(
             toilet_beta=context.step_config.balance_train.toilet_beta,
             area_beta=context.step_config.balance_train.area_beta,
             order_beta=context.step_config.balance_train.order_beta,
+            door_price_scale=context.step_config.balance_train.door_price_scale,
+            toilet_price_scale=context.step_config.balance_train.toilet_price_scale,
+            area_price_scale=context.step_config.balance_train.area_price_scale,
+            order_price_scale=context.step_config.balance_train.order_price_scale,
         )
         if any(
             parameter.grad is not None and not torch.all(torch.isfinite(parameter.grad))

@@ -175,6 +175,37 @@ def test_balance_train_is_required_and_batch_size_divides_round() -> None:
         raise AssertionError("balance_train.door_beta should reject zero")
 
 
+def test_balance_price_scales_are_required_positive_and_scheduleable() -> None:
+    for family in ("door", "toilet", "area", "order"):
+        field = f"{family}_price_scale"
+        config_data = load_debug_config()
+        del config_data["balance_train"][field]
+        try:
+            Config.model_validate(config_data)
+        except ValidationError as error:
+            assert field in str(error)
+        else:
+            raise AssertionError(f"balance_train.{field} should be required")
+
+        for value in (0.0, -1.0, float("nan"), float("inf")):
+            for setting in (value, {"linear": [1.0, value]}):
+                config_data = load_debug_config()
+                config_data["balance_train"][field] = setting
+                try:
+                    validate_config(Config.model_validate(config_data))
+                except ValueError as error:
+                    assert field in str(error)
+                else:
+                    raise AssertionError(f"balance_train.{field} should reject {setting}")
+
+        config_data = load_debug_config()
+        config_data["balance_train"][field] = {"log": [0.25, 1.0]}
+        config = Config.model_validate(config_data)
+        validate_config(config)
+        midpoint = instantiate_scheduleable_config(config, 320)
+        assert getattr(midpoint.balance_train, field) == 0.5
+
+
 def test_proposal_target_temperature_must_be_positive() -> None:
     config_data = load_debug_config()
     config_data["train"]["proposal_target_temperature"] = 0.0
@@ -393,6 +424,7 @@ def main() -> None:
     test_recommended_candidates_same_frontier_is_required()
     test_proposal_target_temperature_is_required()
     test_balance_train_is_required_and_batch_size_divides_round()
+    test_balance_price_scales_are_required_positive_and_scheduleable()
     test_proposal_target_temperature_must_be_positive()
     test_scheduled_values_instantiate()
     test_generation_area_bounding_box_fields_must_be_positive()

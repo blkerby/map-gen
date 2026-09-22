@@ -53,7 +53,11 @@
     "door_beta": {"log": [0.01, 0.02, 0.03, 0.2, 0.2]},
     "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
     "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
-    "order_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]}
+    "order_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
+    "door_price_scale": 1.0,
+    "toilet_price_scale": 1.0,
+    "area_price_scale": 1.0,
+    "order_price_scale": 1.0
   },
   "generation": {
     "num_environments": 4096,
@@ -176,7 +180,7 @@
     "replay_pass_factor": 2.0,
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 1280000, 1280000]},
+    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 640000, 640000]},
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,

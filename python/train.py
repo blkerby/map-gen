@@ -123,6 +123,50 @@ def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
     return torch.sum(counts * (counts - 1) / (totals * (totals - 1)))
 
 
+def compute_door_match_ss(
+    horizontal_counts: torch.Tensor,
+    vertical_counts: torch.Tensor,
+) -> torch.Tensor:
+    return (
+        compute_door_match_count_ss(horizontal_counts, dim=1)
+        + compute_door_match_count_ss(horizontal_counts, dim=0)
+        + compute_door_match_count_ss(vertical_counts, dim=1)
+        + compute_door_match_count_ss(vertical_counts, dim=0)
+    )
+
+
+def compute_valid_door_match_counts(
+    engine: Engine,
+    actions: Actions,
+    success: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Count horizontal and vertical pairs only in fully successful episodes."""
+    door_matches, _ = engine.compute_balance_targets(
+        Actions(
+            room_idx=actions.room_idx[success],
+            room_x=actions.room_x[success],
+            room_y=actions.room_y[success],
+            room_area=actions.room_area[success],
+        ),
+        success.device,
+    )
+    counts = []
+    for matches, target_count in (
+        (door_matches.left, door_matches.right.shape[1]),
+        (door_matches.up, door_matches.down.shape[1]),
+    ):
+        source_count = matches.shape[1]
+        source_idx = torch.arange(source_count, device=matches.device)
+        matched = (matches >= 0) & (matches < target_count)
+        pair_idx = source_idx * target_count + matches
+        counts.append(
+            torch.bincount(
+                pair_idx[matched], minlength=source_count * target_count
+            ).reshape(source_count, target_count).to(torch.float64)
+        )
+    return counts[0], counts[1]
+
+
 def compute_area_order_ss(area_order: torch.Tensor) -> torch.Tensor:
     """Estimate each rank's squared proportions among episodes reaching that rank."""
     rank_ss = []
@@ -1870,12 +1914,23 @@ class TrainingSession:
         )
         left_topk = torch.topk(left_door_match_p.flatten(), k=3).values
         up_topk = torch.topk(up_door_match_p.flatten(), k=3).values
-        door_match_ss = (
-            compute_door_match_count_ss(horizontal_door_match_counts, dim=1)
-            + compute_door_match_count_ss(horizontal_door_match_counts, dim=0)
-            + compute_door_match_count_ss(vertical_door_match_counts, dim=1)
-            + compute_door_match_count_ss(vertical_door_match_counts, dim=0)
+        door_match_ss = compute_door_match_ss(
+            horizontal_door_match_counts,
+            vertical_door_match_counts,
         )
+        valid_horizontal_counts, valid_vertical_counts = compute_valid_door_match_counts(
+            self.engine,
+            episode_data.actions,
+            success,
+        )
+        door_match_valid_ss = compute_door_match_ss(
+            valid_horizontal_counts,
+            valid_vertical_counts,
+        )
+        valid_up_door_match_p = valid_vertical_counts / torch.sum(
+            valid_vertical_counts, dim=1, keepdim=True
+        )
+        door_match_up_valid_top1 = valid_up_door_match_p.max()
         toilet_crossed_room_p = toilet_crossed_room_distribution(
             end_outcomes.toilet_crossed_room_idx,
             self.num_rooms,
@@ -2092,6 +2147,10 @@ class TrainingSession:
             "balance_toilet_beta": step_config.balance_train.toilet_beta,
             "balance_area_beta": step_config.balance_train.area_beta,
             "balance_order_beta": step_config.balance_train.order_beta,
+            "balance_door_price_scale": step_config.balance_train.door_price_scale,
+            "balance_toilet_price_scale": step_config.balance_train.toilet_price_scale,
+            "balance_area_price_scale": step_config.balance_train.area_price_scale,
+            "balance_order_price_scale": step_config.balance_train.order_price_scale,
             "reward_frontier": variable_float_metric_value(
                 step_config.generation.reward_frontier,
                 "generation.reward_frontier",
@@ -2162,7 +2221,9 @@ class TrainingSession:
             "door_match_up_top1": up_topk[0],
             "door_match_up_top2": up_topk[1],
             "door_match_up_top3": up_topk[2],
+            "door_match_up_valid_top1": door_match_up_valid_top1,
             "door_match_ss": door_match_ss,
+            "door_match_valid_ss": door_match_valid_ss,
             "balance_door_price_rms": balance_metrics.door_price_rms,
             "balance_door_price_max": balance_metrics.door_price_max,
             "toilet_crossed_room_top1": toilet_crossed_room_topk[0],

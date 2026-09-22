@@ -53,7 +53,11 @@
     "door_beta": 1.0,
     "toilet_beta": 1.0,
     "area_beta": 1.0,
-    "order_beta": 1.0
+    "order_beta": 1.0,
+    "door_price_scale": 1.0,
+    "toilet_price_scale": 1.0,
+    "area_price_scale": 1.0,
+    "order_price_scale": 1.0
   },
   "generation": {
     "num_environments": 32,

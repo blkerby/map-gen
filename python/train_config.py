@@ -193,6 +193,11 @@ class BalanceTrainConfig(StrictBaseModel):
     toilet_beta: ScheduleableFloat
     area_beta: ScheduleableFloat
     order_beta: ScheduleableFloat
+    # At |price| = price_scale, quartic and quadratic restoring gradients are equal.
+    door_price_scale: ScheduleableFloat
+    toilet_price_scale: ScheduleableFloat
+    area_price_scale: ScheduleableFloat
+    order_price_scale: ScheduleableFloat
 
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
@@ -657,7 +662,10 @@ def validate_config(config: Config) -> None:
         )
     if not config.features.area_state:
         raise ValueError("features.area_state must be enabled for order balancing")
-    for field_name in ("door_beta", "toilet_beta", "area_beta", "order_beta"):
+    for field_name in (
+        "door_beta", "toilet_beta", "area_beta", "order_beta",
+        "door_price_scale", "toilet_price_scale", "area_price_scale", "order_price_scale",
+    ):
         validate_positive_scheduleable_float(
             getattr(config.balance_train, field_name),
             f"balance_train.{field_name}",
