@@ -204,6 +204,7 @@ def compute_expected_reward(
     )
     return (
         batch_weight(config.reward_door) * torch.sum(door_logprobs, dim=2)
+        + batch_weight(config.reward_success) * torch.nn.functional.logsigmoid(preds.success)
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
         + batch_weight(config.reward_toilet) * toilet_logprobs
         + batch_weight(config.reward_phantoon_pair) * phantoon_pair_logprobs
@@ -895,6 +896,7 @@ def compute_candidate_values(
     )
     expected_reward = compute_expected_reward(
         Predictions(
+            success=preds.success.view(environment_count, candidate_count),
             door_invalid=preds.door_invalid.view(environment_count, candidate_count, -1),
             connection_invalid=preds.connection_invalid.view(
                 environment_count,

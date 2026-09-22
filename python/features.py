@@ -175,6 +175,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
             "reward_toilet": values["reward_toilet"],
             "reward_phantoon_pair": values["reward_phantoon_pair"],
             "reward_phantoon_area": values["reward_phantoon_area"],
+            "reward_success": values["reward_success"],
             **{name: values[name] for name in VANILLA_AREA_REWARD_FIELDS},
             "reward_frontier": values["reward_frontier"],
             "reward_graph_diameter": values["reward_graph_diameter"],

@@ -8,7 +8,8 @@ from env import Actions, EpisodeData
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v3"
+EXPERIENCE_FORMAT = "map-gen-experience-v4"
+PRE_SUCCESS_EXPERIENCE_FORMAT = "map-gen-experience-v3"
 REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
     "room_idx",
     "room_x",
@@ -16,21 +17,54 @@ REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
     "room_area",
     "generation_variable_floats",
 )
+REQUIRED_EXPERIENCE_TENSORS = (
+    *REQUIRED_BALANCE_EXPERIENCE_TENSORS,
+    "temperature",
+    "recommended_candidates",
+)
 
 
-def load_balance_experience(path: str | Path, num_rooms: int) -> tuple[Actions, torch.Tensor]:
+def read_experience_tensors(
+    path: str | Path, required_names: tuple[str, ...]
+) -> dict[str, torch.Tensor]:
     with safe_open(path, framework="pt", device="cpu") as experience:
         metadata = experience.metadata()
-        if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
+        if metadata is None or metadata.get("format") not in (
+            EXPERIENCE_FORMAT, PRE_SUCCESS_EXPERIENCE_FORMAT
+        ):
             raise ValueError(f"unsupported experience format in {path}")
         missing = [
-            name for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS if name not in experience.keys()
+            name for name in required_names if name not in experience.keys()
         ]
         if missing:
             raise ValueError(f"{path} missing tensor(s): {', '.join(missing)}")
         tensors = {
-            name: experience.get_tensor(name) for name in REQUIRED_BALANCE_EXPERIENCE_TENSORS
+            name: experience.get_tensor(name) for name in required_names
         }
+    variables = tensors["generation_variable_floats"]
+    pre_success = metadata["format"] == PRE_SUCCESS_EXPERIENCE_FORMAT
+    expected_shape = (
+        tensors["room_idx"].shape[0], len(GENERATION_VARIABLE_FLOAT_FIELDS) - int(pre_success)
+    )
+    if variables.shape != expected_shape:
+        raise ValueError(
+            f"{path} generation_variable_floats shape must be {expected_shape}, "
+            f"got {tuple(variables.shape)}"
+        )
+    if pre_success:
+        # v3 has exactly the current schema minus reward_success. Preserve every
+        # other column, including the vanilla-area constraint flags after it.
+        column = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_success")
+        tensors["generation_variable_floats"] = torch.cat(
+            (variables[:, :column], variables.new_zeros((variables.shape[0], 1)),
+             variables[:, column:]),
+            dim=1,
+        )
+    return tensors
+
+
+def load_balance_experience(path: str | Path, num_rooms: int) -> tuple[Actions, torch.Tensor]:
+    tensors = read_experience_tensors(path, REQUIRED_BALANCE_EXPERIENCE_TENSORS)
 
     action_shape = tensors["room_idx"].shape
     if len(action_shape) != 2 or action_shape[1] != num_rooms:
@@ -43,13 +77,6 @@ def load_balance_experience(path: str | Path, num_rooms: int) -> tuple[Actions, 
                 f"{path} {name} shape {tuple(tensors[name].shape)} does not match "
                 f"room_idx shape {tuple(action_shape)}"
             )
-    variable_shape = tensors["generation_variable_floats"].shape
-    expected_variable_shape = (action_shape[0], len(GENERATION_VARIABLE_FLOAT_FIELDS))
-    if variable_shape != expected_variable_shape:
-        raise ValueError(
-            f"{path} generation_variable_floats shape must be {expected_variable_shape}, "
-            f"got {tuple(variable_shape)}"
-        )
     return (
         Actions(
             room_idx=tensors["room_idx"],
@@ -95,11 +122,7 @@ class ExperienceStorage:
         data_list = []
         for file_num in file_num_list:
             file_path = os.path.join(self.data_path, "{}.safetensors".format(file_num))
-            with safe_open(file_path, framework="pt") as file:
-                metadata = file.metadata()
-                if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
-                    raise ValueError(f"Unsupported experience format in {file_path}")
-                tensors = {name: file.get_tensor(name) for name in file.keys()}
+            tensors = read_experience_tensors(file_path, REQUIRED_EXPERIENCE_TENSORS)
             data = EpisodeData(
                 actions=Actions(
                     room_idx=tensors["room_idx"],

@@ -43,6 +43,7 @@ from env import (
     GeneratedFeatureData,
     concatenate_features,
     compute_area_balance_targets,
+    count_invalid_outcomes,
 )
 from experience import ExperienceStorage
 from features import GenerationVariableFloatsFeature
@@ -105,7 +106,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v20"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v21"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -749,6 +750,10 @@ def create_generate_config(
             config.generation.reward_phantoon_area,
             "generation.reward_phantoon_area",
         ),
+        "reward_success": variable_float_tensor(
+            config.generation.reward_success,
+            "generation.reward_success",
+        ),
         "reward_frontier": variable_float_tensor(
             config.generation.reward_frontier,
             "generation.reward_frontier",
@@ -943,6 +948,7 @@ def create_generate_config(
         reward_toilet=generation_variable_floats_by_name["reward_toilet"],
         reward_phantoon_pair=generation_variable_floats_by_name["reward_phantoon_pair"],
         reward_phantoon_area=generation_variable_floats_by_name["reward_phantoon_area"],
+        reward_success=generation_variable_floats_by_name["reward_success"],
         reward_vanilla_area=raw_vanilla_area_rewards,
         reward_frontier=generation_variable_floats_by_name["reward_frontier"],
         reward_graph_diameter=generation_variable_floats_by_name["reward_graph_diameter"],
@@ -1755,15 +1761,12 @@ class TrainingSession:
             end_outcomes.area_map_station_count != 1,
             dim=1,
         )
-        total_invalid = (
-            door_invalid
-            + conn_invalid
-            + toilet_invalid
-            + phantoon_pair_invalid
-            + phantoon_area_invalid
-            + torch.sum(vanilla_area_invalid.to(torch.int64), dim=1)
-            + area_size_invalid
-            + area_map_station_invalid
+        total_invalid = count_invalid_outcomes(
+            outcomes,
+            vanilla_area_constraint_mask,
+            (area_size >= step_config.generation.min_area_size)
+            & (area_size <= step_config.generation.max_area_size),
+            end_outcomes.area_map_station_count == 1,
         )
         avg_invalid = torch.mean(total_invalid.to(torch.float32))
         min_invalid = torch.min(total_invalid)
@@ -1948,6 +1951,7 @@ class TrainingSession:
         toilet_loss_pct = 100.0 * loss.toilet_contribution / loss_denominator
         phantoon_pair_loss_pct = 100.0 * loss.phantoon_pair_contribution / loss_denominator
         phantoon_area_loss_pct = 100.0 * loss.phantoon_area_contribution / loss_denominator
+        success_loss_pct = 100.0 * loss.success_contribution / loss_denominator
         vanilla_area_loss_pct = 100.0 * loss.vanilla_area_contribution / loss_denominator
         main_balance_loss_pct = 100.0 * loss.balance_contribution / loss_denominator
         main_order_balance_loss_pct = 100.0 * loss.order_balance_contribution / loss_denominator
@@ -1979,6 +1983,8 @@ class TrainingSession:
             "phantoon_pair_loss_pct": phantoon_pair_loss_pct,
             "phantoon_area_loss": loss.phantoon_area,
             "phantoon_area_loss_pct": phantoon_area_loss_pct,
+            "success_loss": loss.success,
+            "success_loss_pct": success_loss_pct,
             "vanilla_area_loss": loss.vanilla_area,
             "vanilla_area_loss_pct": vanilla_area_loss_pct,
             "main_balance_loss": loss.balance,
@@ -2129,6 +2135,10 @@ class TrainingSession:
                 step_config.generation.reward_phantoon_area,
                 "generation.reward_phantoon_area",
             ),
+            "reward_success": variable_float_metric_value(
+                step_config.generation.reward_success,
+                "generation.reward_success",
+            ),
             **{
                 name: variable_float_metric_value(
                     getattr(step_config.generation, name),
@@ -2202,6 +2212,7 @@ class TrainingSession:
             "toilet_weight": step_config.train.toilet_weight,
             "phantoon_pair_weight": step_config.train.phantoon_pair_weight,
             "phantoon_area_weight": step_config.train.phantoon_area_weight,
+            "success_weight": step_config.train.success_weight,
             "toilet_balance_weight": step_config.train.toilet_balance_weight,
             "area_balance_weight": step_config.train.area_balance_weight,
             "order_balance_weight": step_config.train.order_balance_weight,
@@ -2769,6 +2780,7 @@ def build_session(args: Args) -> TrainingSession:
             toilet_weight=config.train.toilet_weight,
             phantoon_pair_weight=config.train.phantoon_pair_weight,
             phantoon_area_weight=config.train.phantoon_area_weight,
+            success_weight=config.train.success_weight,
             vanilla_area_weight=config.train.vanilla_area_weight,
             balance_weight=config.train.balance_weight,
             area_balance_weight=config.train.area_balance_weight,

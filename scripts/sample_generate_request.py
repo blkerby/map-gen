@@ -30,6 +30,7 @@ def main() -> int:
         "reward_toilet": 1.0,
         "reward_phantoon_pair": 1.0,
         "reward_phantoon_area": 1.0,
+        "reward_success": 0.0,
         "reward_ship_in_crateria": 1.0,
         "reward_kraid_in_brinstar": 1.0,
         "reward_ridley_in_norfair": 1.0,

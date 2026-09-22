@@ -74,6 +74,17 @@ class CheckUtilitySupervision:
         # gradient direction, independent of random model initialization.
         values["preds"] = replace(values["preds"], **predictions)
         loss = compute_loss_breakdown(**values)
+        success_target = values["success_target"]
+        success_logits = values["preds"].success
+        torch.testing.assert_close(
+            loss.success,
+            torch.nn.functional.binary_cross_entropy_with_logits(
+                success_logits, success_target.to(torch.float32)
+            ),
+        )
+        success_gradient = torch.autograd.grad(loss.total, success_logits, retain_graph=True)[0]
+        assert (success_gradient[success_target] < 0).all()
+        assert (success_gradient[~success_target] > 0).all()
         gradients = torch.autograd.grad(loss.total, tuple(predictions.values()), retain_graph=True)
         for gradient in gradients[:-1]:
             assert torch.isfinite(gradient).all()
@@ -256,6 +267,9 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         with patch("learn.compute_loss_breakdown", side_effect=checker):
             result = train_feature_batch_backward(context, prepared, 1.0)
         assert math.isfinite(result.total)
+        assert result.success > 0
+        assert result.success_contribution > 0
+        assert torch.count_nonzero(main.success_output.weight.grad) > 0
     assert checker.checked > 0
     assert checker.absent_area_gradients_checked > 0
 

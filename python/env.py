@@ -185,6 +185,7 @@ class GenerateConfig:
     reward_toilet: float | torch.Tensor
     reward_phantoon_pair: float | torch.Tensor
     reward_phantoon_area: float | torch.Tensor
+    reward_success: float | torch.Tensor
     reward_vanilla_area: torch.Tensor
     reward_frontier: float | torch.Tensor
     reward_graph_diameter: float | torch.Tensor
@@ -379,6 +380,25 @@ class StepOutcomes:
             norfair_heat=self.norfair_heat[start:end],
             door_match=self.door_match[start:end],
         )
+
+
+def count_invalid_outcomes(
+    outcomes: StepOutcomes,
+    vanilla_area_constraint_mask: torch.Tensor,
+    area_size_valid: torch.Tensor,
+    area_map_station_valid: torch.Tensor,
+) -> torch.Tensor:
+    """Count terminal validity failures, including unknown required outcomes."""
+    return (
+        (outcomes.door_invalid != 0).sum(dim=-1)
+        + (outcomes.connection_invalid != 0).sum(dim=-1)
+        + (outcomes.toilet_invalid != 0).to(torch.int64)
+        + (outcomes.phantoon_pair_invalid != 0).to(torch.int64)
+        + (outcomes.phantoon_area_invalid != 0).to(torch.int64)
+        + ((outcomes.vanilla_area_invalid != 0) & vanilla_area_constraint_mask).sum(dim=-1)
+        + (~area_size_valid).sum(dim=-1)
+        + (~area_map_station_valid).sum(dim=-1)
+    )
 
 
 @dataclass

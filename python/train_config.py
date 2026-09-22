@@ -114,6 +114,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_toilet",
     "reward_phantoon_pair",
     "reward_phantoon_area",
+    "reward_success",
     *VANILLA_AREA_REWARD_FIELDS,
     "reward_frontier",
     "reward_graph_diameter",
@@ -226,6 +227,7 @@ class GenerationConfig(StrictBaseModel):
     reward_toilet: VariableFloat
     reward_phantoon_pair: VariableFloat
     reward_phantoon_area: VariableFloat
+    reward_success: VariableFloat
     reward_ship_in_crateria: VariableFloat
     reward_kraid_in_brinstar: VariableFloat
     reward_ridley_in_norfair: VariableFloat
@@ -371,6 +373,7 @@ class TrainConfig(StrictBaseModel):
     toilet_weight: float
     phantoon_pair_weight: float
     phantoon_area_weight: float
+    success_weight: float
     vanilla_area_weight: float
     balance_weight: float
     area_balance_weight: float
@@ -706,6 +709,10 @@ def validate_config(config: Config) -> None:
         config.generation.reward_phantoon_area,
         "generation.reward_phantoon_area",
     )
+    validate_nonnegative_variable_float(
+        config.generation.reward_success,
+        "generation.reward_success",
+    )
     for field_name in VANILLA_AREA_REWARD_FIELDS:
         validate_nonnegative_variable_float(
             getattr(config.generation, field_name),
@@ -805,6 +812,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.phantoon_pair_weight must be greater than or equal to zero")
     if config.train.phantoon_area_weight < 0:
         raise ValueError("train.phantoon_area_weight must be greater than or equal to zero")
+    if not math.isfinite(config.train.success_weight) or config.train.success_weight < 0:
+        raise ValueError("train.success_weight must be finite and greater than or equal to zero")
     if config.train.vanilla_area_weight < 0:
         raise ValueError("train.vanilla_area_weight must be greater than or equal to zero")
     if config.train.toilet_balance_weight < 0:

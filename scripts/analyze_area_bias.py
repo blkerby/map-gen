@@ -18,7 +18,7 @@ from train_config import (  # noqa: E402
 )
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v3"
+EXPERIENCE_FORMAT = "map-gen-experience-v4"
 ROOM_DEFINITIONS_PATH = REPO_ROOT / "room_definitions" / "zebes.json"
 PROBABILITY_BIN_COUNT = 5
 AREA_COUNT = 6

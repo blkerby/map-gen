@@ -21,6 +21,7 @@ from env import (
     ProposalData,
     GeneratedFeatureData,
     compute_area_balance_targets,
+    count_invalid_outcomes,
     extract_candidate_features,
     slice_features,
 )
@@ -285,6 +286,7 @@ class MainLossBreakdown:
     toilet: float
     phantoon_pair: float
     phantoon_area: float
+    success: float
     vanilla_area: float
     balance: float
     area_balance: float
@@ -306,6 +308,7 @@ class MainLossBreakdown:
     toilet_contribution: float
     phantoon_pair_contribution: float
     phantoon_area_contribution: float
+    success_contribution: float
     vanilla_area_contribution: float
     balance_contribution: float
     area_balance_contribution: float
@@ -361,6 +364,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet=0.0,
         phantoon_pair=0.0,
         phantoon_area=0.0,
+        success=0.0,
         vanilla_area=0.0,
         balance=0.0,
         area_balance=0.0,
@@ -382,6 +386,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         toilet_contribution=0.0,
         phantoon_pair_contribution=0.0,
         phantoon_area_contribution=0.0,
+        success_contribution=0.0,
         vanilla_area_contribution=0.0,
         balance_contribution=0.0,
         area_balance_contribution=0.0,
@@ -408,6 +413,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet += source.toilet
     target.phantoon_pair += source.phantoon_pair
     target.phantoon_area += source.phantoon_area
+    target.success += source.success
     target.balance += source.balance
     target.area_balance += source.area_balance
     target.order_balance += source.order_balance
@@ -428,6 +434,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet_contribution += source.toilet_contribution
     target.phantoon_pair_contribution += source.phantoon_pair_contribution
     target.phantoon_area_contribution += source.phantoon_area_contribution
+    target.success_contribution += source.success_contribution
     target.vanilla_area += source.vanilla_area
     target.vanilla_area_contribution += source.vanilla_area_contribution
     target.balance_contribution += source.balance_contribution
@@ -455,6 +462,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet=total_loss.toilet / count,
         phantoon_pair=total_loss.phantoon_pair / count,
         phantoon_area=total_loss.phantoon_area / count,
+        success=total_loss.success / count,
         vanilla_area=total_loss.vanilla_area / count,
         balance=total_loss.balance / count,
         area_balance=total_loss.area_balance / count,
@@ -476,6 +484,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         toilet_contribution=total_loss.toilet_contribution / count,
         phantoon_pair_contribution=total_loss.phantoon_pair_contribution / count,
         phantoon_area_contribution=total_loss.phantoon_area_contribution / count,
+        success_contribution=total_loss.success_contribution / count,
         vanilla_area_contribution=total_loss.vanilla_area_contribution / count,
         balance_contribution=total_loss.balance_contribution / count,
         area_balance_contribution=total_loss.area_balance_contribution / count,
@@ -1365,6 +1374,12 @@ def train_feature_batch_backward(
         :,
         VANILLA_AREA_CONDITION_INDICES,
     ].to(torch.bool)
+    success_target = count_invalid_outcomes(
+        repeated_outcomes,
+        vanilla_area_constraint_mask.unsqueeze(1),
+        area_size_target == 1,
+        area_map_station_target == 1,
+    ) == 0
     area_balance_dual_mask = generation_area_balance_targets(
         context.train_batch_envs[0].engine.rooms,
         generation_variable_floats,
@@ -1431,6 +1446,7 @@ def train_feature_batch_backward(
             )
         prefix_loss = compute_loss_breakdown(
             preds,
+            success_target,
             repeated_outcomes,
             mask,
             vanilla_area_constraint_mask,
@@ -1471,6 +1487,7 @@ def train_feature_batch_backward(
         total_loss.toilet += prefix_loss.toilet.item() * prefix_weight
         total_loss.phantoon_pair += prefix_loss.phantoon_pair.item() * prefix_weight
         total_loss.phantoon_area += prefix_loss.phantoon_area.item() * prefix_weight
+        total_loss.success += prefix_loss.success.item() * prefix_weight
         total_loss.vanilla_area += prefix_loss.vanilla_area.item() * prefix_weight
         total_loss.balance += prefix_loss.balance.item() * prefix_weight
         total_loss.area_balance += prefix_loss.area_balance.item() * prefix_weight
@@ -1498,6 +1515,9 @@ def train_feature_batch_backward(
         )
         total_loss.phantoon_area_contribution += (
             prefix_loss.phantoon_area_contribution.item() * prefix_weight
+        )
+        total_loss.success_contribution += (
+            prefix_loss.success_contribution.item() * prefix_weight
         )
         total_loss.vanilla_area_contribution += (
             prefix_loss.vanilla_area_contribution.item() * prefix_weight

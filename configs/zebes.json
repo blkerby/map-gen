@@ -2,7 +2,7 @@
   "experiment_name": "zebes-testing",
   "room_set": "room_definitions/zebes.json",
   "map_size": [72, 72],
-  "knot_episodes": [0, 300000, 1200000, 16000000, 64000000],
+  "knot_episodes": [0, 300000, 1200000, 16000000, 100000000],
   "checkpoint_period": 100,
   "visualize": 0,
   "distance_proximity_scale": 5.0,
@@ -25,14 +25,14 @@
   "optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.0001, 0.0001]},
+      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.00005, 0.00005]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0002, 0.0002]},
+      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0001, 0.0001]},
       "beta1": 0.95,
       "beta2": 0.99
     }
@@ -54,7 +54,7 @@
     "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
     "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
     "order_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
-    "door_price_scale": 1.0,
+    "door_price_scale": 0.5,
     "toilet_price_scale": 1.0,
     "area_price_scale": 1.0,
     "order_price_scale": 1.0
@@ -77,6 +77,7 @@
     "reward_toilet": 1.0,
     "reward_phantoon_pair": 1.0,
     "reward_phantoon_area": 1.0,
+    "reward_success": 0.0,
     "reward_ship_in_crateria": 1.0,
     "reward_kraid_in_brinstar": 1.0,
     "reward_ridley_in_norfair": 1.0,
@@ -180,13 +181,14 @@
     "replay_pass_factor": 2.0,
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 640000, 640000]},
+    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 1280000, 1280000]},
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,
     "toilet_weight": 2.0,
     "phantoon_pair_weight": 2.0,
     "phantoon_area_weight": 2.0,
+    "success_weight": 1.0,
     "vanilla_area_weight": 2.0,
     "balance_weight": 5.0,
     "area_balance_weight": 5.0,

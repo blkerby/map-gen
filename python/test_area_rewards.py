@@ -40,6 +40,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
     generation_variables = torch.zeros([1, len(GENERATION_VARIABLE_FLOAT_FIELDS)])
     area_probability = torch.full([1, 1, AREA_COUNT], 1.0 / AREA_COUNT)
     return GenerateConfig(
+        reward_success=0.0,
         episode_length=1,
         recommended_candidates=2,
         shortlist_candidates=2,
@@ -90,6 +91,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
 def area_predictions() -> Predictions:
     batch, candidate, door, connection, room_part = 1, 2, 3, 4, 5
     return Predictions(
+        success=torch.zeros([batch, candidate]),
         order_balance_score=torch.zeros([batch, candidate]),
         door_invalid=torch.zeros([batch, candidate, door]),
         connection_invalid=torch.zeros([batch, candidate, connection]),

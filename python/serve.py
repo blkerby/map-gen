@@ -62,8 +62,8 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v13"
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v20"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v14"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v21"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -122,6 +122,7 @@ class GenerateRequest(StrictBaseModel):
     reward_toilet: float
     reward_phantoon_pair: float
     reward_phantoon_area: float
+    reward_success: float
     reward_ship_in_crateria: float
     reward_kraid_in_brinstar: float
     reward_ridley_in_norfair: float
@@ -552,6 +553,7 @@ def create_generate_configs(
         "reward_toilet": generate_request.reward_toilet,
         "reward_phantoon_pair": generate_request.reward_phantoon_pair,
         "reward_phantoon_area": generate_request.reward_phantoon_area,
+        "reward_success": generate_request.reward_success,
         "reward_frontier": generate_request.reward_frontier,
         "reward_graph_diameter": generate_request.reward_graph_diameter,
         **{
@@ -692,6 +694,7 @@ def create_generate_configs(
                 reward_toilet=generate_request.reward_toilet,
                 reward_phantoon_pair=generate_request.reward_phantoon_pair,
                 reward_phantoon_area=generate_request.reward_phantoon_area,
+                reward_success=generate_request.reward_success,
                 reward_vanilla_area=torch.tensor(
                     [getattr(generate_request, name) for name in VANILLA_AREA_REWARD_FIELDS],
                     dtype=torch.float32,
@@ -945,6 +948,7 @@ def warmup_generate_request() -> GenerateRequest:
         reward_toilet=1.0,
         reward_phantoon_pair=1.0,
         reward_phantoon_area=1.0,
+        reward_success=0.0,
         reward_ship_in_crateria=1.0,
         reward_kraid_in_brinstar=1.0,
         reward_ridley_in_norfair=1.0,

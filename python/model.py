@@ -28,6 +28,8 @@ DETERMINISTIC_INVALID_LOGIT = 20.0
 #    [batch, candidate, output]  during generation
 @dataclass
 class Predictions:
+    # Log-odds of a terminal map with no invalid outcomes:
+    success: torch.Tensor
     # log-odds of invalid door (unconnected):
     door_invalid: torch.Tensor
     # log-odds of invalid connection (lack of return path):
@@ -117,6 +119,7 @@ def get_predictions(raw_preds, output_sizes):
         col += size
 
     return Predictions(
+        success=preds[9].squeeze(-1),
         door_invalid=preds[0],
         connection_invalid=preds[1],
         toilet_invalid=preds[2].squeeze(-1),
@@ -676,6 +679,7 @@ class FrontierModel(torch.nn.Module):
             door_output_size,
             num_rooms,
             1,
+            1,
         )
         if sum(door_counts) != door_output_size:
             raise ValueError("door_counts must sum to the door output size")
@@ -826,6 +830,7 @@ class FrontierModel(torch.nn.Module):
         self.toilet_output = Float32Linear(embedding_width, 1)
         self.phantoon_pair_output = Float32Linear(embedding_width, 1)
         self.phantoon_area_output = Float32Linear(embedding_width, 1)
+        self.success_output = Float32Linear(embedding_width, 1)
         self.vanilla_area_output = Float32Linear(embedding_width, VANILLA_AREA_CONSTRAINT_COUNT)
         self.balance_score_output = Float32Linear(
             embedding_width,
@@ -874,6 +879,7 @@ class FrontierModel(torch.nn.Module):
             self.toilet_output,
             self.phantoon_pair_output,
             self.phantoon_area_output,
+            self.success_output,
             self.vanilla_area_output,
             self.balance_score_output,
             self.area_balance_score_output,
@@ -1082,6 +1088,7 @@ class FrontierModel(torch.nn.Module):
                     balance_score,
                     area_balance_score,
                     toilet_balance_score,
+                    self.success_output(X),
                 ],
                 dim=-1,
             ),
@@ -1192,6 +1199,7 @@ class FrontierModel(torch.nn.Module):
                 "refill-from-room utility",
             )
         return Predictions(
+            success=preds.success,
             door_invalid=door_invalid,
             connection_invalid=connection_invalid,
             toilet_invalid=preds.toilet_invalid,
