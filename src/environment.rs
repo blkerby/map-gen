@@ -40,19 +40,6 @@ pub struct AreaSizeLimits {
     pub max: usize,
 }
 
-fn violates_forced_map_station_area(
-    common: &CommonData,
-    vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
-    candidate: Action,
-) -> bool {
-    vanilla_area_constraint_mask[PHANTOON_AREA_CONSTRAINT_IDX]
-        && candidate.area as usize == PHANTOON_AREA_CONSTRAINT_IDX
-        && common.phantoon_map_room_idx().is_some_and(|map_room_idx| {
-            candidate.room_idx != map_room_idx
-                && common.room[candidate.room_idx as usize].map_station
-        })
-}
-
 fn encode_known_finalized_distance(
     current_distance: GraphDistance,
     frontier_distance: GraphDistance,
@@ -2005,7 +1992,11 @@ impl Environment {
                 area: area as AreaIdx,
                 ..initial_action
             };
-            if violates_forced_map_station_area(common, vanilla_area_constraint_mask, candidate) {
+            if self.violates_phantoon_map_station_area(
+                common,
+                vanilla_area_constraint_mask,
+                candidate,
+            ) {
                 continue;
             }
             let (outcomes, door_match, features) = self.outcomes_and_features_after_candidate(
@@ -2247,6 +2238,36 @@ impl Environment {
     fn frontier_area(&self, common: &CommonData, room_part_idx: RoomPartIdx) -> AreaIdx {
         let room_idx = common.room_part[room_part_idx as usize].0;
         self.room_area[room_idx as usize]
+    }
+
+    fn violates_phantoon_map_station_area(
+        &self,
+        common: &CommonData,
+        vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
+        candidate: Action,
+    ) -> bool {
+        let Some(map_room_idx) = common.phantoon_map_room_idx() else {
+            return false;
+        };
+        let phantoon_rooms = [
+            common.phantoon_boss_room_idx(),
+            Some(map_room_idx),
+            common.phantoon_save_room_idx(),
+        ];
+        if phantoon_rooms.contains(&Some(candidate.room_idx)) {
+            let own_map_station_placed = common.room[map_room_idx as usize].map_station
+                && self.room_used[map_room_idx as usize]
+                && self.room_area[map_room_idx as usize] == candidate.area;
+            return self.area_map_station_count[candidate.area as usize]
+                > usize::from(own_map_station_placed);
+        }
+        common.room[candidate.room_idx as usize].map_station
+            && ((vanilla_area_constraint_mask[PHANTOON_AREA_CONSTRAINT_IDX]
+                && candidate.area as usize == PHANTOON_AREA_CONSTRAINT_IDX)
+                || phantoon_rooms.into_iter().flatten().any(|room_idx| {
+                    self.room_used[room_idx as usize]
+                        && self.room_area[room_idx as usize] == candidate.area
+                }))
     }
 
     fn candidate_area_bounds_valid(&self, common: &CommonData, action: Action) -> bool {
@@ -4038,7 +4059,8 @@ impl Environment {
         frontier_window_size: usize,
         scratch: &mut FeatureScratch,
     ) -> Result<CandidateOutcome, String> {
-        if violates_forced_map_station_area(common, vanilla_area_constraint_mask, candidate) {
+        if self.violates_phantoon_map_station_area(common, vanilla_area_constraint_mask, candidate)
+        {
             return Ok(CandidateOutcome::Rejected);
         }
         let profile = profile_start();
@@ -4123,9 +4145,10 @@ impl Environment {
                 pre_candidate_outcomes.phantoon_pair_valid
             };
 
+        let has_usable_area_frontier = self.usable_area_frontiers(common);
         let phantoon_area_valid =
             if pre_candidate_outcomes.phantoon_area_valid == DoorValidOutcome::Unknown {
-                let after = self.phantoon_area_outcome(common);
+                let after = self.phantoon_area_outcome(common, &has_usable_area_frontier);
                 if after == DoorValidOutcome::Invalid {
                     let profile = profile_start();
                     self.restore_lookahead_candidate(common, snapshot);
@@ -4137,7 +4160,6 @@ impl Environment {
                 pre_candidate_outcomes.phantoon_area_valid
             };
 
-        let has_usable_area_frontier = self.usable_area_frontiers(common);
         let (area_size_bucket, area_map_station_count_bucket) =
             self.area_bucket_outcomes(&has_usable_area_frontier);
         let vanilla_area_valid = self.vanilla_area_outcomes(common, &has_usable_area_frontier);
@@ -5908,7 +5930,7 @@ impl Environment {
             connections_valid,
             toilet_valid: self.toilet_outcome(common),
             phantoon_pair_valid: self.phantoon_pair_outcome(common),
-            phantoon_area_valid: self.phantoon_area_outcome(common),
+            phantoon_area_valid: self.phantoon_area_outcome(common, &has_usable_area_frontier),
             vanilla_area_valid: self.vanilla_area_outcomes(common, &has_usable_area_frontier),
             area_size_bucket,
             area_map_station_count_bucket,
@@ -6103,7 +6125,11 @@ impl Environment {
         }
     }
 
-    fn phantoon_area_outcome(&self, common: &CommonData) -> DoorValidOutcome {
+    fn phantoon_area_outcome(
+        &self,
+        common: &CommonData,
+        has_usable_area_frontier: &[bool; AREA_COUNT],
+    ) -> DoorValidOutcome {
         let (Some(boss_room_idx), Some(map_room_idx), Some(save_room_idx)) = (
             common.phantoon_boss_room_idx(),
             common.phantoon_map_room_idx(),
@@ -6116,7 +6142,8 @@ impl Environment {
             .into_iter()
             .filter(|&room_idx| self.room_used[room_idx as usize])
             .map(|room_idx| self.room_area[room_idx as usize]);
-        if let Some(first_area) = placed_areas.next()
+        let first_area = placed_areas.next();
+        if let Some(first_area) = first_area
             && placed_areas.any(|area| area != first_area)
         {
             return DoorValidOutcome::Invalid;
@@ -6126,7 +6153,9 @@ impl Environment {
             .all(|room_idx| self.room_used[room_idx as usize])
         {
             DoorValidOutcome::Valid
-        } else if self.finished {
+        } else if self.finished
+            || first_area.is_some_and(|area| !has_usable_area_frontier[area as usize])
+        {
             DoorValidOutcome::Invalid
         } else {
             DoorValidOutcome::Unknown
@@ -11419,6 +11448,43 @@ mod tests {
         CommonData::new(rooms).unwrap()
     }
 
+    fn phantoon_area_test_common() -> CommonData {
+        let room_specs = [
+            (None, false, vec!["left", "right", "up"]),
+            (None, false, vec!["down"]),
+            (Some("phantoon_boss"), false, vec!["right"]),
+            (Some("phantoon_map"), true, vec!["left"]),
+            (Some("phantoon_save"), false, vec!["down"]),
+            (None, true, vec!["left"]),
+            (None, false, vec!["right"]),
+        ];
+        let rooms = room_specs
+            .into_iter()
+            .map(|(special_type, map_station, directions)| {
+                let doors: Vec<_> = directions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, direction)| {
+                        serde_json::json!({
+                            "id": id, "direction": direction, "x": 0, "y": 0, "kind": 0
+                        })
+                    })
+                    .collect();
+                serde_json::from_value(serde_json::json!({
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "special_type": special_type,
+                    "map_station": map_station,
+                    "doors": [doors],
+                    "connections": [],
+                    "missing_connections": []
+                }))
+                .unwrap()
+            })
+            .collect();
+        CommonData::new(rooms).unwrap()
+    }
+
     #[test]
     fn phantoon_outcomes_are_valid_without_special_rooms() {
         let rooms: Vec<Room> = serde_json::from_str(
@@ -11464,9 +11530,9 @@ mod tests {
 
     #[test]
     fn phantoon_outcomes_accept_same_neighbor_and_area() {
-        let common = phantoon_outcome_test_common();
+        let common = phantoon_area_test_common();
         let mut env = Environment::new(&common, (8, 4), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
-        env.step_known(
+        env.step(
             Action {
                 room_idx: 0,
                 x: 2,
@@ -11475,7 +11541,7 @@ mod tests {
             },
             &common,
         );
-        env.step_known(
+        env.step(
             Action {
                 room_idx: 2,
                 x: 1,
@@ -11492,7 +11558,7 @@ mod tests {
             env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Unknown
         );
-        env.step_known(
+        env.step(
             Action {
                 room_idx: 3,
                 x: 3,
@@ -11509,11 +11575,11 @@ mod tests {
             env.outcomes(&common).phantoon_area_valid,
             DoorValidOutcome::Unknown
         );
-        env.step_known(
+        env.step(
             Action {
                 room_idx: 4,
-                x: 5,
-                y: 1,
+                x: 2,
+                y: 0,
                 area: 0,
             },
             &common,
@@ -11653,6 +11719,151 @@ mod tests {
             }
         }
         assert!(found_map_station);
+    }
+
+    #[test]
+    fn phantoon_map_station_reservation_handles_both_placement_orders() {
+        let common = phantoon_area_test_common();
+        for phantoon_room in [2, 3, 4] {
+            for (first_room, candidate_room) in [(phantoon_room, 5), (5, phantoon_room)] {
+                let mut env =
+                    Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+                env.step(
+                    Action {
+                        room_idx: first_room,
+                        x: 3,
+                        y: 3,
+                        area: 2,
+                    },
+                    &common,
+                );
+                let candidate = Action {
+                    room_idx: candidate_room,
+                    x: 5,
+                    y: 3,
+                    area: 2,
+                };
+                assert!(env.violates_phantoon_map_station_area(
+                    &common,
+                    &NO_VANILLA_AREA_CONSTRAINTS,
+                    candidate,
+                ));
+                assert!(!env.violates_phantoon_map_station_area(
+                    &common,
+                    &NO_VANILLA_AREA_CONSTRAINTS,
+                    Action {
+                        area: 1,
+                        ..candidate
+                    },
+                ));
+                let before = env.outcomes(&common);
+                let outcome = env
+                    .evaluate_candidate_outcome(
+                        &common,
+                        &before,
+                        &NO_VANILLA_AREA_CONSTRAINTS,
+                        candidate,
+                        &FeatureConfig::all_disabled(),
+                        FrontierNeighborAlgorithm::Nearest,
+                        1,
+                        4,
+                        &mut FeatureScratch::default(),
+                    )
+                    .unwrap();
+                assert!(matches!(outcome, CandidateOutcome::Rejected));
+                assert!(!env.room_used[candidate_room as usize]);
+                assert_eq!(env.actions.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn phantoon_map_station_reservation_allows_its_own_map_station() {
+        let common = phantoon_area_test_common();
+        for (first_room, candidate_room) in [(2, 3), (4, 3), (3, 2), (3, 4)] {
+            let mut env = Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+            env.step(
+                Action {
+                    room_idx: first_room,
+                    x: 3,
+                    y: 3,
+                    area: 2,
+                },
+                &common,
+            );
+            assert!(!env.violates_phantoon_map_station_area(
+                &common,
+                &NO_VANILLA_AREA_CONSTRAINTS,
+                Action {
+                    room_idx: candidate_room,
+                    x: 5,
+                    y: 3,
+                    area: 2,
+                },
+            ));
+        }
+    }
+
+    #[test]
+    fn phantoon_area_rejects_closure_only_while_partially_placed() {
+        let common = phantoon_area_test_common();
+        // Hub at (3, 2), left and right ends at (2, 2) and (4, 2).
+        // The candidate caps the hub's last frontier at (3, 1).
+        for (left_room, right_room, last_room, expected) in [
+            (6, 5, 1, DoorValidOutcome::Unknown), // No Phantoon rooms.
+            (6, 3, 1, DoorValidOutcome::Invalid), // Only its map room.
+            (2, 3, 1, DoorValidOutcome::Invalid), // Boss and map; save still missing.
+            (2, 3, 4, DoorValidOutcome::Valid),   // Save completes the trio.
+        ] {
+            let mut env = Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+            for (room_idx, x) in [(0, 3), (left_room, 2), (right_room, 4)] {
+                env.step(
+                    Action {
+                        room_idx,
+                        x,
+                        y: 2,
+                        area: 2,
+                    },
+                    &common,
+                );
+            }
+            let before = env.outcomes(&common);
+            assert_eq!(before.phantoon_area_valid, DoorValidOutcome::Unknown);
+            assert!(env.usable_area_frontiers(&common)[2]);
+            let candidate = Action {
+                room_idx: last_room,
+                x: 3,
+                y: 1,
+                area: 2,
+            };
+            let outcome = env
+                .evaluate_candidate_outcome(
+                    &common,
+                    &before,
+                    &NO_VANILLA_AREA_CONSTRAINTS,
+                    candidate,
+                    &FeatureConfig::all_disabled(),
+                    FrontierNeighborAlgorithm::Nearest,
+                    1,
+                    4,
+                    &mut FeatureScratch::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                matches!(outcome, CandidateOutcome::Rejected),
+                expected == DoorValidOutcome::Invalid,
+            );
+            assert!(!env.room_used[last_room as usize]);
+            assert!(env.usable_area_frontiers(&common)[2]);
+            assert_eq!(
+                env.outcomes(&common).phantoon_area_valid,
+                before.phantoon_area_valid
+            );
+
+            env.step(candidate, &common);
+            assert!(!env.usable_area_frontiers(&common)[2]);
+            assert_eq!(env.outcomes(&common).phantoon_area_valid, expected);
+        }
     }
 
     #[test]
