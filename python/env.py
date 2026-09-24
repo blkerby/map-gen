@@ -821,6 +821,7 @@ class GlobalFeatures:
     room_x: torch.Tensor
     room_y: torch.Tensor
     room_placed: torch.Tensor
+    room_area: torch.Tensor
     room_part_furthest_destination: torch.Tensor
     room_part_furthest_source: torch.Tensor
     room_part_save_from_room_distance: torch.Tensor
@@ -864,6 +865,7 @@ class GlobalFeatures:
             room_x=self.room_x.to(device, non_blocking=non_blocking),
             room_y=self.room_y.to(device, non_blocking=non_blocking),
             room_placed=self.room_placed.to(device, non_blocking=non_blocking),
+            room_area=self.room_area.to(device, non_blocking=non_blocking),
             room_part_furthest_destination=self.room_part_furthest_destination.to(
                 device, non_blocking=non_blocking
             ),
@@ -962,6 +964,7 @@ class GlobalFeatures:
             room_x=self.room_x.flatten(0, 1),
             room_y=self.room_y.flatten(0, 1),
             room_placed=self.room_placed.flatten(0, 1),
+            room_area=self.room_area.flatten(0, 1),
             room_part_furthest_destination=self.room_part_furthest_destination.flatten(0, 1),
             room_part_furthest_source=self.room_part_furthest_source.flatten(0, 1),
             room_part_save_from_room_distance=self.room_part_save_from_room_distance.flatten(0, 1),
@@ -1964,6 +1967,7 @@ class EnvironmentGroup:
                     "room_x": feature_slot.room_x.numpy(),
                     "room_y": feature_slot.room_y.numpy(),
                     "room_placed": feature_slot.room_placed.numpy(),
+                    "room_area": feature_slot.room_area.numpy(),
                     "room_part_furthest_destination": feature_slot.room_part_furthest_destination.numpy(),
                     "room_part_furthest_source": feature_slot.room_part_furthest_source.numpy(),
                     "room_part_save_from_room_distance": (
@@ -2096,6 +2100,7 @@ class FeatureSlot:
         room_part_count = env.engine.get_output_metadata().num_room_parts
         self.inventory_width = inventory_count * int(features.inventory)
         self.room_width = room_count * int(features.room_position)
+        self.room_area_width = room_count * int(features.room_area)
         self.room_part_width = room_part_count * int(features.room_part_furthest_distance)
         self.room_part_save_distance_width = room_part_count * int(
             features.room_part_save_distance
@@ -2135,6 +2140,7 @@ class FeatureSlot:
         self.room_x = None
         self.room_y = None
         self.room_placed = None
+        self.room_area = None
         self.room_part_furthest_destination = None
         self.room_part_furthest_source = None
         self.room_part_save_from_room_distance = None
@@ -2216,6 +2222,7 @@ class FeatureSlot:
         self.room_x = self._empty((self.snapshot_capacity, self.room_width), torch.int8)
         self.room_y = self._empty((self.snapshot_capacity, self.room_width), torch.int8)
         self.room_placed = self._empty((self.snapshot_capacity, self.room_width), torch.uint8)
+        self.room_area = self._empty((self.snapshot_capacity, self.room_area_width), torch.uint8)
         self.room_part_furthest_destination = self._empty(
             (self.snapshot_capacity, self.room_part_width), torch.uint8
         )
@@ -2472,6 +2479,7 @@ class FeatureSlot:
                 room_x=self.room_x[:environment_count],
                 room_y=self.room_y[:environment_count],
                 room_placed=self.room_placed[:environment_count],
+                room_area=self.room_area[:environment_count],
                 room_part_furthest_destination=self.room_part_furthest_destination[
                     :environment_count
                 ],
@@ -2686,6 +2694,9 @@ class FeatureSlot:
                 room_y=self.room_y[:snapshot_count].view(
                     environment_count, candidate_count, self.room_width
                 ),
+                room_area=self.room_area[:snapshot_count].view(
+                    environment_count, candidate_count, self.room_area_width
+                ),
                 room_placed=self.room_placed[:snapshot_count].view(
                     environment_count, candidate_count, self.room_width
                 ),
@@ -2889,6 +2900,7 @@ def extract_candidate_features(
                 "room_x": feature_slot.room_x.numpy(),
                 "room_y": feature_slot.room_y.numpy(),
                 "room_placed": feature_slot.room_placed.numpy(),
+                "room_area": feature_slot.room_area.numpy(),
                 "room_part_furthest_destination": feature_slot.room_part_furthest_destination.numpy(),
                 "room_part_furthest_source": feature_slot.room_part_furthest_source.numpy(),
                 "room_part_save_from_room_distance": (

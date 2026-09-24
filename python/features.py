@@ -718,6 +718,26 @@ class AreaStateFeature(GlobalFeature):
         return torch.cat(values, dim=-1)
 
 
+class RoomAreaFeature(GlobalFeature):
+    """Six indicators per room; an unplaced room contributes all zeros."""
+
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.room_area
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return context.num_rooms * AREA_COUNT
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> RoomAreaFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        area = features.global_features.room_area
+        return (area.unsqueeze(-1) == torch.arange(AREA_COUNT, device=area.device)).to(dtype).flatten(1)
+
+
 GLOBAL_FEATURES: list[type[GlobalFeature]] = [
     InventoryFeature,
     TemperatureFeature,
@@ -733,6 +753,7 @@ GLOBAL_FEATURES: list[type[GlobalFeature]] = [
     RoomPartFrontierDistanceFeature,
     KnownDistanceFeature,
     AreaStateFeature,
+    RoomAreaFeature,
 ]
 
 

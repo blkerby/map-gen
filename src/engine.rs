@@ -2037,6 +2037,7 @@ pub struct FeatureBuffers {
     out_room_x: Py<PyArray2<Coord>>,
     out_room_y: Py<PyArray2<Coord>>,
     room_placed: Py<PyArray2<u8>>,
+    room_area: Py<PyArray2<AreaIdx>>,
     room_part_furthest_destination: Py<PyArray2<u8>>,
     room_part_furthest_source: Py<PyArray2<u8>>,
     room_part_save_from_room_distance: Py<PyArray2<u8>>,
@@ -2191,6 +2192,7 @@ impl FeatureBuffers {
             out_room_x: required_py_field!(fields, "room_x"),
             out_room_y: required_py_field!(fields, "room_y"),
             room_placed: required_py_field!(fields, "room_placed"),
+            room_area: required_py_field!(fields, "room_area"),
             room_part_furthest_destination: required_py_field!(
                 fields,
                 "room_part_furthest_destination"
@@ -2794,6 +2796,7 @@ struct GlobalFeatureOutputShards {
     room_x: OutputShard<Coord>,
     room_y: OutputShard<Coord>,
     room_placed: OutputShard<u8>,
+    room_area: OutputShard<AreaIdx>,
     room_part_furthest_destination: OutputShard<u8>,
     room_part_furthest_source: OutputShard<u8>,
     room_part_save_from_room_distance: OutputShard<u8>,
@@ -2818,6 +2821,7 @@ struct GlobalFeatureOutputShards {
     toilet_crossed_room_idx: OutputShard<i16>,
     inventory_count: usize,
     room_count: usize,
+    room_area_count: usize,
     room_part_furthest_count: usize,
     room_part_save_distance_count: usize,
     room_part_refill_distance_count: usize,
@@ -2847,6 +2851,7 @@ struct GlobalFeatureOutputSlices<'a> {
     room_x: &'a mut [Coord],
     room_y: &'a mut [Coord],
     room_placed: &'a mut [u8],
+    room_area: &'a mut [AreaIdx],
     room_part_furthest_destination: &'a mut [u8],
     room_part_furthest_source: &'a mut [u8],
     room_part_save_from_room_distance: &'a mut [u8],
@@ -2871,6 +2876,7 @@ struct GlobalFeatureOutputSlices<'a> {
     toilet_crossed_room_idx: &'a mut [i16],
     inventory_count: usize,
     room_count: usize,
+    room_area_count: usize,
     room_part_furthest_count: usize,
     room_part_save_distance_count: usize,
     room_part_refill_distance_count: usize,
@@ -2902,6 +2908,7 @@ impl GlobalFeatureOutputShards {
             room_x: unsafe { self.room_x.into_mut_slice() },
             room_y: unsafe { self.room_y.into_mut_slice() },
             room_placed: unsafe { self.room_placed.into_mut_slice() },
+            room_area: unsafe { self.room_area.into_mut_slice() },
             room_part_furthest_destination: unsafe {
                 self.room_part_furthest_destination.into_mut_slice()
             },
@@ -2948,6 +2955,7 @@ impl GlobalFeatureOutputShards {
             toilet_crossed_room_idx: unsafe { self.toilet_crossed_room_idx.into_mut_slice() },
             inventory_count: self.inventory_count,
             room_count: self.room_count,
+            room_area_count: self.room_area_count,
             room_part_furthest_count: self.room_part_furthest_count,
             room_part_save_distance_count: self.room_part_save_distance_count,
             room_part_refill_distance_count: self.room_part_refill_distance_count,
@@ -2993,6 +3001,7 @@ impl GlobalFeatureOutputSlices<'_> {
             fill_output_row(&mut self.room_x, idx, self.room_count, 0);
             fill_output_row(&mut self.room_y, idx, self.room_count, 0);
             fill_output_row(&mut self.room_placed, idx, self.room_count, 0);
+            fill_output_row(&mut self.room_area, idx, self.room_area_count, DUMMY_AREA);
             fill_output_row(
                 &mut self.room_part_furthest_destination,
                 idx,
@@ -3102,6 +3111,14 @@ impl GlobalFeatureOutputSlices<'_> {
                     common.room[candidate.room_idx as usize].connection_variant_idx as usize;
                 self.inventory[start + connection_variant_idx] =
                     self.inventory[start + connection_variant_idx].saturating_sub(1);
+            }
+        }
+        if self.room_area_count != 0 {
+            let start = idx * self.room_area_count;
+            let end = start + self.room_area_count;
+            self.room_area[start..end].copy_from_slice(environment.room_area());
+            if let Some(candidate) = candidate {
+                self.room_area[start + candidate.room_idx as usize] = candidate.area;
             }
         }
         if self.room_count != 0 {
@@ -3231,6 +3248,12 @@ impl GlobalFeatureOutputSlices<'_> {
             &features.inventory,
             idx,
             self.inventory_count,
+        );
+        copy_output_row(
+            &mut self.room_area,
+            &features.room_area,
+            idx,
+            self.room_area_count,
         );
         copy_output_row(&mut self.room_x, &features.room_x, idx, self.room_count);
         copy_output_row(&mut self.room_y, &features.room_y, idx, self.room_count);
@@ -4309,6 +4332,7 @@ mod tests {
             room_x: OutputShard::empty(),
             room_y: OutputShard::empty(),
             room_placed: OutputShard::empty(),
+            room_area: OutputShard::empty(),
             room_part_furthest_destination: OutputShard::empty(),
             room_part_furthest_source: OutputShard::empty(),
             room_part_save_from_room_distance: OutputShard::empty(),
@@ -4333,6 +4357,7 @@ mod tests {
             toilet_crossed_room_idx: OutputShard::empty(),
             inventory_count: 0,
             room_count: 0,
+            room_area_count: 0,
             room_part_furthest_count: 0,
             room_part_save_distance_count: 0,
             room_part_refill_distance_count: 0,
@@ -6243,6 +6268,7 @@ impl EnvironmentGroup {
         let mut out_room_x = buffers.out_room_x.bind(py).readwrite();
         let mut out_room_y = buffers.out_room_y.bind(py).readwrite();
         let mut room_placed = buffers.room_placed.bind(py).readwrite();
+        let mut room_area = buffers.room_area.bind(py).readwrite();
         let mut room_part_furthest_destination =
             buffers.room_part_furthest_destination.bind(py).readwrite();
         let mut room_part_furthest_source = buffers.room_part_furthest_source.bind(py).readwrite();
@@ -6376,6 +6402,7 @@ impl EnvironmentGroup {
         let connection_count = self.common_data.room_connection.len();
         let inventory_width = inventory_count * usize::from(self.features.inventory);
         let room_width = room_count * usize::from(self.features.room_position);
+        let room_area_width = room_count * usize::from(self.features.room_area);
         let room_part_furthest_width =
             room_part_count * usize::from(self.features.room_part_furthest_distance);
         let room_part_save_distance_width =
@@ -6406,6 +6433,7 @@ impl EnvironmentGroup {
         let room_x_shape = out_room_x.as_array().shape().to_vec();
         let room_y_shape = out_room_y.as_array().shape().to_vec();
         let room_placed_shape = room_placed.as_array().shape().to_vec();
+        let room_area_shape = room_area.as_array().shape().to_vec();
         let room_part_furthest_destination_shape =
             room_part_furthest_destination.as_array().shape().to_vec();
         let room_part_furthest_source_shape = room_part_furthest_source.as_array().shape().to_vec();
@@ -6533,6 +6561,7 @@ impl EnvironmentGroup {
             || room_x_shape[0] < snapshot_count
             || room_y_shape[0] < snapshot_count
             || room_placed_shape[0] < snapshot_count
+            || room_area_shape[0] < snapshot_count
             || room_part_furthest_destination_shape[0] < snapshot_count
             || room_part_furthest_source_shape[0] < snapshot_count
             || room_part_save_from_room_distance_shape[0] < snapshot_count
@@ -6596,6 +6625,7 @@ impl EnvironmentGroup {
         check_dim("room_x", room_x_shape[1], room_width)?;
         check_dim("room_y", room_y_shape[1], room_width)?;
         check_dim("room_placed", room_placed_shape[1], room_width)?;
+        check_dim("room_area", room_area_shape[1], room_area_width)?;
         check_dim(
             "room_part_furthest_destination",
             room_part_furthest_destination_shape[1],
@@ -6733,6 +6763,9 @@ impl EnvironmentGroup {
         let out_room_y = out_room_y
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("room_y must be contiguous"))?;
+        let room_area = room_area
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("room_area must be contiguous"))?;
         let room_placed = room_placed
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("room_placed must be contiguous"))?;
@@ -6996,6 +7029,10 @@ impl EnvironmentGroup {
                             &mut out_room_y[snapshot_start * room_width
                                 ..(snapshot_start + snapshot_count) * room_width],
                         ),
+                        room_area: OutputShard::from_slice(
+                            &mut room_area[snapshot_start * room_area_width
+                                ..(snapshot_start + snapshot_count) * room_area_width],
+                        ),
                         room_placed: OutputShard::from_slice(
                             &mut room_placed[snapshot_start * room_width
                                 ..(snapshot_start + snapshot_count) * room_width],
@@ -7106,6 +7143,7 @@ impl EnvironmentGroup {
                         ),
                         inventory_count: inventory_width,
                         room_count: room_width,
+                        room_area_count: room_area_width,
                         room_part_furthest_count: room_part_furthest_width,
                         room_part_save_distance_count: room_part_save_distance_width,
                         room_part_refill_distance_count: room_part_refill_distance_width,

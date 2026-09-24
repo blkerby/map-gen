@@ -273,6 +273,7 @@ class FeatureConfig(StrictBaseModel):
     generation_variable_floats: bool
     lookahead_outcomes: int
     room_position: bool
+    room_area: bool
     global_room_position: int
     room_part_furthest_distance: int
     room_part_save_distance: int
@@ -305,6 +306,7 @@ class FeatureConfig(StrictBaseModel):
             generation_variable_floats=self.generation_variable_floats,
             lookahead_outcomes=self.lookahead_outcomes > 0,
             room_position=self.room_position,
+            room_area=self.room_area,
             global_room_position=self.global_room_position > 0,
             room_part_furthest_distance=self.room_part_furthest_distance > 0,
             room_part_save_distance=self.room_part_save_distance > 0,
@@ -337,6 +339,7 @@ class EngineFeatureConfig(StrictBaseModel):
     generation_variable_floats: bool
     lookahead_outcomes: bool
     room_position: bool
+    room_area: bool
     global_room_position: bool
     room_part_furthest_distance: bool
     room_part_save_distance: bool

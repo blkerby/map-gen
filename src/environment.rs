@@ -387,6 +387,7 @@ pub struct FeatureConfig {
     #[allow(dead_code)]
     pub lookahead_outcomes: bool,
     pub room_position: bool,
+    pub room_area: bool,
     pub global_room_position: bool,
     pub room_part_furthest_distance: bool,
     pub room_part_save_distance: bool,
@@ -416,6 +417,7 @@ impl FeatureConfig {
         !self.inventory
             && !self.temperature
             && !self.recommended_candidates
+            && !self.room_area
             && !self.room_position
             && !self.global_room_position
             && !self.room_part_furthest_distance
@@ -471,6 +473,7 @@ impl FeatureConfig {
             generation_variable_floats: true,
             lookahead_outcomes: true,
             room_position: true,
+            room_area: true,
             global_room_position: true,
             room_part_furthest_distance: true,
             room_part_save_distance: true,
@@ -505,6 +508,7 @@ impl FeatureConfig {
             generation_variable_floats: false,
             lookahead_outcomes: false,
             room_position: false,
+            room_area: false,
             global_room_position: false,
             room_part_furthest_distance: false,
             room_part_save_distance: false,
@@ -538,6 +542,7 @@ pub struct Features {
     pub room_x: Vec<Coord>,
     pub room_y: Vec<Coord>,
     pub room_placed: Vec<u8>,
+    pub room_area: Vec<AreaIdx>,
     pub room_part_furthest_destination: Vec<u8>,
     pub room_part_furthest_source: Vec<u8>,
     pub room_part_save_from_room_distance: Vec<u8>,
@@ -720,6 +725,7 @@ impl Features {
         self.room_x.clear();
         self.room_y.clear();
         self.room_placed.clear();
+        self.room_area.clear();
         self.room_part_furthest_destination.clear();
         self.room_part_furthest_source.clear();
         self.room_part_save_from_room_distance.clear();
@@ -5084,6 +5090,10 @@ impl Environment {
                     .map(|&count| count as u8),
             );
         }
+        let mut room_area = std::mem::take(&mut output.room_area);
+        if config.room_area {
+            room_area.extend_from_slice(&self.room_area);
+        }
         let mut room_placed = std::mem::take(&mut output.room_placed);
         if config.room_position {
             room_placed.extend(self.room_used.iter().map(|bit| u8::from(*bit)));
@@ -5721,6 +5731,7 @@ impl Environment {
             room_x,
             room_y,
             room_placed,
+            room_area,
             room_part_furthest_destination,
             room_part_furthest_source,
             room_part_save_from_room_distance,
@@ -5850,6 +5861,10 @@ impl Environment {
 
     pub fn connection_variant_unused_count(&self) -> &[usize] {
         &self.connection_variant_unused_count
+    }
+
+    pub fn room_area(&self) -> &[AreaIdx] {
+        &self.room_area
     }
 
     pub fn room_x(&self) -> &[Coord] {

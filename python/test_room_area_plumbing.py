@@ -19,6 +19,7 @@ def disabled_features() -> FeatureConfig:
         generation_variable_floats=False,
         lookahead_outcomes=0,
         room_position=False,
+        room_area=False,
         global_room_position=0,
         room_part_furthest_distance=0,
         room_part_save_distance=0,

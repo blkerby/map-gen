@@ -25,14 +25,14 @@
   "optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.00005, 0.00005]},
+      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.0001, 0.0001]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0001, 0.0001]},
+      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0002, 0.0002]},
       "beta1": 0.95,
       "beta2": 0.99
     }
@@ -151,6 +151,7 @@
     "generation_variable_floats": true,
     "lookahead_outcomes": 256,
     "room_position": true,
+    "room_area": true,
     "global_room_position": 256,
     "room_part_furthest_distance": 1,
     "room_part_save_distance": 1,

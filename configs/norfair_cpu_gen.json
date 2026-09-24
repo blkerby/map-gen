@@ -130,6 +130,7 @@
     "generation_variable_floats": true,
     "lookahead_outcomes": 128,
     "room_position": true,
+    "room_area": true,
     "global_room_position": 512,
     "room_part_furthest_distance": 1,
     "room_part_save_distance": 1,
