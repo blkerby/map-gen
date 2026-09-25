@@ -28,18 +28,20 @@ class CandidateRecordsTest(unittest.TestCase):
         )
         self.group = SimpleNamespace(
             config=SimpleNamespace(
-                autocast=False, recommended_candidates=0, temperature=torch.tensor([0.5, 1.0])
+                autocast=False, recommended_candidates=0, temperature=torch.tensor([0.5, 1.0]), episode_length=1
             ),
+            step=0,
             room_tile_count=torch.ones(1, dtype=torch.int64),
             balance_score_tables=SimpleNamespace(
                 area_order=torch.zeros(2, 6, 6), area_order_failure=torch.zeros(2, 6),
+                room_step=torch.full((2, 1, 1), 0.75), room_step_failure=torch.full((2, 1), 1.25),
                 room_area=Mock(), toilet_crossed_room=Mock(), toilet_failure=Mock()
             ),
             area_balance_dual_mask=torch.zeros(2, 1, dtype=torch.bool),
         )
         self.features = SimpleNamespace(
             global_features=SimpleNamespace(
-                room_placed=torch.zeros(4, 1, dtype=torch.bool),
+                room_placed=torch.tensor([[True], [True], [False], [False]]),
                 area_size=torch.zeros(4, 6, dtype=torch.int64),
                 toilet_crossed_room_idx=torch.full((4,), -1),
             )
@@ -53,6 +55,7 @@ class CandidateRecordsTest(unittest.TestCase):
         fields = {
             name: torch.zeros(4)
             for name in (
+                "success",
                 "door_invalid",
                 "connection_invalid",
                 "toilet_invalid",
@@ -61,6 +64,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 "balance_score",
                 "area_balance_score",
                 "order_balance_score",
+                "step_balance_score",
                 "toilet_balance_score",
                 "avg_frontiers",
                 "graph_diameter",
@@ -120,7 +124,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 self.profiler,
             )
         expected_logits = torch.tensor(
-            [[1.0, 4.0], [float("-inf"), float("-inf")]]
+            [[0.25, 3.25], [float("-inf"), float("-inf")]]
         ) / self.group.config.temperature.unsqueeze(1)
         torch.testing.assert_close(selection.sampling_logits, expected_logits)
         expected_probs = torch.stack(
@@ -144,8 +148,12 @@ class CandidateRecordsTest(unittest.TestCase):
             previous_proposal_scores=SimpleNamespace(
                 candidate_count=1, action_index=torch.zeros(1, dtype=torch.int64),
                 area_used=torch.zeros(1, 6),
+                room_placed=torch.zeros(1, 1, dtype=torch.bool),
             ),
-            balance_score_tables=SimpleNamespace(area_order=torch.zeros(1, 6, 6)),
+            balance_score_tables=SimpleNamespace(area_order=torch.zeros(1, 6, 6), room_step=torch.full((1, 1, 1), 1.5)),
+            step=0,
+            room_connection_variant_idx=torch.zeros(1, dtype=torch.int64),
+            num_room_connection_variants=1,
             config=SimpleNamespace(
                 temperature=torch.ones(1),
                 proposal_temperature=torch.tensor([2.0]),
@@ -195,9 +203,9 @@ class CandidateRecordsTest(unittest.TestCase):
             patch("generate.add_stat_totals"),
         ):
             shortlist = compute_group_proposal_shortlist(group, model, self.device, shared)
-        torch.testing.assert_close(sampler.call_args.args[0], torch.tensor([[3.0, 2.0]]).repeat(1, 3))
-        torch.testing.assert_close(shortlist.scores, torch.tensor([[3.0, 2.0]]))
-        torch.testing.assert_close(shortlist.balance_residual, torch.tensor([[5.0, 2.0]]))
+        torch.testing.assert_close(sampler.call_args.args[0], torch.tensor([[2.25, 1.25]]).repeat(1, 3))
+        torch.testing.assert_close(shortlist.scores, torch.tensor([[2.25, 1.25]]))
+        torch.testing.assert_close(shortlist.balance_residual, torch.tensor([[3.5, 0.5]]))
 
     def test_top1_agreement_matches_candidates_and_excludes_nonchoices(self) -> None:
         shortlist = ProposalShortlist(
@@ -311,9 +319,9 @@ class CandidateRecordsTest(unittest.TestCase):
         )
         torch.testing.assert_close(data.invalid, torch.tensor([[[False, False, True]]]))
         torch.testing.assert_close(data.rejected, data.invalid)
-        torch.testing.assert_close(data.target_reward[0, 0, :2], torch.tensor([1.0, 4.0]))
+        torch.testing.assert_close(data.target_reward[0, 0, :2], torch.tensor([0.25, 3.25]))
         torch.testing.assert_close(
-            data.sampling_logits, torch.tensor([[[2.0, 8.0, float("-inf")]]])
+            data.sampling_logits, torch.tensor([[[0.5, 6.5, float("-inf")]]])
         )
         diagnostics = compute_candidate_diagnostics(data, proposal_target_temperature=1.0)
         torch.testing.assert_close(

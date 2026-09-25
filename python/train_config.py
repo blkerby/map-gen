@@ -181,7 +181,7 @@ type OptimizerConfig = AdamOptimizerConfig | MuonOptimizerConfig
 
 
 class BalanceModelConfig(StrictBaseModel):
-    """Width and depth of each independent door, Toilet, area, and order price network."""
+    """Width and depth of each independent door, Toilet, area, order, and step price network."""
 
     hidden_width: int
     num_layers: int
@@ -194,11 +194,13 @@ class BalanceTrainConfig(StrictBaseModel):
     toilet_beta: ScheduleableFloat
     area_beta: ScheduleableFloat
     order_beta: ScheduleableFloat
+    step_beta: ScheduleableFloat
     # At |price| = price_scale, quartic and quadratic restoring gradients are equal.
     door_price_scale: ScheduleableFloat
     toilet_price_scale: ScheduleableFloat
     area_price_scale: ScheduleableFloat
     order_price_scale: ScheduleableFloat
+    step_price_scale: ScheduleableFloat
 
 
 class TieredAreaPreferenceConfig(StrictBaseModel):
@@ -381,6 +383,7 @@ class TrainConfig(StrictBaseModel):
     balance_weight: float
     area_balance_weight: float
     order_balance_weight: float
+    step_balance_weight: float
     toilet_balance_weight: float
     avg_frontiers_weight: float
     graph_diameter_weight: float
@@ -669,8 +672,8 @@ def validate_config(config: Config) -> None:
     if not config.features.area_state:
         raise ValueError("features.area_state must be enabled for order balancing")
     for field_name in (
-        "door_beta", "toilet_beta", "area_beta", "order_beta",
-        "door_price_scale", "toilet_price_scale", "area_price_scale", "order_price_scale",
+        "door_beta", "toilet_beta", "area_beta", "order_beta", "step_beta",
+        "door_price_scale", "toilet_price_scale", "area_price_scale", "order_price_scale", "step_price_scale",
     ):
         validate_positive_scheduleable_float(
             getattr(config.balance_train, field_name),
@@ -823,6 +826,8 @@ def validate_config(config: Config) -> None:
         raise ValueError("train.toilet_balance_weight must be greater than or equal to zero")
     if not math.isfinite(config.train.order_balance_weight) or config.train.order_balance_weight < 0:
         raise ValueError("train.order_balance_weight must be finite and greater than or equal to zero")
+    if not math.isfinite(config.train.step_balance_weight) or config.train.step_balance_weight < 0:
+        raise ValueError("train.step_balance_weight must be finite and greater than or equal to zero")
     if config.train.area_balance_weight < 0:
         raise ValueError("train.area_balance_weight must be greater than or equal to zero")
     if config.train.avg_frontiers_weight < 0:

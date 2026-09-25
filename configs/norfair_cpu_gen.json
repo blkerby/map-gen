@@ -54,10 +54,12 @@
     "toilet_beta": 1.0,
     "area_beta": 1.0,
     "order_beta": 1.0,
+    "step_beta": 1.0,
     "door_price_scale": 1.0,
     "toilet_price_scale": 1.0,
     "area_price_scale": 1.0,
-    "order_price_scale": 1.0
+    "order_price_scale": 1.0,
+    "step_price_scale": 1.0
   },
   "generation": {
     "num_environments": 32,
@@ -173,6 +175,7 @@
     "balance_weight": 1.0,
     "area_balance_weight": 1.0,
     "order_balance_weight": 1.0,
+    "step_balance_weight": 1.0,
     "toilet_balance_weight": 1.0,
     "avg_frontiers_weight": 0.0,
     "graph_diameter_weight": 0.1,

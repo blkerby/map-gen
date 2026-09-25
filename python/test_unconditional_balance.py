@@ -30,11 +30,14 @@ def test_terminal_failures_train_all_families() -> None:
     probability, mask = uniform_area_targets()
     loss = compute_balance_loss(
         area_order=torch.full((preds.room_area.shape[0], 6), -1, dtype=torch.int64),
+        room_steps=torch.full(preds.room_area.shape[:2], -1, dtype=torch.int64),
         order_beta=1.0,
+        step_beta=1.0,
         door_price_scale=1.0,
         toilet_price_scale=1.0,
         area_price_scale=1.0,
         order_price_scale=1.0,
+        step_price_scale=1.0,
         preds=preds, door_matches=empty_door_matches(),
         toilet_crossed_room_idx=torch.tensor([-1]), room_area=torch.tensor([[-1, -1]]),
         area_probability=probability, area_dual_mask=mask, record_weight=torch.ones(1),

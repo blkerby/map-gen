@@ -37,6 +37,8 @@ class CheckUtilitySupervision:
         absent_rooms: torch.Tensor,
         order_targets: list[torch.Tensor],
         order_masks: list[torch.Tensor],
+        step_targets: list[torch.Tensor],
+        step_masks: list[torch.Tensor],
     ):
         self.active = active.unsqueeze(1)
         self.expected = expected
@@ -46,6 +48,8 @@ class CheckUtilitySupervision:
         self.absent_area_gradients_checked = 0
         self.order_targets = order_targets
         self.order_masks = order_masks
+        self.step_targets = step_targets
+        self.step_masks = step_masks
 
     def __call__(self, *args, **kwargs):
         bound = LOSS_SIGNATURE.bind(*args, **kwargs)
@@ -56,6 +60,8 @@ class CheckUtilitySupervision:
         torch.testing.assert_close(
             values["order_balance_score_mask"], self.order_masks[self.checked]
         )
+        torch.testing.assert_close(values["step_balance_score_target"], self.step_targets[self.checked])
+        torch.testing.assert_close(values["step_balance_score_mask"], self.step_masks[self.checked])
         assert values["save_utility_mask"].all()
         assert values["refill_utility_mask"].all()
         predictions = {}
@@ -164,6 +170,11 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
     ema = copy.deepcopy(main).requires_grad_(False)
     balance = create_balance_model(config, rooms, engine, device)
     gen_balance = copy.deepcopy(balance).requires_grad_(False)
+    with torch.no_grad():
+        # Exercise both generation scoring and the proposal cache with nonzero prices.
+        gen_balance.step_net[-1].bias.copy_(
+            torch.linspace(-0.1, 0.1, len(rooms) * (len(rooms) + 1))
+        )
     gen_config = create_generate_config(config, rooms, len(rooms), 8, device, False)
     episode_data, outcomes, _, proposals, captured, _, _ = run_generation_groups(
         environments[:1],
@@ -177,6 +188,7 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
     # Distinct nonzero prices expose incorrect rank masks and omitted failures.
     with torch.no_grad():
         balance.order_net[-1].bias.copy_(torch.arange(42.0))
+        balance.step_net[-1].bias.copy_(torch.arange(len(rooms) * (len(rooms) + 1), dtype=torch.float32))
     loss_config = LossConfig(
         **{
             name: getattr(config.train, name)
@@ -249,6 +261,22 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
             dtype=torch.float32,
         ))
         order_masks.append(torch.tensor([[count < 6] for count in started]))
+    # Compute the new targets independently from the recorded action sequence.
+    terminal_step_costs = torch.tensor([
+        [
+            indices.index(room) - (len(rooms) - 1) / 2 if room in indices else len(rooms) ** 2 + room
+            for room in range(len(rooms))
+        ]
+        for indices in episode_data.actions.room_idx.tolist()
+    ])
+    step_targets = [
+        (terminal_step_costs * ~batch.features.global_features.room_placed.bool()).sum(-1, keepdim=True)
+        for batch in prepared.feature_batches
+    ]
+    step_masks = [
+        (~batch.features.global_features.room_placed.bool()).any(-1, keepdim=True)
+        for batch in prepared.feature_batches
+    ]
     checker = CheckUtilitySupervision(
         active=active,
         expected=expected,
@@ -256,6 +284,8 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         absent_rooms=prepared.room_area < 0,
         order_targets=order_targets + [torch.zeros_like(target) for target in order_targets],
         order_masks=order_masks + [torch.zeros_like(mask) for mask in order_masks],
+        step_targets=step_targets + [torch.zeros_like(target) for target in step_targets],
+        step_masks=step_masks + [torch.zeros_like(mask) for mask in step_masks],
     )
     # Deliberately give absent parts reachable distances: terminal absence must
     # override these values, independently of the engine's distance convention.

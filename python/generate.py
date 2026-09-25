@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from area_order import candidate_order_balance_score, proposal_order_price
+from room_step import candidate_step_balance_score, proposal_step_prices
 from device_util import gpu_backend, is_gpu
 from env import (
     AREA_COUNT,
@@ -267,6 +268,7 @@ class ProposalCache:
     frontier_door_variant: torch.Tensor
     inventory: torch.Tensor
     area_used: torch.Tensor
+    room_placed: torch.Tensor
     row_start_idx: torch.Tensor
     row_count: torch.Tensor
     action_index: torch.Tensor
@@ -323,6 +325,8 @@ class GenerationGroup:
     balance_score_tables: BalancePriceTables
     area_balance_dual_mask: torch.Tensor
     room_tile_count: torch.Tensor
+    room_connection_variant_idx: torch.Tensor
+    num_room_connection_variants: int
     proposal_balance_score_table: torch.Tensor
     proposal_area_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
@@ -918,6 +922,7 @@ def compute_candidate_values(
             balance_score=balance_score,
             area_balance_score=area_balance_score,
             order_balance_score=preds.order_balance_score.view(environment_count, candidate_count),
+            step_balance_score=preds.step_balance_score.view(environment_count, candidate_count),
             toilet_balance_score=toilet_balance_score,
             avg_frontiers=preds.avg_frontiers.view(environment_count, candidate_count),
             graph_diameter=preds.graph_diameter.view(environment_count, candidate_count),
@@ -972,8 +977,18 @@ def compute_candidate_values(
         candidates,
         group.room_tile_count,
     )
+    step_balance_score = candidate_step_balance_score(
+        preds.step_balance_score.view(environment_count, candidate_count),
+        group.balance_score_tables.room_step,
+        group.balance_score_tables.room_step_failure,
+        features.global_features.room_placed.view(environment_count, candidate_count, -1),
+        candidates.room_idx,
+        group.step,
+        group.config.episode_length,
+    )
     balance_logit = (
         -order_balance_score
+        -step_balance_score
         - balance_score.float().sum(dim=2)
         + area_balance_reward(area_balance_score)
         - toilet_balance_score
@@ -1044,6 +1059,7 @@ def select_candidate_actions(
             frontier_door_variant=features.frontier_features.frontier_door_variant,
             inventory=features.global_features.inventory,
             area_used=features.global_features.area_used,
+            room_placed=features.global_features.room_placed,
             row_start_idx=row_start_idx,
             row_count=row_count_by_snapshot,
             action_index=action_index,
@@ -1540,6 +1556,7 @@ def compute_group_proposal_shortlist(
                 * cache.candidate_count + cache.action_index
             )
             area_used = cache.area_used[selected_snapshot]
+            room_placed = cache.room_placed[selected_snapshot]
             with torch.amp.autocast(
                 device.type,
                 dtype=torch.bfloat16,
@@ -1572,6 +1589,7 @@ def compute_group_proposal_shortlist(
             frontier_door_variant = env_features.frontier_features.frontier_door_variant
             inventory = env_features.global_features.inventory
             area_used = env_features.global_features.area_used
+            room_placed = env_features.global_features.room_placed
             sync_profile_device(device, profile)
             shared.profiler.add("python.proposal.compute_fresh_scores", profile_time)
         proposal_balance_residual = compute_proposal_balance_score_residual(
@@ -1586,6 +1604,17 @@ def compute_group_proposal_shortlist(
         order_prices = proposal_order_price(group.balance_score_tables.area_order, area_used)
         proposal_balance_residual -= order_prices[row_snapshot_idx.long()].repeat(
             1, proposal_scores.shape[1] // AREA_COUNT,
+        )
+        step_prices = proposal_step_prices(
+            group.balance_score_tables.room_step,
+            room_placed,
+            group.room_connection_variant_idx,
+            group.num_room_connection_variants,
+            shared.door_variant_connection_variant_idx,
+            group.step,
+        )
+        proposal_balance_residual -= step_prices[row_snapshot_idx.long()].repeat_interleave(
+            AREA_COUNT, dim=-1,
         )
         proposal_scores = (
             proposal_scores.to(torch.float32) + proposal_balance_residual
@@ -2268,6 +2297,10 @@ def run_generation_groups(
                 [sum(tile != 0 for row in room["map"] for tile in row) for room in env.engine.rooms],
                 device=device, dtype=torch.int64,
             ),
+            room_connection_variant_idx=torch.tensor(
+                output_metadata.room_connection_variant_idx, device=device, dtype=torch.int64,
+            ),
+            num_room_connection_variants=output_metadata.num_room_connection_variants,
             proposal_balance_score_table=proposal_score_table,
             proposal_area_balance_score_table=proposal_area_score_table,
             previous_lookahead_outcomes=None,

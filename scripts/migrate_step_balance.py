@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Upgrade a v19 checkpoint with a zero-output area-start-order controller.
+"""Upgrade a v22 checkpoint with a zero-output room-placement-step controller.
 
 Example (from the repository root):
-  conda run -n map-gen python scripts/migrate_order_balance.py SOURCE OUTPUT \
-      --order-beta 1 --order-balance-weight 1 --seed 0
+  conda run -n map-gen python scripts/migrate_step_balance.py SOURCE OUTPUT \
+      --step-beta 1 --step-price-scale 1 --step-balance-weight 1 --seed 0
 
 Existing weights, optimizer moments, counters, and run identity are preserved.
 New parameters have no optimizer history, just as in a freshly created optimizer.
@@ -25,21 +25,26 @@ from safetensors.torch import save_file
 
 from env import Engine
 from model import FrontierModel
-from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
+from model_loading import create_balance_model, frontier_model_kwargs
 from train import (
     TRAINING_CHECKPOINT_FORMAT,
     create_adam_optimizer,
     create_main_optimizer,
+    validate_checkpoint_metadata,
 )
 from train_config import Config, instantiate_scheduleable_config, validate_config
 from scripts.checkpoint_migration import add_model_parameters, extend_optimizer_groups
 
-SOURCE_FORMAT = "map-gen-training-session-checkpoint-v19"
+SOURCE_FORMAT = "map-gen-training-session-checkpoint-v22"
+TARGET_FORMAT = "map-gen-training-session-checkpoint-v23"
 
 
 def migrate_checkpoint(
-    source: Path, output: Path, order_beta: float, order_balance_weight: float, seed: int
+    source: Path, output: Path, step_beta: float, step_price_scale: float,
+    step_balance_weight: float, seed: int
 ) -> dict:
+    if TRAINING_CHECKPOINT_FORMAT != TARGET_FORMAT:
+        raise ValueError("this migration requires the v23 model implementation")
     if output.exists():
         raise FileExistsError(output)
     with safe_open(source, framework="pt", device="cpu") as checkpoint:
@@ -49,12 +54,14 @@ def migrate_checkpoint(
         tensors = {name: checkpoint.get_tensor(name) for name in checkpoint.keys()}
     config_data = json.loads(metadata["config"])
     if (
-        "order_beta" in config_data["balance_train"]
-        or "order_balance_weight" in config_data["train"]
+        "step_beta" in config_data["balance_train"]
+        or "step_price_scale" in config_data["balance_train"]
+        or "step_balance_weight" in config_data["train"]
     ):
-        raise ValueError("source already contains order-balancing config fields")
-    config_data["balance_train"]["order_beta"] = order_beta
-    config_data["train"]["order_balance_weight"] = order_balance_weight
+        raise ValueError("source already contains step-balancing config fields")
+    config_data["balance_train"]["step_beta"] = step_beta
+    config_data["balance_train"]["step_price_scale"] = step_price_scale
+    config_data["train"]["step_balance_weight"] = step_balance_weight
     config = Config.model_validate(config_data)
     validate_config(config)
     step_config = instantiate_scheduleable_config(config, int(metadata["num_episodes"]))
@@ -70,36 +77,42 @@ def migrate_checkpoint(
         step_config.generation.max_area_size,
     )
     model = FrontierModel(**frontier_model_kwargs(step_config, rooms, engine))
-    added_main = add_model_parameters(tensors, model, "main_model", "order_balance_score_output.")
+    added_main = add_model_parameters(tensors, model, "main_model", "step_balance_score_output.")
     optimizer = create_main_optimizer(model, step_config.optimizer)
     extend_optimizer_groups(tensors, metadata, model, optimizer, "optimizer", added_main)
     # A new head starts at zero in both networks; no calibration is needed.
-    added_ema = add_model_parameters(tensors, model, "ema_model", "order_balance_score_output.")
+    added_ema = add_model_parameters(tensors, model, "ema_model", "step_balance_score_output.")
     for suffix in ("weight", "bias"):
-        assert torch.count_nonzero(tensors[f"main_model.order_balance_score_output.{suffix}"]) == 0
-        assert torch.count_nonzero(tensors[f"ema_model.order_balance_score_output.{suffix}"]) == 0
+        assert torch.count_nonzero(tensors[f"main_model.step_balance_score_output.{suffix}"]) == 0
+        assert torch.count_nonzero(tensors[f"ema_model.step_balance_score_output.{suffix}"]) == 0
     balance = create_balance_model(step_config, rooms, engine, torch.device("cpu"))
-    added_balance = add_model_parameters(tensors, balance, "balance_model", "order_net.")
+    added_balance = add_model_parameters(tensors, balance, "balance_model", "step_net.")
     balance_optimizer = create_adam_optimizer(balance.parameters(), step_config.balance_optimizer)
     extend_optimizer_groups(
         tensors, metadata, balance, balance_optimizer, "balance_optimizer", added_balance
     )
-    assert torch.count_nonzero(balance.order_net[-1].weight) == 0
-    assert torch.count_nonzero(balance.order_net[-1].bias) == 0
+    assert torch.count_nonzero(balance.step_net[-1].weight) == 0
+    assert torch.count_nonzero(balance.step_net[-1].bias) == 0
+    with safe_open(source, framework="pt", device="cpu") as checkpoint:
+        for name in checkpoint.keys():
+            if not torch.equal(tensors[name], checkpoint.get_tensor(name)):
+                raise ValueError(f"migration changed an existing tensor: {name}")
     report = {
         "source": str(source),
         "source_format": SOURCE_FORMAT,
         "output_format": TRAINING_CHECKPOINT_FORMAT,
         "seed": seed,
-        "order_beta": order_beta,
-        "order_balance_weight": order_balance_weight,
+        "step_beta": step_beta,
+        "step_price_scale": step_price_scale,
+        "step_balance_weight": step_balance_weight,
         "added_main": sorted(added_main),
         "added_ema": sorted(added_ema),
         "added_balance": sorted(added_balance),
     }
     metadata["format"] = TRAINING_CHECKPOINT_FORMAT
     metadata["config"] = config.model_dump_json()
-    metadata["order_balance_migration"] = json.dumps(report)
+    metadata["step_balance_migration"] = json.dumps(report)
+    validate_checkpoint_metadata(output, metadata)
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         dir=output.parent, suffix=".safetensors", delete=False
@@ -117,14 +130,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--order-beta", type=float, required=True)
-    parser.add_argument("--order-balance-weight", type=float, required=True)
+    parser.add_argument("--step-beta", type=float, required=True)
+    parser.add_argument("--step-price-scale", type=float, required=True)
+    parser.add_argument("--step-balance-weight", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
     args = parser.parse_args()
+    torch.set_num_threads(2)
     print(
         json.dumps(
             migrate_checkpoint(
-                args.source, args.output, args.order_beta, args.order_balance_weight, args.seed
+                args.source, args.output, args.step_beta, args.step_price_scale,
+                args.step_balance_weight, args.seed
             ),
             indent=2,
         )

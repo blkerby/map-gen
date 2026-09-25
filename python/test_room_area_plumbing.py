@@ -8,7 +8,7 @@ import torch
 from env import Actions, AREA_COUNT, CandidateSlot, DUMMY_AREA, Engine, EpisodeData
 from experience import ExperienceStorage
 from generate import get_initial_candidate_batch
-from train_config import FeatureConfig
+from train_config import FeatureConfig, GENERATION_VARIABLE_FLOAT_FIELDS
 
 
 def disabled_features() -> FeatureConfig:
@@ -310,7 +310,7 @@ def test_experience_storage_round_trips_room_area() -> None:
         ),
         temperature=torch.tensor([1.0, 2.0]),
         recommended_candidates=torch.tensor([8.0, 8.0]),
-        generation_variable_floats=torch.empty((2, 0)),
+        generation_variable_floats=torch.zeros((2, len(GENERATION_VARIABLE_FLOAT_FIELDS))),
     )
 
     with tempfile.TemporaryDirectory() as temp_dir:

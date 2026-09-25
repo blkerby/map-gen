@@ -44,6 +44,7 @@ def test_each_balance_family_uses_its_own_quartic_scale_for_failures() -> None:
         toilet_crossed_room_idx=torch.tensor([-1]),
         room_area=torch.full((1, 2), -1, dtype=torch.int64),
         area_order=torch.full((1, 6), -1, dtype=torch.int64),
+        room_steps=torch.full(preds.room_area.shape[:2], -1, dtype=torch.int64),
         area_probability=probability,
         area_dual_mask=mask,
         record_weight=torch.ones(1),
@@ -51,10 +52,12 @@ def test_each_balance_family_uses_its_own_quartic_scale_for_failures() -> None:
         toilet_beta=1.0,
         area_beta=1.0,
         order_beta=1.0,
+        step_beta=1.0,
         door_price_scale=0.5,
         toilet_price_scale=1.0,
         area_price_scale=2.0,
         order_price_scale=4.0,
+        step_price_scale=4.0,
     )
     loss.backward()
     # At price=beta=1 with every group failing, the observed and quadratic

@@ -66,10 +66,12 @@ def check_balance_training_round(enabled: bool) -> None:
         step_config=SimpleNamespace(
             balance_train=SimpleNamespace(
                 order_beta=1.0,
+                step_beta=1.0,
                 door_price_scale=0.5,
                 toilet_price_scale=1.0,
                 area_price_scale=2.0,
                 order_price_scale=4.0,
+                step_price_scale=4.0,
                 enabled=enabled,
                 batch_size=2,
                 door_beta=1.0,

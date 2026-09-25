@@ -12,6 +12,7 @@ class BalanceModelV19(BalanceModel):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         del self.order_net
+        del self.step_net
 
     def forward(self, generation_variable_floats):
         inputs = generation_variable_floats.to(activation_dtype(
@@ -20,6 +21,7 @@ class BalanceModelV19(BalanceModel):
         return self.decode_prices(
             self.door_net(inputs).float(), self.toilet_net(inputs).float(),
             self.area_net(inputs).float(), inputs.new_zeros((len(inputs), 6 * 7)),
+            inputs.new_zeros((len(inputs), self.num_rooms * (self.num_rooms + 1))),
         )
 
 
@@ -61,6 +63,7 @@ class BalanceModelV18(BalanceModelV19):
             toilet,
             torch.cat((area, area.new_zeros((len(area), self.num_room_connection_variants))), dim=1),
             area.new_zeros((len(area), 6 * 7)),
+            inputs.new_zeros((len(inputs), self.num_rooms * (self.num_rooms + 1))),
         )
 
 

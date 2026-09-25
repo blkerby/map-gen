@@ -93,6 +93,7 @@ def area_predictions() -> Predictions:
     return Predictions(
         success=torch.zeros([batch, candidate]),
         order_balance_score=torch.zeros([batch, candidate]),
+        step_balance_score=torch.zeros([batch, candidate]),
         door_invalid=torch.zeros([batch, candidate, door]),
         connection_invalid=torch.zeros([batch, candidate, connection]),
         toilet_invalid=torch.zeros([batch, candidate]),
