@@ -15,7 +15,6 @@ from types import FrameType
 from typing import Any
 
 import safetensors.torch
-from area_assignment import build_door_room_lookup
 from area_order import episode_area_order
 import torch
 import map_gen
@@ -108,7 +107,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v23"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v24"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -117,51 +116,6 @@ VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "draygon_boss",
     "mother_brain",
 )
-
-
-def compute_area_distinct_crossing_counts(
-    actions: Actions,
-    door_matches: DoorMatches,
-    rooms: list[dict],
-) -> torch.Tensor:
-    """Count undirected area pairs joined by a door match in each episode."""
-    lookup = build_door_room_lookup(rooms, door_matches.left.device)
-    room_area = torch.full(
-        (door_matches.left.shape[0], len(rooms)),
-        AREA_COUNT,
-        dtype=torch.int64,
-        device=door_matches.left.device,
-    )
-    valid_action = (actions.room_idx < len(rooms)) & (actions.room_area < AREA_COUNT)
-    episode_idx, step_idx = torch.where(valid_action)
-    room_area[episode_idx, actions.room_idx[episode_idx, step_idx].long()] = (
-        actions.room_area[episode_idx, step_idx].long()
-    )
-    adjacency = torch.zeros(
-        (door_matches.left.shape[0], AREA_COUNT, AREA_COUNT),
-        dtype=torch.bool,
-        device=door_matches.left.device,
-    )
-    # Left and up cover each physical match once; unmatched doors use -1.
-    for matches, source_rooms, target_rooms in (
-        (door_matches.left, lookup.left, lookup.right),
-        (door_matches.up, lookup.up, lookup.down),
-    ):
-        episode_idx, source_idx = torch.where((matches >= 0) & (matches < target_rooms.numel()))
-        target_idx = matches[episode_idx, source_idx].long()
-        source_area = room_area[episode_idx, source_rooms[source_idx]]
-        target_area = room_area[episode_idx, target_rooms[target_idx]]
-        crossing = (
-            (source_area < AREA_COUNT)
-            & (target_area < AREA_COUNT)
-            & (source_area != target_area)
-        )
-        episode_idx = episode_idx[crossing]
-        source_area = source_area[crossing]
-        target_area = target_area[crossing]
-        adjacency[episode_idx, source_area, target_area] = True
-        adjacency[episode_idx, target_area, source_area] = True
-    return torch.triu(adjacency, diagonal=1).sum(dim=(1, 2))
 
 
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
@@ -847,6 +801,10 @@ def create_generate_config(
             config.generation.reward_missing_connect_utility,
             "generation.reward_missing_connect_utility",
         ),
+        "reward_area_distinct_crossing": variable_float_tensor(
+            config.generation.reward_area_distinct_crossing,
+            "generation.reward_area_distinct_crossing",
+        ),
         "reward_area_crossing": variable_float_tensor(
             config.generation.reward_area_crossing,
             "generation.reward_area_crossing",
@@ -1030,6 +988,9 @@ def create_generate_config(
         reward_refill_distance=generation_variable_floats_by_name["reward_refill_distance"],
         reward_missing_connect_utility=(
             generation_variable_floats_by_name["reward_missing_connect_utility"]
+        ),
+        reward_area_distinct_crossing=(
+            generation_variable_floats_by_name["reward_area_distinct_crossing"]
         ),
         reward_area_crossing=generation_variable_floats_by_name["reward_area_crossing"],
         reward_area_size_valid=generation_variable_floats_by_name["reward_area_size_valid"],
@@ -1509,6 +1470,12 @@ class TrainingSession:
                             for outcomes in outcome_iterations
                         ]
                     ),
+                    area_connections=torch.cat(
+                        [
+                            outcomes.step_outcomes.area_connections
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
                     area_size_bucket=torch.cat(
                         [
                             outcomes.step_outcomes.area_size_bucket
@@ -1929,9 +1896,7 @@ class TrainingSession:
         door_matches, _ = self.engine.compute_balance_targets(
             episode_data.actions, episode_data.actions.room_idx.device
         )
-        avg_area_distinct_crossing = compute_area_distinct_crossing_counts(
-            episode_data.actions, door_matches, self.rooms
-        ).to(torch.float32).mean()
+        avg_area_distinct_crossing = outcomes.area_connections.sum(dim=-1).float().mean()
         avg_area_size_valid = torch.mean(
             (
                 (area_size >= step_config.generation.min_area_size)
@@ -2044,6 +2009,9 @@ class TrainingSession:
         missing_connect_utility_loss_pct = (
             100.0 * loss.missing_connect_utility_contribution / loss_denominator
         )
+        area_distinct_crossing_loss_pct = (
+            100.0 * loss.area_distinct_crossing_contribution / loss_denominator
+        )
         area_crossings_loss_pct = 100.0 * loss.area_crossings_contribution / loss_denominator
         area_size_loss_pct = 100.0 * loss.area_size_contribution / loss_denominator
         area_map_station_loss_pct = 100.0 * loss.area_map_station_contribution / loss_denominator
@@ -2100,6 +2068,8 @@ class TrainingSession:
             "refill_distance_loss_pct": refill_distance_loss_pct,
             "missing_connect_utility_loss": loss.missing_connect_utility,
             "missing_connect_utility_loss_pct": missing_connect_utility_loss_pct,
+            "area_distinct_crossing_loss": loss.area_distinct_crossing,
+            "area_distinct_crossing_loss_pct": area_distinct_crossing_loss_pct,
             "area_crossings_loss": loss.area_crossings,
             "area_crossings_loss_pct": area_crossings_loss_pct,
             "area_size_loss": loss.area_size,
@@ -2272,6 +2242,10 @@ class TrainingSession:
                     "generation.reward_missing_connect_utility",
                 )
             ),
+            "reward_area_distinct_crossing": variable_float_metric_value(
+                step_config.generation.reward_area_distinct_crossing,
+                "generation.reward_area_distinct_crossing",
+            ),
             "reward_area_crossing": variable_float_metric_value(
                 step_config.generation.reward_area_crossing,
                 "generation.reward_area_crossing",
@@ -2311,6 +2285,7 @@ class TrainingSession:
             "save_distance_weight": step_config.train.save_distance_weight,
             "refill_distance_weight": step_config.train.refill_distance_weight,
             "missing_connect_utility_weight": step_config.train.missing_connect_utility_weight,
+            "area_distinct_crossing_weight": step_config.train.area_distinct_crossing_weight,
             "area_crossing_weight": step_config.train.area_crossing_weight,
             "area_size_weight": step_config.train.area_size_weight,
             "area_map_station_weight": step_config.train.area_map_station_weight,
@@ -2884,6 +2859,7 @@ def build_session(args: Args) -> TrainingSession:
             save_distance_weight=config.train.save_distance_weight,
             refill_distance_weight=config.train.refill_distance_weight,
             missing_connect_utility_weight=config.train.missing_connect_utility_weight,
+            area_distinct_crossing_weight=config.train.area_distinct_crossing_weight,
             area_crossing_weight=config.train.area_crossing_weight,
             area_size_weight=config.train.area_size_weight,
             area_map_station_weight=config.train.area_map_station_weight,

@@ -169,6 +169,7 @@ def compute_expected_reward(
     preds,
     outcomes,
     config: GenerateConfig,
+    area_connections: torch.Tensor,
 ):
     def batch_weight(value: float | torch.Tensor) -> float | torch.Tensor:
         if isinstance(value, torch.Tensor):
@@ -232,6 +233,12 @@ def compute_expected_reward(
             batch_weight(config.reward_missing_connect_utility)
             * total_proximity_utility(preds.missing_connect_utility)
         )
+        + batch_weight(config.reward_area_distinct_crossing)
+        * torch.where(
+            area_connections,
+            1.0,
+            torch.sigmoid(preds.area_connection_logits.to(torch.float32)),
+        ).sum(dim=2)
         - batch_weight(config.reward_area_crossing) * preds.area_crossings.to(torch.float32)
         + batch_weight(config.reward_area_size_valid)
         * torch.sum(area_size_valid_log_probability, dim=2)
@@ -685,6 +692,7 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
         phantoon_pair_invalid=gather_scalar(outcomes.phantoon_pair_invalid),
         phantoon_area_invalid=gather_scalar(outcomes.phantoon_area_invalid),
         vanilla_area_invalid=gather(outcomes.vanilla_area_invalid),
+        area_connections=gather(outcomes.area_connections),
         area_size_bucket=gather(outcomes.area_size_bucket),
         area_map_station_count_bucket=gather(outcomes.area_map_station_count_bucket),
         maridia_water=gather(outcomes.maridia_water),
@@ -951,6 +959,9 @@ def compute_candidate_values(
                 candidate_count,
                 -1,
             ),
+            area_connection_logits=preds.area_connection_logits.view(
+                environment_count, candidate_count, -1
+            ),
             area_crossings=preds.area_crossings.view(environment_count, candidate_count),
             area_size=preds.area_size.view(environment_count, candidate_count, -1, 3),
             area_map_station_count=preds.area_map_station_count.view(
@@ -967,6 +978,7 @@ def compute_candidate_values(
         ),
         outcomes,
         group.config,
+        post_candidate_outcomes.area_connections,
     )
     order_balance_score = candidate_order_balance_score(
         preds.order_balance_score.view(environment_count, candidate_count),
@@ -1954,6 +1966,12 @@ def merge_generation_results(
                 vanilla_area_invalid=torch.cat(
                     [
                         episode_outcomes.step_outcomes.vanilla_area_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                area_connections=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.area_connections
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from device_util import is_gpu
 from door_balance import sinkhorn_door_target
-from env import AREA_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, OutputMetadata, Features
+from env import AREA_COUNT, AREA_PAIR_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, OutputMetadata, Features
 from features import (
     FRONTIER_NODE_FEATURES,
     FRONTIER_PAIR_FEATURES,
@@ -65,6 +65,8 @@ class Predictions:
     refill_from_room_utility: torch.Tensor
     # Predicted utility for each required missing connection:
     missing_connect_utility: torch.Tensor
+    # Terminal connection log-odds in lexicographic unordered area-pair order.
+    area_connection_logits: torch.Tensor
     area_crossings: torch.Tensor
     area_size: torch.Tensor
     area_map_station_count: torch.Tensor
@@ -143,6 +145,7 @@ def get_predictions(raw_preds, output_sizes):
         refill_to_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         refill_from_room_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
         missing_connect_utility=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], 0]),
+        area_connection_logits=raw_preds.new_empty([*raw_preds.shape[:2], AREA_PAIR_COUNT]),
         area_crossings=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1]]),
         area_size=raw_preds.new_empty([raw_preds.shape[0], raw_preds.shape[1], AREA_COUNT, 3]),
         area_map_station_count=raw_preds.new_empty(
@@ -868,6 +871,7 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             self.num_connection_outputs,
         )
+        self.area_connection_output = Float32Linear(embedding_width, AREA_PAIR_COUNT)
         self.area_crossings_output = Float32Linear(embedding_width, 1)
         self.area_size_output = Float32Linear(embedding_width, AREA_COUNT * 3)
         self.area_map_station_count_output = Float32Linear(embedding_width, AREA_COUNT * 3)
@@ -900,6 +904,7 @@ class FrontierModel(torch.nn.Module):
             self.refill_to_room_utility_output,
             self.refill_from_room_utility_output,
             self.missing_connect_utility_output,
+            self.area_connection_output,
             self.area_crossings_output,
             self.area_size_output,
             self.area_map_station_count_output,
@@ -1226,6 +1231,7 @@ class FrontierModel(torch.nn.Module):
             refill_to_room_utility=refill_to_room_utility,
             refill_from_room_utility=refill_from_room_utility,
             missing_connect_utility=missing_connect_utility,
+            area_connection_logits=self.area_connection_output(X).to(torch.float32),
             area_crossings=area_crossings,
             area_size=area_size,
             area_map_station_count=area_map_station_count,

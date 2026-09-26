@@ -39,6 +39,8 @@ class CheckUtilitySupervision:
         order_masks: list[torch.Tensor],
         step_targets: list[torch.Tensor],
         step_masks: list[torch.Tensor],
+        connection_targets: torch.Tensor,
+        connection_masks: list[torch.Tensor],
     ):
         self.active = active.unsqueeze(1)
         self.expected = expected
@@ -50,10 +52,15 @@ class CheckUtilitySupervision:
         self.order_masks = order_masks
         self.step_targets = step_targets
         self.step_masks = step_masks
+        self.connection_targets = connection_targets.unsqueeze(1)
+        self.connection_masks = connection_masks
 
     def __call__(self, *args, **kwargs):
         bound = LOSS_SIGNATURE.bind(*args, **kwargs)
         values = bound.arguments
+        connection_mask = values["area_connection_mask"]
+        torch.testing.assert_close(connection_mask, self.connection_masks[self.checked])
+        torch.testing.assert_close(values["outcomes"].area_connections, self.connection_targets)
         torch.testing.assert_close(
             values["order_balance_score_target"], self.order_targets[self.checked]
         )
@@ -80,6 +87,31 @@ class CheckUtilitySupervision:
         # gradient direction, independent of random model initialization.
         values["preds"] = replace(values["preds"], **predictions)
         loss = compute_loss_breakdown(**values)
+        connection_logits = values["preds"].area_connection_logits
+        if connection_mask.any():
+            expected_connection_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                connection_logits[connection_mask],
+                self.connection_targets[connection_mask].float(),
+            )
+        else:
+            expected_connection_loss = connection_logits.new_zeros(())
+        torch.testing.assert_close(loss.area_distinct_crossing, expected_connection_loss)
+        if self.checked == 0:
+            fully_known_loss = compute_loss_breakdown(
+                **{**values, "area_connection_mask": torch.zeros_like(connection_mask)}
+            )
+            assert fully_known_loss.area_distinct_crossing == 0
+            assert fully_known_loss.area_distinct_crossing_contribution == 0
+            fully_known_gradient = torch.autograd.grad(
+                fully_known_loss.total, connection_logits, retain_graph=True
+            )[0]
+            assert torch.count_nonzero(fully_known_gradient) == 0
+        connection_gradient = torch.autograd.grad(
+            loss.total, connection_logits, retain_graph=True
+        )[0]
+        assert torch.count_nonzero(connection_gradient[~connection_mask]) == 0
+        assert (connection_gradient[connection_mask & self.connection_targets] < 0).all()
+        assert (connection_gradient[connection_mask & ~self.connection_targets] > 0).all()
         success_target = values["success_target"]
         success_logits = values["preds"].success
         torch.testing.assert_close(
@@ -286,6 +318,11 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         order_masks=order_masks + [torch.zeros_like(mask) for mask in order_masks],
         step_targets=step_targets + [torch.zeros_like(target) for target in step_targets],
         step_masks=step_masks + [torch.zeros_like(mask) for mask in step_masks],
+        connection_targets=outcomes.step_outcomes.area_connections,
+        connection_masks=[
+            (~batch.features.global_features.area_connections).unsqueeze(1)
+            for batch in prepared.feature_batches
+        ] * 2,
     )
     # Deliberately give absent parts reachable distances: terminal absence must
     # override these values, independently of the engine's distance convention.
@@ -300,6 +337,8 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         assert result.success > 0
         assert result.success_contribution > 0
         assert torch.count_nonzero(main.success_output.weight.grad) > 0
+        assert result.area_distinct_crossing > 0
+        assert torch.count_nonzero(main.area_connection_output.weight.grad) > 0
     assert checker.checked > 0
     assert checker.absent_area_gradients_checked > 0
 

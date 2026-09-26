@@ -56,11 +56,12 @@ class SuccessTest(unittest.TestCase):
         predictions = replace(area_predictions(), success=torch.tensor([[-100.0, 2.0]]))
         outcomes = unknown_outcomes()
         config = zero_generate_config()
-        baseline = compute_expected_reward(predictions, outcomes, config)
+        baseline = compute_expected_reward(predictions, outcomes, config, outcomes.area_connections)
         torch.testing.assert_close(baseline, torch.zeros_like(baseline))
         for weight in (3.0, torch.tensor([3.0])):
             reward = compute_expected_reward(
-                predictions, outcomes, replace(config, reward_success=weight)
+                predictions, outcomes, replace(config, reward_success=weight),
+                outcomes.area_connections,
             )
             torch.testing.assert_close(
                 reward - baseline, 3.0 * torch.nn.functional.logsigmoid(predictions.success)

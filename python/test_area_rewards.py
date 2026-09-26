@@ -30,6 +30,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
     values = {
         "reward_phantoon_pair": 0.0,
         "reward_phantoon_area": 0.0,
+        "reward_area_distinct_crossing": 0.0,
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 0.0,
         "reward_area_map_station": 0.0,
@@ -62,6 +63,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         reward_save_distance=0.0,
         reward_refill_distance=0.0,
         reward_missing_connect_utility=0.0,
+        reward_area_distinct_crossing=values["reward_area_distinct_crossing"],
         reward_area_crossing=values["reward_area_crossing"],
         reward_area_size_valid=values["reward_area_size_valid"],
         reward_area_map_station=values["reward_area_map_station"],
@@ -110,6 +112,7 @@ def area_predictions() -> Predictions:
         refill_to_room_utility=torch.zeros([batch, candidate, room_part]),
         refill_from_room_utility=torch.zeros([batch, candidate, room_part]),
         missing_connect_utility=torch.zeros([batch, candidate, connection]),
+        area_connection_logits=torch.zeros([batch, candidate, 15]),
         area_crossings=torch.tensor([[2.0, 0.0]]),
         area_size=torch.zeros([batch, candidate, AREA_COUNT, 3]),
         area_map_station_count=torch.zeros([batch, candidate, AREA_COUNT, 3]),
@@ -129,6 +132,7 @@ def unknown_outcomes() -> StepOutcomes:
         phantoon_pair_invalid=torch.full([1, 2], -1.0),
         phantoon_area_invalid=torch.full([1, 2], -1.0),
         vanilla_area_invalid=torch.full([1, 2, AREA_COUNT], -1.0),
+        area_connections=torch.zeros([1, 2, 15], dtype=torch.bool),
         area_size_bucket=torch.full([1, 2, AREA_COUNT], -1.0),
         area_map_station_count_bucket=torch.full([1, 2, AREA_COUNT], -1.0),
         maridia_water=torch.full([1, 2, 3], -1.0),
@@ -141,7 +145,9 @@ def test_ordinary_area_rewards_are_unchanged() -> None:
     predictions = area_predictions()
     outcomes = unknown_outcomes()
     assert torch.equal(
-        compute_expected_reward(predictions, outcomes, zero_generate_config()),
+        compute_expected_reward(
+            predictions, outcomes, zero_generate_config(), outcomes.area_connections
+        ),
         torch.zeros([1, 2]),
     )
 
@@ -150,6 +156,7 @@ def test_ordinary_area_rewards_are_unchanged() -> None:
         predictions,
         outcomes,
         zero_generate_config(reward_phantoon_pair=2.0),
+        outcomes.area_connections,
     )
     torch.testing.assert_close(
         reward,
@@ -161,10 +168,12 @@ def test_ordinary_area_rewards_are_unchanged() -> None:
         predictions,
         outcomes,
         zero_generate_config(
+            reward_area_distinct_crossing=0.0,
             reward_area_crossing=5.0,
             reward_area_size_valid=7.0,
             reward_area_map_station=11.0,
         ),
+        outcomes.area_connections,
     )
     middle_log_probability = torch.log_softmax(torch.zeros([3]), dim=0)[1]
     expected = (

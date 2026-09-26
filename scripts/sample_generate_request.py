@@ -54,6 +54,7 @@ def main() -> int:
         "reward_save_distance": 0.1,
         "reward_refill_distance": 0.1,
         "reward_missing_connect_utility": 0.5,
+        "reward_area_distinct_crossing": 0.0,
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 0.0,
         "reward_area_map_station": 0.0,

@@ -2,8 +2,8 @@
 /// EnvironmentGroup classes. It handles the creation and management of worker threads that run
 /// environment simulations in parallel.
 use crate::common::{
-    AREA_COUNT, Action, AreaIdx, CommonData, Coord, DUMMY_AREA, Direction, DoorLocation,
-    DoorValidOutcome, DoorVariantIdx, FrontierIdx, ProposalActionIdx, Room, RoomIdx,
+    AREA_COUNT, AREA_PAIR_COUNT, Action, AreaIdx, CommonData, Coord, DUMMY_AREA, Direction,
+    DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx, ProposalActionIdx, Room, RoomIdx,
     VANILLA_AREA_CONSTRAINT_COUNT,
 };
 #[cfg(test)]
@@ -321,6 +321,7 @@ enum WorkerCommand {
         pre_phantoon_area_valid: OutputShard<i8>,
         pre_vanilla_area_valid: OutputShard<i8>,
         pre_area_size_bucket: OutputShard<i8>,
+        pre_area_connections: OutputShard<bool>,
         pre_area_map_station_count_bucket: OutputShard<i8>,
         pre_maridia_water: OutputShard<i8>,
         pre_norfair_heat: OutputShard<i8>,
@@ -331,6 +332,7 @@ enum WorkerCommand {
         phantoon_area_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
+        area_connections: OutputShard<bool>,
         area_map_station_count_bucket: OutputShard<i8>,
         maridia_water: OutputShard<i8>,
         norfair_heat: OutputShard<i8>,
@@ -358,6 +360,7 @@ enum WorkerCommand {
         phantoon_area_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
+        area_connections: OutputShard<bool>,
         area_map_station_count_bucket: OutputShard<i8>,
         toilet_crossed_room_idx: OutputShard<i16>,
         avg_frontiers: OutputShard<f32>,
@@ -402,6 +405,7 @@ enum WorkerCommand {
         phantoon_area_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
+        area_connections: OutputShard<bool>,
         area_map_station_count_bucket: OutputShard<i8>,
         maridia_water: OutputShard<i8>,
         norfair_heat: OutputShard<i8>,
@@ -677,6 +681,7 @@ fn worker_loop(
                 pre_phantoon_area_valid,
                 pre_vanilla_area_valid,
                 pre_area_size_bucket,
+                pre_area_connections,
                 pre_area_map_station_count_bucket,
                 pre_maridia_water,
                 pre_norfair_heat,
@@ -687,6 +692,7 @@ fn worker_loop(
                 phantoon_area_valid,
                 vanilla_area_valid,
                 area_size_bucket,
+                area_connections,
                 area_map_station_count_bucket,
                 maridia_water,
                 norfair_heat,
@@ -721,6 +727,7 @@ fn worker_loop(
                 let pre_phantoon_area_valid = unsafe { pre_phantoon_area_valid.into_mut_slice() };
                 let pre_vanilla_area_valid = unsafe { pre_vanilla_area_valid.into_mut_slice() };
                 let pre_area_size_bucket = unsafe { pre_area_size_bucket.into_mut_slice() };
+                let pre_area_connections = unsafe { pre_area_connections.into_mut_slice() };
                 let pre_area_map_station_count_bucket =
                     unsafe { pre_area_map_station_count_bucket.into_mut_slice() };
                 let pre_maridia_water = unsafe { pre_maridia_water.into_mut_slice() };
@@ -732,6 +739,7 @@ fn worker_loop(
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
+                let area_connections = unsafe { area_connections.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
                 let maridia_water = unsafe { maridia_water.into_mut_slice() };
@@ -800,6 +808,10 @@ fn worker_loop(
                 );
                 debug_assert_eq!(pre_area_size_bucket.len(), environments.len() * AREA_COUNT);
                 debug_assert_eq!(
+                    pre_area_connections.len(),
+                    environments.len() * AREA_PAIR_COUNT
+                );
+                debug_assert_eq!(
                     pre_maridia_water.len(),
                     environments.len() * common_data.water_room_idx().len()
                 );
@@ -838,6 +850,10 @@ fn worker_loop(
                 debug_assert_eq!(
                     area_size_bucket.len(),
                     environments.len() * recommended_candidates * AREA_COUNT
+                );
+                debug_assert_eq!(
+                    area_connections.len(),
+                    environments.len() * recommended_candidates * AREA_PAIR_COUNT
                 );
                 debug_assert_eq!(
                     area_map_station_count_bucket.len(),
@@ -947,6 +963,9 @@ fn worker_loop(
                     {
                         pre_vanilla_area_valid[pre_vanilla_start + idx] = outcome_to_i8(outcome);
                     }
+                    pre_area_connections
+                        [env_idx * AREA_PAIR_COUNT..(env_idx + 1) * AREA_PAIR_COUNT]
+                        .copy_from_slice(&pre_candidate_outcomes.area_connections);
                     let pre_area_start = env_idx * AREA_COUNT;
                     for area in 0..AREA_COUNT {
                         pre_area_size_bucket[pre_area_start + area] =
@@ -1040,6 +1059,8 @@ fn worker_loop(
                             vanilla_area_valid[vanilla_start + constraint_idx] =
                                 outcome_to_i8(value);
                         }
+                        area_connections[idx * AREA_PAIR_COUNT..(idx + 1) * AREA_PAIR_COUNT]
+                            .copy_from_slice(&outcome.area_connections);
                         let area_start = idx * AREA_COUNT;
                         for area in 0..AREA_COUNT {
                             area_size_bucket[area_start + area] =
@@ -1113,6 +1134,7 @@ fn worker_loop(
                 phantoon_area_valid,
                 vanilla_area_valid,
                 area_size_bucket,
+                area_connections,
                 area_map_station_count_bucket,
                 toilet_crossed_room_idx,
                 avg_frontiers,
@@ -1149,6 +1171,7 @@ fn worker_loop(
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
+                let area_connections = unsafe { area_connections.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
                 let toilet_crossed_room_idx = unsafe { toilet_crossed_room_idx.into_mut_slice() };
@@ -1195,6 +1218,7 @@ fn worker_loop(
                     environments.len() * VANILLA_AREA_CONSTRAINT_COUNT
                 );
                 debug_assert_eq!(area_size_bucket.len(), environments.len() * AREA_COUNT);
+                debug_assert_eq!(area_connections.len(), environments.len() * AREA_PAIR_COUNT);
                 debug_assert_eq!(
                     area_map_station_count_bucket.len(),
                     environments.len() * AREA_COUNT
@@ -1405,6 +1429,8 @@ fn worker_loop(
                     for (idx, &outcome) in outcomes.vanilla_area_valid.iter().enumerate() {
                         vanilla_area_valid[vanilla_start + idx] = outcome_to_i8(outcome);
                     }
+                    area_connections[env_idx * AREA_PAIR_COUNT..(env_idx + 1) * AREA_PAIR_COUNT]
+                        .copy_from_slice(&outcomes.area_connections);
                     for area in 0..AREA_COUNT {
                         area_size_bucket[area_row_start + area] =
                             outcomes.area_size_bucket[area] as i8;
@@ -1459,6 +1485,7 @@ fn worker_loop(
                 phantoon_area_valid,
                 vanilla_area_valid,
                 area_size_bucket,
+                area_connections,
                 area_map_station_count_bucket,
                 maridia_water,
                 norfair_heat,
@@ -1473,6 +1500,7 @@ fn worker_loop(
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
+                let area_connections = unsafe { area_connections.into_mut_slice() };
                 let area_map_station_count_bucket =
                     unsafe { area_map_station_count_bucket.into_mut_slice() };
                 let maridia_water = unsafe { maridia_water.into_mut_slice() };
@@ -1491,6 +1519,7 @@ fn worker_loop(
                     environment_count * VANILLA_AREA_CONSTRAINT_COUNT
                 );
                 debug_assert_eq!(area_size_bucket.len(), environment_count * AREA_COUNT);
+                debug_assert_eq!(area_connections.len(), environment_count * AREA_PAIR_COUNT);
                 debug_assert_eq!(
                     area_map_station_count_bucket.len(),
                     environment_count * AREA_COUNT
@@ -1542,6 +1571,8 @@ fn worker_loop(
                     for (idx, &outcome) in outcomes.vanilla_area_valid.iter().enumerate() {
                         vanilla_area_valid[vanilla_start + idx] = outcome_to_i8(outcome);
                     }
+                    area_connections[env_idx * AREA_PAIR_COUNT..(env_idx + 1) * AREA_PAIR_COUNT]
+                        .copy_from_slice(&outcomes.area_connections);
                     let area_start = env_idx * AREA_COUNT;
                     for area in 0..AREA_COUNT {
                         area_size_bucket[area_start + area] = outcomes.area_size_bucket[area] as i8;
@@ -1896,6 +1927,7 @@ pub struct StepOutcomes {
     phantoon_area_valid: Py<PyArray1<i8>>,
     vanilla_area_valid: Py<PyArray2<i8>>,
     area_size_bucket: Py<PyArray2<i8>>,
+    area_connections: Py<PyArray2<bool>>,
     area_map_station_count_bucket: Py<PyArray2<i8>>,
     maridia_water: Py<PyArray2<i8>>,
     norfair_heat: Py<PyArray2<i8>>,
@@ -1993,6 +2025,7 @@ pub struct ProposalCandidateBuffers {
     pre_phantoon_area_valid: Py<PyArray1<i8>>,
     pre_vanilla_area_valid: Py<PyArray2<i8>>,
     pre_area_size_bucket: Py<PyArray2<i8>>,
+    pre_area_connections: Py<PyArray2<bool>>,
     pre_area_map_station_count_bucket: Py<PyArray2<i8>>,
     pre_maridia_water: Py<PyArray2<i8>>,
     pre_norfair_heat: Py<PyArray2<i8>>,
@@ -2003,6 +2036,7 @@ pub struct ProposalCandidateBuffers {
     phantoon_area_valid: Py<PyArray2<i8>>,
     vanilla_area_valid: Py<PyArray3<i8>>,
     area_size_bucket: Py<PyArray3<i8>>,
+    area_connections: Py<PyArray3<bool>>,
     area_map_station_count_bucket: Py<PyArray3<i8>>,
     maridia_water: Py<PyArray3<i8>>,
     norfair_heat: Py<PyArray3<i8>>,
@@ -2134,6 +2168,7 @@ impl ProposalCandidateBuffers {
             pre_phantoon_area_valid: required_py_field!(fields, "pre_phantoon_area_valid"),
             pre_vanilla_area_valid: required_py_field!(fields, "pre_vanilla_area_valid"),
             pre_area_size_bucket: required_py_field!(fields, "pre_area_size_bucket"),
+            pre_area_connections: required_py_field!(fields, "pre_area_connections"),
             pre_area_map_station_count_bucket: required_py_field!(
                 fields,
                 "pre_area_map_station_count_bucket"
@@ -2147,6 +2182,7 @@ impl ProposalCandidateBuffers {
             phantoon_area_valid: required_py_field!(fields, "phantoon_area_valid"),
             vanilla_area_valid: required_py_field!(fields, "vanilla_area_valid"),
             area_size_bucket: required_py_field!(fields, "area_size_bucket"),
+            area_connections: required_py_field!(fields, "area_connections"),
             area_map_station_count_bucket: required_py_field!(
                 fields,
                 "area_map_station_count_bucket"
@@ -2403,6 +2439,10 @@ impl StepOutcomes {
     fn area_size_bucket(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
         self.area_size_bucket.clone_ref(py)
     }
+    #[getter]
+    fn area_connections(&self, py: Python<'_>) -> Py<PyArray2<bool>> {
+        self.area_connections.clone_ref(py)
+    }
 
     #[getter]
     fn area_map_station_count_bucket(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
@@ -2583,6 +2623,7 @@ impl EpisodeOutcomes {
             phantoon_area_valid: self.step_outcomes.phantoon_area_valid.clone_ref(py),
             vanilla_area_valid: self.step_outcomes.vanilla_area_valid.clone_ref(py),
             area_size_bucket: self.step_outcomes.area_size_bucket.clone_ref(py),
+            area_connections: self.step_outcomes.area_connections.clone_ref(py),
             area_map_station_count_bucket: self
                 .step_outcomes
                 .area_map_station_count_bucket
@@ -4729,6 +4770,7 @@ impl EnvironmentGroup {
         let mut pre_phantoon_area_valid = buffers.pre_phantoon_area_valid.bind(py).readwrite();
         let mut pre_vanilla_area_valid = buffers.pre_vanilla_area_valid.bind(py).readwrite();
         let mut pre_area_size_bucket = buffers.pre_area_size_bucket.bind(py).readwrite();
+        let mut pre_area_connections = buffers.pre_area_connections.bind(py).readwrite();
         let mut pre_area_map_station_count_bucket = buffers
             .pre_area_map_station_count_bucket
             .bind(py)
@@ -4742,6 +4784,7 @@ impl EnvironmentGroup {
         let mut phantoon_area_valid = buffers.phantoon_area_valid.bind(py).readwrite();
         let mut vanilla_area_valid = buffers.vanilla_area_valid.bind(py).readwrite();
         let mut area_size_bucket = buffers.area_size_bucket.bind(py).readwrite();
+        let mut area_connections = buffers.area_connections.bind(py).readwrite();
         let mut area_map_station_count_bucket =
             buffers.area_map_station_count_bucket.bind(py).readwrite();
         let mut maridia_water = buffers.maridia_water.bind(py).readwrite();
@@ -4899,6 +4942,11 @@ impl EnvironmentGroup {
             &[self.num_environments, AREA_COUNT],
         )?;
         check_shape(
+            "pre_area_connections",
+            pre_area_connections.as_array().shape(),
+            &[self.num_environments, AREA_PAIR_COUNT],
+        )?;
+        check_shape(
             "pre_area_map_station_count_bucket",
             pre_area_map_station_count_bucket.as_array().shape(),
             &[self.num_environments, AREA_COUNT],
@@ -4965,6 +5013,15 @@ impl EnvironmentGroup {
             "area_size_bucket",
             area_size_bucket.as_array().shape(),
             &[self.num_environments, recommended_candidates, AREA_COUNT],
+        )?;
+        check_shape(
+            "area_connections",
+            area_connections.as_array().shape(),
+            &[
+                self.num_environments,
+                recommended_candidates,
+                AREA_PAIR_COUNT,
+            ],
         )?;
         check_shape(
             "area_map_station_count_bucket",
@@ -5072,6 +5129,9 @@ impl EnvironmentGroup {
         let pre_area_size_bucket = pre_area_size_bucket
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_area_size_bucket must be contiguous"))?;
+        let pre_area_connections = pre_area_connections
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_area_connections must be contiguous"))?;
         let pre_area_map_station_count_bucket = pre_area_map_station_count_bucket
             .as_slice_mut()
             .map_err(|_| {
@@ -5104,6 +5164,9 @@ impl EnvironmentGroup {
         let area_size_bucket = area_size_bucket
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("area_size_bucket must be contiguous"))?;
+        let area_connections = area_connections
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("area_connections must be contiguous"))?;
         let area_map_station_count_bucket =
             area_map_station_count_bucket.as_slice_mut().map_err(|_| {
                 PyValueError::new_err("area_map_station_count_bucket must be contiguous")
@@ -5147,6 +5210,7 @@ impl EnvironmentGroup {
         pre_phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
+        pre_area_connections.fill(false);
         pre_area_map_station_count_bucket.fill(AreaBucketOutcome::Unknown as i8);
         pre_maridia_water.fill(-1);
         pre_norfair_heat.fill(-1);
@@ -5157,6 +5221,7 @@ impl EnvironmentGroup {
         phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
         vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
+        area_connections.fill(false);
         area_map_station_count_bucket.fill(AreaBucketOutcome::Unknown as i8);
         maridia_water.fill(-1);
         norfair_heat.fill(-1);
@@ -5184,13 +5249,17 @@ impl EnvironmentGroup {
                 let pre_connection_output_end =
                     pre_connection_output_start + worker.len * connection_outcome_count;
                 let pre_area_output_start = worker.start * AREA_COUNT;
+                let pre_area_pair_output_start = worker.start * AREA_PAIR_COUNT;
                 let pre_area_output_end = worker.end() * AREA_COUNT;
+                let pre_area_pair_output_end = worker.end() * AREA_PAIR_COUNT;
                 let door_output_start = output_start * door_outcome_count;
                 let door_output_end = output_end * door_outcome_count;
                 let connection_output_start = output_start * connection_outcome_count;
                 let connection_output_end = output_end * connection_outcome_count;
                 let area_output_start = output_start * AREA_COUNT;
+                let area_pair_output_start = output_start * AREA_PAIR_COUNT;
                 let area_output_end = output_end * AREA_COUNT;
+                let area_pair_output_end = output_end * AREA_PAIR_COUNT;
                 let pre_water_start = worker.start * self.common_data.water_room_idx().len();
                 let pre_water_end = worker.end() * self.common_data.water_room_idx().len();
                 let pre_heat_start = worker.start * self.common_data.heat_room_idx().len();
@@ -5271,6 +5340,10 @@ impl EnvironmentGroup {
                     pre_area_size_bucket: OutputShard::from_slice(
                         &mut pre_area_size_bucket[pre_area_output_start..pre_area_output_end],
                     ),
+                    pre_area_connections: OutputShard::from_slice(
+                        &mut pre_area_connections
+                            [pre_area_pair_output_start..pre_area_pair_output_end],
+                    ),
                     pre_area_map_station_count_bucket: OutputShard::from_slice(
                         &mut pre_area_map_station_count_bucket
                             [pre_area_output_start..pre_area_output_end],
@@ -5302,6 +5375,9 @@ impl EnvironmentGroup {
                     ),
                     area_size_bucket: OutputShard::from_slice(
                         &mut area_size_bucket[area_output_start..area_output_end],
+                    ),
+                    area_connections: OutputShard::from_slice(
+                        &mut area_connections[area_pair_output_start..area_pair_output_end],
                     ),
                     area_map_station_count_bucket: OutputShard::from_slice(
                         &mut area_map_station_count_bucket[area_output_start..area_output_end],
@@ -5416,7 +5492,9 @@ impl EnvironmentGroup {
             self.num_environments * VANILLA_AREA_CONSTRAINT_COUNT
         ];
         let area_outcome_len = self.num_environments * AREA_COUNT;
+        let area_pair_outcome_len = self.num_environments * AREA_PAIR_COUNT;
         let mut area_size_bucket = vec![AreaBucketOutcome::Unknown as i8; area_outcome_len];
+        let mut area_connections = vec![false; area_pair_outcome_len];
         let mut area_map_station_count_bucket =
             vec![AreaBucketOutcome::Unknown as i8; area_outcome_len];
         let mut toilet_crossed_room_idx = vec![-1i16; self.num_environments];
@@ -5493,6 +5571,10 @@ impl EnvironmentGroup {
                     ),
                     area_size_bucket: OutputShard::from_slice(
                         &mut area_size_bucket[area_start..area_end],
+                    ),
+                    area_connections: OutputShard::from_slice(
+                        &mut area_connections
+                            [worker.start * AREA_PAIR_COUNT..worker.end() * AREA_PAIR_COUNT],
                     ),
                     area_map_station_count_bucket: OutputShard::from_slice(
                         &mut area_map_station_count_bucket[area_start..area_end],
@@ -5611,6 +5693,13 @@ impl EnvironmentGroup {
                     area_size_bucket,
                     self.num_environments,
                     AREA_COUNT,
+                )?
+                .unbind(),
+                area_connections: pyarray2_from_flat_vec(
+                    py,
+                    area_connections,
+                    self.num_environments,
+                    AREA_PAIR_COUNT,
                 )?
                 .unbind(),
                 area_map_station_count_bucket: pyarray2_from_flat_vec(
@@ -5812,7 +5901,9 @@ impl EnvironmentGroup {
             environment_count * VANILLA_AREA_CONSTRAINT_COUNT
         ];
         let area_output_len = environment_count * AREA_COUNT;
+        let area_pair_output_len = environment_count * AREA_PAIR_COUNT;
         let mut area_size_bucket = vec![AreaBucketOutcome::Unknown as i8; area_output_len];
+        let mut area_connections = vec![false; area_pair_output_len];
         let mut area_map_station_count_bucket =
             vec![AreaBucketOutcome::Unknown as i8; area_output_len];
         let water_room_count = self.common_data.water_room_idx().len();
@@ -5841,7 +5932,10 @@ impl EnvironmentGroup {
                 let door_match_output_end =
                     door_match_output_start + environment_count * door_outcome_count;
                 let area_output_start = input_start * AREA_COUNT;
+                let area_pair_output_start = input_start * AREA_PAIR_COUNT;
                 let area_output_end = area_output_start + environment_count * AREA_COUNT;
+                let area_pair_output_end =
+                    area_pair_output_start + environment_count * AREA_PAIR_COUNT;
                 let water_output_start = input_start * water_room_count;
                 let water_output_end = (input_start + environment_count) * water_room_count;
                 let heat_output_start = input_start * heat_room_count;
@@ -5872,6 +5966,9 @@ impl EnvironmentGroup {
                     ),
                     area_size_bucket: OutputShard::from_slice(
                         &mut area_size_bucket[area_output_start..area_output_end],
+                    ),
+                    area_connections: OutputShard::from_slice(
+                        &mut area_connections[area_pair_output_start..area_pair_output_end],
                     ),
                     area_map_station_count_bucket: OutputShard::from_slice(
                         &mut area_map_station_count_bucket[area_output_start..area_output_end],
@@ -5925,6 +6022,13 @@ impl EnvironmentGroup {
                 area_size_bucket,
                 environment_count,
                 AREA_COUNT,
+            )?
+            .unbind(),
+            area_connections: pyarray2_from_flat_vec(
+                py,
+                area_connections,
+                environment_count,
+                AREA_PAIR_COUNT,
             )?
             .unbind(),
             area_map_station_count_bucket: pyarray2_from_flat_vec(

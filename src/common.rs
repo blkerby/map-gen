@@ -28,6 +28,7 @@ pub enum DoorValidOutcome {
 }
 
 pub const AREA_COUNT: usize = 6;
+pub const AREA_PAIR_COUNT: usize = AREA_COUNT * (AREA_COUNT - 1) / 2;
 pub const DUMMY_AREA: AreaIdx = AREA_COUNT as AreaIdx;
 pub const VANILLA_AREA_CONSTRAINT_COUNT: usize = 6;
 pub const NUM_DIRS: usize = 4; // left, right, up, down

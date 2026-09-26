@@ -8,8 +8,14 @@ from env import Actions, EpisodeData
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v4"
+EXPERIENCE_FORMAT = "map-gen-experience-v5"
+PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT = "map-gen-experience-v4"
 PRE_SUCCESS_EXPERIENCE_FORMAT = "map-gen-experience-v3"
+EXPERIENCE_MISSING_VARIABLE_FIELDS = {
+    EXPERIENCE_FORMAT: (),
+    PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT: ("reward_area_distinct_crossing",),
+    PRE_SUCCESS_EXPERIENCE_FORMAT: ("reward_success", "reward_area_distinct_crossing"),
+}
 REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
     "room_idx",
     "room_x",
@@ -29,8 +35,9 @@ def read_experience_tensors(
 ) -> dict[str, torch.Tensor]:
     with safe_open(path, framework="pt", device="cpu") as experience:
         metadata = experience.metadata()
-        if metadata is None or metadata.get("format") not in (
-            EXPERIENCE_FORMAT, PRE_SUCCESS_EXPERIENCE_FORMAT
+        if (
+            metadata is None
+            or metadata.get("format") not in EXPERIENCE_MISSING_VARIABLE_FIELDS
         ):
             raise ValueError(f"unsupported experience format in {path}")
         missing = [
@@ -42,24 +49,31 @@ def read_experience_tensors(
             name: experience.get_tensor(name) for name in required_names
         }
     variables = tensors["generation_variable_floats"]
-    pre_success = metadata["format"] == PRE_SUCCESS_EXPERIENCE_FORMAT
+    missing_fields = EXPERIENCE_MISSING_VARIABLE_FIELDS[metadata["format"]]
     expected_shape = (
-        tensors["room_idx"].shape[0], len(GENERATION_VARIABLE_FLOAT_FIELDS) - int(pre_success)
+        tensors["room_idx"].shape[0],
+        len(GENERATION_VARIABLE_FLOAT_FIELDS) - len(missing_fields),
     )
     if variables.shape != expected_shape:
         raise ValueError(
             f"{path} generation_variable_floats shape must be {expected_shape}, "
             f"got {tuple(variables.shape)}"
         )
-    if pre_success:
-        # v3 has exactly the current schema minus reward_success. Preserve every
-        # other column, including the vanilla-area constraint flags after it.
-        column = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_success")
-        tensors["generation_variable_floats"] = torch.cat(
-            (variables[:, :column], variables.new_zeros((variables.shape[0], 1)),
-             variables[:, column:]),
+    # Older formats predate these rewards. Insert neutral columns in schema order
+    # so that every recorded reward and constraint keeps its original meaning.
+    missing_columns = sorted(
+        GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in missing_fields
+    )
+    for column in missing_columns:
+        variables = torch.cat(
+            (
+                variables[:, :column],
+                variables.new_zeros((variables.shape[0], 1)),
+                variables[:, column:],
+            ),
             dim=1,
         )
+    tensors["generation_variable_floats"] = variables
     return tensors
 
 

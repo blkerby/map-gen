@@ -308,6 +308,7 @@ class MainLossBreakdown:
     save_distance: float
     refill_distance: float
     missing_connect_utility: float
+    area_distinct_crossing: float
     area_crossings: float
     area_size: float
     area_map_station: float
@@ -331,6 +332,7 @@ class MainLossBreakdown:
     save_distance_contribution: float
     refill_distance_contribution: float
     missing_connect_utility_contribution: float
+    area_distinct_crossing_contribution: float
     area_crossings_contribution: float
     area_size_contribution: float
     area_map_station_contribution: float
@@ -388,6 +390,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         save_distance=0.0,
         refill_distance=0.0,
         missing_connect_utility=0.0,
+        area_distinct_crossing=0.0,
         area_crossings=0.0,
         area_size=0.0,
         area_map_station=0.0,
@@ -411,6 +414,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         save_distance_contribution=0.0,
         refill_distance_contribution=0.0,
         missing_connect_utility_contribution=0.0,
+        area_distinct_crossing_contribution=0.0,
         area_crossings_contribution=0.0,
         area_size_contribution=0.0,
         area_map_station_contribution=0.0,
@@ -438,6 +442,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.save_distance += source.save_distance
     target.refill_distance += source.refill_distance
     target.missing_connect_utility += source.missing_connect_utility
+    target.area_distinct_crossing += source.area_distinct_crossing
     target.area_crossings += source.area_crossings
     target.area_size += source.area_size
     target.area_map_station += source.area_map_station
@@ -462,6 +467,7 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.save_distance_contribution += source.save_distance_contribution
     target.refill_distance_contribution += source.refill_distance_contribution
     target.missing_connect_utility_contribution += source.missing_connect_utility_contribution
+    target.area_distinct_crossing_contribution += source.area_distinct_crossing_contribution
     target.area_crossings_contribution += source.area_crossings_contribution
     target.area_size_contribution += source.area_size_contribution
     target.area_map_station_contribution += source.area_map_station_contribution
@@ -490,6 +496,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         save_distance=total_loss.save_distance / count,
         refill_distance=total_loss.refill_distance / count,
         missing_connect_utility=total_loss.missing_connect_utility / count,
+        area_distinct_crossing=total_loss.area_distinct_crossing / count,
         area_crossings=total_loss.area_crossings / count,
         area_size=total_loss.area_size / count,
         area_map_station=total_loss.area_map_station / count,
@@ -515,6 +522,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         missing_connect_utility_contribution=(
             total_loss.missing_connect_utility_contribution / count
         ),
+        area_distinct_crossing_contribution=total_loss.area_distinct_crossing_contribution / count,
         area_crossings_contribution=total_loss.area_crossings_contribution / count,
         area_size_contribution=total_loss.area_size_contribution / count,
         area_map_station_contribution=total_loss.area_map_station_contribution / count,
@@ -900,14 +908,11 @@ def prepare_feature_batches(
         else:
             env.step_known(next_actions)
         if sample_step:
-            if config.features.lookahead_outcomes:
-                next_lookahead_outcomes = env.get_current_feature_outcomes(
-                    torch.device("cpu"),
-                    0,
-                    train_actions.room_idx.shape[0],
-                )
-            else:
-                next_lookahead_outcomes = None
+            next_lookahead_outcomes = env.get_current_feature_outcomes(
+                torch.device("cpu"),
+                0,
+                train_actions.room_idx.shape[0],
+            )
             proposal_frontier_idx = None
             proposal_action_idx = None
             proposal_invalid = None
@@ -920,7 +925,7 @@ def prepare_feature_batches(
                 proposal_target_reward = proposal_data.target_reward[:, step]
                 proposal_balance_residual = proposal_data.balance_residual[:, step]
             feature_slot = FeatureSlot(env, pin_memory=pin_memory)
-            if generated_feature_batches is not None and next_lookahead_outcomes is not None:
+            if generated_feature_batches is not None:
                 replay_feature_requirements = env.get_replay_action_feature_requirements(
                     next_actions,
                     0,
@@ -955,6 +960,7 @@ def prepare_feature_batches(
                         vanilla_area_invalid=(
                             next_lookahead_outcomes.vanilla_area_invalid.unsqueeze(1)
                         ),
+                        area_connections=next_lookahead_outcomes.area_connections.unsqueeze(1),
                         area_size_bucket=next_lookahead_outcomes.area_size_bucket.unsqueeze(1),
                         area_map_station_count_bucket=(
                             next_lookahead_outcomes.area_map_station_count_bucket.unsqueeze(1)
@@ -1262,6 +1268,7 @@ def train_feature_batch_backward(
         phantoon_pair_invalid=step_outcomes.phantoon_pair_invalid.unsqueeze(1),
         phantoon_area_invalid=step_outcomes.phantoon_area_invalid.unsqueeze(1),
         vanilla_area_invalid=step_outcomes.vanilla_area_invalid.unsqueeze(1),
+        area_connections=step_outcomes.area_connections.unsqueeze(1),
         area_size_bucket=step_outcomes.area_size_bucket.unsqueeze(1),
         area_map_station_count_bucket=step_outcomes.area_map_station_count_bucket.unsqueeze(1),
         maridia_water=step_outcomes.maridia_water.unsqueeze(1),
@@ -1507,6 +1514,7 @@ def train_feature_batch_backward(
             area_y_target,
             area_mask,
             area_coordinate_mask,
+            (~features.global_features.area_connections).unsqueeze(1),
             area_crossings_mask,
             context.loss_config,
         )
@@ -1531,6 +1539,7 @@ def train_feature_batch_backward(
         total_loss.missing_connect_utility += (
             prefix_loss.missing_connect_utility.item() * prefix_weight
         )
+        total_loss.area_distinct_crossing += prefix_loss.area_distinct_crossing.item() * prefix_weight
         total_loss.area_crossings += prefix_loss.area_crossings.item() * prefix_weight
         total_loss.area_size += prefix_loss.area_size.item() * prefix_weight
         total_loss.area_map_station += prefix_loss.area_map_station.item() * prefix_weight
@@ -1580,6 +1589,9 @@ def train_feature_batch_backward(
         )
         total_loss.missing_connect_utility_contribution += (
             prefix_loss.missing_connect_utility_contribution.item() * prefix_weight
+        )
+        total_loss.area_distinct_crossing_contribution += (
+            prefix_loss.area_distinct_crossing_contribution.item() * prefix_weight
         )
         total_loss.area_crossings_contribution += (
             prefix_loss.area_crossings_contribution.item() * prefix_weight

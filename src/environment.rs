@@ -9,11 +9,11 @@ use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    AREA_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx, Coord, DUMMY_AREA,
-    DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
-    GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
-    RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT, get_behind_door_position,
-    proposal_action_parts,
+    AREA_COUNT, AREA_PAIR_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx,
+    Coord, DUMMY_AREA, DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome,
+    DoorVariantIdx, FrontierIdx, GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx,
+    ProposalActionIdx, RoomIdx, RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT,
+    get_behind_door_position, proposal_action_parts,
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
 use crate::scc_dag::SccDag;
@@ -348,6 +348,8 @@ pub struct StepOutcomes {
     pub phantoon_area_valid: DoorValidOutcome,
     // Whether each constrained special room is assigned to its vanilla area.
     pub vanilla_area_valid: [DoorValidOutcome; VANILLA_AREA_CONSTRAINT_COUNT],
+    // Present connections, independent of validity; false means not connected yet.
+    pub area_connections: [bool; AREA_PAIR_COUNT],
     // Final area-size bucket: below range, valid range, or above range.
     pub area_size_bucket: [AreaBucketOutcome; AREA_COUNT],
     // Final map-station-count bucket: zero, one, or two-or-more.
@@ -1217,6 +1219,7 @@ pub struct Environment {
     area_max_y: [Coord; AREA_COUNT],
     area_map_station_count: [usize; AREA_COUNT],
     area_crossings: usize,
+    area_connections: [bool; AREA_PAIR_COUNT],
     area_size: [usize; AREA_COUNT],
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
     connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
@@ -1258,6 +1261,7 @@ struct FeatureSnapshot {
     area_map_station_count: usize,
     area_size: usize,
     area_crossings: usize,
+    area_connections: [bool; AREA_PAIR_COUNT],
     connection_variant_idx: Option<ConnectionVariantIdx>,
     connection_variant_unused_count: usize,
     room_part_component: Vec<usize>,
@@ -1287,6 +1291,7 @@ struct LookaheadSnapshot {
     area_map_station_count: usize,
     area_size: usize,
     area_crossings: usize,
+    area_connections: [bool; AREA_PAIR_COUNT],
     geometry_idx: Option<GeometryIdx>,
     geometry_unused_count: usize,
     connection_variant_idx: Option<ConnectionVariantIdx>,
@@ -1869,6 +1874,7 @@ impl Environment {
             area_max_y: [0; AREA_COUNT],
             area_map_station_count: [0; AREA_COUNT],
             area_crossings: 0,
+            area_connections: [false; AREA_PAIR_COUNT],
             area_size: [0; AREA_COUNT],
             geometry_unused_count: common
                 .geometry_rooms
@@ -1928,6 +1934,7 @@ impl Environment {
         self.area_max_y = [0; AREA_COUNT];
         self.area_map_station_count = [0; AREA_COUNT];
         self.area_crossings = 0;
+        self.area_connections.fill(false);
         self.area_size = [0; AREA_COUNT];
         self.geometry_unused_count.clear();
         self.geometry_unused_count
@@ -2106,6 +2113,11 @@ impl Environment {
         let matched_room_area = self.room_area[matched_room_idx as usize];
         if action.area != matched_room_area {
             self.area_crossings += 1;
+            let a = usize::from(action.area.min(matched_room_area));
+            let b = usize::from(action.area.max(matched_room_area));
+            // Lexicographic upper-triangle order: (0,1), ..., (4,5).
+            let pair_idx = a * (2 * AREA_COUNT - a - 1) / 2 + b - a - 1;
+            self.area_connections[pair_idx] = true;
         }
     }
 
@@ -4215,6 +4227,7 @@ impl Environment {
             phantoon_area_valid,
             vanilla_area_valid,
             area_size_bucket,
+            area_connections: self.area_connections,
             area_map_station_count_bucket,
             maridia_water: self.preferred_area_room_outcomes(
                 common.water_room_idx(),
@@ -4406,6 +4419,7 @@ impl Environment {
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
+            area_connections: self.area_connections,
             geometry_idx,
             geometry_unused_count: geometry_idx
                 .map_or(0, |idx| self.geometry_unused_count[idx as usize]),
@@ -4449,6 +4463,7 @@ impl Environment {
             self.area_size[area] = snapshot.area_size;
         }
         self.area_crossings = snapshot.area_crossings;
+        self.area_connections = snapshot.area_connections;
         if let Some(geometry_idx) = snapshot.geometry_idx {
             self.geometry_unused_count[geometry_idx as usize] = snapshot.geometry_unused_count;
         }
@@ -4521,6 +4536,7 @@ impl Environment {
             area_map_station_count: area_idx.map_or(0, |area| self.area_map_station_count[area]),
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
+            area_connections: self.area_connections,
             connection_variant_idx,
             connection_variant_unused_count: connection_variant_idx
                 .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
@@ -4561,6 +4577,7 @@ impl Environment {
             self.area_size[area] = snapshot.area_size;
         }
         self.area_crossings = snapshot.area_crossings;
+        self.area_connections = snapshot.area_connections;
         if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
             self.connection_variant_unused_count[connection_variant_idx as usize] =
                 snapshot.connection_variant_unused_count;
@@ -5948,6 +5965,7 @@ impl Environment {
             phantoon_area_valid: self.phantoon_area_outcome(common, &has_usable_area_frontier),
             vanilla_area_valid: self.vanilla_area_outcomes(common, &has_usable_area_frontier),
             area_size_bucket,
+            area_connections: self.area_connections,
             area_map_station_count_bucket,
             maridia_water: self.preferred_area_room_outcomes(
                 common.water_room_idx(),
@@ -6278,6 +6296,16 @@ impl Environment {
     ) -> Result<StepOutcomes, String> {
         let outcomes = self.outcomes(common);
         if let Some(known_outcomes) = &self.known_outcomes {
+            for (pair, (&known, &current)) in known_outcomes
+                .area_connections
+                .iter()
+                .zip(&outcomes.area_connections)
+                .enumerate()
+            {
+                if known && !current {
+                    return Err(format!("area connection {pair} disappeared during {stage}"));
+                }
+            }
             check_outcome_transition_consistency(
                 &known_outcomes.door_valid,
                 &outcomes.door_valid,
@@ -6400,6 +6428,7 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
             )
         }),
         toilet_crossed_room_idx: current.toilet_crossed_room_idx,
+        area_connections: current.area_connections,
     }
 }
 
@@ -7241,6 +7270,7 @@ mod tests {
         );
         assert_eq!(env.area_size[0], 1);
         assert_eq!(env.area_crossings, 0);
+        assert_eq!(env.area_connections, [false; AREA_PAIR_COUNT]);
 
         env.step(
             Action {
@@ -7253,6 +7283,7 @@ mod tests {
         );
         assert_eq!(env.area_size[0], 2);
         assert_eq!(env.area_crossings, 0);
+        assert_eq!(env.area_connections, [false; AREA_PAIR_COUNT]);
 
         let snapshot = env.apply_lookahead_candidate(
             Action {
@@ -7265,11 +7296,28 @@ mod tests {
         );
         assert_eq!(env.area_size[1], 1);
         assert_eq!(env.area_crossings, 1);
+        assert!(env.area_connections[0]);
+        assert_eq!(
+            env.area_connections.iter().filter(|&&value| value).count(),
+            1
+        );
         env.restore_lookahead_candidate(&common, snapshot);
 
         assert_eq!(env.area_size[0], 2);
         assert_eq!(env.area_size[1], 0);
         assert_eq!(env.area_crossings, 0);
+        assert_eq!(env.area_connections, [false; AREA_PAIR_COUNT]);
+
+        let candidate = Action {
+            room_idx: 2,
+            x: 2,
+            y: 0,
+            area: 1,
+        };
+        let snapshot = env.apply_feature_candidate(candidate, &common);
+        assert!(env.area_connections[0]);
+        env.restore_feature_candidate(&common, candidate, snapshot);
+        assert_eq!(env.area_connections, [false; AREA_PAIR_COUNT]);
 
         env.step(
             Action {
@@ -7288,6 +7336,24 @@ mod tests {
         env.clear(&common);
         assert_eq!(env.area_size, [0; AREA_COUNT]);
         assert_eq!(env.area_crossings, 0);
+        assert_eq!(env.area_connections, [false; AREA_PAIR_COUNT]);
+        for (room_idx, area) in [(0, 0), (1, 1), (2, 0)] {
+            env.step(
+                Action {
+                    room_idx,
+                    x: room_idx as Coord,
+                    y: 0,
+                    area,
+                },
+                &common,
+            );
+        }
+        assert_eq!(env.area_crossings, 2);
+        assert_eq!(
+            env.area_connections.iter().filter(|&&value| value).count(),
+            1
+        );
+        assert!(env.outcomes(&common).area_connections[0]);
     }
 
     #[test]
@@ -7793,6 +7859,10 @@ mod tests {
     }
 
     fn assert_feature_outcomes_eq(left: &FeatureOutcomes, right: &FeatureOutcomes) {
+        assert_eq!(
+            left.step_outcomes.area_connections,
+            right.step_outcomes.area_connections
+        );
         assert_eq!(
             left.step_outcomes.door_valid,
             right.step_outcomes.door_valid
@@ -8622,6 +8692,7 @@ mod tests {
 
         assert!(introduces_invalid_outcome(
             &StepOutcomes {
+                area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Unknown],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
@@ -8635,6 +8706,7 @@ mod tests {
                 toilet_crossed_room_idx: -1,
             },
             &StepOutcomes {
+                area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Valid,
@@ -8650,6 +8722,7 @@ mod tests {
         ));
         assert!(!introduces_invalid_outcome(
             &StepOutcomes {
+                area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Invalid],
                 connections_valid: vec![Unknown],
                 toilet_valid: Unknown,
@@ -8663,6 +8736,7 @@ mod tests {
                 toilet_crossed_room_idx: -1,
             },
             &StepOutcomes {
+                area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 toilet_valid: Unknown,

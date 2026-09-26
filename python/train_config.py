@@ -122,6 +122,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_save_distance",
     "reward_refill_distance",
     "reward_missing_connect_utility",
+    "reward_area_distinct_crossing",
     "reward_area_crossing",
     "reward_area_size_valid",
     "reward_area_map_station",
@@ -243,6 +244,7 @@ class GenerationConfig(StrictBaseModel):
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
+    reward_area_distinct_crossing: VariableFloat
     reward_area_crossing: VariableFloat
     reward_area_size_valid: VariableFloat
     reward_area_map_station: VariableFloat
@@ -390,6 +392,7 @@ class TrainConfig(StrictBaseModel):
     save_distance_weight: float
     refill_distance_weight: float
     missing_connect_utility_weight: float
+    area_distinct_crossing_weight: float
     area_crossing_weight: float
     area_size_weight: float
     area_map_station_weight: float
@@ -770,6 +773,10 @@ def validate_config(config: Config) -> None:
         config.generation.reward_missing_connect_utility,
         "generation.reward_missing_connect_utility",
     )
+    validate_finite_variable_float(
+        config.generation.reward_area_distinct_crossing,
+        "generation.reward_area_distinct_crossing",
+    )
     validate_nonnegative_variable_float(
         config.generation.reward_area_crossing,
         "generation.reward_area_crossing",
@@ -842,6 +849,11 @@ def validate_config(config: Config) -> None:
         raise ValueError(
             "train.missing_connect_utility_weight must be greater than or equal to zero"
         )
+    if (
+        not math.isfinite(config.train.area_distinct_crossing_weight)
+        or config.train.area_distinct_crossing_weight < 0
+    ):
+        raise ValueError("train.area_distinct_crossing_weight must be finite and nonnegative")
     if config.train.area_crossing_weight < 0:
         raise ValueError("train.area_crossing_weight must be greater than or equal to zero")
     if config.train.area_size_weight < 0:

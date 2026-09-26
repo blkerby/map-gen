@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from env import AREA_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, Features, OutputMetadata
+from env import AREA_COUNT, AREA_PAIR_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, Features, OutputMetadata
 from train_config import (
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_PROBABILITY_FIELDS,
@@ -183,6 +183,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
             "reward_save_distance": values["reward_save_distance"],
             "reward_refill_distance": values["reward_refill_distance"],
             "reward_missing_connect_utility": values["reward_missing_connect_utility"],
+            "reward_area_distinct_crossing": values["reward_area_distinct_crossing"],
             "reward_area_crossing": values["reward_area_crossing"],
             "reward_area_size_valid": values["reward_area_size_valid"],
             "reward_area_map_station": values["reward_area_map_station"],
@@ -272,6 +273,7 @@ class LookaheadFeature(GlobalFeature):
             + 6
             + 2 * VANILLA_AREA_CONSTRAINT_COUNT
             + 2 * AREA_COUNT * 3
+            + AREA_PAIR_COUNT
             + 2 * len(context.output_metadata.maridia_water_room_idx)
             + 2 * len(context.output_metadata.norfair_heat_room_idx)
         )
@@ -365,6 +367,7 @@ class LookaheadFeature(GlobalFeature):
         return torch.cat(
             [
                 door_match_features,
+                features.global_features.area_connections.to(dtype),
                 connection_features,
                 toilet_features,
                 phantoon_pair_features,

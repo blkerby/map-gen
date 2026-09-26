@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from train_config import EngineFeatureConfig, FeatureConfig
 
 AREA_COUNT = 6
+AREA_PAIR_COUNT = AREA_COUNT * (AREA_COUNT - 1) // 2
 DUMMY_AREA = AREA_COUNT
 VANILLA_AREA_CONSTRAINT_COUNT = 6
 VANILLA_AREA_CONDITION_INDICES = [
@@ -193,6 +194,7 @@ class GenerateConfig:
     reward_save_distance: float | torch.Tensor
     reward_refill_distance: float | torch.Tensor
     reward_missing_connect_utility: float | torch.Tensor
+    reward_area_distinct_crossing: float | torch.Tensor
     reward_area_crossing: float | torch.Tensor
     reward_area_size_valid: float | torch.Tensor
     reward_area_map_station: float | torch.Tensor
@@ -337,6 +339,8 @@ class StepOutcomes:
     phantoon_area_invalid: torch.Tensor
     # -1 = unknown, 0 = special room is in its vanilla area, 1 = invalid.
     vanilla_area_invalid: torch.Tensor
+    # Boolean connections in lexicographic unordered area-pair order.
+    area_connections: torch.Tensor
     # -1 = unknown; 0 = below minimum, 1 = valid range, 2 = above maximum.
     area_size_bucket: torch.Tensor
     # -1 = unknown; 0 = zero, 1 = one, 2 = two-or-more.
@@ -357,6 +361,7 @@ class StepOutcomes:
             phantoon_pair_invalid=self.phantoon_pair_invalid.to(device, non_blocking=non_blocking),
             phantoon_area_invalid=self.phantoon_area_invalid.to(device, non_blocking=non_blocking),
             vanilla_area_invalid=self.vanilla_area_invalid.to(device, non_blocking=non_blocking),
+            area_connections=self.area_connections.to(device, non_blocking=non_blocking),
             area_size_bucket=self.area_size_bucket.to(device, non_blocking=non_blocking),
             area_map_station_count_bucket=self.area_map_station_count_bucket.to(
                 device, non_blocking=non_blocking
@@ -374,6 +379,7 @@ class StepOutcomes:
             phantoon_pair_invalid=self.phantoon_pair_invalid[start:end],
             phantoon_area_invalid=self.phantoon_area_invalid[start:end],
             vanilla_area_invalid=self.vanilla_area_invalid[start:end],
+            area_connections=self.area_connections[start:end],
             area_size_bucket=self.area_size_bucket[start:end],
             area_map_station_count_bucket=self.area_map_station_count_bucket[start:end],
             maridia_water=self.maridia_water[start:end],
@@ -604,6 +610,7 @@ class CandidateSlot:
         self.pre_phantoon_pair_invalid = None
         self.pre_phantoon_area_invalid = None
         self.pre_vanilla_area_invalid = None
+        self.pre_area_connections = None
         self.pre_area_size_bucket = None
         self.pre_area_map_station_count_bucket = None
         self.pre_maridia_water = None
@@ -614,6 +621,7 @@ class CandidateSlot:
         self.phantoon_pair_invalid = None
         self.phantoon_area_invalid = None
         self.vanilla_area_invalid = None
+        self.area_connections = None
         self.area_size_bucket = None
         self.area_map_station_count_bucket = None
         self.maridia_water = None
@@ -672,6 +680,9 @@ class CandidateSlot:
         self.pre_vanilla_area_invalid = self._empty(
             (self.environment_capacity, VANILLA_AREA_CONSTRAINT_COUNT), torch.int8
         )
+        self.pre_area_connections = self._empty(
+            (self.environment_capacity, AREA_PAIR_COUNT), torch.bool
+        )
         self.pre_area_size_bucket = self._empty(
             (self.environment_capacity, AREA_COUNT), torch.int8
         )
@@ -698,6 +709,7 @@ class CandidateSlot:
         self.vanilla_area_invalid = self._empty(
             (*candidate_shape, VANILLA_AREA_CONSTRAINT_COUNT), torch.int8
         )
+        self.area_connections = self._empty((*candidate_shape, AREA_PAIR_COUNT), torch.bool)
         self.area_size_bucket = self._empty((*candidate_shape, AREA_COUNT), torch.int8)
         self.area_map_station_count_bucket = self._empty(
             (*candidate_shape, AREA_COUNT), torch.int8
@@ -740,6 +752,7 @@ class CandidateSlot:
             phantoon_pair_invalid=self.pre_phantoon_pair_invalid[:environment_count],
             phantoon_area_invalid=self.pre_phantoon_area_invalid[:environment_count],
             vanilla_area_invalid=self.pre_vanilla_area_invalid[:environment_count],
+            area_connections=self.pre_area_connections[:environment_count],
             area_size_bucket=self.pre_area_size_bucket[:environment_count],
             area_map_station_count_bucket=self.pre_area_map_station_count_bucket[
                 :environment_count
@@ -761,6 +774,7 @@ class CandidateSlot:
             phantoon_pair_invalid=self.phantoon_pair_invalid[:environment_count, :candidate_count],
             phantoon_area_invalid=self.phantoon_area_invalid[:environment_count, :candidate_count],
             vanilla_area_invalid=self.vanilla_area_invalid[:environment_count, :candidate_count],
+            area_connections=self.area_connections[:environment_count, :candidate_count],
             area_size_bucket=self.area_size_bucket[:environment_count, :candidate_count],
             area_map_station_count_bucket=self.area_map_station_count_bucket[
                 :environment_count, :candidate_count
@@ -852,6 +866,8 @@ class GlobalFeatures:
     lookahead_phantoon_pair_invalid: torch.Tensor
     lookahead_phantoon_area_invalid: torch.Tensor
     lookahead_vanilla_area_invalid: torch.Tensor
+    # Always present, even when the lookahead input embedding is disabled.
+    area_connections: torch.Tensor
     lookahead_area_size_bucket: torch.Tensor
     lookahead_area_map_station_count_bucket: torch.Tensor
     lookahead_maridia_water: torch.Tensor
@@ -938,6 +954,7 @@ class GlobalFeatures:
             lookahead_vanilla_area_invalid=self.lookahead_vanilla_area_invalid.to(
                 device, non_blocking=non_blocking
             ),
+            area_connections=self.area_connections.to(device, non_blocking=non_blocking),
             lookahead_area_size_bucket=self.lookahead_area_size_bucket.to(
                 device, non_blocking=non_blocking
             ),
@@ -1001,6 +1018,7 @@ class GlobalFeatures:
             lookahead_phantoon_pair_invalid=self.lookahead_phantoon_pair_invalid.flatten(0, 1),
             lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.flatten(0, 1),
             lookahead_vanilla_area_invalid=self.lookahead_vanilla_area_invalid.flatten(0, 1),
+            area_connections=self.area_connections.flatten(0, 1),
             lookahead_area_size_bucket=self.lookahead_area_size_bucket.flatten(0, 1),
             lookahead_area_map_station_count_bucket=(
                 self.lookahead_area_map_station_count_bucket.flatten(0, 1)
@@ -1613,6 +1631,9 @@ class EnvironmentGroup:
                     "pre_vanilla_area_valid": candidate_slot.pre_vanilla_area_invalid[
                         : self.num_envs
                     ].numpy(),
+                    "pre_area_connections": candidate_slot.pre_area_connections[
+                        : self.num_envs
+                    ].numpy(),
                     "pre_area_size_bucket": candidate_slot.pre_area_size_bucket[
                         : self.num_envs
                     ].numpy(),
@@ -1637,6 +1658,9 @@ class EnvironmentGroup:
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "vanilla_area_valid": candidate_slot.vanilla_area_invalid[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "area_connections": candidate_slot.area_connections[
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "area_size_bucket": candidate_slot.area_size_bucket[
@@ -1735,6 +1759,9 @@ class EnvironmentGroup:
                     result.step_outcomes.phantoon_area_valid
                 ).to(device),
                 vanilla_area_invalid=torch.from_numpy(result.step_outcomes.vanilla_area_valid).to(
+                    device
+                ),
+                area_connections=torch.from_numpy(result.step_outcomes.area_connections).to(
                     device
                 ),
                 area_size_bucket=torch.from_numpy(result.step_outcomes.area_size_bucket).to(
@@ -1846,6 +1873,7 @@ class EnvironmentGroup:
             phantoon_pair_invalid=torch.from_numpy(result.phantoon_pair_valid).to(device),
             phantoon_area_invalid=torch.from_numpy(result.phantoon_area_valid).to(device),
             vanilla_area_invalid=torch.from_numpy(result.vanilla_area_valid).to(device),
+            area_connections=torch.from_numpy(result.area_connections).to(device),
             area_size_bucket=torch.from_numpy(result.area_size_bucket).to(device),
             area_map_station_count_bucket=torch.from_numpy(
                 result.area_map_station_count_bucket
@@ -2415,6 +2443,7 @@ class FeatureSlot:
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
+        area_connections = lookahead_outcomes.area_connections
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
         lookahead_maridia_water = lookahead_outcomes.maridia_water
@@ -2530,6 +2559,7 @@ class FeatureSlot:
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
+                area_connections=area_connections,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
                 lookahead_area_map_station_count_bucket=(lookahead_area_map_station_count_bucket),
                 lookahead_maridia_water=lookahead_maridia_water,
@@ -2643,6 +2673,7 @@ class FeatureSlot:
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
+        area_connections = lookahead_outcomes.area_connections
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
         lookahead_maridia_water = lookahead_outcomes.maridia_water
@@ -2770,6 +2801,7 @@ class FeatureSlot:
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
+                area_connections=area_connections,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
                 lookahead_area_map_station_count_bucket=(lookahead_area_map_station_count_bucket),
                 lookahead_maridia_water=lookahead_maridia_water,
