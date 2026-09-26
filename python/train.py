@@ -15,6 +15,7 @@ from types import FrameType
 from typing import Any
 
 import safetensors.torch
+from area_assignment import build_door_room_lookup
 from area_order import episode_area_order
 import torch
 import map_gen
@@ -33,6 +34,7 @@ from env import (
     AREA_COUNT,
     Actions,
     DoorMatchCounts,
+    DoorMatches,
     Engine,
     EndOutcomes,
     EpisodeData,
@@ -117,6 +119,51 @@ VANILLA_AREA_SPECIAL_ROOM_TYPES = (
 )
 
 
+def compute_area_distinct_crossing_counts(
+    actions: Actions,
+    door_matches: DoorMatches,
+    rooms: list[dict],
+) -> torch.Tensor:
+    """Count undirected area pairs joined by a door match in each episode."""
+    lookup = build_door_room_lookup(rooms, door_matches.left.device)
+    room_area = torch.full(
+        (door_matches.left.shape[0], len(rooms)),
+        AREA_COUNT,
+        dtype=torch.int64,
+        device=door_matches.left.device,
+    )
+    valid_action = (actions.room_idx < len(rooms)) & (actions.room_area < AREA_COUNT)
+    episode_idx, step_idx = torch.where(valid_action)
+    room_area[episode_idx, actions.room_idx[episode_idx, step_idx].long()] = (
+        actions.room_area[episode_idx, step_idx].long()
+    )
+    adjacency = torch.zeros(
+        (door_matches.left.shape[0], AREA_COUNT, AREA_COUNT),
+        dtype=torch.bool,
+        device=door_matches.left.device,
+    )
+    # Left and up cover each physical match once; unmatched doors use -1.
+    for matches, source_rooms, target_rooms in (
+        (door_matches.left, lookup.left, lookup.right),
+        (door_matches.up, lookup.up, lookup.down),
+    ):
+        episode_idx, source_idx = torch.where((matches >= 0) & (matches < target_rooms.numel()))
+        target_idx = matches[episode_idx, source_idx].long()
+        source_area = room_area[episode_idx, source_rooms[source_idx]]
+        target_area = room_area[episode_idx, target_rooms[target_idx]]
+        crossing = (
+            (source_area < AREA_COUNT)
+            & (target_area < AREA_COUNT)
+            & (source_area != target_area)
+        )
+        episode_idx = episode_idx[crossing]
+        source_area = source_area[crossing]
+        target_area = target_area[crossing]
+        adjacency[episode_idx, source_area, target_area] = True
+        adjacency[episode_idx, target_area, source_area] = True
+    return torch.triu(adjacency, diagonal=1).sum(dim=(1, 2))
+
+
 def compute_door_match_count_ss(counts: torch.Tensor, dim: int) -> torch.Tensor:
     totals = torch.sum(counts, dim=dim, keepdim=True)
     if torch.any(totals <= 1):
@@ -137,24 +184,14 @@ def compute_door_match_ss(
 
 
 def compute_valid_door_match_counts(
-    engine: Engine,
-    actions: Actions,
+    door_matches: DoorMatches,
     success: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Count horizontal and vertical pairs only in fully successful episodes."""
-    door_matches, _ = engine.compute_balance_targets(
-        Actions(
-            room_idx=actions.room_idx[success],
-            room_x=actions.room_x[success],
-            room_y=actions.room_y[success],
-            room_area=actions.room_area[success],
-        ),
-        success.device,
-    )
     counts = []
     for matches, target_count in (
-        (door_matches.left, door_matches.right.shape[1]),
-        (door_matches.up, door_matches.down.shape[1]),
+        (door_matches.left[success], door_matches.right.shape[1]),
+        (door_matches.up[success], door_matches.down.shape[1]),
     ):
         source_count = matches.shape[1]
         source_idx = torch.arange(source_count, device=matches.device)
@@ -1889,6 +1926,12 @@ class TrainingSession:
             missing_connect_utility = torch.mean(missing_connect_utility_values)
         avg_area_used = torch.mean((end_outcomes.area_size > 0).to(torch.float32))
         avg_area_crossing = torch.mean(end_outcomes.area_crossings.to(torch.float32))
+        door_matches, _ = self.engine.compute_balance_targets(
+            episode_data.actions, episode_data.actions.room_idx.device
+        )
+        avg_area_distinct_crossing = compute_area_distinct_crossing_counts(
+            episode_data.actions, door_matches, self.rooms
+        ).to(torch.float32).mean()
         avg_area_size_valid = torch.mean(
             (
                 (area_size >= step_config.generation.min_area_size)
@@ -1959,8 +2002,7 @@ class TrainingSession:
             vertical_door_match_counts,
         )
         valid_horizontal_counts, valid_vertical_counts = compute_valid_door_match_counts(
-            self.engine,
-            episode_data.actions,
+            door_matches,
             success,
         )
         door_match_valid_ss = compute_door_match_ss(
@@ -2116,6 +2158,7 @@ class TrainingSession:
                 for rank in range(AREA_COUNT)
             },
             "avg_area_crossing": avg_area_crossing,
+            "avg_area_distinct_crossing": avg_area_distinct_crossing,
             "avg_area_size_invalid": avg_area_size_invalid,
             "avg_area_map_station_invalid": avg_area_map_station_invalid,
             "avg_area_size_valid": avg_area_size_valid,
