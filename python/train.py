@@ -178,6 +178,23 @@ def compute_area_order_ss(area_order: torch.Tensor) -> torch.Tensor:
     return torch.stack(rank_ss)
 
 
+def compute_phantoon_placement_step_metrics(
+    room_idx: torch.Tensor, rooms: list[dict],
+) -> dict[str, torch.Tensor]:
+    """One-based mean placement step, including random initial placements.
+
+    Unplaced rooms are excluded; no placements yields NaN. Room sets without a
+    particular Phantoon room omit its metric. Forced/unforced configs are pooled.
+    """
+    metrics = {}
+    for index, room in enumerate(rooms):
+        special_type = room.get("special_type")
+        if special_type in ("phantoon_boss", "phantoon_map", "phantoon_save"):
+            steps = (room_idx == index).nonzero(as_tuple=True)[1] + 1
+            metrics[f"avg_{special_type}_placement_step"] = steps.float().mean()
+    return metrics
+
+
 def compute_room_step_ss(room_idx: torch.Tensor, num_rooms: int) -> torch.Tensor:
     """Mean squared step probability per room, pooled over configs, bias-corrected.
 
@@ -2083,6 +2100,9 @@ class TrainingSession:
             "avg_area_used": avg_area_used,
             "area_order_ss": area_order_ss.mean(),
             "room_step_ss": room_step_ss,
+            **compute_phantoon_placement_step_metrics(
+                episode_data.actions.room_idx, self.rooms,
+            ),
             **{
                 f"area_order_{rank + 1}_ss": area_order_ss[rank]
                 for rank in range(AREA_COUNT)
