@@ -483,10 +483,10 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         raise ValueError("temperature must be greater than zero")
     if generate_request.proposal_temperature <= 0:
         raise ValueError("proposal_temperature must be greater than zero")
-    if not math.isfinite(generate_request.reward_area_distinct_crossing):
-        raise ValueError("reward_area_distinct_crossing must be finite")
+    for name in ("reward_area_distinct_crossing", "reward_area_crossing"):
+        if not math.isfinite(getattr(generate_request, name)):
+            raise ValueError(f"{name} must be finite")
     for name in (
-        "reward_area_crossing",
         "reward_area_size_valid",
         "reward_area_map_station",
         "reward_area_x",

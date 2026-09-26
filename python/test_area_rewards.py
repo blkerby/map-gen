@@ -141,7 +141,7 @@ def unknown_outcomes() -> StepOutcomes:
     )
 
 
-def test_ordinary_area_rewards_are_unchanged() -> None:
+def test_ordinary_area_rewards() -> None:
     predictions = area_predictions()
     outcomes = unknown_outcomes()
     assert torch.equal(
@@ -177,11 +177,25 @@ def test_ordinary_area_rewards_are_unchanged() -> None:
     )
     middle_log_probability = torch.log_softmax(torch.zeros([3]), dim=0)[1]
     expected = (
-        -5.0 * torch.tensor([[2.0, 0.0]])
+        5.0 * torch.tensor([[2.0, 0.0]])
         + 7.0 * AREA_COUNT * middle_log_probability
         + 11.0 * AREA_COUNT * middle_log_probability
     )
     torch.testing.assert_close(reward, expected)
+
+
+def test_area_crossing_reward_is_signed() -> None:
+    predictions = area_predictions()
+    outcomes = unknown_outcomes()
+    for coefficient in (-5.0, 0.0, 5.0):
+        for weight in (coefficient, torch.tensor([coefficient])):
+            reward = compute_expected_reward(
+                predictions,
+                outcomes,
+                zero_generate_config(reward_area_crossing=weight),
+                outcomes.area_connections,
+            )
+            torch.testing.assert_close(reward, torch.tensor([[2.0 * coefficient, 0.0]]))
 
 
 def test_candidate_area_balance_uses_exact_placed_room_price() -> None:
@@ -364,7 +378,8 @@ def test_unforced_special_room_area_ss_excludes_forced_episodes() -> None:
 
 
 def main() -> None:
-    test_ordinary_area_rewards_are_unchanged()
+    test_ordinary_area_rewards()
+    test_area_crossing_reward_is_signed()
     test_candidate_area_balance_uses_exact_placed_room_price()
     test_candidate_toilet_balance_uses_exact_known_crossing_price()
     test_training_samples_tiered_preferred_probabilities()

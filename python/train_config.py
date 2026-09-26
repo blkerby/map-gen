@@ -777,7 +777,7 @@ def validate_config(config: Config) -> None:
         config.generation.reward_area_distinct_crossing,
         "generation.reward_area_distinct_crossing",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_area_crossing,
         "generation.reward_area_crossing",
     )

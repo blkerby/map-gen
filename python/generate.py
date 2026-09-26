@@ -239,7 +239,7 @@ def compute_expected_reward(
             1.0,
             torch.sigmoid(preds.area_connection_logits.to(torch.float32)),
         ).sum(dim=2)
-        - batch_weight(config.reward_area_crossing) * preds.area_crossings.to(torch.float32)
+        + batch_weight(config.reward_area_crossing) * preds.area_crossings.to(torch.float32)
         + batch_weight(config.reward_area_size_valid)
         * torch.sum(area_size_valid_log_probability, dim=2)
         + batch_weight(config.reward_area_map_station)

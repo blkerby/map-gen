@@ -487,6 +487,16 @@ def main() -> None:
     full_map_payload = base_payload() | {"small_map": False}
     full_map_request = GenerateRequest.model_validate(full_map_payload)
     validate_generate_request(full_map_request, rooms=[{}, {}, {}])
+    for coefficient in (-1.0, 0.0, 1.0):
+        request = GenerateRequest.model_validate(
+            full_map_payload | {"reward_area_crossing": coefficient}
+        )
+        validate_generate_request(request, rooms=[{}, {}, {}])
+    for coefficient in (float("nan"), float("inf"), -float("inf")):
+        assert_invalid_value(
+            full_map_payload | {"reward_area_crossing": coefficient},
+            "reward_area_crossing must be finite",
+        )
 
     missing_same_frontier_payload = dict(full_map_payload)
     del missing_same_frontier_payload["recommended_candidates_same_frontier"]

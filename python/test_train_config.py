@@ -418,7 +418,24 @@ def test_preferred_probability_tier_min_is_required_and_bounds_are_feasible() ->
                 raise AssertionError(f"invalid tier bounds should be rejected: {minima}")
 
 
+def test_area_crossing_reward_accepts_finite_signed_values() -> None:
+    for value in (-1.0, 0.0, 1.0, {"step": [-1.0, 1.0]}, {"step": {"min": -2.0, "max": 2.0}}):
+        config_data = load_debug_config()
+        config_data["generation"]["reward_area_crossing"] = value
+        validate_config(Config.model_validate(config_data))
+    for value in (float("nan"), float("inf"), -float("inf"), {"step": [-1.0, float("inf")]}):
+        config_data = load_debug_config()
+        config_data["generation"]["reward_area_crossing"] = value
+        try:
+            validate_config(Config.model_validate(config_data))
+        except ValueError as err:
+            assert "reward_area_crossing" in str(err)
+        else:
+            raise AssertionError("reward_area_crossing should reject non-finite values")
+
+
 def main() -> None:
+    test_area_crossing_reward_accepts_finite_signed_values()
     test_generation_area_bounding_box_fields_are_required()
     test_vanilla_area_probability_is_required_and_bounded()
     test_recommended_candidates_same_frontier_is_required()
