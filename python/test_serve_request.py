@@ -25,6 +25,7 @@ def base_payload() -> dict:
         "num_scored_invalid_candidates": 1,
         "max_candidate_areas_per_placement": 2,
         "recommended_candidates_same_frontier": False,
+        "guarantee_phantoon_counterpart": False,
         "temperature": 1.0,
         "proposal_temperature": 1.0,
         "reward_door": 1.0,
@@ -124,6 +125,7 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
             "proposal_temperature": 100.0,
             "target_area_x": [5.0] * 6,
             "target_area_y": [10.0] * 6,
+            "guarantee_phantoon_counterpart": True,
         }
     )
     state = SimpleNamespace(
@@ -145,6 +147,7 @@ def test_create_generate_configs_normalizes_area_targets() -> None:
         torch.tensor([1, 2, 3, 4, 5, 9], dtype=torch.float32).div(8).expand(2, 6)
     )
     assert torch.equal(config.target_area_rooms, expected_area_rooms)
+    assert config.guarantee_phantoon_counterpart
     assert torch.equal(config.target_area_x, torch.full([2, 6], 0.5))
     assert torch.equal(config.target_area_y, torch.full([2, 6], 0.5))
     target_rooms_index = GENERATION_VARIABLE_FLOAT_FIELDS.index("target_area_probability_0")
@@ -507,6 +510,15 @@ def main() -> None:
     else:
         raise AssertionError("recommended_candidates_same_frontier should be required")
 
+    missing_counterpart_payload = dict(full_map_payload)
+    del missing_counterpart_payload["guarantee_phantoon_counterpart"]
+    try:
+        GenerateRequest.model_validate(missing_counterpart_payload)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("guarantee_phantoon_counterpart should be required")
+
     assert_invalid_value(
         base_payload() | {"small_map": False, "max_candidate_areas_per_placement": 0},
         "max_candidate_areas_per_placement must be greater than zero",
@@ -677,6 +689,7 @@ def main() -> None:
     assert warmup_request.num_scored_invalid_candidates == 4
     assert warmup_request.max_candidate_areas_per_placement == 2
     assert not warmup_request.recommended_candidates_same_frontier
+    assert not warmup_request.guarantee_phantoon_counterpart
     assert warmup_request.temperature == 0.03
     assert warmup_request.proposal_temperature == 0.3
     assert warmup_request.reward_missing_connect_utility == 0.5

@@ -104,6 +104,21 @@ def test_proposal_target_temperature_is_required() -> None:
         raise AssertionError("train.proposal_target_temperature should be required")
 
 
+def test_guarantee_phantoon_counterpart_is_required() -> None:
+    config_data = load_debug_config()
+    for enabled in (False, True):
+        config_data["generation"]["guarantee_phantoon_counterpart"] = enabled
+        config = Config.model_validate(config_data)
+        assert config.generation.guarantee_phantoon_counterpart is enabled
+    del config_data["generation"]["guarantee_phantoon_counterpart"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("generation.guarantee_phantoon_counterpart should be required")
+
+
 def test_balance_train_is_required_and_batch_size_divides_round() -> None:
     config_data = load_debug_config()
     del config_data["balance_train"]
@@ -439,6 +454,7 @@ def main() -> None:
     test_generation_area_bounding_box_fields_are_required()
     test_vanilla_area_probability_is_required_and_bounded()
     test_recommended_candidates_same_frontier_is_required()
+    test_guarantee_phantoon_counterpart_is_required()
     test_proposal_target_temperature_is_required()
     test_balance_train_is_required_and_batch_size_divides_round()
     test_balance_price_scales_are_required_positive_and_scheduleable()

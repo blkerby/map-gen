@@ -2461,6 +2461,27 @@ impl Environment {
         (frontier_idx >= 0).then_some((frontier_idx, door_variant_idx))
     }
 
+    fn phantoon_counterpart_door_variant(&self, common: &CommonData) -> Option<DoorVariantIdx> {
+        let boss = common.phantoon_boss_room_idx()?;
+        let map = common.phantoon_map_room_idx()?;
+        let counterpart = match (self.room_used[boss as usize], self.room_used[map as usize]) {
+            (true, false) => map,
+            (false, true) => boss,
+            _ => return None,
+        };
+        let room = &common.room[counterpart as usize];
+        // CommonData requires exactly one door for each Phantoon map/boss room,
+        // and their special types give them distinct connection variants.
+        let door = &room.doors[0];
+        Some(common.door_variant_idx(
+            room.connection_variant_idx,
+            door.direction,
+            door.x,
+            door.y,
+            common.room_dir_door[door.direction as usize][door.dir_door_idx as usize].kind,
+        ))
+    }
+
     fn resolve_proposal_action(
         &mut self,
         common: &CommonData,
@@ -3763,6 +3784,7 @@ impl Environment {
         num_scored_invalid_candidates: usize,
         max_candidate_areas_per_placement: usize,
         recommended_candidates_same_frontier: bool,
+        guarantee_phantoon_counterpart: bool,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -3816,12 +3838,46 @@ impl Environment {
         let mut invalid_count = 0;
         let mut unresolved = Vec::with_capacity(num_scored_invalid_candidates);
         let mut scored_failures = Vec::with_capacity(num_scored_invalid_candidates);
-        for (&frontier_idx, &proposal_action_idx) in
-            sampled_frontier_idx.iter().zip(sampled_proposal_action_idx)
+        let mut counterpart_indices = Vec::new();
+        if guarantee_phantoon_counterpart
+            && let Some(counterpart_variant) = self.phantoon_counterpart_door_variant(common)
+        {
+            counterpart_indices.extend(
+                sampled_proposal_action_idx
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, &action)| {
+                        proposal_action_parts(action)
+                            .is_some_and(|(variant, _)| variant == counterpart_variant)
+                            .then_some(idx)
+                    }),
+            );
+        }
+        // Try counterpart proposals in shortlist order until one is clean. It
+        // takes the first budget slot (and selects the frontier, if constrained).
+        // Then resume ordinary shortlist order without evaluating any entry twice.
+        let mut tried_counterparts = 0;
+        for (shortlist_idx, prioritize_counterpart) in counterpart_indices
+            .iter()
+            .map(|&idx| (idx, true))
+            .chain((0..sampled_frontier_idx.len()).map(|idx| (idx, false)))
         {
             if clean.len() == recommended_candidates {
                 break;
             }
+            if prioritize_counterpart {
+                if !clean.is_empty() {
+                    continue;
+                }
+                tried_counterparts += 1;
+            } else if counterpart_indices[..tried_counterparts]
+                .binary_search(&shortlist_idx)
+                .is_ok()
+            {
+                continue;
+            }
+            let frontier_idx = sampled_frontier_idx[shortlist_idx];
+            let proposal_action_idx = sampled_proposal_action_idx[shortlist_idx];
             if frontier_idx < 0 || proposal_action_idx < 0 {
                 continue;
             }
@@ -6972,6 +7028,7 @@ mod tests {
                 0,
                 1,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -7482,6 +7539,7 @@ mod tests {
                 0,
                 1,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -7991,6 +8049,7 @@ mod tests {
                 1,
                 1,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8122,6 +8181,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8273,6 +8333,7 @@ mod tests {
                 1,
                 1,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8305,6 +8366,197 @@ mod tests {
     }
 
     #[test]
+    fn proposal_shortlist_guarantees_phantoon_counterpart_within_budget() {
+        let room_specs = [
+            (None, vec!["left", "right", "up", "down"]),
+            (None, vec!["left", "right", "up", "down"]),
+            (None, vec!["left", "right", "up", "down"]),
+            (Some("phantoon_boss"), vec!["right"]),
+            (Some("phantoon_map"), vec!["left"]),
+            (Some("phantoon_save"), vec!["down"]),
+            (None, vec!["up", "down"]),
+        ];
+        let rooms = room_specs
+            .into_iter()
+            .map(|(special_type, directions)| {
+                let doors: Vec<_> = directions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, direction)| {
+                        serde_json::json!({
+                            "id": id, "direction": direction, "x": 0, "y": 0, "kind": 0
+                        })
+                    })
+                    .collect();
+                serde_json::from_value(serde_json::json!({
+                    "map": [[1]],
+                    "toilet_crossing_x": [],
+                    "special_type": special_type,
+                    "map_station": special_type == Some("phantoon_map"),
+                    "doors": [doors],
+                    "connections": [],
+                    "missing_connections": []
+                }))
+                .unwrap()
+            })
+            .collect();
+        let common = CommonData::new(rooms).unwrap();
+        for first_room in [3, 4] {
+            for (enabled, same_frontier, budget) in [
+                (false, false, 1),
+                (true, false, 0),
+                (true, false, 1),
+                (true, false, 2),
+                (true, false, 3),
+                (true, true, 2),
+            ] {
+                let mut env =
+                    Environment::new(&common, (8, 8), 8, 100, 100, TEST_AREA_SIZE_LIMITS, 0);
+                env.step(
+                    Action {
+                        room_idx: 0,
+                        x: 3,
+                        y: 3,
+                        area: 0,
+                    },
+                    &common,
+                );
+                assert_eq!(env.phantoon_counterpart_door_variant(&common), None);
+                env.step(
+                    Action {
+                        room_idx: first_room,
+                        x: if first_room == 3 { 2 } else { 4 },
+                        y: 3,
+                        area: 0,
+                    },
+                    &common,
+                );
+                let counterpart_room = if first_room == 3 { 4 } else { 3 };
+                let counterpart_variant = env.phantoon_counterpart_door_variant(&common).unwrap();
+                let locations = env.sorted_frontier_locations();
+                let counterpart_direction =
+                    common.door_variant_direction[counterpart_variant as usize];
+                let counterpart_frontier = locations
+                    .iter()
+                    .position(|location| {
+                        env.frontier[location].direction == counterpart_direction.opposite()
+                    })
+                    .unwrap() as FrontierIdx;
+                let ordinary_frontier = locations
+                    .iter()
+                    .position(|location| env.frontier[location].direction == Direction::Down)
+                    .unwrap() as FrontierIdx;
+                let ordinary_variant = common.door_variant_idx(
+                    common.room[6].connection_variant_idx,
+                    Direction::Up,
+                    0,
+                    0,
+                    0,
+                );
+                let rejected_counterpart = proposal_action_idx(counterpart_variant, 1);
+                let clean_counterpart = proposal_action_idx(counterpart_variant, 0);
+                let result = env
+                    .get_proposal_candidates_with_outcomes(
+                        &common,
+                        &[
+                            ordinary_frontier,
+                            ordinary_frontier,
+                            ordinary_frontier,
+                            counterpart_frontier,
+                            counterpart_frontier,
+                            counterpart_frontier,
+                        ],
+                        &[
+                            proposal_action_idx(ordinary_variant, 0),
+                            proposal_action_idx(ordinary_variant, 1),
+                            clean_counterpart, // Wrong door orientation: cannot resolve.
+                            rejected_counterpart, // Resolves, but violates the Phantoon area rule.
+                            clean_counterpart,
+                            clean_counterpart, // Repeated shortlist entry must not use another slot.
+                        ],
+                        &NO_VANILLA_AREA_CONSTRAINTS,
+                        budget,
+                        6,
+                        1,
+                        same_frontier,
+                        enabled,
+                        &FeatureConfig::all_disabled(),
+                        FrontierNeighborAlgorithm::Nearest,
+                        1,
+                        4,
+                        &mut FeatureScratch::default(),
+                    )
+                    .unwrap();
+                let expected_count = if same_frontier { 1 } else { budget };
+                assert_eq!(result.clean_count, expected_count);
+                assert_eq!(result.candidates.len(), expected_count);
+                assert_eq!(result.rejected, vec![0; expected_count]);
+                if budget == 0 {
+                    assert_eq!(result.evaluated_count, 0);
+                } else if enabled {
+                    assert_eq!(result.candidates[0].room_idx, counterpart_room);
+                    assert_eq!(result.candidates[0].area, 0);
+                    assert_eq!(result.frontier_idx[0], counterpart_frontier);
+                    assert_eq!(result.proposal_action_idx[0], clean_counterpart);
+                    assert_eq!(result.invalid_count, 1);
+                    assert_eq!(result.rejected_count, 1);
+                    assert_eq!(result.evaluated_count, expected_count + 1);
+                    assert_eq!(result.scored_invalid_rejected, [0, 1]);
+                    assert!(
+                        result.candidates[1..]
+                            .iter()
+                            .all(|action| action.room_idx == 6)
+                    );
+                } else {
+                    assert_eq!(result.candidates[0].room_idx, 6);
+                    assert_eq!(result.evaluated_count, 1);
+                }
+
+                // With no clean counterpart in the shortlist, ordinary candidates
+                // can still use the entire budget, with no duplicate evaluations.
+                for counterpart_actions in [vec![], vec![rejected_counterpart]] {
+                    let mut actions = vec![proposal_action_idx(ordinary_variant, 0)];
+                    actions.extend(&counterpart_actions);
+                    let mut frontiers = vec![ordinary_frontier];
+                    frontiers.extend(vec![counterpart_frontier; counterpart_actions.len()]);
+                    let fallback = env
+                        .get_proposal_candidates_with_outcomes(
+                            &common,
+                            &frontiers,
+                            &actions,
+                            &NO_VANILLA_AREA_CONSTRAINTS,
+                            1,
+                            6,
+                            1,
+                            false,
+                            true,
+                            &FeatureConfig::all_disabled(),
+                            FrontierNeighborAlgorithm::Nearest,
+                            1,
+                            4,
+                            &mut FeatureScratch::default(),
+                        )
+                        .unwrap();
+                    assert_eq!(fallback.clean_count, 1);
+                    assert_eq!(fallback.candidates[0].room_idx, 6);
+                    assert_eq!(fallback.rejected_count, counterpart_actions.len());
+                    assert_eq!(fallback.evaluated_count, 1 + counterpart_actions.len());
+                }
+                env.step(
+                    Action {
+                        room_idx: counterpart_room,
+                        x: if counterpart_room == 3 { 2 } else { 4 },
+                        y: 3,
+                        area: 0,
+                    },
+                    &common,
+                );
+                assert_eq!(env.phantoon_counterpart_door_variant(&common), None);
+            }
+        }
+    }
+
+    #[test]
     fn proposal_shortlist_postpones_duplicate_clean_placement_keys() {
         let (common, mut env, door_variant_idx) = two_clean_proposal_frontier_env(100);
         let sampled_frontier_idx = [0, 0, 1];
@@ -8324,6 +8576,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8347,6 +8600,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8372,6 +8626,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8405,6 +8660,7 @@ mod tests {
                 3,
                 1,
                 2,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8447,6 +8703,7 @@ mod tests {
                 1,
                 2,
                 true,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8494,6 +8751,7 @@ mod tests {
                     budget,
                     2,
                     false,
+                    false,
                     &FeatureConfig::all_disabled(),
                     FrontierNeighborAlgorithm::Nearest,
                     1,
@@ -8526,6 +8784,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8599,6 +8858,7 @@ mod tests {
                 1,
                 1,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8626,6 +8886,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,

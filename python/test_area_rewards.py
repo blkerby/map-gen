@@ -48,6 +48,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         num_scored_invalid_candidates=1,
         max_candidate_areas_per_placement=2,
         recommended_candidates_same_frontier=False,
+        guarantee_phantoon_counterpart=False,
         gpu_prefetch_batches=0,
         temperature=torch.ones([1]),
         proposal_temperature=torch.ones([1]),
@@ -234,6 +235,7 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
         Config.model_validate_json(Path("configs/zebes.json").read_text()), 0
     )
     config.generation.maridia_water_preferred_probability.active_probability = 0.5
+    config.generation.guarantee_phantoon_counterpart = True
     config.generation.norfair_heat_preferred_probability.active_probability = 0.5
     for family in HEAT_WATER_FAMILIES:
         preference = getattr(config.generation, f"{family}_preferred_probability")
@@ -247,6 +249,7 @@ def test_training_samples_tiered_preferred_probabilities() -> None:
         ignore_scores=False,
     )
 
+    assert generate_config.guarantee_phantoon_counterpart
     baseline = generate_config.target_area_rooms / len(rooms)
     probability_indices = [
         GENERATION_VARIABLE_FLOAT_FIELDS.index(f"target_area_probability_{area}")

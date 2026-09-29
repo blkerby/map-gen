@@ -475,6 +475,7 @@ def get_shortlist_candidate_batch(
         group.config.num_scored_invalid_candidates,
         group.config.max_candidate_areas_per_placement,
         group.config.recommended_candidates_same_frontier,
+        group.config.guarantee_phantoon_counterpart,
     )
 
 
@@ -492,6 +493,7 @@ def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
         AREA_COUNT,
         0,
         AREA_COUNT,
+        False,
         False,
     )
 

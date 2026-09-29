@@ -223,6 +223,9 @@ class GenerationConfig(StrictBaseModel):
     num_scored_invalid_candidates: int
     max_candidate_areas_per_placement: int
     recommended_candidates_same_frontier: bool
+    # Reserve one recommended slot for the first non-rejected counterpart in the
+    # shortlist when exactly one Phantoon map/boss room has been placed.
+    guarantee_phantoon_counterpart: bool
     temperature: VariableFloat
     proposal_temperature: VariableFloat
     reward_door: VariableFloat
