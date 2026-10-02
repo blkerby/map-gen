@@ -10,6 +10,7 @@ import signal
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -18,6 +19,7 @@ import safetensors.torch
 from area_order import episode_area_order
 import torch
 import map_gen
+from variable_sampling import sample_variable_float, variable_mixture_weights
 from aim import Run
 from aim.sdk.errors import MissingRunError
 from safetensors import safe_open
@@ -169,20 +171,36 @@ def compute_area_order_ss(area_order: torch.Tensor) -> torch.Tensor:
     return torch.stack(rank_ss)
 
 
-def compute_phantoon_placement_step_metrics(
+def compute_phantoon_placement_metrics(
     room_idx: torch.Tensor, rooms: list[dict],
 ) -> dict[str, torch.Tensor]:
-    """One-based mean placement step, including random initial placements.
+    """Placement steps and boss-before-map fraction, including initial placements.
 
-    Unplaced rooms are excluded; no placements yields NaN. Room sets without a
-    particular Phantoon room omit its metric. Forced/unforced configs are pooled.
+    Mean steps are one-based and exclude unplaced rooms. The ordering fraction
+    includes only maps where both rooms are placed. Empty samples yield NaN.
+    Room sets without a required Phantoon room omit its metric.
+    Forced/unforced configs are pooled.
     """
     metrics = {}
+    placement_steps = {}
     for index, room in enumerate(rooms):
         special_type = room.get("special_type")
         if special_type in ("phantoon_boss", "phantoon_map", "phantoon_save"):
-            steps = (room_idx == index).nonzero(as_tuple=True)[1] + 1
+            episodes, step_indices = (room_idx == index).nonzero(as_tuple=True)
+            steps = step_indices + 1
             metrics[f"avg_{special_type}_placement_step"] = steps.float().mean()
+            if special_type in ("phantoon_boss", "phantoon_map"):
+                placement_steps[special_type] = room_idx.new_full(
+                    (room_idx.shape[0],), -1, dtype=torch.int64,
+                )
+                placement_steps[special_type][episodes] = steps
+    if "phantoon_boss" in placement_steps and "phantoon_map" in placement_steps:
+        boss_steps = placement_steps["phantoon_boss"]
+        map_steps = placement_steps["phantoon_map"]
+        both_placed = (boss_steps >= 0) & (map_steps >= 0)
+        metrics["phantoon_boss_before_map_fraction"] = (
+            boss_steps[both_placed] < map_steps[both_placed]
+        ).float().mean()
     return metrics
 
 
@@ -502,15 +520,6 @@ def optimizer_metric_values(config: OptimizerConfig) -> dict[str, float]:
     return {"lr": config.lr}
 
 
-def variable_mixture_weights(value: VariableMixture, path: str) -> list[float]:
-    weights = [float(component.weight) for component in value.mixture]
-    if any(not math.isfinite(weight) or weight < 0.0 for weight in weights):
-        raise ValueError(f"{path}.mixture weights must be finite and nonnegative")
-    if sum(weights) <= 0.0:
-        raise ValueError(f"{path}.mixture must have a positive total weight")
-    return weights
-
-
 def variable_float_metric_value(value: VariableFloat, path: str) -> float:
     if isinstance(value, VariableMixture):
         weights = variable_mixture_weights(value, path)
@@ -702,44 +711,7 @@ def create_generate_config(
     device: torch.device,
     ignore_scores: bool,
 ) -> GenerateConfig:
-    def variable_float_tensor(value: VariableFloat, path: str) -> torch.Tensor:
-        if isinstance(value, VariableMixture):
-            weights = torch.tensor(
-                variable_mixture_weights(value, path),
-                dtype=torch.float32,
-                device=device,
-            )
-            component_idx = torch.multinomial(weights, num_envs, replacement=True)
-            component_values = torch.stack(
-                [
-                    variable_float_tensor(
-                        component.value,
-                        f"{path}.mixture[{index}].value",
-                    )
-                    for index, component in enumerate(value.mixture)
-                ],
-                dim=1,
-            )
-            return torch.gather(component_values, 1, component_idx.unsqueeze(1)).squeeze(1)
-        if isinstance(value, VariableSchedule):
-            if (value.linear is None) == (value.log is None):
-                raise ValueError(f"{path} must have exactly one value: 'linear' or 'log'")
-            range_value = value.linear if value.linear is not None else value.log
-            if not isinstance(range_value, VariableRange):
-                raise ValueError(f"{path} must be instantiated before creating a generate config")
-            min_value = float(range_value.min)
-            max_value = float(range_value.max)
-            if min_value > max_value:
-                raise ValueError(f"{path}.min must be less than or equal to {path}.max")
-            sample = torch.rand([num_envs], dtype=torch.float32, device=device)
-            if value.linear is not None:
-                return min_value + sample * (max_value - min_value)
-            if min_value <= 0.0:
-                raise ValueError(f"{path}.min must be greater than zero for a log range")
-            log_min = math.log(min_value)
-            log_max = math.log(max_value)
-            return torch.exp(log_min + sample * (log_max - log_min))
-        return torch.full([num_envs], float(value), dtype=torch.float32, device=device)
+    variable_float_tensor = partial(sample_variable_float, num_envs=num_envs, device=device)
 
     temperature = (
         torch.full([num_envs], IGNORE_SCORES_TEMPERATURE, dtype=torch.float32, device=device)
@@ -2113,7 +2085,7 @@ class TrainingSession:
             "avg_area_used": avg_area_used,
             "area_order_ss": area_order_ss.mean(),
             "room_step_ss": room_step_ss,
-            **compute_phantoon_placement_step_metrics(
+            **compute_phantoon_placement_metrics(
                 episode_data.actions.room_idx, self.rooms,
             ),
             **{

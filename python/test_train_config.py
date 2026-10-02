@@ -449,7 +449,40 @@ def test_area_crossing_reward_accepts_finite_signed_values() -> None:
             raise AssertionError("reward_area_crossing should reject non-finite values")
 
 
+def test_reorder_probability_is_required_bounded_and_scheduleable() -> None:
+    config_data = load_debug_config()
+    del config_data["train"]["reorder_probability"]
+    try:
+        Config.model_validate(config_data)
+    except ValidationError as err:
+        assert "reorder_probability" in str(err)
+    else:
+        raise AssertionError("reorder_probability must be required")
+    for value in (-0.1, 1.1, float("nan"), {"linear": {"min": 0, "max": 2}},
+                  {"mixture": [{"weight": 1, "value": -1}]}):
+        config_data = load_debug_config()
+        config_data["train"]["reorder_probability"] = value
+        try:
+            validate_config(Config.model_validate(config_data))
+        except ValueError as err:
+            assert "reorder_probability" in str(err)
+        else:
+            raise AssertionError(f"invalid reorder probability accepted: {value}")
+    config_data = load_debug_config()
+    config_data["knot_episodes"] = [0, 100]
+    config_data["train"]["reorder_probability"] = {"mixture": [
+        {"weight": 1.0, "value": 0.0},
+        {"weight": 1.0, "value": {"linear": {"min": 0.0, "max": [0.0, 0.2]}}},
+    ]}
+    config = Config.model_validate(config_data)
+    validate_config(config)
+    value = instantiate_scheduleable_config(config, 50).train.reorder_probability
+    assert value.mixture[0].value == 0.0
+    assert value.mixture[1].value.linear.max == 0.1
+
+
 def main() -> None:
+    test_reorder_probability_is_required_bounded_and_scheduleable()
     test_area_crossing_reward_accepts_finite_signed_values()
     test_generation_area_bounding_box_fields_are_required()
     test_vanilla_area_probability_is_required_and_bounded()

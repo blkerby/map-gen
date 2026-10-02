@@ -501,7 +501,6 @@ impl FeatureConfig {
         }
     }
 
-    #[cfg(test)]
     pub fn all_disabled() -> Self {
         Self {
             inventory: false,
@@ -2551,6 +2550,87 @@ impl Environment {
         self.step_impl(action, common, StepMode::CommitKnown);
     }
 
+    // Test a recorded placement against the same geometry and area constraints as
+    // proposal resolution, without depending on proposal scores or shortlist size.
+    fn replay_placement_valid(&self, common: &CommonData, action: Action) -> bool {
+        let Some(room) = common.room.get(action.room_idx as usize) else {
+            return false;
+        };
+        if self.room_used[action.room_idx as usize] || !self.candidate_area_valid(common, action) {
+            return false;
+        }
+        let mut geometry_matches = false;
+        let mut area_matches = !self.area_used[action.area as usize];
+        for door in &room.doors {
+            let location = DoorLocation::new(door, action.x, action.y);
+            let Some(frontier) = self.frontier.get(&location) else {
+                continue;
+            };
+            if frontier.direction != door.direction.opposite() {
+                continue;
+            }
+            area_matches |= action.area == self.frontier_area(common, frontier.room_part_idx);
+            geometry_matches |= frontier.candidates.iter().any(|candidate| {
+                candidate.geometry_idx == room.geometry_idx
+                    && candidate.x == action.x
+                    && candidate.y == action.y
+            });
+        }
+        geometry_matches && area_matches
+    }
+
+    pub fn select_replay_action(
+        &mut self,
+        common: &CommonData,
+        actions: &[Action],
+        remaining_order: &mut [usize],
+        probability: f64,
+        constraints: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
+        scratch: &mut FeatureScratch,
+    ) -> Result<Action, String> {
+        // The first placement and dummy tail retain their original order. In
+        // particular, probability zero consumes no extra RNG draws.
+        if self.actions.is_empty() || probability == 0.0 || !self.rng.random_bool(probability) {
+            return Ok(actions[remaining_order[0]]);
+        }
+        let mut candidates: Vec<usize> = remaining_order
+            .iter()
+            .enumerate()
+            .filter_map(|(position, &index)| {
+                self.replay_placement_valid(common, actions[index])
+                    .then_some(position)
+            })
+            .collect();
+        if candidates.is_empty() {
+            return Ok(actions[remaining_order[0]]);
+        }
+        candidates.shuffle(&mut self.rng);
+        let before = self.outcomes(common);
+        for position in candidates {
+            let action = actions[remaining_order[position]];
+            if matches!(
+                self.evaluate_candidate_outcome(
+                    common,
+                    &before,
+                    constraints,
+                    action,
+                    &FeatureConfig::all_disabled(),
+                    FrontierNeighborAlgorithm::Delaunay,
+                    0,
+                    0,
+                    scratch,
+                )?,
+                CandidateOutcome::Clean(..)
+            ) {
+                // Preserve the original relative order of every unselected action.
+                remaining_order[..=position].rotate_right(1);
+                return Ok(action);
+            }
+        }
+        // Failed episodes remain trainable: the original action may be rejected.
+        Ok(actions[remaining_order[0]])
+    }
+
     fn record_frontier_count(&mut self) {
         self.frontier_count_sum += self.frontier.len() as u64;
         self.frontier_count_steps += 1;
@@ -3842,16 +3922,13 @@ impl Environment {
         if guarantee_phantoon_counterpart
             && let Some(counterpart_variant) = self.phantoon_counterpart_door_variant(common)
         {
-            counterpart_indices.extend(
-                sampled_proposal_action_idx
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, &action)| {
-                        proposal_action_parts(action)
-                            .is_some_and(|(variant, _)| variant == counterpart_variant)
-                            .then_some(idx)
-                    }),
-            );
+            counterpart_indices.extend(sampled_proposal_action_idx.iter().enumerate().filter_map(
+                |(idx, &action)| {
+                    proposal_action_parts(action)
+                        .is_some_and(|(variant, _)| variant == counterpart_variant)
+                        .then_some(idx)
+                },
+            ));
         }
         // Try counterpart proposals in shortlist order until one is clean. It
         // takes the first budget slot (and selects the frontier, if constrained).

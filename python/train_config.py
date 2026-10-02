@@ -375,6 +375,7 @@ class TrainConfig(StrictBaseModel):
     batch_size: ScheduleableInt
     fresh_pass_factor: float
     replay_pass_factor: float
+    reorder_probability: VariableFloat
     sample_period: int
     episodes_per_file: int
     hist_c: float
@@ -564,6 +565,7 @@ def validate_config(config: Config) -> None:
         if value < 0:
             raise ValueError(f"features.{name} must be greater than or equal to zero")
 
+    validate_variable_probability(config.train.reorder_probability, "train.reorder_probability")
     if not config.knot_episodes:
         raise ValueError("knot_episodes must contain at least one episode count")
     if config.knot_episodes[-1] <= 0:
@@ -1088,6 +1090,26 @@ def validate_positive_scheduleable_float(value: ScheduleableFloat, path: str) ->
         return
     if not math.isfinite(value) or value <= 0.0:
         raise ValueError(f"{path} must be greater than zero")
+
+
+def validate_variable_probability(value: VariableFloat, path: str) -> None:
+    if isinstance(value, VariableMixture):
+        validate_variable_mixture_weights(value, path)
+        for index, component in enumerate(value.mixture):
+            validate_variable_probability(component.value, f"{path}.mixture[{index}].value")
+        return
+    if isinstance(value, VariableSchedule):
+        kind, values = variable_schedule_kind_and_value(value, path)
+        endpoints = [values.min, values.max] if isinstance(values, VariableRange) else [values]
+        for endpoint in endpoints:
+            for probability in endpoint if isinstance(endpoint, list) else [endpoint]:
+                if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+                    raise ValueError(f"{path} must be finite and between zero and one")
+                if kind == "log" and probability <= 0.0:
+                    raise ValueError(f"{path} must be positive for a log schedule")
+        return
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{path} must be finite and between zero and one")
 
 
 def validate_probability_config(

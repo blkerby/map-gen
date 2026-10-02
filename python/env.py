@@ -1541,6 +1541,24 @@ class EnvironmentGroup:
             actions.room_area.contiguous().cpu().numpy(),
         )
 
+    def create_replay_reordering(
+        self, episode: EpisodeData, probabilities: torch.Tensor,
+    ) -> map_gen.ReplayReordering:
+        actions = episode.actions.to(torch.device("cpu"))
+        return map_gen.ReplayReordering({
+            "room_idx": actions.room_idx.contiguous().numpy(),
+            "room_x": actions.room_x.contiguous().numpy(),
+            "room_y": actions.room_y.contiguous().numpy(),
+            "room_area": actions.room_area.contiguous().numpy(),
+            "probabilities": probabilities.to(device="cpu", dtype=torch.float64).contiguous().numpy(),
+            "constraints": episode.generation_variable_floats[
+                :, VANILLA_AREA_CONDITION_INDICES
+            ].to(device="cpu", dtype=torch.bool).contiguous().numpy(),
+        })
+
+    def step_reordered(self, replay: map_gen.ReplayReordering) -> None:
+        self.env.step_reordered(replay)
+
     def get_actions(self, device: torch.device) -> Actions:
         room_idx, room_x, room_y, room_area = self.env.get_actions()
         return Actions(

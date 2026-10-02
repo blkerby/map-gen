@@ -154,6 +154,7 @@
     "batch_size": 256,
     "fresh_pass_factor": 2.0,
     "replay_pass_factor": 2.0,
+    "reorder_probability": 0.0,
     "sample_period": 16,
     "episodes_per_file": 64,
     "ema_half_life_episodes": 35400.338684,

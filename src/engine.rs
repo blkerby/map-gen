@@ -86,6 +86,7 @@ profile_metrics! {
     EnvStepBuildNewFrontierCandidates => "env.step.build_new_frontier_candidates",
     EnvStepFilterExistingFrontiers => "env.step.filter_existing_frontiers",
     WorkerStepKnown => "worker.step_known",
+    WorkerReplayStep => "worker.replay_step",
     WorkerGetCandidatesFromProposals => "worker.get_candidates_from_proposals",
     EnvProposalPreOutcomes => "env.proposal.pre_outcomes",
     EnvProposalSortFrontiers => "env.proposal.sort_frontiers",
@@ -288,6 +289,14 @@ enum WorkerCommand {
         room_y: InputShard<Coord>,
         room_area: InputShard<AreaIdx>,
     },
+    ReplayStep {
+        step: usize,
+        episode_length: usize,
+        actions: InputShard<Action>,
+        probabilities: InputShard<f64>,
+        constraints: InputShard<[bool; VANILLA_AREA_CONSTRAINT_COUNT]>,
+        order: OutputShard<usize>,
+    },
     GetCandidatesFromProposals {
         initial_candidates: bool,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
@@ -472,6 +481,7 @@ impl WorkerCommand {
             WorkerCommand::GetReplayActionFeatures { .. } => Some(ProfileMetric::WorkerGetFeatures),
             WorkerCommand::PackFeatures { .. } => Some(ProfileMetric::WorkerPackFeatures),
             WorkerCommand::StepKnown { .. } => Some(ProfileMetric::WorkerStepKnown),
+            WorkerCommand::ReplayStep { .. } => Some(ProfileMetric::WorkerReplayStep),
             WorkerCommand::GetCandidatesFromProposals { .. } => {
                 Some(ProfileMetric::WorkerGetCandidatesFromProposals)
             }
@@ -567,6 +577,45 @@ fn worker_loop(
             None
         };
         let response = match command {
+            WorkerCommand::ReplayStep {
+                step,
+                episode_length,
+                actions,
+                probabilities,
+                constraints,
+                order,
+            } => {
+                // SAFETY: The binding holds the input storage and disjoint output
+                // shards until every worker has responded.
+                let actions = unsafe { actions.into_slice() };
+                let probabilities = unsafe { probabilities.into_slice() };
+                let constraints = unsafe { constraints.into_slice() };
+                let order = unsafe { order.into_mut_slice() };
+                let result = environments
+                    .iter_mut()
+                    .enumerate()
+                    .try_for_each(|(i, env)| {
+                        let start = i * episode_length;
+                        let action = env.select_replay_action(
+                            &common_data,
+                            &actions[start..start + episode_length],
+                            &mut order[start + step..start + episode_length],
+                            probabilities[i],
+                            &constraints[i],
+                            &mut feature_scratch,
+                        )?;
+                        if probabilities[i] > 0.0 || features.lookahead_outcomes {
+                            env.step(action, &common_data);
+                        } else {
+                            env.step_known(action, &common_data);
+                        }
+                        Ok::<(), String>(())
+                    });
+                match result {
+                    Ok(()) => WorkerResponse::Done,
+                    Err(err) => WorkerResponse::Error(err),
+                }
+            }
             WorkerCommand::Clear => {
                 for env in &mut environments {
                     env.clear(&common_data);
@@ -1902,6 +1951,76 @@ pub struct EnvironmentGroup {
     frontier_neighbor_count: usize,
     frontier_window_size: usize,
     action_count: usize,
+}
+
+/// Episode-local replay state. Action records are immutable; only their order changes.
+#[pyclass(module = "map_gen")]
+pub struct ReplayReordering {
+    actions: Vec<Action>,
+    probabilities: Vec<f64>,
+    constraints: Vec<[bool; VANILLA_AREA_CONSTRAINT_COUNT]>,
+    order: Vec<usize>,
+    episode_length: usize,
+    next_step: usize,
+}
+
+#[pymethods]
+impl ReplayReordering {
+    #[new]
+    fn new(fields: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let room_idx: numpy::PyReadonlyArray2<'_, RoomIdx> = required_py_field!(fields, "room_idx");
+        let room_x: numpy::PyReadonlyArray2<'_, Coord> = required_py_field!(fields, "room_x");
+        let room_y: numpy::PyReadonlyArray2<'_, Coord> = required_py_field!(fields, "room_y");
+        let room_area: numpy::PyReadonlyArray2<'_, AreaIdx> =
+            required_py_field!(fields, "room_area");
+        let probabilities: PyReadonlyArray1<'_, f64> = required_py_field!(fields, "probabilities");
+        let constraints: numpy::PyReadonlyArray2<'_, bool> =
+            required_py_field!(fields, "constraints");
+        let shape = room_idx.as_array().dim();
+        if shape.1 == 0
+            || room_x.as_array().dim() != shape
+            || room_y.as_array().dim() != shape
+            || room_area.as_array().dim() != shape
+            || probabilities.len()? != shape.0
+            || constraints.as_array().dim() != (shape.0, VANILLA_AREA_CONSTRAINT_COUNT)
+        {
+            return Err(PyValueError::new_err(
+                "replay reordering input shapes do not match",
+            ));
+        }
+        let probabilities = probabilities.as_slice()?.to_vec();
+        if probabilities
+            .iter()
+            .any(|p| !p.is_finite() || !(0.0..=1.0).contains(p))
+        {
+            return Err(PyValueError::new_err(
+                "reorder probabilities must be finite and in [0, 1]",
+            ));
+        }
+        let indices = room_idx.as_slice()?;
+        let xs = room_x.as_slice()?;
+        let ys = room_y.as_slice()?;
+        let areas = room_area.as_slice()?;
+        Ok(Self {
+            actions: (0..indices.len())
+                .map(|i| Action {
+                    room_idx: indices[i],
+                    x: xs[i],
+                    y: ys[i],
+                    area: areas[i],
+                })
+                .collect(),
+            probabilities,
+            constraints: constraints
+                .as_slice()?
+                .chunks_exact(VANILLA_AREA_CONSTRAINT_COUNT)
+                .map(|row| row.try_into().expect("constraint row has fixed width"))
+                .collect(),
+            order: (0..shape.0).flat_map(|_| 0..shape.1).collect(),
+            episode_length: shape.1,
+            next_step: 0,
+        })
+    }
 }
 
 #[pyclass(module = "map_gen")]
@@ -4717,6 +4836,74 @@ impl EnvironmentGroup {
             room_area,
             StepCommandKind::StepKnown,
         )
+    }
+
+    fn step_reordered(
+        &mut self,
+        py: Python<'_>,
+        mut replay: PyRefMut<'_, ReplayReordering>,
+    ) -> PyResult<()> {
+        let replay = &mut *replay;
+        let length = replay.episode_length;
+        if replay.probabilities.len() != self.num_environments
+            || replay.next_step != self.action_count
+            || replay.next_step >= length
+        {
+            return Err(PyValueError::new_err(
+                "replay reordering does not match environment batch or step",
+            ));
+        }
+        if replay.next_step == 0 {
+            let room_count = self.common_data.room.len();
+            for episode in replay.actions.chunks_exact(length) {
+                let mut placed = vec![false; room_count];
+                let mut finished = false;
+                for action in episode {
+                    let room = action.room_idx as usize;
+                    if room == room_count && action.area == DUMMY_AREA {
+                        finished = true;
+                    } else if room >= room_count
+                        || action.area as usize >= AREA_COUNT
+                        || finished
+                        || placed[room]
+                    {
+                        return Err(PyValueError::new_err(
+                            "invalid or duplicate recorded replay action",
+                        ));
+                    } else {
+                        placed[room] = true;
+                    }
+                }
+            }
+        }
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                let start = worker.start * length;
+                let end = worker.end() * length;
+                if let Err(err) = worker.send(WorkerCommand::ReplayStep {
+                    step: replay.next_step,
+                    episode_length: length,
+                    actions: InputShard::from_slice(&replay.actions[start..end]),
+                    probabilities: InputShard::from_slice(
+                        &replay.probabilities[worker.start..worker.end()],
+                    ),
+                    constraints: InputShard::from_slice(
+                        &replay.constraints[worker.start..worker.end()],
+                    ),
+                    order: OutputShard::from_slice(&mut replay.order[start..end]),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })?;
+        replay.next_step += 1;
+        self.action_count += 1;
+        Ok(())
     }
 
     fn pack_candidates_from_proposals_into<'py>(

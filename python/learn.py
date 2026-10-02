@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 import math
 import logging
 from typing import Literal
@@ -7,6 +7,8 @@ from typing import Literal
 from area_order import episode_area_order, remaining_order_price
 from room_step import episode_room_steps, remaining_step_price
 import torch
+import map_gen
+from variable_sampling import sample_variable_float
 
 from device_util import is_gpu
 from env import (
@@ -879,6 +881,7 @@ def prepare_feature_batches(
     episode_length: int,
     pin_memory: bool,
     generated_feature_batches: list[Features | None] | None,
+    reordering: map_gen.ReplayReordering | None,
 ) -> tuple[list[FeatureTrainBatch], list[FeatureMismatch], int, int]:
     offset = torch.randint(0, config.train.sample_period, [1]).item()
     train_actions = train_episode_data.actions
@@ -903,7 +906,9 @@ def prepare_feature_batches(
             room_area=train_actions_cpu.room_area[:, step],
         )
         sample_step = step % config.train.sample_period == offset
-        if config.features.lookahead_outcomes:
+        if reordering is not None:
+            env.step_reordered(reordering)
+        elif config.features.lookahead_outcomes:
             env.step(next_actions)
         else:
             env.step_known(next_actions)
@@ -1071,6 +1076,7 @@ def prepare_feature_batch(
             episode_length,
             is_gpu(device),
             generated_feature_batches,
+            None,
         )
     )
     door_matches = env.get_door_matches(device)
@@ -1127,6 +1133,16 @@ def prepare_train_batch_task(
         context.config.train.episodes_per_file,
         context.config.train.hist_c,
     )
+    probabilities = sample_variable_float(
+        context.step_config.train.reorder_probability,
+        "train.reorder_probability",
+        replay_episode_data.actions.room_idx.shape[0],
+        torch.device("cpu"),
+    )
+    reordering = (
+        env.create_replay_reordering(replay_episode_data, probabilities)
+        if torch.any(probabilities > 0.0) else None
+    )
     feature_batches, feature_mismatches, compared_tensors, compared_values = (
         prepare_feature_batches(
             context.config,
@@ -1136,9 +1152,14 @@ def prepare_train_batch_task(
             context.episode_length,
             is_gpu(context.device),
             None,
+            reordering,
         )
     )
     replay_door_matches = env.get_door_matches(context.device)
+    if reordering is not None:
+        replay_episode_data = replace(
+            replay_episode_data, actions=env.get_actions(torch.device("cpu")),
+        )
     env.finish()
     replay_episode_data = replay_episode_data.to(context.device)
     replay_outcomes = env.get_outcomes(context.device, verify_consistency=False)
