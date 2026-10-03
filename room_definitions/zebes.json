@@ -1972,7 +1972,7 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [],
+        "toilet_crossing_x": [0],
         "water": 2
     },
     {
@@ -2006,7 +2006,7 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [],
+        "toilet_crossing_x": [0, 1, 2, 3, 4, 5, 6],
         "water": 2
     },
     {
@@ -2125,7 +2125,7 @@
         ],
         "connections": [],
         "missing_connections": [],
-        "toilet_crossing_x": [],
+        "toilet_crossing_x": [0, 4],
         "water": 2
     },
     {

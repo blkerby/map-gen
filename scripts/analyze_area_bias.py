@@ -18,7 +18,6 @@ from train_config import (  # noqa: E402
 )
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v4"
 ROOM_DEFINITIONS_PATH = REPO_ROOT / "room_definitions" / "zebes.json"
 PROBABILITY_BIN_COUNT = 5
 AREA_COUNT = 6
@@ -57,8 +56,6 @@ def load_experience(paths: list[Path]) -> tuple[np.ndarray, np.ndarray, np.ndarr
     for path in paths:
         with safe_open(path, framework="np") as experience:
             metadata = experience.metadata()
-            if metadata is None or metadata.get("format") != EXPERIENCE_FORMAT:
-                raise ValueError(f"unsupported experience format in {path}")
             required = {"room_idx", "room_area", "generation_variable_floats"}
             missing = required.difference(experience.keys())
             if missing:
