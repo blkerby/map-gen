@@ -25,21 +25,21 @@
   "optimizer": {
     "type": "muon",
     "muon": {
-      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.00005, 0.00005]},
+      "lr": {"log": [0.0005, 0.0003, 0.0002, 0.00003, 0.00003]},
       "momentum": 0.95,
       "nesterov": true,
       "backend": "newtonschulz5",
       "backend_steps": 5
     },
     "adam": {
-      "lr": {"log": [0.001, 0.0005, 0.0003, 0.0001, 0.0001]},
+      "lr": {"log": [0.001, 0.0005, 0.0003, 0.00005, 0.00005]},
       "beta1": 0.95,
       "beta2": 0.99
     }
   },
   "balance_optimizer": {
     "type": "adam",
-    "lr": {"log": [0.00005, 0.000025, 0.00001, 0.0000025, 0.0000025]},
+    "lr": {"log": [0.00005, 0.000025, 0.00001, 0.000001, 0.000001]},
     "beta1": 0.9,
     "beta2": 0.95
   },
@@ -54,7 +54,7 @@
     "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
     "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
     "order_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
-    "step_beta": 0.02,
+    "step_beta": 0.2,
     "door_price_scale": 0.5,
     "toilet_price_scale": 1.0,
     "area_price_scale": 1.0,
@@ -105,8 +105,8 @@
       "tier_min": [0.0, 0.0, 0.0],
       "tier_max": [0.75, 0.75, 0.75]
     },
-    "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},
-    "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.2}},
+    "reward_save_distance": {"linear": {"min": 0.0, "max": 0.1}},
+    "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.1}},
     "reward_missing_connect_utility": {"linear": {"min": 0.0, "max": 1.0}},
     "reward_area_distinct_crossing": {"linear": {"min": 0.0, "max": 1.0}},
     "reward_area_crossing": 0.0,
@@ -189,7 +189,7 @@
     },
     "sample_period": 16,
     "episodes_per_file": 64,
-    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 640000, 640000]},
+    "ema_half_life_episodes": {"log": [40000, 160000, 640000, 1280000, 1280000]},
     "hist_c": 3.0,
     "door_weight": 1.0,
     "connection_weight": 1.0,
