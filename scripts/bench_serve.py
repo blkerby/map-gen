@@ -5,33 +5,22 @@
 # a per-phase timing summary of the final response.
 import argparse
 import json
+import sys
 import time
 import urllib.request
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "python"))
+
+from serve import warmup_generate_request  # noqa: E402
+
 
 PROFILE_SUMMARY_ROWS = 12
 
 
 def generate_request_payload() -> dict:
-    return {
-        "episode_length": 253,
-        "recommended_candidates": 4,
-        "shortlist_candidates": 16,
-        "temperature": 0.03,
-        "proposal_temperature": 0.3,
-        "reward_door": 1.0,
-        "reward_connection": 1.0,
-        "reward_toilet": 1.0,
-        "reward_phantoon": 1.0,
-        "reward_balance": 0.1,
-        "reward_toilet_balance": 0.1,
-        "reward_frontier": 0.0,
-        "reward_graph_diameter": 0.1,
-        "reward_save_distance": 0.1,
-        "reward_refill_distance": 0.1,
-        "reward_missing_connect_utility": 0.5,
-        "area_assignment_base_order": "random",
-        "small_map": False,
-    }
+    return warmup_generate_request().model_dump(mode="json")
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,7 +74,9 @@ def main() -> None:
         response = send_request(args.url, payload_bytes)
         elapsed = time.perf_counter() - start
         wall_times.append(elapsed)
-        print(f"request {request_idx + 1}/{args.requests}: {elapsed:.2f}s stats={response['stats']}")
+        print(
+            f"request {request_idx + 1}/{args.requests}: {elapsed:.2f}s stats={response['stats']}"
+        )
     print(f"mean: {sum(wall_times) / len(wall_times):.2f}s min: {min(wall_times):.2f}s")
     if response is None:
         raise RuntimeError("no requests were sent")

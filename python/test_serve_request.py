@@ -66,7 +66,6 @@ def base_payload() -> dict:
         "target_area_rooms": [1.0] * 6,
         "target_area_x": [1.0] * 6,
         "target_area_y": [1.0] * 6,
-        "area_assignment_base_order": "random",
     }
 
 
@@ -190,11 +189,6 @@ def base_serving_config_payload() -> dict:
         "prefetch_queue_max_size": 2,
         "prefetch_max_queues": 2,
         "prefetch_delay_seconds": 1.0,
-        "area_assignment_attempts": 1,
-        "area_bounding_box_width": 1,
-        "area_bounding_box_height": 1,
-        "area_min_rooms": 1,
-        "area_max_rooms": 1,
         "room_set": "room_definitions/zebes.json",
         "num_environments": 1,
         "pipeline_groups": 1,
@@ -565,28 +559,6 @@ def main() -> None:
     else:
         raise AssertionError("small_map should be required")
 
-    missing_area_order_payload = base_payload() | {"small_map": False}
-    del missing_area_order_payload["area_assignment_base_order"]
-    try:
-        GenerateRequest.model_validate(missing_area_order_payload)
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError("area_assignment_base_order should be required")
-
-    try:
-        GenerateRequest.model_validate(
-            base_payload()
-            | {
-                "area_assignment_base_order": "invalid",
-                "small_map": False,
-            }
-        )
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError("area_assignment_base_order should reject invalid values")
-
     assert_invalid_value(
         base_payload() | {"small_map": True},
         "small_map requires min_rooms, max_rooms, target_rooms",
@@ -684,17 +656,16 @@ def main() -> None:
 
     warmup_request = warmup_generate_request()
     assert warmup_request.episode_length == 253
-    assert warmup_request.recommended_candidates == 4
-    assert warmup_request.shortlist_candidates == 16
-    assert warmup_request.num_scored_invalid_candidates == 4
+    assert warmup_request.recommended_candidates == 8
+    assert warmup_request.shortlist_candidates == 1024
+    assert warmup_request.num_scored_invalid_candidates == 0
     assert warmup_request.max_candidate_areas_per_placement == 2
     assert not warmup_request.recommended_candidates_same_frontier
-    assert not warmup_request.guarantee_phantoon_counterpart
-    assert warmup_request.temperature == 0.03
-    assert warmup_request.proposal_temperature == 0.3
-    assert warmup_request.reward_missing_connect_utility == 0.5
-    assert warmup_request.target_area_rooms == [1.0] * 6
-    assert warmup_request.area_assignment_base_order == "random"
+    assert warmup_request.guarantee_phantoon_counterpart
+    assert warmup_request.temperature == 0.04
+    assert warmup_request.proposal_temperature == 0.03
+    assert warmup_request.reward_missing_connect_utility == 1.0
+    assert warmup_request.target_area_rooms == [150, 300, 300, 100, 200, 100]
     assert not warmup_request.small_map
     validate_generate_request(warmup_request, rooms=[{} for _ in range(253)])
     assert_warmup_requests_run()

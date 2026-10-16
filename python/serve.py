@@ -9,7 +9,7 @@ import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, NamedTuple
+from typing import Annotated, NamedTuple
 
 import torch
 from flask import Flask, Response, jsonify, request
@@ -17,17 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from safetensors import safe_open
 from werkzeug.exceptions import BadRequest
 
-from area_assignment import (
-    DoorRoomLookup,
-    MapStationData,
-    RoomGeometry,
-    ToiletData,
-    assign_room_areas,
-    build_door_room_lookup,
-    build_map_station_data,
-    build_room_geometry,
-    build_toilet_data,
-)
 from env import (
     AREA_COUNT,
     DoorMatches,
@@ -52,6 +41,12 @@ from small_map import (
 )
 from device_util import gpu_backend, is_gpu
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
+from subarea import (
+    DoorRoomLookup,
+    build_door_room_lookup,
+    build_room_adjacency,
+    split_assignment_by_balanced_centers,
+)
 from train_config import (
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
@@ -97,11 +92,6 @@ class ServingConfig(StrictBaseModel):
     prefetch_queue_max_size: int
     prefetch_max_queues: int
     prefetch_delay_seconds: float
-    area_assignment_attempts: int
-    area_bounding_box_width: int
-    area_bounding_box_height: int
-    area_min_rooms: int
-    area_max_rooms: int
     room_set: Path
     num_environments: int
     pipeline_groups: int
@@ -156,7 +146,6 @@ class GenerateRequest(StrictBaseModel):
     target_area_rooms: Annotated[list[float], Field(min_length=6, max_length=6)]
     target_area_x: Annotated[list[float], Field(min_length=6, max_length=6)]
     target_area_y: Annotated[list[float], Field(min_length=6, max_length=6)]
-    area_assignment_base_order: Literal["random", "depth", "size"]
     small_map: bool
     min_rooms: int | None = None
     max_rooms: int | None = None
@@ -217,9 +206,6 @@ class ServingState:
     model: torch.nn.Module
     balance_model: torch.nn.Module
     door_room_lookup: DoorRoomLookup
-    room_geometry: RoomGeometry
-    map_station_data: MapStationData
-    toilet_data: ToiletData
     door_lookups: DoorLookups
     door_data: DoorData
     room_part_data: RoomPartData
@@ -345,16 +331,6 @@ def validate_serving_config(serving_config: ServingConfig) -> None:
         raise ValueError("prefetch_max_queues must be greater than or equal to zero")
     if serving_config.prefetch_delay_seconds < 0:
         raise ValueError("prefetch_delay_seconds must be greater than or equal to zero")
-    if serving_config.area_assignment_attempts <= 0:
-        raise ValueError("area_assignment_attempts must be greater than zero")
-    if serving_config.area_bounding_box_width <= 0:
-        raise ValueError("area_bounding_box_width must be greater than zero")
-    if serving_config.area_bounding_box_height <= 0:
-        raise ValueError("area_bounding_box_height must be greater than zero")
-    if serving_config.area_min_rooms <= 0:
-        raise ValueError("area_min_rooms must be greater than zero")
-    if serving_config.area_max_rooms < serving_config.area_min_rooms:
-        raise ValueError("area_max_rooms must be at least area_min_rooms")
 
 
 def serving_model_dtype(serving_config: ServingConfig) -> torch.dtype:
@@ -426,9 +402,6 @@ def create_serving_state(
         balance_model = torch.compile(balance_model)
     envs = create_environment_groups(serving_config, model_export.training_config, engine, seed)
     door_room_lookup = build_door_room_lookup(rooms, device)
-    room_geometry = build_room_geometry(rooms, device)
-    map_station_data = build_map_station_data(rooms, device)
-    toilet_data = build_toilet_data(rooms, device)
     door_lookups = build_door_lookups(rooms)
     door_data = build_door_data(rooms)
     room_part_data = build_room_part_data(rooms)
@@ -443,9 +416,6 @@ def create_serving_state(
         model=model,
         balance_model=balance_model,
         door_room_lookup=door_room_lookup,
-        room_geometry=room_geometry,
-        map_station_data=map_station_data,
-        toilet_data=toilet_data,
         door_lookups=door_lookups,
         door_data=door_data,
         room_part_data=room_part_data,
@@ -943,14 +913,14 @@ def initialize_serving_state(state: ServingState) -> None:
 def warmup_generate_request() -> GenerateRequest:
     return GenerateRequest(
         episode_length=253,
-        recommended_candidates=4,
-        shortlist_candidates=16,
-        num_scored_invalid_candidates=4,
+        recommended_candidates=8,
+        shortlist_candidates=1024,
+        num_scored_invalid_candidates=0,
         max_candidate_areas_per_placement=2,
         recommended_candidates_same_frontier=False,
-        guarantee_phantoon_counterpart=False,
-        temperature=0.03,
-        proposal_temperature=0.3,
+        guarantee_phantoon_counterpart=True,
+        temperature=0.04,
+        proposal_temperature=0.03,
         reward_door=1.0,
         reward_connection=1.0,
         reward_toilet=1.0,
@@ -963,33 +933,32 @@ def warmup_generate_request() -> GenerateRequest:
         reward_phantoon_in_wrecked_ship=1.0,
         reward_draygon_in_maridia=1.0,
         reward_mother_brain_in_tourian=1.0,
-        force_ship_in_crateria=False,
-        force_kraid_in_brinstar=False,
-        force_ridley_in_norfair=False,
-        force_phantoon_in_wrecked_ship=False,
-        force_draygon_in_maridia=False,
-        force_mother_brain_in_tourian=False,
+        force_ship_in_crateria=True,
+        force_kraid_in_brinstar=True,
+        force_ridley_in_norfair=True,
+        force_phantoon_in_wrecked_ship=True,
+        force_draygon_in_maridia=True,
+        force_mother_brain_in_tourian=True,
         reward_frontier=0.0,
         reward_graph_diameter=0.1,
-        maridia_water_preferred_probability_1=1.0 / AREA_COUNT,
-        maridia_water_preferred_probability_2=1.0 / AREA_COUNT,
-        maridia_water_preferred_probability_3=1.0 / AREA_COUNT,
-        norfair_heat_preferred_probability_1=1.0 / AREA_COUNT,
-        norfair_heat_preferred_probability_2=1.0 / AREA_COUNT,
-        norfair_heat_preferred_probability_3=1.0 / AREA_COUNT,
+        maridia_water_preferred_probability_1=0.3,
+        maridia_water_preferred_probability_2=0.45,
+        maridia_water_preferred_probability_3=0.6,
+        norfair_heat_preferred_probability_1=0.3,
+        norfair_heat_preferred_probability_2=0.45,
+        norfair_heat_preferred_probability_3=0.6,
         reward_save_distance=0.1,
         reward_refill_distance=0.1,
-        reward_missing_connect_utility=0.5,
-        reward_area_distinct_crossing=0.0,
+        reward_missing_connect_utility=1.0,
+        reward_area_distinct_crossing=1.0,
         reward_area_crossing=0.0,
-        reward_area_size_valid=0.0,
-        reward_area_map_station=0.0,
-        reward_area_x=0.0,
-        reward_area_y=0.0,
-        target_area_rooms=[1.0] * 6,
-        target_area_x=[0.0] * 6,
-        target_area_y=[0.0] * 6,
-        area_assignment_base_order="random",
+        reward_area_size_valid=1.0,
+        reward_area_map_station=1.0,
+        reward_area_x=5.0,
+        reward_area_y=5.0,
+        target_area_rooms=[150, 300, 300, 100, 200, 100],
+        target_area_x=[16, 10, 40, 48, 40, 16],
+        target_area_y=[12, 32, 64, 12, 32, 24],
         small_map=False,
     )
 
@@ -1112,6 +1081,7 @@ def run_generation_with_generation_lock_held(
         outcomes,
         _door_match_counts,
         _proposal_data,
+        _generated_feature_data,
         _generation_stats,
         profile_report,
     ) = run_generation_groups(
@@ -1183,6 +1153,7 @@ def build_generate_response_data(
         state.training_config.generation.max_area_size,
     )
     valid_room_idx = episode_data.actions.room_idx[valid_mask]
+    valid_room_area = episode_data.actions.room_area[valid_mask]
     valid_room_x = episode_data.actions.room_x[valid_mask]
     valid_room_y = episode_data.actions.room_y[valid_mask]
     valid_toilet_crossed_room_idx = outcomes.end_outcomes.toilet_crossed_room_idx[valid_mask]
@@ -1195,45 +1166,27 @@ def build_generate_response_data(
     )
 
     profile_time = profile_start(state.profile)
-    area_assignment = assign_room_areas(
-        valid_room_idx,
-        valid_room_x,
-        valid_room_y,
-        valid_toilet_crossed_room_idx,
-        valid_door_matches,
-        state.door_room_lookup,
-        state.room_geometry,
-        state.map_station_data,
-        state.toilet_data,
-        state.serving_config.area_assignment_attempts,
-        state.serving_config.area_bounding_box_width,
-        state.serving_config.area_bounding_box_height,
-        state.serving_config.area_min_rooms,
-        state.serving_config.area_max_rooms,
-        generate_request.area_assignment_base_order,
-        serving_profiler,
+    adjacency = build_room_adjacency(valid_room_idx, valid_door_matches, state.door_room_lookup)
+    subarea = split_assignment_by_balanced_centers(adjacency, (valid_room_area,), (AREA_COUNT,))
+    subsubarea = split_assignment_by_balanced_centers(
+        adjacency, (valid_room_area, subarea), (AREA_COUNT, 2)
     )
     add_serving_profile(
         serving_profiler,
         state.device,
-        "python.serve.assign_room_areas",
+        "python.serve.subdivide_areas",
         profile_time,
     )
 
     profile_time = profile_start(state.profile)
-    area_valid_mask = area_assignment.valid_mask
-    final_room_idx = area_assignment.room_idx
-    final_room_x = valid_room_x[area_valid_mask]
-    final_room_y = valid_room_y[area_valid_mask]
-    final_toilet_crossed_room_idx = valid_toilet_crossed_room_idx[area_valid_mask]
-    final_door_matches = area_assignment.door_matches
-    final_room_idx_list = tensor_to_list(final_room_idx)
-    final_room_x_list = tensor_to_list(final_room_x)
-    final_room_y_list = tensor_to_list(final_room_y)
-    final_area_list = tensor_to_list(area_assignment.area)
-    final_subarea_list = tensor_to_list(area_assignment.subarea)
-    final_subsubarea_list = tensor_to_list(area_assignment.subsubarea)
-    final_toilet_crossed_room_idx_list = tensor_to_list(final_toilet_crossed_room_idx)
+    final_door_matches = valid_door_matches
+    final_room_idx_list = tensor_to_list(valid_room_idx)
+    final_room_x_list = tensor_to_list(valid_room_x)
+    final_room_y_list = tensor_to_list(valid_room_y)
+    final_area_list = tensor_to_list(valid_room_area)
+    final_subarea_list = tensor_to_list(subarea)
+    final_subsubarea_list = tensor_to_list(subsubarea)
+    final_toilet_crossed_room_idx_list = tensor_to_list(valid_toilet_crossed_room_idx)
     if generate_request.small_map:
         assert generate_request.min_rooms is not None
         assert generate_request.max_rooms is not None
