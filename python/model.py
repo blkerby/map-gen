@@ -914,6 +914,23 @@ class FrontierModel(torch.nn.Module):
         for output_layer in output_layers:
             zero_init_output_layer(output_layer)
 
+    def configure_inference_dtype(self, backbone_dtype: torch.dtype) -> None:
+        """Convert the backbone while retaining float32 prediction blocks and buffers."""
+        backbone_modules = (
+            self.frontier_node_features,
+            self.frontier_node_mlp,
+            self.frontier_pair_features,
+            self.source_message_layers,
+            *self.pair_message_layers,
+            self.message_output_layers,
+            self.update_layers,
+            self.global_features,
+            self.global_mlp,
+        )
+        for module in backbone_modules:
+            if module is not None:
+                module.to(dtype=backbone_dtype)
+
     def _pair_features(self, features, neighbor, dtype):
         values = []
         for pair_feature in self.frontier_pair_features:
@@ -1490,6 +1507,14 @@ class BalanceModel(torch.nn.Module):
         self.step_net = balance_price_network(
             hidden_width, num_layers, self.num_rooms * (self.num_rooms + 1)
         )
+
+    def configure_inference_dtype(self, backbone_dtype: torch.dtype) -> None:
+        """Convert hidden layers while retaining float32 price outputs and buffers."""
+        for network in (
+            self.door_net, self.toilet_net, self.area_net, self.order_net, self.step_net
+        ):
+            for layer in network[:-1]:
+                layer.to(dtype=backbone_dtype)
 
     def forward(self, generation_variable_floats: torch.Tensor) -> BalancePredictions:
         parameter_dtype = next(self.parameters()).dtype

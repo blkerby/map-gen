@@ -4,7 +4,6 @@
   "device": "cpu",
   "compile_model": true,
   "gpu_memory_fraction": 1.0,
-  "model_dtype": "float32",
   "autocast": false,
   "verify_outcome_consistency": false,
   "gpu_prefetch_batches": 0,

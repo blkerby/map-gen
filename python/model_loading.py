@@ -3,8 +3,18 @@ from typing import Any
 import torch
 
 from env import Engine
-from model import BalanceModel
+from model import BalanceModel, FrontierModel
 from train_config import Config
+
+
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v18"
+INFERENCE_BACKBONE_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
+
+
+def inference_backbone_dtype(name: str) -> torch.dtype:
+    if name not in INFERENCE_BACKBONE_DTYPES:
+        raise ValueError('backbone_dtype must be "float32" or "bfloat16"')
+    return INFERENCE_BACKBONE_DTYPES[name]
 
 
 def without_prefix(
@@ -120,3 +130,39 @@ def create_balance_model(
     device: torch.device,
 ) -> BalanceModel:
     return BalanceModel(**balance_model_kwargs(config, rooms, engine)).to(device)
+
+
+def load_inference_model_state(
+    model: FrontierModel | BalanceModel,
+    tensors: dict[str, torch.Tensor],
+    backbone_dtype: torch.dtype,
+    device: torch.device,
+) -> None:
+    """Validate the saved precision policy and preserve dtypes when loading weights."""
+    model.configure_inference_dtype(backbone_dtype)
+    for name, expected in model.state_dict().items():
+        if name in tensors and tensors[name].dtype != expected.dtype:
+            raise ValueError(
+                f"inference tensor {name!r} has dtype {tensors[name].dtype}, "
+                f"expected {expected.dtype}"
+            )
+    # Copying into the model's initial parameters would silently change saved dtypes.
+    model.load_state_dict(tensors, assign=True)
+    model.to(device)
+    model.requires_grad_(False)
+    model.eval()
+
+
+def create_inference_models(
+    config: Config,
+    rooms: list[dict],
+    engine: Engine,
+    tensors: dict[str, torch.Tensor],
+    backbone_dtype: torch.dtype,
+    device: torch.device,
+) -> tuple[FrontierModel, BalanceModel]:
+    model = FrontierModel(**frontier_model_kwargs(config, rooms, engine))
+    balance_model = create_balance_model(config, rooms, engine, torch.device("cpu"))
+    for module, prefix in ((model, "ema_model"), (balance_model, "balance_model")):
+        load_inference_model_state(module, without_prefix(tensors, prefix), backbone_dtype, device)
+    return model, balance_model

@@ -28,7 +28,6 @@ from env import (
 )
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from features import GenerationVariableFloatsFeature
-from model import FrontierModel
 from small_map import (
     DoorData,
     RequiredRoomData,
@@ -40,7 +39,7 @@ from small_map import (
     prune_small_maps,
 )
 from device_util import gpu_backend, is_gpu
-from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
+from model_loading import MODEL_EXPORT_FORMAT, create_inference_models, inference_backbone_dtype
 from subarea import (
     DoorRoomLookup,
     build_door_room_lookup,
@@ -57,7 +56,6 @@ from train_config import (
 )
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v17"
 TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v24"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
@@ -84,7 +82,6 @@ class ServingConfig(StrictBaseModel):
     device: str
     compile_model: bool
     gpu_memory_fraction: float
-    model_dtype: str
     autocast: bool
     verify_outcome_consistency: bool
     gpu_prefetch_batches: int
@@ -156,6 +153,7 @@ class GenerateRequest(StrictBaseModel):
 class ModelExport:
     training_config: Config
     tensors: dict[str, torch.Tensor]
+    backbone_dtype: torch.dtype
 
 
 class DoorLookup(NamedTuple):
@@ -257,6 +255,8 @@ def validate_model_input_metadata(path: Path, metadata: dict[str, str] | None) -
             raise ValueError(f"model input metadata field {field!r} missing in {path}")
     if metadata["format"] not in MODEL_INPUT_FORMATS:
         raise ValueError(f"unsupported model input format in {path}")
+    if metadata["format"] == MODEL_EXPORT_FORMAT and "backbone_dtype" not in metadata:
+        raise ValueError(f"model input metadata field 'backbone_dtype' missing in {path}")
     return metadata
 
 
@@ -264,12 +264,14 @@ def load_model_input(path: Path) -> ModelExport:
     with safe_open(path, framework="pt", device="cpu") as model_input:
         metadata = validate_model_input_metadata(path, model_input.metadata())
         if metadata["format"] == TRAINING_CHECKPOINT_FORMAT:
+            backbone_dtype = torch.float32
             tensors = {
                 name: model_input.get_tensor(name)
                 for name in model_input.keys()
                 if name.startswith(("ema_model.", "balance_model."))
             }
         else:
+            backbone_dtype = inference_backbone_dtype(metadata["backbone_dtype"])
             tensors = {name: model_input.get_tensor(name) for name in model_input.keys()}
     missing_prefixes = [
         prefix
@@ -280,7 +282,9 @@ def load_model_input(path: Path) -> ModelExport:
         raise ValueError(f"model input missing tensor group(s): {', '.join(missing_prefixes)}")
     training_config = Config.model_validate_json(metadata["config"])
     validate_config(training_config)
-    return ModelExport(training_config=training_config, tensors=tensors)
+    return ModelExport(
+        training_config=training_config, tensors=tensors, backbone_dtype=backbone_dtype
+    )
 
 
 def create_environment_groups(
@@ -333,14 +337,6 @@ def validate_serving_config(serving_config: ServingConfig) -> None:
         raise ValueError("prefetch_delay_seconds must be greater than or equal to zero")
 
 
-def serving_model_dtype(serving_config: ServingConfig) -> torch.dtype:
-    if serving_config.model_dtype == "float32":
-        return torch.float32
-    if serving_config.model_dtype == "bfloat16":
-        return torch.bfloat16
-    raise ValueError('model_dtype must be "float32" or "bfloat16"')
-
-
 def create_prefetch_state() -> PrefetchState:
     lock = threading.Lock()
     return PrefetchState(
@@ -373,30 +369,20 @@ def create_serving_state(
             device,
         )
         torch.set_float32_matmul_precision("high")
-    model_dtype = serving_model_dtype(serving_config)
     engine = Engine(
         rooms,
         model_export.training_config.features,
         model_export.training_config.generation.min_area_size,
         model_export.training_config.generation.max_area_size,
     )
-    model = FrontierModel(**frontier_model_kwargs(model_export.training_config, rooms, engine)).to(
-        device
-    )
-    model.load_state_dict(without_prefix(model_export.tensors, "ema_model"))
-    model.to(dtype=model_dtype)
-    model.requires_grad_(False)
-    model.eval()
-    balance_model = create_balance_model(
+    model, balance_model = create_inference_models(
         model_export.training_config,
         rooms,
         engine,
+        model_export.tensors,
+        model_export.backbone_dtype,
         device,
     )
-    balance_model.load_state_dict(without_prefix(model_export.tensors, "balance_model"))
-    balance_model.to(dtype=model_dtype)
-    balance_model.requires_grad_(False)
-    balance_model.eval()
     if serving_config.compile_model:
         model = torch.compile(model)
         balance_model = torch.compile(balance_model)

@@ -1,14 +1,36 @@
 #!/usr/bin/env python3
+"""Export inference-ready weights.
+
+From the repository root:
+  python scripts/export_model.py CHECKPOINT OUTPUT --backbone-dtype bfloat16
+
+Use --backbone-dtype float32 for an entirely float32 model export. Prediction
+blocks retain float32 weights in both modes.
+"""
+
 import argparse
+import json
 import os
 from pathlib import Path
+import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+
+import torch
 import safetensors.torch
 from safetensors import safe_open
 
+from env import Engine
+from model_loading import (
+    INFERENCE_BACKBONE_DTYPES,
+    MODEL_EXPORT_FORMAT,
+    create_inference_models,
+    inference_backbone_dtype,
+)
+from train_config import Config, validate_config
+
 
 TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v24"
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v17"
 MODEL_PREFIX_MAP = {
     "ema_model": "ema_model",
     "balance_model": "balance_model",
@@ -31,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         "output",
         type=Path,
         help="Output safetensors file containing only ema_model.* and balance_model.* tensors.",
+    )
+    parser.add_argument(
+        "--backbone-dtype",
+        choices=tuple(INFERENCE_BACKBONE_DTYPES),
+        required=True,
+        help="Saved backbone dtype; prediction blocks always retain float32 weights.",
     )
     parser.add_argument(
         "--overwrite",
@@ -58,7 +86,15 @@ def exported_model_name(name: str) -> tuple[str, str] | None:
     return None
 
 
-def export_model_tensors(checkpoint_path: Path, output_path: Path, overwrite: bool) -> None:
+def export_model_tensors(
+    checkpoint_path: Path,
+    output_path: Path,
+    backbone_dtype: str,
+    overwrite: bool,
+) -> None:
+    dtype = inference_backbone_dtype(backbone_dtype)
+    if checkpoint_path.resolve() == output_path.resolve():
+        raise ValueError("model export must not overwrite the training checkpoint")
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"output file already exists: {output_path}")
 
@@ -83,8 +119,28 @@ def export_model_tensors(checkpoint_path: Path, output_path: Path, overwrite: bo
             f"checkpoint missing model tensor group(s): {', '.join(missing_prefixes)}"
         )
 
+    config = Config.model_validate_json(checkpoint_metadata["config"])
+    validate_config(config)
+    rooms = json.loads(Path(config.room_set).read_text())
+    engine = Engine(
+        rooms, config.features, config.generation.min_area_size, config.generation.max_area_size
+    )
+    models = create_inference_models(
+        config, rooms, engine, tensors, torch.float32, torch.device("cpu")
+    )
+    tensors = {}
+    for prefix, model in zip(MODEL_PREFIX_MAP.values(), models, strict=True):
+        model.configure_inference_dtype(dtype)
+        tensors.update(
+            {
+                f"{prefix}.{name}": value.detach().contiguous()
+                for name, value in model.state_dict().items()
+            }
+        )
+
     metadata = {
         "format": MODEL_EXPORT_FORMAT,
+        "backbone_dtype": backbone_dtype,
         "config": checkpoint_metadata["config"],
         "source_format": checkpoint_metadata["format"],
         "source_num_episodes": checkpoint_metadata["num_episodes"],
@@ -104,7 +160,12 @@ def export_model_tensors(checkpoint_path: Path, output_path: Path, overwrite: bo
 
 def main() -> int:
     args = parse_args()
-    export_model_tensors(args.checkpoint, args.output, args.overwrite)
+    export_model_tensors(
+        checkpoint_path=args.checkpoint,
+        output_path=args.output,
+        backbone_dtype=args.backbone_dtype,
+        overwrite=args.overwrite,
+    )
     return 0
 
 

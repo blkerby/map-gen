@@ -181,7 +181,6 @@ def base_serving_config_payload() -> dict:
         "device": "cpu",
         "compile_model": False,
         "gpu_memory_fraction": 1.0,
-        "model_dtype": "float32",
         "autocast": False,
         "verify_outcome_consistency": False,
         "gpu_prefetch_batches": 1,
