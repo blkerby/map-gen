@@ -178,12 +178,16 @@ def compute_expected_reward(
 
     door_logprobs = torch.nn.functional.logsigmoid(-preds.door_invalid)
     connection_logprobs = torch.nn.functional.logsigmoid(-preds.connection_invalid)
+    return_distance_logprobs = torch.nn.functional.logsigmoid(-preds.return_distance_invalid)
     toilet_logprobs = torch.nn.functional.logsigmoid(-preds.toilet_invalid)
     phantoon_pair_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_pair_invalid)
     phantoon_area_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_area_invalid)
     vanilla_area_logprobs = torch.nn.functional.logsigmoid(-preds.vanilla_area_invalid)
     door_logprobs = outcome_reward(door_logprobs, outcomes.door_invalid)
     connection_logprobs = outcome_reward(connection_logprobs, outcomes.connection_invalid)
+    return_distance_logprobs = outcome_reward(
+        return_distance_logprobs, outcomes.return_distance_invalid
+    )
     toilet_logprobs = outcome_reward(toilet_logprobs, outcomes.toilet_invalid)
     phantoon_pair_logprobs = outcome_reward(phantoon_pair_logprobs, outcomes.phantoon_pair_invalid)
     phantoon_area_logprobs = outcome_reward(phantoon_area_logprobs, outcomes.phantoon_area_invalid)
@@ -208,6 +212,7 @@ def compute_expected_reward(
         batch_weight(config.reward_door) * torch.sum(door_logprobs, dim=2)
         + batch_weight(config.reward_success) * torch.nn.functional.logsigmoid(preds.success)
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
+        + batch_weight(config.reward_connection) * torch.sum(return_distance_logprobs, dim=2)
         + batch_weight(config.reward_toilet) * toilet_logprobs
         + batch_weight(config.reward_phantoon_pair) * phantoon_pair_logprobs
         + batch_weight(config.reward_phantoon_area) * phantoon_area_logprobs
@@ -690,6 +695,7 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
     return StepOutcomes(
         door_invalid=gather(outcomes.door_invalid),
         connection_invalid=gather(outcomes.connection_invalid),
+        return_distance_invalid=gather(outcomes.return_distance_invalid),
         toilet_invalid=gather_scalar(outcomes.toilet_invalid),
         phantoon_pair_invalid=gather_scalar(outcomes.phantoon_pair_invalid),
         phantoon_area_invalid=gather_scalar(outcomes.phantoon_area_invalid),
@@ -913,6 +919,11 @@ def compute_candidate_values(
             success=preds.success.view(environment_count, candidate_count),
             door_invalid=preds.door_invalid.view(environment_count, candidate_count, -1),
             connection_invalid=preds.connection_invalid.view(
+                environment_count,
+                candidate_count,
+                -1,
+            ),
+            return_distance_invalid=preds.return_distance_invalid.view(
                 environment_count,
                 candidate_count,
                 -1,
@@ -1808,6 +1819,7 @@ def run_group_producer(
 ) -> None:
     try:
         group.env.clear()
+        group.env.set_max_return_distances(group.config.generation_variable_floats)
         initial_result, initial_step = score_initial_action(
             group,
             group_index,
@@ -1944,6 +1956,12 @@ def merge_generation_results(
                 connection_invalid=torch.cat(
                     [
                         episode_outcomes.step_outcomes.connection_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                return_distance_invalid=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.return_distance_invalid
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 from env import DoorMatches
@@ -20,6 +21,7 @@ class SmallMapConfig:
     min_rooms: int
     max_rooms: int
     target_rooms: int
+    max_return_distance: float | None
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class DoorData:
 class RoomPartData:
     part_count: list[int]
     connections: list[list[tuple[int, int]]]
+    missing_connections: list[list[tuple[int, int]]]
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,10 @@ def build_room_part_data(rooms: list[dict]) -> RoomPartData:
             [(int(from_part), int(to_part)) for from_part, to_part in room["connections"]]
             for room in rooms
         ],
+        missing_connections=[
+            [(int(source), int(target)) for source, target in room["missing_connections"]]
+            for room in rooms
+        ],
     )
 
 
@@ -178,6 +185,41 @@ def add_bidirectional_door_edge(
 ) -> None:
     adjacency[source_part_position].append(target_part_position)
     adjacency[target_part_position].append(source_part_position)
+
+
+def return_distances_valid(
+    adjacency: list[list[int]],
+    offsets: dict[int, int],
+    map_room_idx: list[int],
+    room_part_data: RoomPartData,
+    limit: float,
+) -> bool:
+    zero_edges = {
+        (offset + source, offset + target)
+        for position, offset in offsets.items()
+        for source, target in room_part_data.connections[map_room_idx[position]]
+    }
+    for position, offset in offsets.items():
+        for source, target in room_part_data.missing_connections[map_room_idx[position]]:
+            target += offset
+            source += offset
+            distances = [float("inf")] * len(adjacency)
+            distances[source] = 0
+            queue = deque([source])
+            while queue and distances[target] > limit:
+                current = queue.popleft()
+                for neighbor in adjacency[current]:
+                    cost = 0 if (current, neighbor) in zero_edges else 1
+                    distance = distances[current] + cost
+                    if distance <= limit and distance < distances[neighbor]:
+                        distances[neighbor] = distance
+                        if cost == 0:
+                            queue.appendleft(neighbor)
+                        else:
+                            queue.append(neighbor)
+            if distances[target] > limit:
+                return False
+    return True
 
 
 def subset_valid(
@@ -265,7 +307,16 @@ def subset_valid(
             ):
                 return False
 
-    return is_strongly_connected(adjacency)
+    return is_strongly_connected(adjacency) and (
+        config.max_return_distance is None
+        or return_distances_valid(
+            adjacency,
+            room_part_offset_by_position,
+            map_room_idx,
+            room_part_data,
+            config.max_return_distance,
+        )
+    )
 
 
 def select_area_mask(

@@ -56,7 +56,7 @@ from train_config import (
 )
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v24"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v25"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -134,6 +134,7 @@ class GenerateRequest(StrictBaseModel):
     reward_save_distance: float
     reward_refill_distance: float
     reward_missing_connect_utility: float
+    max_return_distance: float | None
     reward_area_distinct_crossing: float
     reward_area_crossing: float
     reward_area_size_valid: float
@@ -440,6 +441,11 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         raise ValueError("temperature must be greater than zero")
     if generate_request.proposal_temperature <= 0:
         raise ValueError("proposal_temperature must be greater than zero")
+    if generate_request.max_return_distance is not None and (
+        not math.isfinite(generate_request.max_return_distance)
+        or not 0 < generate_request.max_return_distance <= 254
+    ):
+        raise ValueError("max_return_distance must be null or a finite value in (0, 254]")
     for name in ("reward_area_distinct_crossing", "reward_area_crossing"):
         if not math.isfinite(getattr(generate_request, name)):
             raise ValueError(f"{name} must be finite")
@@ -526,6 +532,10 @@ def create_generate_configs(
         "reward_save_distance": generate_request.reward_save_distance,
         "reward_refill_distance": generate_request.reward_refill_distance,
         "reward_missing_connect_utility": generate_request.reward_missing_connect_utility,
+        "max_return_distance": (
+            0.0 if generate_request.max_return_distance is None
+            else generate_request.max_return_distance
+        ),
         "reward_area_distinct_crossing": generate_request.reward_area_distinct_crossing,
         "reward_area_crossing": generate_request.reward_area_crossing,
         "reward_area_size_valid": generate_request.reward_area_size_valid,
@@ -749,6 +759,7 @@ def valid_map_mask(
     invalid = (
         tensor_has_invalid_outcome(step_outcomes.door_invalid)
         | tensor_has_invalid_outcome(step_outcomes.connection_invalid)
+        | tensor_has_invalid_outcome(step_outcomes.return_distance_invalid)
         | tensor_has_invalid_outcome(step_outcomes.toilet_invalid)
         | tensor_has_invalid_outcome(step_outcomes.phantoon_pair_invalid)
         | tensor_has_invalid_outcome(step_outcomes.phantoon_area_invalid)
@@ -936,6 +947,7 @@ def warmup_generate_request() -> GenerateRequest:
         reward_save_distance=0.1,
         reward_refill_distance=0.1,
         reward_missing_connect_utility=1.0,
+        max_return_distance=None,
         reward_area_distinct_crossing=1.0,
         reward_area_crossing=0.0,
         reward_area_size_valid=1.0,
@@ -1193,6 +1205,7 @@ def build_generate_response_data(
                 min_rooms=generate_request.min_rooms,
                 max_rooms=generate_request.max_rooms,
                 target_rooms=generate_request.target_rooms,
+                max_return_distance=generate_request.max_return_distance,
             ),
         )
         final_room_idx_list = small_map_result.room_idx

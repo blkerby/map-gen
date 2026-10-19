@@ -58,6 +58,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 "success",
                 "door_invalid",
                 "connection_invalid",
+                "return_distance_invalid",
                 "toilet_invalid",
                 "phantoon_pair_invalid",
                 "phantoon_area_invalid",
@@ -80,6 +81,7 @@ class CandidateRecordsTest(unittest.TestCase):
         }
         predictions = SimpleNamespace(
             **fields,
+            area_connection_logits=torch.zeros(4, 15),
             vanilla_area_invalid=torch.zeros(4, 6),
             area_size=torch.zeros(4, 3),
             area_map_station_count=torch.zeros(4, 3),
@@ -116,7 +118,8 @@ class CandidateRecordsTest(unittest.TestCase):
                 self.candidates,
                 self.outcomes,
                 SimpleNamespace(
-                    door_match=torch.zeros(2, 2, 1), toilet_invalid=torch.zeros(2, 2)
+                    door_match=torch.zeros(2, 2, 1), toilet_invalid=torch.zeros(2, 2),
+                    area_connections=torch.zeros(2, 2, 15, dtype=torch.bool),
                 ),
                 self.features,
                 self.device,

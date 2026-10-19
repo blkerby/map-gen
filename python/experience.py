@@ -8,13 +8,19 @@ from env import Actions, EpisodeData
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v5"
+EXPERIENCE_FORMAT = "map-gen-experience-v6"
+PRE_RETURN_DISTANCE_EXPERIENCE_FORMAT = "map-gen-experience-v5"
 PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT = "map-gen-experience-v4"
 PRE_SUCCESS_EXPERIENCE_FORMAT = "map-gen-experience-v3"
 EXPERIENCE_MISSING_VARIABLE_FIELDS = {
     EXPERIENCE_FORMAT: (),
-    PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT: ("reward_area_distinct_crossing",),
-    PRE_SUCCESS_EXPERIENCE_FORMAT: ("reward_success", "reward_area_distinct_crossing"),
+    PRE_RETURN_DISTANCE_EXPERIENCE_FORMAT: ("max_return_distance",),
+    PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT: (
+        "reward_area_distinct_crossing", "max_return_distance"
+    ),
+    PRE_SUCCESS_EXPERIENCE_FORMAT: (
+        "reward_success", "reward_area_distinct_crossing", "max_return_distance"
+    ),
 }
 REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
     "room_idx",
@@ -59,8 +65,8 @@ def read_experience_tensors(
             f"{path} generation_variable_floats shape must be {expected_shape}, "
             f"got {tuple(variables.shape)}"
         )
-    # Older formats predate these rewards. Insert neutral columns in schema order
-    # so that every recorded reward and constraint keeps its original meaning.
+    # Older formats predate these fields. Zero encodes an unrestricted return
+    # limit; neutral reward columns retain their existing import semantics.
     missing_columns = sorted(
         GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in missing_fields
     )

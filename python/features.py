@@ -183,6 +183,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
             "reward_save_distance": values["reward_save_distance"],
             "reward_refill_distance": values["reward_refill_distance"],
             "reward_missing_connect_utility": values["reward_missing_connect_utility"],
+            "max_return_distance": values["max_return_distance"],
             "reward_area_distinct_crossing": values["reward_area_distinct_crossing"],
             "reward_area_crossing": values["reward_area_crossing"],
             "reward_area_size_valid": values["reward_area_size_valid"],
@@ -269,7 +270,7 @@ class LookaheadFeature(GlobalFeature):
     def tensor_width(cls, context: FeatureContext) -> int:
         return (
             context.features.lookahead_outcomes
-            + 2 * context.num_connection_outputs
+            + 4 * context.num_connection_outputs
             + 6
             + 2 * VANILLA_AREA_CONSTRAINT_COUNT
             + 2 * AREA_COUNT * 3
@@ -305,6 +306,13 @@ class LookaheadFeature(GlobalFeature):
             [
                 (features.global_features.lookahead_connection_invalid == 0).to(dtype),
                 (features.global_features.lookahead_connection_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        return_distance_features = torch.stack(
+            [
+                (features.global_features.lookahead_return_distance_invalid == 0).to(dtype),
+                (features.global_features.lookahead_return_distance_invalid == 1).to(dtype),
             ],
             dim=-1,
         ).flatten(1)
@@ -369,6 +377,7 @@ class LookaheadFeature(GlobalFeature):
                 door_match_features,
                 features.global_features.area_connections.to(dtype),
                 connection_features,
+                return_distance_features,
                 toilet_features,
                 phantoon_pair_features,
                 phantoon_area_features,

@@ -62,9 +62,9 @@
     "step_price_scale": 10.0
   },
   "generation": {
-    "num_environments": 4096,
-    "num_iterations": 2,
-    "num_devices": 2,
+    "num_environments": 2048,
+    "num_iterations": 4,
+    "num_devices": 1,
     "pipeline_groups": 4,
     "gpu_prefetch_batches": 1,
     "recommended_candidates": 8,
@@ -107,7 +107,20 @@
     },
     "reward_save_distance": {"linear": {"min": 0.0, "max": 0.1}},
     "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.1}},
-    "reward_missing_connect_utility": {"linear": {"min": 0.0, "max": 1.0}},
+    "reward_missing_connect_utility": {"linear": {"min": 0.0, "max": 2.0}},
+    "max_return_distance": {
+      "mixture": [
+        {"weight": 8.0, "value": null},
+        {"weight": 3.0, "value": 13.0},
+        {"weight": 3.0, "value": 14.0},
+        {"weight": 3.0, "value": 15.0},
+        {"weight": 3.0, "value": 16.0},
+        {"weight": 3.0, "value": 17.0},
+        {"weight": 3.0, "value": 18.0},
+        {"weight": 3.0, "value": 19.0},
+        {"weight": 3.0, "value": 20.0}
+      ]
+    },
     "reward_area_distinct_crossing": {"linear": {"min": 0.0, "max": 1.0}},
     "reward_area_crossing": 0.0,
     "reward_area_size_valid": 1.0,
@@ -145,7 +158,7 @@
     "frontier_window_size": 8,
     "candidate_spatial_cell_size": 8,
     "area_bounding_box_width": 61,
-    "area_bounding_box_height": 30,
+    "area_bounding_box_height": 29,
     "num_threads": 32
   },
   "features": {

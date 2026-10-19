@@ -99,6 +99,7 @@ def area_predictions() -> Predictions:
         step_balance_score=torch.zeros([batch, candidate]),
         door_invalid=torch.zeros([batch, candidate, door]),
         connection_invalid=torch.zeros([batch, candidate, connection]),
+        return_distance_invalid=torch.zeros([batch, candidate, connection]),
         toilet_invalid=torch.zeros([batch, candidate]),
         phantoon_pair_invalid=torch.zeros([batch, candidate]),
         phantoon_area_invalid=torch.zeros([batch, candidate]),
@@ -129,6 +130,7 @@ def unknown_outcomes() -> StepOutcomes:
     return StepOutcomes(
         door_invalid=torch.full([1, 2, 3], -1.0),
         connection_invalid=torch.full([1, 2, 4], -1.0),
+        return_distance_invalid=torch.full([1, 2, 4], -1.0),
         toilet_invalid=torch.full([1, 2], -1.0),
         phantoon_pair_invalid=torch.full([1, 2], -1.0),
         phantoon_area_invalid=torch.full([1, 2], -1.0),

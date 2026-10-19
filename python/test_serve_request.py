@@ -57,6 +57,7 @@ def base_payload() -> dict:
         "reward_save_distance": 1.0,
         "reward_refill_distance": 1.0,
         "reward_missing_connect_utility": 1.0,
+        "max_return_distance": None,
         "reward_area_distinct_crossing": 0.0,
         "reward_area_crossing": 1.0,
         "reward_area_size_valid": 1.0,
@@ -78,6 +79,7 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
     step_outcomes = SimpleNamespace(
         door_invalid=torch.zeros([batch_size, 1]),
         connection_invalid=torch.zeros([batch_size, 1]),
+        return_distance_invalid=torch.zeros([batch_size, 1]),
         toilet_invalid=torch.zeros([batch_size]),
         phantoon_pair_invalid=phantoon_pair_invalid,
         phantoon_area_invalid=phantoon_area_invalid,

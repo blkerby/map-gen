@@ -30,7 +30,7 @@ from model_loading import (
 from train_config import Config, validate_config
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v24"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v25"
 MODEL_PREFIX_MAP = {
     "ema_model": "ema_model",
     "balance_model": "balance_model",

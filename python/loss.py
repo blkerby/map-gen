@@ -230,6 +230,14 @@ def compute_loss_breakdown(
     conn_loss, conn_wt = masked_binary_cross_entropy_loss(
         preds.connection_invalid, outcomes.connection_invalid, mask, config.connection_weight
     )
+    return_distance_loss, return_distance_wt = masked_binary_cross_entropy_loss(
+        preds.return_distance_invalid,
+        outcomes.return_distance_invalid,
+        mask,
+        config.connection_weight,
+    )
+    conn_loss = conn_loss + return_distance_loss
+    conn_wt = conn_wt + return_distance_wt
     toilet_loss, toilet_wt = masked_binary_cross_entropy_loss(
         preds.toilet_invalid, outcomes.toilet_invalid, mask.squeeze(-1), config.toilet_weight
     )

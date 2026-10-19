@@ -80,6 +80,15 @@ class VariableMixture(StrictBaseModel):
     mixture: Annotated[list[VariableMixtureComponent], Field(min_length=1)]
 
 
+class ReturnDistanceMixtureComponent(VariableMixtureComponent):
+    value: VariableFloatValue | None
+
+
+class ReturnDistanceMixture(VariableMixture):
+    mixture: Annotated[list[ReturnDistanceMixtureComponent], Field(min_length=1)]
+
+
+type ReturnDistanceLimit = VariableFloatValue | ReturnDistanceMixture | None
 type VariableFloat = VariableFloatValue | VariableMixture
 type AreaVariableFloats = Annotated[list[VariableFloat], Field(min_length=6, max_length=6)]
 type TierProbabilities = Annotated[list[float], Field(min_length=3, max_length=3)]
@@ -122,6 +131,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_save_distance",
     "reward_refill_distance",
     "reward_missing_connect_utility",
+    "max_return_distance",
     "reward_area_distinct_crossing",
     "reward_area_crossing",
     "reward_area_size_valid",
@@ -247,6 +257,7 @@ class GenerationConfig(StrictBaseModel):
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
+    max_return_distance: ReturnDistanceLimit
     reward_area_distinct_crossing: VariableFloat
     reward_area_crossing: VariableFloat
     reward_area_size_valid: VariableFloat
@@ -438,7 +449,7 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
             field_path = f"{path}.{field_name}"
             if field_info.annotation is ScheduleableFloat:
                 updates[field_name] = instantiate_float(value, field_path)
-            elif field_info.annotation is VariableFloat:
+            elif field_info.annotation in (VariableFloat, ReturnDistanceLimit):
                 updates[field_name] = instantiate_variable_float(value, field_path)
             elif field_name in AREA_TARGET_FIELDS:
                 updates[field_name] = [
@@ -497,7 +508,11 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
             raise ValueError(f"{path} must be greater than zero for a log schedule")
         return float(value)
 
-    def instantiate_variable_float(value: VariableFloat, path: str) -> VariableFloat:
+    def instantiate_variable_float(
+        value: VariableFloat | ReturnDistanceLimit, path: str
+    ) -> VariableFloat | ReturnDistanceLimit:
+        if value is None:
+            return None
         if isinstance(value, VariableMixture):
             return value.model_copy(
                 update={
@@ -560,12 +575,36 @@ def instantiate_scheduleable_config(config: Config, num_episodes: int) -> Config
     return instantiate_model(config, "config")
 
 
+def validate_return_distance_limit(value: ReturnDistanceLimit, path: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, ReturnDistanceMixture):
+        validate_variable_mixture_weights(value, path)
+        for index, component in enumerate(value.mixture):
+            validate_return_distance_limit(component.value, f"{path}.mixture[{index}].value")
+        return
+    if isinstance(value, VariableSchedule):
+        _, values = variable_schedule_kind_and_value(value, path)
+        endpoints = [values.min, values.max] if isinstance(values, VariableRange) else [values]
+    else:
+        endpoints = [value]
+    for endpoint in endpoints:
+        for limit in endpoint if isinstance(endpoint, list) else [endpoint]:
+            if not math.isfinite(limit) or not 0.0 < limit <= 254.0:
+                raise ValueError(f"{path} must be finite, greater than zero, and at most 254")
+
+
 def validate_config(config: Config) -> None:
     def validate_feature_width(name: str, value: int) -> None:
         if value < 0:
             raise ValueError(f"features.{name} must be greater than or equal to zero")
 
     validate_variable_probability(config.train.reorder_probability, "train.reorder_probability")
+    validate_return_distance_limit(
+        config.generation.max_return_distance, "generation.max_return_distance"
+    )
+    if config.generation.max_return_distance is not None and not config.features.generation_variable_floats:
+        raise ValueError("max_return_distance requires features.generation_variable_floats")
     if not config.knot_episodes:
         raise ValueError("knot_episodes must contain at least one episode count")
     if config.knot_episodes[-1] <= 0:

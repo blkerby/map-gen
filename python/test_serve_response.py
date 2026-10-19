@@ -57,6 +57,7 @@ def response_fixture() -> tuple[SimpleNamespace, GenerationRunResult]:
     step_outcomes = SimpleNamespace(
         door_invalid=torch.tensor([[1], [0], [0]]),
         connection_invalid=torch.zeros([3, 1]),
+        return_distance_invalid=torch.zeros([3, 1]),
         toilet_invalid=torch.zeros([3]),
         phantoon_pair_invalid=torch.zeros([3]),
         phantoon_area_invalid=torch.zeros([3]),

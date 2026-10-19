@@ -894,6 +894,7 @@ def prepare_feature_batches(
         torch.device("cpu")
     )
     env.clear()
+    env.set_max_return_distances(generation_variable_floats)
     feature_batches = []
     feature_mismatches = []
     feature_compared_tensors = 0
@@ -954,6 +955,9 @@ def prepare_feature_batches(
                         door_invalid=next_lookahead_outcomes.door_invalid.unsqueeze(1),
                         connection_invalid=(
                             next_lookahead_outcomes.connection_invalid.unsqueeze(1)
+                        ),
+                        return_distance_invalid=(
+                            next_lookahead_outcomes.return_distance_invalid.unsqueeze(1)
                         ),
                         toilet_invalid=next_lookahead_outcomes.toilet_invalid.unsqueeze(1),
                         phantoon_pair_invalid=(
@@ -1285,6 +1289,7 @@ def train_feature_batch_backward(
     repeated_outcomes = StepOutcomes(
         door_invalid=step_outcomes.door_invalid.unsqueeze(1),
         connection_invalid=step_outcomes.connection_invalid.unsqueeze(1),
+        return_distance_invalid=step_outcomes.return_distance_invalid.unsqueeze(1),
         toilet_invalid=step_outcomes.toilet_invalid.unsqueeze(1),
         phantoon_pair_invalid=step_outcomes.phantoon_pair_invalid.unsqueeze(1),
         phantoon_area_invalid=step_outcomes.phantoon_area_invalid.unsqueeze(1),
@@ -1430,6 +1435,12 @@ def train_feature_batch_backward(
         area_size_target == 1,
         area_map_station_target == 1,
     ) == 0
+    return_distance_active = generation_variable_floats[
+        :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
+    ] > 0
+    repeated_outcomes.return_distance_invalid = torch.where(
+        return_distance_active[:, None, None], repeated_outcomes.return_distance_invalid, -1
+    )
     area_balance_dual_mask = generation_area_balance_targets(
         context.train_batch_envs[0].engine.rooms,
         generation_variable_floats,

@@ -34,6 +34,7 @@ class Predictions:
     door_invalid: torch.Tensor
     # log-odds of invalid connection (lack of return path):
     connection_invalid: torch.Tensor
+    return_distance_invalid: torch.Tensor
     # log-odds of invalid Toilet crossing count:
     toilet_invalid: torch.Tensor
     # log-odds of invalid Phantoon same-room connection:
@@ -129,6 +130,7 @@ def get_predictions(raw_preds, output_sizes):
         success=preds[9].squeeze(-1),
         door_invalid=preds[0],
         connection_invalid=preds[1],
+        return_distance_invalid=torch.empty_like(preds[1]),
         toilet_invalid=preds[2].squeeze(-1),
         phantoon_pair_invalid=preds[3].squeeze(-1),
         phantoon_area_invalid=preds[4].squeeze(-1),
@@ -826,6 +828,10 @@ class FrontierModel(torch.nn.Module):
             embedding_width,
             output_metadata.num_connection_variants,
         )
+        self.return_distance_output = Float32Linear(
+            embedding_width,
+            output_metadata.num_connection_variants,
+        )
         self.missing_connect_query_output = (
             MissingConnectQueryHead(
                 embedding_width,
@@ -887,6 +893,7 @@ class FrontierModel(torch.nn.Module):
             self.frontier_door_invalid_output,
             self.frontier_balance_score_output,
             self.connection_output,
+            self.return_distance_output,
             self.toilet_output,
             self.phantoon_pair_output,
             self.phantoon_area_output,
@@ -1136,6 +1143,9 @@ class FrontierModel(torch.nn.Module):
             "door",
         )
         connection_invalid = preds.connection_invalid
+        return_distance_invalid = self.return_distance_output(X)[
+            ..., self.connection_variant_outcome_idx
+        ]
         if self.missing_connect_query_output is not None:
             (
                 query_connection_invalid,
@@ -1165,6 +1175,11 @@ class FrontierModel(torch.nn.Module):
             connection_invalid,
             features.global_features.lookahead_connection_invalid,
             "connection",
+        )
+        return_distance_invalid = apply_known_invalid_logits(
+            return_distance_invalid,
+            features.global_features.lookahead_return_distance_invalid,
+            "return distance",
         )
         balance_score = apply_frontier_door_output_logits(
             preds.balance_score,
@@ -1232,6 +1247,7 @@ class FrontierModel(torch.nn.Module):
             success=preds.success,
             door_invalid=door_invalid,
             connection_invalid=connection_invalid,
+            return_distance_invalid=return_distance_invalid,
             toilet_invalid=preds.toilet_invalid,
             phantoon_pair_invalid=preds.phantoon_pair_invalid,
             phantoon_area_invalid=preds.phantoon_area_invalid,

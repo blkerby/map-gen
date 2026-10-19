@@ -68,7 +68,7 @@ def test_prunes_room_columns_and_keeps_source_index() -> None:
         room_idx=[0, 1, 2],
         area=[0, 1, 2],
         door_matches=chain_door_matches(left_matches=[0, 1], right_matches=[0, 1]),
-        config=SmallMapConfig(min_rooms=2, max_rooms=2, target_rooms=2),
+        config=SmallMapConfig(min_rooms=2, max_rooms=2, target_rooms=2, max_return_distance=None),
     )
     assert result.source_map_idx == [0]
     assert result.room_idx == [[0, 1]]
@@ -91,7 +91,7 @@ def test_non_kind_zero_crossing_discards_map() -> None:
         room_idx=[0, 1, 2],
         area=[0, 1, 2],
         door_matches=chain_door_matches(left_matches=[0, 1], right_matches=[0, 1]),
-        config=SmallMapConfig(min_rooms=2, max_rooms=2, target_rooms=2),
+        config=SmallMapConfig(min_rooms=2, max_rooms=2, target_rooms=2, max_return_distance=None),
     )
     assert result.room_idx == []
 
@@ -108,7 +108,7 @@ def test_selects_room_count_closest_to_target() -> None:
         room_idx=[0, 1, 2, 3],
         area=[0, 1, 2, 3],
         door_matches=chain_door_matches(left_matches=[0, 1, 2], right_matches=[0, 1, 2]),
-        config=SmallMapConfig(min_rooms=2, max_rooms=4, target_rooms=3),
+        config=SmallMapConfig(min_rooms=2, max_rooms=4, target_rooms=3, max_return_distance=None),
     )
     assert result.room_idx == [[0, 1, 2]]
 
@@ -126,7 +126,7 @@ def test_required_special_rooms_must_be_included() -> None:
         room_idx=[0, 1, 2, 3],
         area=[0, 1, 2, 3],
         door_matches=chain_door_matches(left_matches=[0, 1, 2], right_matches=[0, 1, 2]),
-        config=SmallMapConfig(min_rooms=2, max_rooms=4, target_rooms=3),
+        config=SmallMapConfig(min_rooms=2, max_rooms=4, target_rooms=3, max_return_distance=None),
     )
     assert result.room_idx == [[1, 2, 3]]
 
@@ -142,7 +142,7 @@ def test_room_part_graph_uses_directed_connections() -> None:
         room_idx=[0, 1, 2],
         area=[0, 1, 2],
         door_matches=chain_door_matches(left_matches=[0, 1], right_matches=[0, 1]),
-        config=SmallMapConfig(min_rooms=3, max_rooms=3, target_rooms=3),
+        config=SmallMapConfig(min_rooms=3, max_rooms=3, target_rooms=3, max_return_distance=None),
     )
     assert one_way_result.room_idx == []
 
@@ -152,7 +152,7 @@ def test_room_part_graph_uses_directed_connections() -> None:
         room_idx=[0, 1, 2],
         area=[0, 1, 2],
         door_matches=chain_door_matches(left_matches=[0, 1], right_matches=[0, 1]),
-        config=SmallMapConfig(min_rooms=3, max_rooms=3, target_rooms=3),
+        config=SmallMapConfig(min_rooms=3, max_rooms=3, target_rooms=3, max_return_distance=None),
     )
     assert two_way_result.room_idx == [[0, 1, 2]]
 

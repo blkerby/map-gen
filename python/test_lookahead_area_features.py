@@ -17,6 +17,7 @@ def test_lookahead_area_buckets_use_unknown_zero_and_known_one_hot() -> None:
         global_features=SimpleNamespace(
             lookahead_door_match=torch.empty([1, 0], dtype=torch.int16),
             lookahead_connection_invalid=torch.empty([1, 0], dtype=torch.int8),
+            lookahead_return_distance_invalid=torch.empty([1, 0], dtype=torch.int8),
             lookahead_toilet_invalid=torch.tensor([-1], dtype=torch.int8),
             lookahead_phantoon_pair_invalid=torch.tensor([-1], dtype=torch.int8),
             lookahead_phantoon_area_invalid=torch.tensor([-1], dtype=torch.int8),

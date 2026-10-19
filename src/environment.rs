@@ -228,6 +228,13 @@ fn introduces_invalid_outcome(before: &StepOutcomes, after: &StepOutcomes) -> bo
             .any(|(&before, &after)| {
                 before == DoorValidOutcome::Unknown && after == DoorValidOutcome::Invalid
             })
+        || before
+            .return_distance_valid
+            .iter()
+            .zip(&after.return_distance_valid)
+            .any(|(&before, &after)| {
+                before == DoorValidOutcome::Unknown && after == DoorValidOutcome::Invalid
+            })
         || (before.toilet_valid == DoorValidOutcome::Unknown
             && after.toilet_valid == DoorValidOutcome::Invalid)
         || (before.phantoon_pair_valid == DoorValidOutcome::Unknown
@@ -340,6 +347,7 @@ pub struct StepOutcomes {
     pub door_valid: Vec<DoorValidOutcome>,
     // For each connection, whether its destination can reach its source.
     pub connections_valid: Vec<DoorValidOutcome>,
+    pub return_distance_valid: Vec<DoorValidOutcome>,
     // Whether the Toilet crosses exactly one room.
     pub toilet_valid: DoorValidOutcome,
     // Whether Phantoon's Room and Wrecked Ship Map Room connect to the same room.
@@ -1228,6 +1236,7 @@ pub struct Environment {
     active_save_room_parts: Vec<RoomPartIdx>,
     active_refill_room_parts: Vec<RoomPartIdx>,
     graph_distance: Vec<GraphDistance>,
+    max_return_distance: Option<f32>,
     room_part_furthest_distance_cache: RoomPartFurthestDistanceCache,
     room_part_save_distance_cache: RoomPartSaveDistanceCache,
     room_part_refill_distance_cache: RoomPartSaveDistanceCache,
@@ -1907,10 +1916,16 @@ impl Environment {
             intersection_query_actions: Vec::new(),
             intersection_query_seen: vec![0; common.room.len()],
             intersection_query_generation: 0,
+            max_return_distance: None,
             known_outcomes: None,
             frontier_count_sum: 0,
             frontier_count_steps: 0,
         }
+    }
+
+    pub fn set_max_return_distance(&mut self, limit: Option<f32>) {
+        self.max_return_distance = limit;
+        self.known_outcomes = None;
     }
 
     pub fn clear(&mut self, common: &CommonData) {
@@ -4267,6 +4282,28 @@ impl Environment {
                 connections_valid.push(before);
             }
         }
+        let mut return_distance_valid =
+            Vec::with_capacity(pre_candidate_outcomes.return_distance_valid.len());
+        for connection_idx in 0..common.room_connection.len() {
+            let before = pre_candidate_outcomes.return_distance_valid[connection_idx];
+            if before == DoorValidOutcome::Unknown {
+                let after = self.return_distance_outcome(
+                    common,
+                    connection_idx,
+                    frontier_reachability.as_ref(),
+                );
+                if after == DoorValidOutcome::Invalid {
+                    profile_end(ProfileMetric::EnvProposalConnectionOutcomes, profile);
+                    let profile = profile_start();
+                    self.restore_lookahead_candidate(common, snapshot);
+                    profile_end(ProfileMetric::EnvProposalRestore, profile);
+                    return Ok(CandidateOutcome::Rejected);
+                }
+                return_distance_valid.push(after);
+            } else {
+                return_distance_valid.push(before);
+            }
+        }
         profile_end(ProfileMetric::EnvProposalConnectionOutcomes, profile);
 
         let toilet_valid = if pre_candidate_outcomes.toilet_valid == DoorValidOutcome::Unknown {
@@ -4355,6 +4392,7 @@ impl Environment {
         let step_outcomes = StepOutcomes {
             door_valid: door_valid.clone(),
             connections_valid: connections_valid.clone(),
+            return_distance_valid: return_distance_valid.clone(),
             toilet_valid,
             phantoon_pair_valid,
             phantoon_area_valid,
@@ -6085,6 +6123,14 @@ impl Environment {
                 frontier_reachability.as_ref(),
             ));
         }
+        let mut return_distance_valid = Vec::with_capacity(common.room_connection.len());
+        for connection_idx in 0..common.room_connection.len() {
+            return_distance_valid.push(self.return_distance_outcome(
+                common,
+                connection_idx,
+                frontier_reachability.as_ref(),
+            ));
+        }
 
         let has_usable_area_frontier = self.usable_area_frontiers(common);
         let (area_size_bucket, area_map_station_count_bucket) =
@@ -6093,6 +6139,7 @@ impl Environment {
         StepOutcomes {
             door_valid,
             connections_valid,
+            return_distance_valid,
             toilet_valid: self.toilet_outcome(common),
             phantoon_pair_valid: self.phantoon_pair_outcome(common),
             phantoon_area_valid: self.phantoon_area_outcome(common, &has_usable_area_frontier),
@@ -6387,6 +6434,53 @@ impl Environment {
         }
     }
 
+    fn return_distance_outcome(
+        &self,
+        common: &CommonData,
+        connection_idx: usize,
+        frontier_reachability: Option<&(SccDag, Vec<usize>)>,
+    ) -> DoorValidOutcome {
+        let Some(limit) = self.max_return_distance else {
+            return DoorValidOutcome::Valid;
+        };
+        let connection = &common.room_connection[connection_idx];
+        if !self.room_used[connection.room_idx as usize] {
+            return if self.finished {
+                DoorValidOutcome::Invalid
+            } else {
+                DoorValidOutcome::Unknown
+            };
+        }
+        let source =
+            Self::room_part_idx(common, connection.room_idx, connection.from_part) as usize;
+        let target = Self::room_part_idx(common, connection.room_idx, connection.to_part) as usize;
+        let current = self.graph_distance[source * common.room_part.len() + target];
+        if current != UNREACHABLE_DISTANCE && f32::from(current) <= limit {
+            return DoorValidOutcome::Valid;
+        }
+        if self.finished
+            || self.connection_outcome(common, connection_idx, frontier_reachability)
+                == DoorValidOutcome::Invalid
+        {
+            return DoorValidOutcome::Invalid;
+        }
+        let from_frontier = self
+            .room_part_frontier_distance_cache
+            .nearest_frontier_destination[source];
+        let to_frontier = self
+            .room_part_frontier_distance_cache
+            .nearest_frontier_source[target];
+        // Every new route must leave and re-enter the placed graph through two doors.
+        if from_frontier == UNREACHABLE_DISTANCE
+            || to_frontier == UNREACHABLE_DISTANCE
+            || f32::from(from_frontier) + f32::from(to_frontier) + 2.0 > limit
+        {
+            DoorValidOutcome::Invalid
+        } else {
+            DoorValidOutcome::Unknown
+        }
+    }
+
     fn connection_outcome(
         &self,
         common: &CommonData,
@@ -6449,6 +6543,12 @@ impl Environment {
                 &known_outcomes.connections_valid,
                 &outcomes.connections_valid,
                 "connection",
+                stage,
+            )?;
+            check_outcome_transition_consistency(
+                &known_outcomes.return_distance_valid,
+                &outcomes.return_distance_valid,
+                "return distance",
                 stage,
             )?;
             check_outcome_transition_consistency(
@@ -6533,6 +6633,10 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
         connections_valid: merge_known_outcome_values(
             &known.connections_valid,
             &current.connections_valid,
+        ),
+        return_distance_valid: merge_known_outcome_values(
+            &known.return_distance_valid,
+            &current.return_distance_valid,
         ),
         toilet_valid: merge_known_outcome_value(known.toilet_valid, current.toilet_valid),
         phantoon_pair_valid: merge_known_outcome_value(
@@ -9033,6 +9137,7 @@ mod tests {
                 area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Unknown],
                 connections_valid: vec![Valid],
+                return_distance_valid: vec![Valid],
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
@@ -9047,6 +9152,7 @@ mod tests {
                 area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
+                return_distance_valid: vec![Valid],
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
@@ -9063,6 +9169,7 @@ mod tests {
                 area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Invalid],
                 connections_valid: vec![Unknown],
+                return_distance_valid: vec![Unknown],
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,
@@ -9077,6 +9184,7 @@ mod tests {
                 area_connections: [false; AREA_PAIR_COUNT],
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
+                return_distance_valid: vec![Valid],
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,

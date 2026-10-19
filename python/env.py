@@ -332,6 +332,7 @@ class StepOutcomes:
     door_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (connection has return path), 1 = invalid (connection does not have return path)
     connection_invalid: torch.Tensor
+    return_distance_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (the Toilet crosses exactly one room), 1 = invalid
     toilet_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (Phantoon rooms connect to the same room), 1 = invalid
@@ -358,6 +359,7 @@ class StepOutcomes:
         return StepOutcomes(
             door_invalid=self.door_invalid.to(device, non_blocking=non_blocking),
             connection_invalid=self.connection_invalid.to(device, non_blocking=non_blocking),
+            return_distance_invalid=self.return_distance_invalid.to(device, non_blocking=non_blocking),
             toilet_invalid=self.toilet_invalid.to(device, non_blocking=non_blocking),
             phantoon_pair_invalid=self.phantoon_pair_invalid.to(device, non_blocking=non_blocking),
             phantoon_area_invalid=self.phantoon_area_invalid.to(device, non_blocking=non_blocking),
@@ -376,6 +378,7 @@ class StepOutcomes:
         return StepOutcomes(
             door_invalid=self.door_invalid[start:end],
             connection_invalid=self.connection_invalid[start:end],
+            return_distance_invalid=self.return_distance_invalid[start:end],
             toilet_invalid=self.toilet_invalid[start:end],
             phantoon_pair_invalid=self.phantoon_pair_invalid[start:end],
             phantoon_area_invalid=self.phantoon_area_invalid[start:end],
@@ -399,6 +402,7 @@ def count_invalid_outcomes(
     return (
         (outcomes.door_invalid != 0).sum(dim=-1)
         + (outcomes.connection_invalid != 0).sum(dim=-1)
+        + (outcomes.return_distance_invalid != 0).sum(dim=-1)
         + (outcomes.toilet_invalid != 0).to(torch.int64)
         + (outcomes.phantoon_pair_invalid != 0).to(torch.int64)
         + (outcomes.phantoon_area_invalid != 0).to(torch.int64)
@@ -607,6 +611,7 @@ class CandidateSlot:
         self.scored_invalid_proposal_action_idx = None
         self.pre_door_invalid = None
         self.pre_connection_invalid = None
+        self.pre_return_distance_invalid = None
         self.pre_toilet_invalid = None
         self.pre_phantoon_pair_invalid = None
         self.pre_phantoon_area_invalid = None
@@ -618,6 +623,7 @@ class CandidateSlot:
         self.pre_norfair_heat = None
         self.door_invalid = None
         self.connection_invalid = None
+        self.return_distance_invalid = None
         self.toilet_invalid = None
         self.phantoon_pair_invalid = None
         self.phantoon_area_invalid = None
@@ -675,6 +681,10 @@ class CandidateSlot:
             (self.environment_capacity, self.connection_count),
             torch.int8,
         )
+        self.pre_return_distance_invalid = self._empty(
+            (self.environment_capacity, self.connection_count),
+            torch.int8,
+        )
         self.pre_toilet_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_phantoon_pair_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_phantoon_area_invalid = self._empty((self.environment_capacity,), torch.int8)
@@ -701,6 +711,10 @@ class CandidateSlot:
             torch.int8,
         )
         self.connection_invalid = self._empty(
+            (*candidate_shape, self.connection_count),
+            torch.int8,
+        )
+        self.return_distance_invalid = self._empty(
             (*candidate_shape, self.connection_count),
             torch.int8,
         )
@@ -749,6 +763,7 @@ class CandidateSlot:
         return StepOutcomes(
             door_invalid=self.pre_door_invalid[:environment_count],
             connection_invalid=self.pre_connection_invalid[:environment_count],
+            return_distance_invalid=self.pre_return_distance_invalid[:environment_count],
             toilet_invalid=self.pre_toilet_invalid[:environment_count],
             phantoon_pair_invalid=self.pre_phantoon_pair_invalid[:environment_count],
             phantoon_area_invalid=self.pre_phantoon_area_invalid[:environment_count],
@@ -771,6 +786,7 @@ class CandidateSlot:
         return StepOutcomes(
             door_invalid=self.door_invalid[:environment_count, :candidate_count],
             connection_invalid=self.connection_invalid[:environment_count, :candidate_count],
+            return_distance_invalid=self.return_distance_invalid[:environment_count, :candidate_count],
             toilet_invalid=self.toilet_invalid[:environment_count, :candidate_count],
             phantoon_pair_invalid=self.phantoon_pair_invalid[:environment_count, :candidate_count],
             phantoon_area_invalid=self.phantoon_area_invalid[:environment_count, :candidate_count],
@@ -863,6 +879,7 @@ class GlobalFeatures:
     lookahead_door_invalid: torch.Tensor
     lookahead_door_match: torch.Tensor
     lookahead_connection_invalid: torch.Tensor
+    lookahead_return_distance_invalid: torch.Tensor
     lookahead_toilet_invalid: torch.Tensor
     lookahead_phantoon_pair_invalid: torch.Tensor
     lookahead_phantoon_area_invalid: torch.Tensor
@@ -943,6 +960,9 @@ class GlobalFeatures:
             lookahead_connection_invalid=self.lookahead_connection_invalid.to(
                 device, non_blocking=non_blocking
             ),
+            lookahead_return_distance_invalid=self.lookahead_return_distance_invalid.to(
+                device, non_blocking=non_blocking
+            ),
             lookahead_toilet_invalid=self.lookahead_toilet_invalid.to(
                 device, non_blocking=non_blocking
             ),
@@ -1015,6 +1035,7 @@ class GlobalFeatures:
             lookahead_door_invalid=self.lookahead_door_invalid.flatten(0, 1),
             lookahead_door_match=self.lookahead_door_match.flatten(0, 1),
             lookahead_connection_invalid=self.lookahead_connection_invalid.flatten(0, 1),
+            lookahead_return_distance_invalid=self.lookahead_return_distance_invalid.flatten(0, 1),
             lookahead_toilet_invalid=self.lookahead_toilet_invalid.flatten(0, 1),
             lookahead_phantoon_pair_invalid=self.lookahead_phantoon_pair_invalid.flatten(0, 1),
             lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.flatten(0, 1),
@@ -1525,6 +1546,12 @@ class EnvironmentGroup:
     def clear(self):
         self.env.clear()
 
+    def set_max_return_distances(self, generation_variable_floats: torch.Tensor) -> None:
+        limits = generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
+        ].to(device="cpu", dtype=torch.float32).contiguous()
+        self.env.set_max_return_distances(limits.numpy())
+
     def step(self, actions: Actions):
         self.env.step(
             actions.room_idx.contiguous().cpu().numpy(),
@@ -1642,6 +1669,9 @@ class EnvironmentGroup:
                     "pre_connections_valid": candidate_slot.pre_connection_invalid[
                         : self.num_envs
                     ].numpy(),
+                    "pre_return_distance_valid": candidate_slot.pre_return_distance_invalid[
+                        : self.num_envs
+                    ].numpy(),
                     "pre_toilet_valid": candidate_slot.pre_toilet_invalid[: self.num_envs].numpy(),
                     "pre_phantoon_pair_valid": candidate_slot.pre_phantoon_pair_invalid[
                         : self.num_envs
@@ -1667,6 +1697,9 @@ class EnvironmentGroup:
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "connections_valid": candidate_slot.connection_invalid[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "return_distance_valid": candidate_slot.return_distance_invalid[
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "toilet_valid": candidate_slot.toilet_invalid[
@@ -1770,6 +1803,9 @@ class EnvironmentGroup:
             step_outcomes=StepOutcomes(
                 door_invalid=torch.from_numpy(result.step_outcomes.door_valid).to(device),
                 connection_invalid=torch.from_numpy(result.step_outcomes.connections_valid).to(
+                    device
+                ),
+                return_distance_invalid=torch.from_numpy(result.step_outcomes.return_distance_valid).to(
                     device
                 ),
                 toilet_invalid=torch.from_numpy(result.step_outcomes.toilet_valid).to(device),
@@ -1890,6 +1926,7 @@ class EnvironmentGroup:
         return StepOutcomes(
             door_invalid=torch.from_numpy(result.door_valid).to(device),
             connection_invalid=torch.from_numpy(result.connections_valid).to(device),
+            return_distance_invalid=torch.from_numpy(result.return_distance_valid).to(device),
             toilet_invalid=torch.from_numpy(result.toilet_valid).to(device),
             phantoon_pair_invalid=torch.from_numpy(result.phantoon_pair_valid).to(device),
             phantoon_area_invalid=torch.from_numpy(result.phantoon_area_valid).to(device),
@@ -2461,6 +2498,7 @@ class FeatureSlot:
         lookahead_door_invalid = lookahead_outcomes.door_invalid
         lookahead_door_match = lookahead_outcomes.door_match
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid
+        lookahead_return_distance_invalid = lookahead_outcomes.return_distance_invalid
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
@@ -2485,6 +2523,12 @@ class FeatureSlot:
             lookahead_connection_invalid = lookahead_connection_invalid.new_empty(
                 [
                     *lookahead_connection_invalid.shape[:-1],
+                    0,
+                ]
+            )
+            lookahead_return_distance_invalid = lookahead_return_distance_invalid.new_empty(
+                [
+                    *lookahead_return_distance_invalid.shape[:-1],
                     0,
                 ]
             )
@@ -2576,6 +2620,7 @@ class FeatureSlot:
                 lookahead_door_invalid=lookahead_door_invalid,
                 lookahead_door_match=lookahead_door_match,
                 lookahead_connection_invalid=lookahead_connection_invalid,
+                lookahead_return_distance_invalid=lookahead_return_distance_invalid,
                 lookahead_toilet_invalid=lookahead_toilet_invalid,
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
@@ -2691,6 +2736,7 @@ class FeatureSlot:
         lookahead_door_invalid = lookahead_outcomes.door_invalid
         lookahead_door_match = lookahead_outcomes.door_match
         lookahead_connection_invalid = lookahead_outcomes.connection_invalid
+        lookahead_return_distance_invalid = lookahead_outcomes.return_distance_invalid
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
@@ -2707,6 +2753,9 @@ class FeatureSlot:
                 [environment_count, candidate_count, 0]
             )
             lookahead_connection_invalid = lookahead_connection_invalid.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_return_distance_invalid = lookahead_return_distance_invalid.new_empty(
                 [environment_count, candidate_count, 0]
             )
             lookahead_toilet_invalid = lookahead_toilet_invalid.new_empty(
@@ -2818,6 +2867,7 @@ class FeatureSlot:
                 lookahead_door_invalid=lookahead_door_invalid,
                 lookahead_door_match=lookahead_door_match,
                 lookahead_connection_invalid=lookahead_connection_invalid,
+                lookahead_return_distance_invalid=lookahead_return_distance_invalid,
                 lookahead_toilet_invalid=lookahead_toilet_invalid,
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,

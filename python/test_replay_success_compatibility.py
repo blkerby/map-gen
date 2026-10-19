@@ -22,7 +22,9 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         self.directory = Path(directory.name)
         self.column = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_area_distinct_crossing")
         self.variables = torch.arange(len(GENERATION_VARIABLE_FLOAT_FIELDS)).float().unsqueeze(0)
+        self.limit_column = GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
         self.variables[:, self.column] = 0
+        self.variables[:, self.limit_column] = 0
         self.tensors = {
             "room_idx": torch.zeros((1, 2), dtype=torch.uint8),
             "room_x": torch.zeros((1, 2), dtype=torch.uint8),
@@ -43,10 +45,11 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         )
         return path
 
-    def test_v3_v4_and_v5_files_preserve_all_other_columns(self) -> None:
-        old_variables = torch.cat(
-            (self.variables[:, :self.column], self.variables[:, self.column + 1:]), dim=1
-        )
+    def test_v3_v4_and_v6_files_preserve_all_other_columns(self) -> None:
+        old_variables = self.variables[:, [
+            index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
+            if index not in (self.column, self.limit_column)
+        ]]
         legacy_path = self.write_experience(0, old_variables, PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT)
         original_bytes = legacy_path.read_bytes()
         current_variables = self.variables.clone()
@@ -57,7 +60,7 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         v3_variables[:, success_column] = 0
         v3_columns = [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.column, success_column)
+            if index not in (self.column, success_column, self.limit_column)
         ]
         v3_path = self.write_experience(2, v3_variables[:, v3_columns], PRE_SUCCESS_EXPERIENCE_FORMAT)
         v3_original_bytes = v3_path.read_bytes()
@@ -71,10 +74,10 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
 
     def test_wrong_schema_width_and_unsupported_versions_are_rejected(self) -> None:
         for version, width in (
-            (PRE_SUCCESS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 1),
-            (PRE_SUCCESS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 3),
+            (PRE_SUCCESS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 2),
+            (PRE_SUCCESS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 4),
             (PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS)),
-            (PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 2),
+            (PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 3),
             (EXPERIENCE_FORMAT, len(GENERATION_VARIABLE_FLOAT_FIELDS) - 1),
             ("map-gen-experience-v2", len(GENERATION_VARIABLE_FLOAT_FIELDS) - 1),
         ):
