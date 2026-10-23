@@ -50,21 +50,8 @@ def candidate_step_balance_score(
 
 def proposal_step_prices(
     prices: torch.Tensor,
-    room_placed: torch.Tensor,
-    room_connection_variant_idx: torch.Tensor,
-    num_room_connection_variants: int,
-    door_variant_connection_variant_idx: torch.Tensor,
+    door_room_idx: torch.Tensor,
     step: int,
 ) -> torch.Tensor:
-    """Mean immediate cost of unused concrete rooms for each proposed door variant.
-
-The proposal does not choose a concrete room. Resolution samples an available
-representative; candidate evaluation then uses that room's exact price.
-"""
-    available = (~room_placed.bool()).to(prices.dtype)
-    indices = room_connection_variant_idx.unsqueeze(0).expand_as(available)
-    shape = (prices.shape[0], num_room_connection_variants)
-    sums = prices.new_zeros(shape).scatter_add_(1, indices, prices[:, :, step] * available)
-    counts = prices.new_zeros(shape).scatter_add_(1, indices, available)
-    means = sums / counts.clamp_min(1)
-    return means[:, door_variant_connection_variant_idx]
+    """Immediate placement cost for the concrete room selected by each door."""
+    return prices[:, door_room_idx, step]

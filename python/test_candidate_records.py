@@ -155,8 +155,6 @@ class CandidateRecordsTest(unittest.TestCase):
             ),
             balance_score_tables=SimpleNamespace(area_order=torch.zeros(1, 6, 6), room_step=torch.full((1, 1, 1), 1.5)),
             step=0,
-            room_connection_variant_idx=torch.zeros(1, dtype=torch.int64),
-            num_room_connection_variants=1,
             config=SimpleNamespace(
                 temperature=torch.ones(1),
                 proposal_temperature=torch.tensor([2.0]),
@@ -169,7 +167,7 @@ class CandidateRecordsTest(unittest.TestCase):
             profiler=self.profiler,
             gpu_lock=Lock(),
             door_variant_compatibility=torch.ones(1, 1, dtype=torch.bool),
-            door_variant_connection_variant_idx=torch.zeros(1, dtype=torch.int64),
+            door_room_idx=torch.zeros(1, dtype=torch.int64),
         )
         model = Mock()
         model.proposal_output.output_dtype = torch.float32

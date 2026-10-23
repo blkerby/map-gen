@@ -9,11 +9,11 @@ use std::collections::BinaryHeap;
 use std::time::{Duration, Instant};
 
 use crate::common::{
-    AREA_COUNT, AREA_PAIR_COUNT, Action, ActionIdx, AreaIdx, CommonData, ConnectionVariantIdx,
-    Coord, DUMMY_AREA, DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome,
-    DoorVariantIdx, FrontierIdx, GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx,
-    ProposalActionIdx, RoomIdx, RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT,
-    get_behind_door_position, proposal_action_parts,
+    AREA_COUNT, AREA_PAIR_COUNT, Action, ActionIdx, AreaIdx, CommonData, Coord, DUMMY_AREA,
+    DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
+    GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
+    RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT, get_behind_door_position,
+    proposal_action_parts,
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
 use crate::scc_dag::SccDag;
@@ -81,16 +81,6 @@ impl StepMode {
             StepMode::Lookahead => true,
             #[cfg(test)]
             StepMode::FeatureOnly => false,
-        }
-    }
-
-    fn updates_connection_variant_inventory(self) -> bool {
-        match self {
-            StepMode::CommitFull => true,
-            StepMode::CommitKnown => true,
-            StepMode::Lookahead => true,
-            #[cfg(test)]
-            StepMode::FeatureOnly => true,
         }
     }
 
@@ -1229,9 +1219,8 @@ pub struct Environment {
     area_connections: [bool; AREA_PAIR_COUNT],
     area_size: [usize; AREA_COUNT],
     geometry_unused_count: Vec<usize>, // number of unused room representatives for each geometry
-    connection_variant_unused_count: Vec<usize>, // number of unused room representatives for each connection variant
-    room_part_component: Vec<usize>,             // maps placed room door groups to SCC components
-    scc_dag: SccDag, // DAG of strongly connected components (condensation graph)
+    room_part_component: Vec<usize>,   // maps placed room door groups to SCC components
+    scc_dag: SccDag,                   // DAG of strongly connected components (condensation graph)
     active_room_parts: Vec<RoomPartIdx>,
     active_save_room_parts: Vec<RoomPartIdx>,
     active_refill_room_parts: Vec<RoomPartIdx>,
@@ -1270,8 +1259,6 @@ struct FeatureSnapshot {
     area_size: usize,
     area_crossings: usize,
     area_connections: [bool; AREA_PAIR_COUNT],
-    connection_variant_idx: Option<ConnectionVariantIdx>,
-    connection_variant_unused_count: usize,
     room_part_component: Vec<usize>,
     scc_dag: SccDag,
     active_room_parts_len: usize,
@@ -1302,8 +1289,6 @@ struct LookaheadSnapshot {
     area_connections: [bool; AREA_PAIR_COUNT],
     geometry_idx: Option<GeometryIdx>,
     geometry_unused_count: usize,
-    connection_variant_idx: Option<ConnectionVariantIdx>,
-    connection_variant_unused_count: usize,
     door_matches: Vec<(usize, usize, DirDoorIdx)>,
     room_part_component: Vec<usize>,
     scc_dag: SccDag,
@@ -1889,11 +1874,6 @@ impl Environment {
                 .iter()
                 .map(|rooms| rooms.len())
                 .collect(),
-            connection_variant_unused_count: common
-                .connection_variant_rooms
-                .iter()
-                .map(|rooms| rooms.len())
-                .collect(),
             room_part_component: vec![NO_COMPONENT; common.room_part.len()],
             scc_dag: SccDag::default(),
             active_room_parts: Vec::new(),
@@ -1953,13 +1933,6 @@ impl Environment {
         self.geometry_unused_count.clear();
         self.geometry_unused_count
             .extend(common.geometry_rooms.iter().map(|rooms| rooms.len()));
-        self.connection_variant_unused_count.clear();
-        self.connection_variant_unused_count.extend(
-            common
-                .connection_variant_rooms
-                .iter()
-                .map(|rooms| rooms.len()),
-        );
         self.room_part_component.fill(NO_COMPONENT);
         self.scc_dag.clear();
         self.active_room_parts.clear();
@@ -2360,20 +2333,13 @@ impl Environment {
         &self,
         common: &CommonData,
         sorted_frontier_locations: &[DoorLocation],
-        connection_variant_idx: ConnectionVariantIdx,
+        room_idx: RoomIdx,
         x: Coord,
         y: Coord,
         area: AreaIdx,
     ) -> bool {
-        let Some(&representative_room_idx) = common
-            .connection_variant_rooms
-            .get(connection_variant_idx as usize)
-            .and_then(|rooms| rooms.first())
-        else {
-            return false;
-        };
         let mut area_matches = !self.area_used[area as usize];
-        for door in &common.room[representative_room_idx as usize].doors {
+        for door in &common.room[room_idx as usize].doors {
             let location = DoorLocation::new(door, x, y);
             if sorted_frontier_locations.binary_search(&location).is_err() {
                 continue;
@@ -2412,59 +2378,47 @@ impl Environment {
         if door_variant_direction != frontier.direction.opposite() {
             return None;
         }
-        let mut matching_count = 0usize;
-        let mut selected = None;
+        let room_idx = common.door_output[door_variant_idx].room_idx;
+        if self.room_used[room_idx as usize] {
+            return None;
+        }
+        let geometry_idx = common.room[room_idx as usize].geometry_idx;
         for &candidate in &frontier.candidates {
-            for &connection_variant_idx in
-                common.geometry_connection_variants[candidate.geometry_idx as usize].iter()
+            if candidate.geometry_idx != geometry_idx {
+                continue;
+            }
+            if common.door_variant_idx(
+                room_idx,
+                candidate.door_direction,
+                candidate.door_x,
+                candidate.door_y,
+                candidate.door_kind,
+            ) as usize
+                != door_variant_idx
             {
-                if self.connection_variant_unused_count[connection_variant_idx as usize] == 0 {
-                    continue;
-                }
-                if common.door_variant_idx(
-                    connection_variant_idx,
-                    candidate.door_direction,
-                    candidate.door_x,
-                    candidate.door_y,
-                    candidate.door_kind,
-                ) as usize
-                    != door_variant_idx
-                {
-                    continue;
-                }
-                if !self.proposal_placement_area_valid(
-                    common,
-                    sorted_frontier_locations,
-                    connection_variant_idx,
-                    candidate.x,
-                    candidate.y,
-                    area,
-                ) {
-                    continue;
-                }
-                for &room_idx in
-                    common.connection_variant_rooms[connection_variant_idx as usize].iter()
-                {
-                    if self.room_used[room_idx as usize] {
-                        continue;
-                    }
-                    let action = Action {
-                        room_idx,
-                        x: candidate.x,
-                        y: candidate.y,
-                        area,
-                    };
-                    if !self.candidate_area_valid(common, action) {
-                        continue;
-                    }
-                    matching_count += 1;
-                    if self.rng.random_range(0..matching_count) == 0 {
-                        selected = Some(action);
-                    }
-                }
+                continue;
+            }
+            if !self.proposal_placement_area_valid(
+                common,
+                sorted_frontier_locations,
+                room_idx,
+                candidate.x,
+                candidate.y,
+                area,
+            ) {
+                continue;
+            }
+            let action = Action {
+                room_idx,
+                x: candidate.x,
+                y: candidate.y,
+                area,
+            };
+            if self.candidate_area_valid(common, action) {
+                return Some(action);
             }
         }
-        selected
+        None
     }
 
     fn proposal_cell_key(
@@ -2485,10 +2439,10 @@ impl Environment {
         };
         let room = &common.room[counterpart as usize];
         // CommonData requires exactly one door for each Phantoon map/boss room,
-        // and their special types give them distinct connection variants.
+        // and each concrete door has its own proposal index.
         let door = &room.doors[0];
         Some(common.door_variant_idx(
-            room.connection_variant_idx,
+            counterpart,
             door.direction,
             door.x,
             door.y,
@@ -3127,7 +3081,6 @@ impl Environment {
             crate::common::AREA_COUNT
         );
         let action_geometry_idx = room.geometry_idx;
-        let connection_variant_idx = room.connection_variant_idx;
         assert!(!self.room_used[action.room_idx as usize]);
         if let Some(action_idx) = indexed_action_idx {
             self.placed_room_index.insert_action(
@@ -3144,9 +3097,6 @@ impl Environment {
         self.apply_area_state(common, action);
         if mode.updates_geometry_inventory() {
             self.geometry_unused_count[action_geometry_idx as usize] -= 1;
-        }
-        if mode.updates_connection_variant_inventory() {
-            self.connection_variant_unused_count[connection_variant_idx as usize] -= 1;
         }
         profile_end(ProfileMetric::EnvStepMarkRoomUsed, profile);
 
@@ -3265,7 +3215,7 @@ impl Environment {
                 let door_kind =
                     common.room_dir_door[door.direction as usize][door.dir_door_idx as usize].kind;
                 let door_variant_idx = common.door_variant_idx(
-                    common.room[action.room_idx as usize].connection_variant_idx,
+                    action.room_idx,
                     door.direction,
                     door.x,
                     door.y,
@@ -4547,8 +4497,6 @@ impl Environment {
             (candidate.room_idx < common.room.len() as RoomIdx).then_some(candidate.room_idx);
         let area_idx = room_idx.map(|_| candidate.area as usize);
         let geometry_idx = room_idx.map(|room_idx| common.room[room_idx as usize].geometry_idx);
-        let connection_variant_idx =
-            room_idx.map(|room_idx| common.room[room_idx as usize].connection_variant_idx);
         let mut door_matches = Vec::new();
         let graph_distance_snapshot = self.graph_distance_snapshot_for_candidate(common, candidate);
         if !self.finished {
@@ -4594,9 +4542,6 @@ impl Environment {
             geometry_idx,
             geometry_unused_count: geometry_idx
                 .map_or(0, |idx| self.geometry_unused_count[idx as usize]),
-            connection_variant_idx,
-            connection_variant_unused_count: connection_variant_idx
-                .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
             door_matches,
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
@@ -4637,10 +4582,6 @@ impl Environment {
         self.area_connections = snapshot.area_connections;
         if let Some(geometry_idx) = snapshot.geometry_idx {
             self.geometry_unused_count[geometry_idx as usize] = snapshot.geometry_unused_count;
-        }
-        if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
-            self.connection_variant_unused_count[connection_variant_idx as usize] =
-                snapshot.connection_variant_unused_count;
         }
         for (dir, idx, value) in snapshot.door_matches {
             self.door_matches[dir][idx] = value;
@@ -4688,8 +4629,6 @@ impl Environment {
         let room_idx =
             (candidate.room_idx < common.room.len() as RoomIdx).then_some(candidate.room_idx);
         let area_idx = room_idx.map(|_| candidate.area as usize);
-        let connection_variant_idx =
-            room_idx.map(|room_idx| common.room[room_idx as usize].connection_variant_idx);
         let snapshot = FeatureSnapshot {
             finished: self.finished,
             frontier,
@@ -4708,9 +4647,6 @@ impl Environment {
             area_size: area_idx.map_or(0, |area| self.area_size[area]),
             area_crossings: self.area_crossings,
             area_connections: self.area_connections,
-            connection_variant_idx,
-            connection_variant_unused_count: connection_variant_idx
-                .map_or(0, |idx| self.connection_variant_unused_count[idx as usize]),
             room_part_component: self.room_part_component.clone(),
             scc_dag: self.scc_dag.clone(),
             active_room_parts_len: self.active_room_parts.len(),
@@ -4749,10 +4685,6 @@ impl Environment {
         }
         self.area_crossings = snapshot.area_crossings;
         self.area_connections = snapshot.area_connections;
-        if let Some(connection_variant_idx) = snapshot.connection_variant_idx {
-            self.connection_variant_unused_count[connection_variant_idx as usize] =
-                snapshot.connection_variant_unused_count;
-        }
         self.room_part_component = snapshot.room_part_component;
         self.scc_dag = snapshot.scc_dag;
         self.active_room_parts
@@ -5272,11 +5204,7 @@ impl Environment {
         );
         let mut inventory = std::mem::take(&mut output.inventory);
         if config.inventory {
-            inventory.extend(
-                self.connection_variant_unused_count
-                    .iter()
-                    .map(|&count| count as u8),
-            );
+            inventory.extend(self.room_used.iter().map(|used| u8::from(!*used)));
         }
         let mut room_area = std::mem::take(&mut output.room_area);
         if config.room_area {
@@ -6045,10 +5973,6 @@ impl Environment {
 
     pub fn occupancy(&self) -> &[u8] {
         &self.occupancy
-    }
-
-    pub fn connection_variant_unused_count(&self) -> &[usize] {
-        &self.connection_variant_unused_count
     }
 
     pub fn room_area(&self) -> &[AreaIdx] {
@@ -6898,7 +6822,7 @@ mod tests {
         area: AreaIdx,
     ) -> Option<ProposalActionIdx> {
         let sorted_frontier_locations = env.sorted_frontier_locations();
-        (0..common.num_door_output_variants as DoorVariantIdx)
+        (0..common.door_output.len() as DoorVariantIdx)
             .map(|door_variant_idx| proposal_action_idx(door_variant_idx, area))
             .find(|&proposal_action_idx| {
                 env.action_for_proposal_candidate(
@@ -6988,13 +6912,7 @@ mod tests {
                 candidates: vec![second_candidate],
             },
         );
-        let door_variant_idx = common.door_variant_idx(
-            common.room[1].connection_variant_idx,
-            Direction::Left,
-            0,
-            0,
-            0,
-        );
+        let door_variant_idx = common.door_variant_idx(1, Direction::Left, 0, 0, 0);
         (common, env, door_variant_idx)
     }
 
@@ -8342,13 +8260,7 @@ mod tests {
                 env.frontier_area(&common, frontier.room_part_idx) == 1
             })
             .unwrap() as FrontierIdx;
-        let second_door_variant_idx = common.door_variant_idx(
-            common.room[2].connection_variant_idx,
-            Direction::Right,
-            0,
-            0,
-            0,
-        );
+        let second_door_variant_idx = common.door_variant_idx(2, Direction::Right, 0, 0, 0);
         let mut scratch = FeatureScratch::default();
         let result = env
             .get_proposal_candidates_with_outcomes(
@@ -8627,13 +8539,7 @@ mod tests {
                     .iter()
                     .position(|location| env.frontier[location].direction == Direction::Down)
                     .unwrap() as FrontierIdx;
-                let ordinary_variant = common.door_variant_idx(
-                    common.room[6].connection_variant_idx,
-                    Direction::Up,
-                    0,
-                    0,
-                    0,
-                );
+                let ordinary_variant = common.door_variant_idx(6, Direction::Up, 0, 0, 0);
                 let rejected_counterpart = proposal_action_idx(counterpart_variant, 1);
                 let clean_counterpart = proposal_action_idx(counterpart_variant, 0);
                 let result = env
@@ -11243,7 +11149,6 @@ mod tests {
         let expected_room_x = env.room_x.clone();
         let expected_room_y = env.room_y.clone();
         let expected_room_area = env.room_area.clone();
-        let expected_connection_variant_unused_count = env.connection_variant_unused_count.clone();
         let expected_room_part_component = env.room_part_component.clone();
         let expected_scc_dag = env.scc_dag.clone();
         let expected_active_room_parts = env.active_room_parts.clone();
@@ -11268,10 +11173,6 @@ mod tests {
         assert_eq!(env.room_x, expected_room_x);
         assert_eq!(env.room_y, expected_room_y);
         assert_eq!(env.room_area, expected_room_area);
-        assert_eq!(
-            env.connection_variant_unused_count,
-            expected_connection_variant_unused_count
-        );
         assert_eq!(env.room_part_component, expected_room_part_component);
         assert_eq!(env.scc_dag, expected_scc_dag);
         assert_eq!(env.active_room_parts, expected_active_room_parts);
@@ -11350,13 +11251,7 @@ mod tests {
             .iter()
             .position(|output| output.room_idx == 0)
             .unwrap() as i16;
-        let placed_door_variant_idx = common.door_variant_idx(
-            common.room[0].connection_variant_idx,
-            Direction::Right,
-            0,
-            0,
-            0,
-        );
+        let placed_door_variant_idx = common.door_variant_idx(0, Direction::Right, 0, 0, 0);
         assert_eq!(features.row_door_output_idx, vec![placed_door_output_idx]);
         assert_eq!(
             features.frontier_door_variant,

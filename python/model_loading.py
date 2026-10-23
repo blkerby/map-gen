@@ -7,7 +7,7 @@ from model import BalanceModel, FrontierModel
 from train_config import Config
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v19"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v20"
 INFERENCE_BACKBONE_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 
 
@@ -103,20 +103,12 @@ def balance_model_kwargs(
         right_count=count_room_doors_by_direction(rooms, "right"),
         up_count=count_room_doors_by_direction(rooms, "up"),
         down_count=count_room_doors_by_direction(rooms, "down"),
-        door_output_variant_idx=torch.tensor(
-            [variant_idx for _, variant_idx in output_metadata.door],
-            dtype=torch.int64,
-        ),
         door_room_idx=torch.tensor(
-            [room_idx for room_idx, _ in output_metadata.door],
+            output_metadata.door,
             dtype=torch.int64,
         ),
         door_variant_compatibility=output_metadata.door_variant_compatibility,
-        room_connection_variant_idx=torch.tensor(
-            output_metadata.room_connection_variant_idx,
-            dtype=torch.int64,
-        ),
-        num_room_connection_variants=output_metadata.num_room_connection_variants,
+        num_rooms=len(rooms),
         toilet_compatibility=toilet_compatibility,
         hidden_width=config.balance_model.hidden_width,
         num_layers=config.balance_model.num_layers,

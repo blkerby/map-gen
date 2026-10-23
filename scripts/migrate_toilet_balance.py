@@ -55,7 +55,7 @@ class CaptureHeadInput:
 def append_failure_output(tensors, balance_model):
     """Append an affine copy of the feasible-success mean, giving centered f=0."""
     layer_name = f"net.{len(balance_model.door_net) - 1}"
-    area_width = balance_model.num_room_connection_variants * AREA_COUNT
+    area_width = balance_model.num_rooms * AREA_COUNT
     old_width = (
         balance_model.door_net[-1].out_features + balance_model.num_rooms + area_width
     )

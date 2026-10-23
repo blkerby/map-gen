@@ -8,9 +8,8 @@ pub type AreaIdx = u8; // semantic area id assigned to a placed room
 pub type ActionIdx = u8; // index into an environment's placed action history
 pub type SpatialCellIdx = u8; // index into an environment's coarse spatial grid
 pub type GeometryIdx = u8; // flat index of unique room geometries (map + door layout)
-pub type ConnectionVariantIdx = u8; // flat index of unique room types (map + door layout + connections + room effects)
 pub type FrontierIdx = i16; // index into the sorted frontier feature rows
-pub type DoorVariantIdx = i16; // index into door variants keyed by room type and local door identity
+pub type DoorVariantIdx = i16; // flat door index across all concrete rooms
 pub type ProposalActionIdx = i16; // flattened proposal action: door variant * area count + area
 pub type Coord = i8; // x or y position on the map
 pub type PartIdx = u8; // index of part within a room
@@ -209,12 +208,10 @@ pub struct RoomConnectionData {
 
 pub struct OutputData {
     pub room_idx: RoomIdx,
-    pub variant_outcome_idx: usize,
 }
 
 pub struct RoomData {
     pub geometry_idx: GeometryIdx,
-    pub connection_variant_idx: ConnectionVariantIdx,
     pub map_station: bool,
     pub heat: i32,
     pub water: i32,
@@ -239,18 +236,6 @@ struct GeometryKey {
     toilet_crossing_x: Vec<Coord>,
     is_toilet: bool,
     doors: Vec<GeometryDoorData>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ConnectionsKey {
-    special_type: Option<SpecialType>,
-    save: bool,
-    refill: bool,
-    map_station: bool,
-    heat: i32,
-    water: i32,
-    connections: Vec<(PartIdx, PartIdx)>,
-    missing_connections: Vec<(PartIdx, PartIdx)>,
 }
 
 pub struct GeometryData {
@@ -285,8 +270,6 @@ pub struct CommonData {
     phantoon_map_door: Option<(Direction, DirDoorIdx)>,
     pub geometry: Vec<GeometryData>,
     pub geometry_rooms: Vec<Vec<RoomIdx>>,
-    pub geometry_connection_variants: Vec<Vec<ConnectionVariantIdx>>,
-    pub connection_variant_rooms: Vec<Vec<RoomIdx>>,
     // set of pairs of geometry placements that would cause an intersection
     intersection_idx: Vec<u32>, // maps a pair of geometry ids to the index of their intersection bits in the intersection_bitvec
     intersection_bitvec: BitVec,
@@ -300,12 +283,9 @@ pub struct CommonData {
     pub room_connection: Vec<RoomConnectionData>,
     pub door_output: Vec<OutputData>,
     pub connection_output: Vec<OutputData>,
-    pub num_door_output_variants: usize,
-    pub num_connection_output_variants: usize,
     pub door_variant_direction: Vec<Direction>,
     pub door_variant_compatibility: Vec<bool>,
-    door_variant_idx_by_key:
-        HashMap<(ConnectionVariantIdx, Direction, Coord, Coord, DoorKind), DoorVariantIdx>,
+    door_variant_idx_by_key: HashMap<(RoomIdx, Direction, Coord, Coord, DoorKind), DoorVariantIdx>,
 }
 
 impl GeometryKey {
@@ -331,25 +311,6 @@ impl GeometryKey {
             toilet_crossing_x,
             is_toilet,
             doors,
-        }
-    }
-}
-
-impl ConnectionsKey {
-    fn from_room(room: &Room) -> Self {
-        let mut connections = room.connections.clone();
-        connections.sort_unstable();
-        let mut missing_connections = room.missing_connections.clone();
-        missing_connections.sort_unstable();
-        Self {
-            special_type: room.special_type,
-            save: room.save,
-            refill: room.refill,
-            map_station: room.map_station,
-            heat: room.heat,
-            water: room.water,
-            connections,
-            missing_connections,
         }
     }
 }
@@ -583,15 +544,12 @@ impl CommonData {
         let mut room_data = vec![];
         let mut geometry_data = vec![];
         let mut geometry_rooms = vec![];
-        let mut geometry_connection_variants = vec![];
-        let mut connection_variant_rooms = vec![];
         let mut door_group_count = 0;
         let mut room_part = vec![];
         let mut save_room_part = vec![];
         let mut refill_room_part = vec![];
         let mut room_connection = vec![];
         let mut geometry_by_key = HashMap::new();
-        let mut connection_variant_by_key = HashMap::new();
         let mut vanilla_area_room_idx = [None; VANILLA_AREA_CONSTRAINT_COUNT];
         let mut toilet_room_idx = None;
         let mut phantoon_boss_room_idx = None;
@@ -782,33 +740,11 @@ impl CommonData {
                 }
                 geometry_data.push(geometry);
                 geometry_rooms.push(vec![]);
-                geometry_connection_variants.push(vec![]);
                 geometry_by_key.insert(geometry_key, geometry_idx);
                 geometry_idx
             };
 
-            let connections_key = ConnectionsKey::from_room(room);
-            let connection_variant_idx = if let Some(&connection_variant_idx) =
-                connection_variant_by_key.get(&(geometry_idx, connections_key.clone()))
-            {
-                connection_variant_idx
-            } else {
-                if connection_variant_rooms.len() > ConnectionVariantIdx::MAX as usize {
-                    bail!(
-                        "room set has too many connection variants, exceeding the maximum {}",
-                        ConnectionVariantIdx::MAX as usize + 1
-                    );
-                }
-                let connection_variant_idx = connection_variant_rooms.len() as ConnectionVariantIdx;
-                connection_variant_rooms.push(vec![]);
-                geometry_connection_variants[geometry_idx as usize].push(connection_variant_idx);
-                connection_variant_by_key
-                    .insert((geometry_idx, connections_key), connection_variant_idx);
-                connection_variant_idx
-            };
-
             geometry_rooms[geometry_idx as usize].push(room_idx as RoomIdx);
-            connection_variant_rooms[connection_variant_idx as usize].push(room_idx as RoomIdx);
             for part_idx in 0..room.doors.len() {
                 let room_part_idx = room_part.len() as RoomPartIdx;
                 room_part.push((room_idx as RoomIdx, part_idx as PartIdx));
@@ -828,7 +764,6 @@ impl CommonData {
             }
             room_data.push(RoomData {
                 geometry_idx,
-                connection_variant_idx,
                 map_station: room.map_station,
                 heat: room.heat,
                 water: room.water,
@@ -853,62 +788,31 @@ impl CommonData {
             .collect();
 
         let mut door_output = vec![];
-        let mut door_output_variant_by_key = HashMap::new();
+        let mut door_variant_idx_by_key = HashMap::new();
+        let mut door_variant_direction = vec![];
         for door in room_dir_door.iter().flatten() {
-            let connection_variant_idx = room_data[door.room_idx as usize].connection_variant_idx;
-            let next_variant_idx = door_output_variant_by_key.len();
-            let variant_outcome_idx = *door_output_variant_by_key
-                .entry((
-                    connection_variant_idx,
-                    door.direction,
-                    door.x,
-                    door.y,
-                    door.kind,
-                ))
-                .or_insert(next_variant_idx);
+            let idx = door_output.len();
+            door_variant_idx_by_key.insert(
+                (door.room_idx, door.direction, door.x, door.y, door.kind),
+                idx as DoorVariantIdx,
+            );
+            door_variant_direction.push(door.direction);
             door_output.push(OutputData {
                 room_idx: door.room_idx,
-                variant_outcome_idx,
             });
         }
-        if door_output_variant_by_key.len() > DoorVariantIdx::MAX as usize {
+        if door_output.len() > DoorVariantIdx::MAX as usize {
             bail!(
-                "room set has too many door output variants, exceeding the maximum {}",
+                "room set has too many doors, exceeding the maximum {}",
                 DoorVariantIdx::MAX
             );
         }
-        let door_variant_idx_by_key = door_output_variant_by_key
+        let connection_output = room_connection
             .iter()
-            .map(|(&key, &idx)| (key, idx as DoorVariantIdx))
-            .collect();
-        let mut door_variant_direction = door_output_variant_by_key
-            .iter()
-            .map(|(&(_, direction, _, _, _), &idx)| (idx, direction))
-            .collect::<Vec<_>>();
-        door_variant_direction.sort_unstable_by_key(|&(idx, _)| idx);
-        let door_variant_direction = door_variant_direction
-            .into_iter()
-            .map(|(_, direction)| direction)
-            .collect();
-
-        let mut connection_output = vec![];
-        let mut connection_output_variant_by_key = HashMap::new();
-        for connection in &room_connection {
-            let connection_variant_idx =
-                room_data[connection.room_idx as usize].connection_variant_idx;
-            let next_variant_idx = connection_output_variant_by_key.len();
-            let variant_outcome_idx = *connection_output_variant_by_key
-                .entry((
-                    connection_variant_idx,
-                    connection.from_part,
-                    connection.to_part,
-                ))
-                .or_insert(next_variant_idx);
-            connection_output.push(OutputData {
+            .map(|connection| OutputData {
                 room_idx: connection.room_idx,
-                variant_outcome_idx,
-            });
-        }
+            })
+            .collect();
 
         let mut common = Self {
             room: room_data,
@@ -923,8 +827,6 @@ impl CommonData {
             phantoon_map_door,
             geometry: geometry_data,
             geometry_rooms,
-            geometry_connection_variants,
-            connection_variant_rooms,
             intersection_idx: vec![],
             intersection_bitvec: BitVec::new(),
             geometry_dir_door,
@@ -935,8 +837,6 @@ impl CommonData {
             room_connection,
             door_output,
             connection_output,
-            num_door_output_variants: door_output_variant_by_key.len(),
-            num_connection_output_variants: connection_output_variant_by_key.len(),
             door_variant_direction,
             door_variant_compatibility: vec![],
             door_variant_idx_by_key,
@@ -948,7 +848,7 @@ impl CommonData {
 
     pub fn door_variant_idx(
         &self,
-        connection_variant_idx: ConnectionVariantIdx,
+        room_idx: RoomIdx,
         direction: Direction,
         x: Coord,
         y: Coord,
@@ -956,32 +856,24 @@ impl CommonData {
     ) -> DoorVariantIdx {
         *self
             .door_variant_idx_by_key
-            .get(&(connection_variant_idx, direction, x, y, kind))
+            .get(&(room_idx, direction, x, y, kind))
             .expect("candidate door must have a door output variant")
     }
 
     fn build_door_variant_compatibility(&mut self) {
-        let variant_count = self.num_door_output_variants;
+        let variant_count = self.door_output.len();
         self.door_variant_compatibility = vec![false; variant_count * variant_count];
         for (
-            &(
-                frontier_connection_variant,
-                frontier_direction,
-                frontier_x,
-                frontier_y,
-                frontier_kind,
-            ),
+            &(frontier_room_idx, frontier_direction, frontier_x, frontier_y, frontier_kind),
             &frontier_variant,
         ) in &self.door_variant_idx_by_key
         {
-            let frontier_room_idx =
-                self.connection_variant_rooms[frontier_connection_variant as usize][0];
             let frontier_geometry_idx = self.room[frontier_room_idx as usize].geometry_idx;
             let (behind_x, behind_y) =
                 get_behind_door_position(frontier_direction, frontier_x, frontier_y);
             for (
                 &(
-                    candidate_connection_variant,
+                    candidate_room_idx,
                     candidate_direction,
                     candidate_x,
                     candidate_y,
@@ -995,8 +887,6 @@ impl CommonData {
                 {
                     continue;
                 }
-                let candidate_room_idx =
-                    self.connection_variant_rooms[candidate_connection_variant as usize][0];
                 let candidate_geometry_idx = self.room[candidate_room_idx as usize].geometry_idx;
                 if !self.has_geometry_intersection(
                     frontier_geometry_idx,
@@ -1175,7 +1065,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn room_heat_and_water_are_optional_connection_variant_metadata() {
+    fn room_heat_and_water_metadata() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1191,14 +1081,6 @@ mod tests {
         assert_eq!((common.room[0].heat, common.room[0].water), (0, 0));
         assert_eq!((common.room[1].heat, common.room[1].water), (2, 0));
         assert_eq!((common.room[2].heat, common.room[2].water), (0, 3));
-        assert_ne!(
-            common.room[0].connection_variant_idx,
-            common.room[1].connection_variant_idx
-        );
-        assert_ne!(
-            common.room[0].connection_variant_idx,
-            common.room[2].connection_variant_idx
-        );
     }
 
     #[test]
@@ -1219,7 +1101,7 @@ mod tests {
             let room = &common.room[room_idx];
             let door = &common.geometry[room.geometry_idx as usize].doors[0];
             common.door_variant_idx(
-                room.connection_variant_idx,
+                room_idx as RoomIdx,
                 door.direction,
                 door.x,
                 door.y,
@@ -1230,7 +1112,7 @@ mod tests {
         let compatible_variant = variant(1);
         let same_direction_variant = variant(2);
         let wrong_kind_variant = variant(3);
-        let width = common.num_door_output_variants;
+        let width = common.door_output.len();
 
         assert!(common.door_variant_compatibility[frontier_variant * width + compatible_variant]);
         assert!(
@@ -1240,7 +1122,7 @@ mod tests {
     }
 
     #[test]
-    fn output_metadata_shares_only_matching_connection_variants() {
+    fn output_metadata_keeps_concrete_rooms_with_shared_geometry() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1305,40 +1187,11 @@ mod tests {
         let door_output: Vec<_> = common
             .door_output
             .iter()
-            .map(|output| (output.room_idx, output.variant_outcome_idx))
+            .map(|output| output.room_idx)
             .collect();
-        assert_eq!(
-            door_output,
-            vec![
-                (0, 0),
-                (1, 0),
-                (2, 1),
-                (3, 2),
-                (4, 3),
-                (0, 4),
-                (1, 4),
-                (2, 5),
-                (3, 6),
-                (4, 7)
-            ]
-        );
-        assert_eq!(common.num_door_output_variants, 8);
-
-        let connection_output: Vec<_> = common
-            .connection_output
-            .iter()
-            .map(|output| (output.room_idx, output.variant_outcome_idx))
-            .collect();
-        assert!(connection_output.is_empty());
-        assert_eq!(common.num_connection_output_variants, 0);
-
-        let room_connection_variant_idx: Vec<_> = common
-            .room
-            .iter()
-            .map(|room| room.connection_variant_idx)
-            .collect();
-        assert_eq!(room_connection_variant_idx, vec![0, 0, 1, 2, 3]);
-        assert_eq!(common.connection_variant_rooms.len(), 4);
+        assert_eq!(door_output, vec![0, 1, 2, 3, 4, 0, 1, 2, 3, 4]);
+        assert_eq!(common.geometry.len(), 1);
+        assert!(common.connection_output.is_empty());
     }
 
     #[test]
@@ -1356,7 +1209,7 @@ mod tests {
     }
 
     #[test]
-    fn special_types_create_connection_variants() {
+    fn special_types_share_geometry() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1389,13 +1242,8 @@ mod tests {
         .unwrap();
 
         let common = CommonData::new(rooms).unwrap();
-        let room_connection_variant_idx: Vec<_> = common
-            .room
-            .iter()
-            .map(|room| room.connection_variant_idx)
-            .collect();
-        assert_eq!(room_connection_variant_idx, vec![0, 1, 2]);
-        assert_eq!(common.connection_variant_rooms.len(), 3);
+        assert_eq!(common.geometry.len(), 1);
+        assert_eq!(common.room.len(), 3);
     }
 
     #[test]
@@ -1549,7 +1397,7 @@ mod tests {
     }
 
     #[test]
-    fn phantoon_special_type_distinguishes_connection_variants() {
+    fn phantoon_special_types_share_geometry() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1593,14 +1441,13 @@ mod tests {
         let common = CommonData::new(rooms).unwrap();
 
         assert_eq!(common.geometry.len(), 1);
-        assert_eq!(common.connection_variant_rooms.len(), 4);
         assert_eq!(common.phantoon_boss_room_idx(), Some(0));
         assert_eq!(common.phantoon_map_room_idx(), Some(1));
         assert_eq!(common.phantoon_save_room_idx(), Some(2));
     }
 
     #[test]
-    fn map_station_distinguishes_connection_variants() {
+    fn map_station_metadata_with_shared_geometry() {
         let rooms: Vec<Room> = serde_json::from_str(
             r#"
             [
@@ -1626,11 +1473,8 @@ mod tests {
         let common = CommonData::new(rooms).unwrap();
 
         assert_eq!(common.geometry.len(), 1);
-        assert_eq!(common.connection_variant_rooms.len(), 2);
-        assert_ne!(
-            common.room[0].connection_variant_idx,
-            common.room[1].connection_variant_idx
-        );
+        assert!(common.room[0].map_station);
+        assert!(!common.room[1].map_station);
     }
 
     #[test]

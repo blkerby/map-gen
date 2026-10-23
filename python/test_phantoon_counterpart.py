@@ -44,9 +44,9 @@ def test_counterpart_option_reaches_each_environment_worker() -> None:
             room_area=torch.tensor([0, 0], dtype=torch.uint8),
         ))
     metadata = engine.get_output_metadata()
-    ordinary_variants = [variant for room, variant in metadata.door if room == 6]
+    ordinary_variants = [door_idx for door_idx, room in enumerate(metadata.door) if room == 6]
     counterpart_variants = [
-        next(variant for room, variant in metadata.door if room == counterpart)
+        next(door_idx for door_idx, room in enumerate(metadata.door) if room == counterpart)
         for counterpart in [4, 3]
     ]
     # Ordinary corridor proposals precede every counterpart proposal. Each state

@@ -496,14 +496,6 @@ def compute_loss_breakdown(
     )
 
 
-def materialize_direction_balance_logits(
-    logits: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
-) -> torch.Tensor:
-    return logits[:, source_door_variant_idx, :][:, :, target_door_variant_idx]
-
-
 @dataclass
 class BalanceObjectiveTerms:
     observed_price: torch.Tensor
@@ -647,16 +639,10 @@ def compute_balance_loss(
 
 def direction_balance_price_table(
     prices: torch.Tensor,
-    source_door_variant_idx: torch.Tensor,
-    target_door_variant_idx: torch.Tensor,
     compatibility: torch.Tensor,
     probability: torch.Tensor,
 ) -> torch.Tensor:
-    concrete_prices = materialize_direction_balance_logits(
-        prices,
-        source_door_variant_idx,
-        target_door_variant_idx,
-    ).to(torch.float32)
+    concrete_prices = prices.to(torch.float32)
     means = torch.sum(
         concrete_prices * probability.unsqueeze(0),
         dim=-1,
@@ -690,36 +676,28 @@ def compute_balance_price_tables(
     direction_inputs = (
         (
             preds.left,
-            preds.left_door_variant_idx,
-            preds.right_door_variant_idx,
             preds.left_compatibility,
             preds.left_probability,
         ),
         (
             preds.right,
-            preds.right_door_variant_idx,
-            preds.left_door_variant_idx,
             preds.right_compatibility,
             preds.right_probability,
         ),
         (
             preds.up,
-            preds.up_door_variant_idx,
-            preds.down_door_variant_idx,
             preds.up_compatibility,
             preds.up_probability,
         ),
         (
             preds.down,
-            preds.down_door_variant_idx,
-            preds.up_door_variant_idx,
             preds.down_compatibility,
             preds.down_probability,
         ),
     )
     left, right, up, down = (
-        direction_balance_price_table(prices, source_idx, target_idx, compatibility, probability)
-        for prices, source_idx, target_idx, compatibility, probability in direction_inputs
+        direction_balance_price_table(prices, compatibility, probability)
+        for prices, compatibility, probability in direction_inputs
     )
     toilet_mask = preds.toilet_compatibility.unsqueeze(0)
     toilet_count = toilet_mask.sum(dim=-1).clamp_min(1)
@@ -805,75 +783,25 @@ def compute_step_balance_score_targets(
     return torch.cat(values, dim=-1).detach(), door_match >= 0
 
 
-def first_concrete_door_idx_by_variant(
-    door_variant_idx: torch.Tensor,
-    variant_count: int,
-) -> torch.Tensor:
-    concrete_door_idx = torch.arange(
-        door_variant_idx.numel(),
-        dtype=torch.int64,
-        device=door_variant_idx.device,
-    )
-    first_idx = torch.full(
-        [variant_count],
-        door_variant_idx.numel(),
-        dtype=torch.int64,
-        device=door_variant_idx.device,
-    )
-    return first_idx.scatter_reduce(
-        0,
-        door_variant_idx,
-        concrete_door_idx,
-        reduce="amin",
-        include_self=True,
-    )
-
-
 def compute_proposal_balance_score_table(
-    preds: BalancePredictions,
     tables: BalancePriceTables,
-    num_door_variants: int,
+    num_doors: int,
 ) -> torch.Tensor:
-    proposal_score_table = torch.zeros(
-        [tables.left.shape[0], num_door_variants, num_door_variants],
-        dtype=torch.float32,
-        device=tables.left.device,
+    proposal_score_table = tables.left.new_zeros(
+        [tables.left.shape[0], num_doors, num_doors],
     )
-    for (
-        forward,
-        reverse,
-        pairs,
-        source_variants,
-        target_variants,
-        source_global,
-        target_global,
-    ) in (
-        (
-            tables.left,
-            tables.right,
-            preds.horizontal_proposal_door_pairs,
-            preds.left_door_variant_idx,
-            preds.right_door_variant_idx,
-            preds.left_global_door_variant_idx,
-            preds.right_global_door_variant_idx,
-        ),
-        (
-            tables.up,
-            tables.down,
-            preds.vertical_proposal_door_pairs,
-            preds.up_door_variant_idx,
-            preds.down_door_variant_idx,
-            preds.up_global_door_variant_idx,
-            preds.down_global_door_variant_idx,
-        ),
+    left_count, right_count = tables.left.shape[1:]
+    up_count, down_count = tables.up.shape[1:]
+    offsets = (0, left_count, left_count + right_count, left_count + right_count + up_count)
+    for forward, reverse, source, target, source_count, target_count in (
+        (tables.left, tables.right, offsets[0], offsets[1], left_count, right_count),
+        (tables.up, tables.down, offsets[2], offsets[3], up_count, down_count),
     ):
-        source_idx, target_idx = pairs.unbind(0)
-        source_variant = source_global[source_variants[source_idx]]
-        target_variant = target_global[target_variants[target_idx]]
-        # A placement fixes both directed sides of the same compatible door pair.
-        prices = forward[:, source_idx, target_idx] + reverse[:, target_idx, source_idx]
-        proposal_score_table[:, source_variant, target_variant] = prices
-        proposal_score_table[:, target_variant, source_variant] = prices
+        prices = forward + reverse.transpose(1, 2)
+        source_slice = slice(source, source + source_count)
+        target_slice = slice(target, target + target_count)
+        proposal_score_table[:, source_slice, target_slice] = prices
+        proposal_score_table[:, target_slice, source_slice] = prices.transpose(1, 2)
     return proposal_score_table
 
 
@@ -900,17 +828,10 @@ def compute_proposal_area_balance_score_table(
     room_area_score_table: torch.Tensor,
     exempt_room: torch.Tensor,
     door_room_idx: torch.Tensor,
-    door_output_variant_idx: torch.Tensor,
-    num_door_variants: int,
 ) -> torch.Tensor:
-    representative_door_idx = first_concrete_door_idx_by_variant(
-        door_output_variant_idx,
-        num_door_variants,
-    )
-    proposal_room_idx = door_room_idx[representative_door_idx]
-    scores = room_area_score_table[:, proposal_room_idx]
+    scores = room_area_score_table[:, door_room_idx]
     return torch.where(
-        exempt_room[:, proposal_room_idx].unsqueeze(-1),
+        exempt_room[:, door_room_idx].unsqueeze(-1),
         0.0,
         scores,
     ).flatten(1)

@@ -13,11 +13,9 @@ from train import save_named_optimizer_checkpoint_state
 def test_new_controller_failure_price_preserves_success_prices() -> None:
     model = BalanceModel(
         left_count=1, right_count=1, up_count=0, down_count=0,
-        door_output_variant_idx=torch.tensor([0, 1]),
         door_room_idx=torch.tensor([0, 1]),
         door_variant_compatibility=torch.ones((2, 2), dtype=torch.bool),
-        room_connection_variant_idx=torch.tensor([0, 1]),
-        num_room_connection_variants=2,
+        num_rooms=2,
         toilet_compatibility=torch.tensor([True, True]),
         hidden_width=4, num_layers=1,
     )

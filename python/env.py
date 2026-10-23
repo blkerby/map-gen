@@ -1352,15 +1352,10 @@ def select_feature_snapshots(value: Features, indices: torch.Tensor) -> Features
 
 @dataclass
 class OutputMetadata:
-    door: list[tuple[int, int]]
-    connection: list[tuple[int, int]]
-    num_door_variants: int
-    num_connection_variants: int
-    room_connection_variant_idx: list[int]
-    num_room_connection_variants: int
+    door: list[int]
+    connection: list[int]
     num_room_parts: int
     door_variant_compatibility: torch.Tensor
-    door_variant_connection_variant_idx: torch.Tensor
     maridia_water_room_idx: list[int]
     maridia_water_tier: list[int]
     norfair_heat_room_idx: list[int]
@@ -1466,43 +1461,14 @@ class Engine:
         return self.output_metadata
 
     def _load_output_metadata(self) -> OutputMetadata:
-        (
-            door,
-            connection,
-            num_door_variants,
-            num_connection_variants,
-            room_connection_variant_idx,
-            num_room_connection_variants,
-            num_room_parts,
-        ) = self.engine.get_output_metadata()
-        door_variant_connection_variant_idx = torch.full(
-            (num_door_variants,), -1, dtype=torch.int64
-        )
-        for room_idx, door_variant_idx in door:
-            connection_variant_idx = room_connection_variant_idx[room_idx]
-            previous_connection_variant_idx = door_variant_connection_variant_idx[door_variant_idx]
-            if (
-                previous_connection_variant_idx >= 0
-                and previous_connection_variant_idx != connection_variant_idx
-            ):
-                raise ValueError(
-                    f"door variant {door_variant_idx} maps to multiple connection variants"
-                )
-            door_variant_connection_variant_idx[door_variant_idx] = connection_variant_idx
-        if torch.any(door_variant_connection_variant_idx < 0):
-            raise ValueError("every door variant must map to a connection variant")
+        door, connection, num_room_parts = self.engine.get_output_metadata()
         return OutputMetadata(
             door=door,
             connection=connection,
-            num_door_variants=num_door_variants,
-            num_connection_variants=num_connection_variants,
-            room_connection_variant_idx=room_connection_variant_idx,
-            num_room_connection_variants=num_room_connection_variants,
             num_room_parts=num_room_parts,
             door_variant_compatibility=torch.tensor(
                 self.engine.get_door_variant_compatibility(), dtype=torch.bool
             ),
-            door_variant_connection_variant_idx=door_variant_connection_variant_idx,
             maridia_water_room_idx=[
                 i for i, room in enumerate(self.rooms) if room.get("water", 0) > 0
             ],

@@ -101,11 +101,9 @@ def test_disabled_groups_have_no_failure_price_or_gradient() -> None:
 def model_kwargs():
     return dict(
         left_count=2, right_count=2, up_count=0, down_count=0,
-        door_output_variant_idx=torch.tensor([0, 0, 1, 1]),
         door_room_idx=torch.tensor([0, 1, 2, 2]),
-        door_variant_compatibility=torch.ones((2, 2), dtype=torch.bool),
-        room_connection_variant_idx=torch.tensor([0, 0, 1]),
-        num_room_connection_variants=2,
+        door_variant_compatibility=torch.ones((4, 4), dtype=torch.bool),
+        num_rooms=3,
         toilet_compatibility=torch.tensor([True, True, False]),
         hidden_width=8, num_layers=2,
     )
@@ -152,18 +150,18 @@ def test_migration_preserves_prices_hidden_layers_and_moments() -> None:
                     assert value[source.shape[0]:].count_nonzero() == 0
                 else:
                     torch.testing.assert_close(value, optimizer.state[source][key], atol=0, rtol=0)
-    # Failure rows preserve variant sharing and gradients stay in their branch.
+    # Failure price gradients stay in their branch.
     for family, output in (("door", after.door_failure), ("toilet", after.toilet_failure), ("area", after.room_area_failure)):
         new.zero_grad(set_to_none=True)
         output.sum().backward(retain_graph=True)
         for branch in ("door", "toilet", "area"):
             assert all(p.grad is None for p in getattr(new, branch + "_net").parameters()) == (branch != family)
     with torch.no_grad():
-        new.door_net[-1].bias[-2:] = torch.tensor([2.0, 3.0])
-        new.area_net[-1].bias[-2:] = torch.tensor([4.0, 5.0])
+        new.door_net[-1].bias[-4:] = torch.tensor([2., 4., 3., 5.])
+        new.area_net[-1].bias[-3:] = torch.tensor([4., 6., 5.])
     after = new(variables)
-    torch.testing.assert_close(after.door_failure[0], torch.tensor([2.0, 2.0, 3.0, 3.0]))
-    torch.testing.assert_close(after.room_area_failure[0], torch.tensor([4.0, 4.0, 5.0]))
+    torch.testing.assert_close(after.door_failure[0], torch.tensor([2., 4., 3., 5.]))
+    torch.testing.assert_close(after.room_area_failure[0], torch.tensor([4., 6., 5.]))
 
 
 def test_calibration_changes_only_final_cost_layer() -> None:

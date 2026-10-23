@@ -98,14 +98,6 @@ class BalancePredictions:
     # Concrete room by placement step, with an explicit unplaced outcome.
     room_step: torch.Tensor
     room_step_failure: torch.Tensor
-    left_door_variant_idx: torch.Tensor
-    right_door_variant_idx: torch.Tensor
-    up_door_variant_idx: torch.Tensor
-    down_door_variant_idx: torch.Tensor
-    left_global_door_variant_idx: torch.Tensor
-    right_global_door_variant_idx: torch.Tensor
-    up_global_door_variant_idx: torch.Tensor
-    down_global_door_variant_idx: torch.Tensor
     left_compatibility: torch.Tensor
     right_compatibility: torch.Tensor
     up_compatibility: torch.Tensor
@@ -115,8 +107,6 @@ class BalancePredictions:
     right_probability: torch.Tensor
     up_probability: torch.Tensor
     down_probability: torch.Tensor
-    horizontal_proposal_door_pairs: torch.Tensor
-    vertical_proposal_door_pairs: torch.Tensor
 
 
 def get_predictions(raw_preds, output_sizes):
@@ -808,29 +798,16 @@ class FrontierModel(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, embedding_width, bias=False),
         )
-        door_output_metadata = torch.tensor(output_metadata.door, dtype=torch.int64).reshape(
-            door_output_size,
-            2,
-        )
-        self.register_buffer("door_variant_outcome_idx", door_output_metadata[:, 1])
-        self.door_output = Float32Linear(embedding_width, output_metadata.num_door_variants)
+        self.door_output = Float32Linear(embedding_width, door_output_size)
         self.frontier_door_invalid_output = Float32Linear(embedding_width, 1)
         self.frontier_balance_score_output = Float32Linear(embedding_width, 1)
-        connection_output_metadata = torch.tensor(
-            output_metadata.connection,
-            dtype=torch.int64,
-        ).reshape(connection_output_size, 2)
-        self.register_buffer(
-            "connection_variant_outcome_idx",
-            connection_output_metadata[:, 1],
-        )
         self.connection_output = Float32Linear(
             embedding_width,
-            output_metadata.num_connection_variants,
+            connection_output_size,
         )
         self.return_distance_output = Float32Linear(
             embedding_width,
-            output_metadata.num_connection_variants,
+            connection_output_size,
         )
         self.missing_connect_query_output = (
             MissingConnectQueryHead(
@@ -849,7 +826,7 @@ class FrontierModel(torch.nn.Module):
         self.vanilla_area_output = Float32Linear(embedding_width, VANILLA_AREA_CONSTRAINT_COUNT)
         self.balance_score_output = Float32Linear(
             embedding_width,
-            output_metadata.num_door_variants,
+            door_output_size,
         )
         self.area_balance_score_output = Float32Linear(embedding_width, self.num_rooms)
         self.order_balance_score_output = Float32Linear(embedding_width, 1)
@@ -886,7 +863,7 @@ class FrontierModel(torch.nn.Module):
         self.proposal_output = ProposalOutput(
             embedding_width + global_embedding_width,
             proposal_hidden_widths,
-            output_metadata.num_door_variants * AREA_COUNT,
+            door_output_size * AREA_COUNT,
         )
         output_layers = (
             self.door_output,
@@ -1071,16 +1048,13 @@ class FrontierModel(torch.nn.Module):
             pooled_state = self.pooled_mlp(torch.cat(pooled_inputs, dim=-1).to(torch.float32))
         # X: [s, 1, e]
         X = pooled_state.unsqueeze(1)
-        door_variant = self.door_output(X)
-        door = door_variant[..., self.door_variant_outcome_idx]
-        connection_variant = self.connection_output(X)
-        connection = connection_variant[..., self.connection_variant_outcome_idx]
+        door = self.door_output(X)
+        connection = self.connection_output(X)
         toilet = self.toilet_output(X)
         phantoon_pair = self.phantoon_pair_output(X)
         phantoon_area = self.phantoon_area_output(X)
         vanilla_area = self.vanilla_area_output(X)
-        balance_score_variant = self.balance_score_output(X)
-        balance_score = balance_score_variant[..., self.door_variant_outcome_idx]
+        balance_score = self.balance_score_output(X)
         area_balance_score = self.area_balance_score_output(X).to(torch.float32)
         toilet_balance_score = self.toilet_balance_score_output(X)
         avg_frontiers = self.avg_frontiers_output(X).squeeze(-1).to(torch.float32)
@@ -1143,9 +1117,7 @@ class FrontierModel(torch.nn.Module):
             "door",
         )
         connection_invalid = preds.connection_invalid
-        return_distance_invalid = self.return_distance_output(X)[
-            ..., self.connection_variant_outcome_idx
-        ]
+        return_distance_invalid = self.return_distance_output(X)
         if self.missing_connect_query_output is not None:
             (
                 query_connection_invalid,
@@ -1282,34 +1254,6 @@ class FrontierModel(torch.nn.Module):
         )
 
 
-def compatible_proposal_door_pairs(
-    source_variant_idx: torch.Tensor,
-    target_variant_idx: torch.Tensor,
-    compatibility: torch.Tensor,
-    source_variant_count: int,
-    target_variant_count: int,
-) -> torch.Tensor:
-    """Choose the first compatible concrete pair for each realizable variant pair."""
-    source_idx, target_idx = compatibility.nonzero(as_tuple=True)
-    pair_idx = source_idx * compatibility.shape[1] + target_idx
-    variant_pair_idx = (
-        source_variant_idx[source_idx] * target_variant_count + target_variant_idx[target_idx]
-    )
-    first_pair_idx = torch.full(
-        (source_variant_count * target_variant_count,),
-        compatibility.numel(),
-        dtype=torch.int64,
-        device=compatibility.device,
-    )
-    first_pair_idx.scatter_reduce_(0, variant_pair_idx, pair_idx, reduce="amin")
-    first_pair_idx = first_pair_idx[first_pair_idx < compatibility.numel()]
-    if compatibility.shape[1] == 0:
-        return torch.empty((2, 0), dtype=torch.int64, device=compatibility.device)
-    return torch.stack(
-        (first_pair_idx // compatibility.shape[1], first_pair_idx % compatibility.shape[1])
-    )
-
-
 def balance_price_network(
     hidden_width: int,
     num_layers: int,
@@ -1333,11 +1277,9 @@ class BalanceModel(torch.nn.Module):
         right_count: int,
         up_count: int,
         down_count: int,
-        door_output_variant_idx: torch.Tensor,
         door_room_idx: torch.Tensor,
         door_variant_compatibility: torch.Tensor,
-        room_connection_variant_idx: torch.Tensor,
-        num_room_connection_variants: int,
+        num_rooms: int,
         toilet_compatibility: torch.Tensor,
         hidden_width: int,
         num_layers: int,
@@ -1351,50 +1293,24 @@ class BalanceModel(torch.nn.Module):
         self.right_count = right_count
         self.up_count = up_count
         self.down_count = down_count
-        if room_connection_variant_idx.ndim != 1:
-            raise ValueError("room_connection_variant_idx must contain one variant per room")
-        if num_room_connection_variants <= 0:
-            raise ValueError("num_room_connection_variants must be greater than zero")
-        if torch.any(room_connection_variant_idx < 0) or torch.any(
-            room_connection_variant_idx >= num_room_connection_variants
-        ):
-            raise ValueError("room_connection_variant_idx contains an out-of-range variant")
-        self.num_rooms = room_connection_variant_idx.numel()
-        self.num_room_connection_variants = num_room_connection_variants
+        self.num_rooms = num_rooms
         if (
             toilet_compatibility.shape != (self.num_rooms,)
             or toilet_compatibility.dtype != torch.bool
         ):
             raise ValueError("toilet_compatibility must contain one boolean per room")
         self.register_buffer("toilet_compatibility", toilet_compatibility, persistent=False)
-        self.register_buffer(
-            "room_connection_variant_idx",
-            room_connection_variant_idx.to(torch.int64),
-        )
         door_count = left_count + right_count + up_count + down_count
-        if door_output_variant_idx.shape != (door_count,):
-            raise ValueError(
-                "door_output_variant_idx must contain one variant for every directional door"
-            )
-        if (
-            door_variant_compatibility.ndim != 2
-            or door_variant_compatibility.shape[0] != door_variant_compatibility.shape[1]
-        ):
-            raise ValueError("door_variant_compatibility must be square")
-        variant_count = door_variant_compatibility.shape[0]
-        if torch.any(door_output_variant_idx < 0) or torch.any(
-            door_output_variant_idx >= variant_count
-        ):
-            raise ValueError("door_output_variant_idx contains an out-of-range variant")
+        if door_variant_compatibility.shape != (door_count, door_count):
+            raise ValueError("door compatibility must contain one row and column per door")
         if door_room_idx.shape != (door_count,) or door_room_idx.dtype != torch.int64:
             raise ValueError("door_room_idx must contain one int64 room ID per directional door")
         if torch.any(door_room_idx < 0) or torch.any(door_room_idx >= self.num_rooms):
             raise ValueError("door_room_idx contains an out-of-range room ID")
         direction_counts = [left_count, right_count, up_count, down_count]
-        direction_variants = torch.split(door_output_variant_idx.to(torch.int64), direction_counts)
+        direction_doors = torch.split(torch.arange(door_count), direction_counts)
         direction_rooms = torch.split(door_room_idx, direction_counts)
-        # Variant compatibility alone includes impossible connections within one room.
-        # Cache concrete masks once for loss, price centering, and diagnostics.
+        # Exclude connections within the same room from the geometric compatibility.
         for name, source, target in (
             ("left", 0, 1),
             ("right", 1, 0),
@@ -1402,8 +1318,8 @@ class BalanceModel(torch.nn.Module):
             ("down", 3, 2),
         ):
             compatibility = door_variant_compatibility[
-                direction_variants[source].unsqueeze(1),
-                direction_variants[target].unsqueeze(0),
+                direction_doors[source].unsqueeze(1),
+                direction_doors[target].unsqueeze(0),
             ].to(torch.bool) & (
                 direction_rooms[source].unsqueeze(1) != direction_rooms[target].unsqueeze(0)
             )
@@ -1416,104 +1332,15 @@ class BalanceModel(torch.nn.Module):
                 raise ValueError(f"{forward}/{reverse} door balance target: {error}") from error
             self.register_buffer(f"{forward}_probability", probability, persistent=False)
             self.register_buffer(f"{reverse}_probability", probability.T, persistent=False)
-        (
-            left_output_variant_idx,
-            right_output_variant_idx,
-            up_output_variant_idx,
-            down_output_variant_idx,
-        ) = direction_variants
-        left_variants, left_door_variant_idx = torch.unique(
-            left_output_variant_idx,
-            sorted=True,
-            return_inverse=True,
-        )
-        right_variants, right_door_variant_idx = torch.unique(
-            right_output_variant_idx,
-            sorted=True,
-            return_inverse=True,
-        )
-        up_variants, up_door_variant_idx = torch.unique(
-            up_output_variant_idx,
-            sorted=True,
-            return_inverse=True,
-        )
-        down_variants, down_door_variant_idx = torch.unique(
-            down_output_variant_idx,
-            sorted=True,
-            return_inverse=True,
-        )
-        self.register_buffer("left_door_variant_idx", left_door_variant_idx)
-        self.register_buffer("right_door_variant_idx", right_door_variant_idx)
-        self.register_buffer("up_door_variant_idx", up_door_variant_idx)
-        self.register_buffer("down_door_variant_idx", down_door_variant_idx)
-        self.register_buffer("left_global_door_variant_idx", left_variants)
-        self.register_buffer("right_global_door_variant_idx", right_variants)
-        self.register_buffer("up_global_door_variant_idx", up_variants)
-        self.register_buffer("down_global_door_variant_idx", down_variants)
-        self.left_variant_count = left_variants.numel()
-        self.right_variant_count = right_variants.numel()
-        self.up_variant_count = up_variants.numel()
-        self.down_variant_count = down_variants.numel()
-        # Derived static indices move with the model but need no checkpoint storage.
-        for name, source_idx, target_idx, compatibility, source_count, target_count in (
-            (
-                "horizontal",
-                left_door_variant_idx,
-                right_door_variant_idx,
-                self.left_compatibility,
-                self.left_variant_count,
-                self.right_variant_count,
-            ),
-            (
-                "vertical",
-                up_door_variant_idx,
-                down_door_variant_idx,
-                self.up_compatibility,
-                self.up_variant_count,
-                self.down_variant_count,
-            ),
-        ):
-            self.register_buffer(
-                f"{name}_proposal_door_pairs",
-                compatible_proposal_door_pairs(
-                    source_idx,
-                    target_idx,
-                    compatibility,
-                    source_count,
-                    target_count,
-                ),
-                persistent=False,
-            )
-        door_width = (
-            self.left_variant_count * self.right_variant_count
-            + self.right_variant_count * self.left_variant_count
-            + self.up_variant_count * self.down_variant_count
-            + self.down_variant_count * self.up_variant_count
-        )
-        variant_counts = (
-            self.left_variant_count, self.right_variant_count,
-            self.up_variant_count, self.down_variant_count,
-        )
-        variant_offsets = (0, *torch.tensor(variant_counts).cumsum(0).tolist())
-        self.register_buffer(
-            "door_failure_variant_idx",
-            torch.cat([
-                indices + offset for indices, offset in zip(
-                    (left_door_variant_idx, right_door_variant_idx,
-                     up_door_variant_idx, down_door_variant_idx),
-                    variant_offsets[:-1], strict=True,
-                )
-            ]),
-            persistent=False,
-        )
+        door_width = 2 * (left_count * right_count + up_count * down_count)
         # Independent parameters prevent one controller's updates from moving
         # the other families' prices through shared hidden representations.
         self.door_net = balance_price_network(
-            hidden_width, num_layers, door_width + sum(variant_counts)
+            hidden_width, num_layers, door_width + door_count
         )
         self.toilet_net = balance_price_network(hidden_width, num_layers, self.num_rooms + 1)
         self.area_net = balance_price_network(
-            hidden_width, num_layers, num_room_connection_variants * (AREA_COUNT + 1)
+            hidden_width, num_layers, num_rooms * (AREA_COUNT + 1)
         )
 
         self.order_net = balance_price_network(
@@ -1554,44 +1381,43 @@ class BalanceModel(torch.nn.Module):
     ) -> BalancePredictions:
         batch_size = raw.shape[0]
         offset = 0
-        left_size = self.left_variant_count * self.right_variant_count
-        right_size = self.right_variant_count * self.left_variant_count
-        up_size = self.up_variant_count * self.down_variant_count
-        down_size = self.down_variant_count * self.up_variant_count
+        left_size = self.left_count * self.right_count
+        right_size = self.right_count * self.left_count
+        up_size = self.up_count * self.down_count
+        down_size = self.down_count * self.up_count
         left = raw[:, offset : offset + left_size].reshape(
             batch_size,
-            self.left_variant_count,
-            self.right_variant_count,
+            self.left_count,
+            self.right_count,
         )
         offset += left_size
         right = raw[:, offset : offset + right_size].reshape(
             batch_size,
-            self.right_variant_count,
-            self.left_variant_count,
+            self.right_count,
+            self.left_count,
         )
         offset += right_size
         up = raw[:, offset : offset + up_size].reshape(
             batch_size,
-            self.up_variant_count,
-            self.down_variant_count,
+            self.up_count,
+            self.down_count,
         )
         offset += up_size
         down = raw[:, offset : offset + down_size].reshape(
             batch_size,
-            self.down_variant_count,
-            self.up_variant_count,
+            self.down_count,
+            self.up_count,
         )
         offset += down_size
-        door_failure = raw[:, offset:][:, self.door_failure_variant_idx]
+        door_failure = raw[:, offset:]
         toilet_crossed_room = toilet_raw[:, : self.num_rooms]
-        area_width = self.num_room_connection_variants * AREA_COUNT
-        room_area_by_variant = area_raw[:, :area_width].reshape(
+        area_width = self.num_rooms * AREA_COUNT
+        room_area = area_raw[:, :area_width].reshape(
             batch_size,
-            self.num_room_connection_variants,
+            self.num_rooms,
             AREA_COUNT,
         )
-        room_area = room_area_by_variant[:, self.room_connection_variant_idx]
-        room_area_failure = area_raw[:, area_width:][:, self.room_connection_variant_idx]
+        room_area_failure = area_raw[:, area_width:]
         toilet_failure = toilet_raw[:, self.num_rooms]
         return BalancePredictions(
             left=left,
@@ -1611,14 +1437,6 @@ class BalanceModel(torch.nn.Module):
                 batch_size, self.num_rooms, self.num_rooms,
             ),
             room_step_failure=step_raw[:, self.num_rooms ** 2:],
-            left_door_variant_idx=self.left_door_variant_idx,
-            right_door_variant_idx=self.right_door_variant_idx,
-            up_door_variant_idx=self.up_door_variant_idx,
-            down_door_variant_idx=self.down_door_variant_idx,
-            left_global_door_variant_idx=self.left_global_door_variant_idx,
-            right_global_door_variant_idx=self.right_global_door_variant_idx,
-            up_global_door_variant_idx=self.up_global_door_variant_idx,
-            down_global_door_variant_idx=self.down_global_door_variant_idx,
             left_compatibility=self.left_compatibility,
             right_compatibility=self.right_compatibility,
             up_compatibility=self.up_compatibility,
@@ -1628,6 +1446,4 @@ class BalanceModel(torch.nn.Module):
             right_probability=self.right_probability,
             up_probability=self.up_probability,
             down_probability=self.down_probability,
-            horizontal_proposal_door_pairs=self.horizontal_proposal_door_pairs,
-            vertical_proposal_door_pairs=self.vertical_proposal_door_pairs,
         )

@@ -280,7 +280,6 @@ class ProposalCache:
     frontier_door_variant: torch.Tensor
     inventory: torch.Tensor
     area_used: torch.Tensor
-    room_placed: torch.Tensor
     row_start_idx: torch.Tensor
     row_count: torch.Tensor
     action_index: torch.Tensor
@@ -337,8 +336,6 @@ class GenerationGroup:
     balance_score_tables: BalancePriceTables
     area_balance_dual_mask: torch.Tensor
     room_tile_count: torch.Tensor
-    room_connection_variant_idx: torch.Tensor
-    num_room_connection_variants: int
     proposal_balance_score_table: torch.Tensor
     proposal_area_balance_score_table: torch.Tensor
     previous_lookahead_outcomes: StepOutcomes | None
@@ -402,7 +399,7 @@ class PipelineSharedState:
     cancellation_event: threading.Event
     groups: list[GenerationGroup]
     door_variant_compatibility: torch.Tensor
-    door_variant_connection_variant_idx: torch.Tensor
+    door_room_idx: torch.Tensor
 
 
 @dataclass
@@ -508,7 +505,7 @@ def sample_proposal_shortlist(
     frontier_door_variant: torch.Tensor,
     inventory: torch.Tensor,
     door_variant_compatibility: torch.Tensor,
-    door_variant_connection_variant_idx: torch.Tensor,
+    door_room_idx: torch.Tensor,
     row_snapshot_idx: torch.Tensor,
     row_frontier_idx: torch.Tensor,
     environment_count: int,
@@ -523,7 +520,7 @@ def sample_proposal_shortlist(
     frontier_door_variant = frontier_door_variant.to(device=device, dtype=torch.int64)
     compatible_variants = door_variant_compatibility[frontier_door_variant]
     candidate_variant_available = (
-        inventory[row_snapshot_idx][:, door_variant_connection_variant_idx] > 0
+        inventory[row_snapshot_idx][:, door_room_idx] > 0
     )
     valid_variants = compatible_variants & candidate_variant_available
     row_possible_counts = valid_variants.sum(dim=1, dtype=torch.int64) * AREA_COUNT
@@ -1084,7 +1081,6 @@ def select_candidate_actions(
             frontier_door_variant=features.frontier_features.frontier_door_variant,
             inventory=features.global_features.inventory,
             area_used=features.global_features.area_used,
-            room_placed=features.global_features.room_placed,
             row_start_idx=row_start_idx,
             row_count=row_count_by_snapshot,
             action_index=action_index,
@@ -1581,7 +1577,6 @@ def compute_group_proposal_shortlist(
                 * cache.candidate_count + cache.action_index
             )
             area_used = cache.area_used[selected_snapshot]
-            room_placed = cache.room_placed[selected_snapshot]
             with torch.amp.autocast(
                 device.type,
                 dtype=torch.bfloat16,
@@ -1614,7 +1609,6 @@ def compute_group_proposal_shortlist(
             frontier_door_variant = env_features.frontier_features.frontier_door_variant
             inventory = env_features.global_features.inventory
             area_used = env_features.global_features.area_used
-            room_placed = env_features.global_features.room_placed
             sync_profile_device(device, profile)
             shared.profiler.add("python.proposal.compute_fresh_scores", profile_time)
         proposal_balance_residual = compute_proposal_balance_score_residual(
@@ -1632,10 +1626,7 @@ def compute_group_proposal_shortlist(
         )
         step_prices = proposal_step_prices(
             group.balance_score_tables.room_step,
-            room_placed,
-            group.room_connection_variant_idx,
-            group.num_room_connection_variants,
-            shared.door_variant_connection_variant_idx,
+            shared.door_room_idx,
             group.step,
         )
         proposal_balance_residual -= step_prices[row_snapshot_idx.long()].repeat_interleave(
@@ -1656,7 +1647,7 @@ def compute_group_proposal_shortlist(
             frontier_door_variant,
             inventory,
             shared.door_variant_compatibility,
-            shared.door_variant_connection_variant_idx,
+            shared.door_room_idx,
             row_snapshot_idx,
             row_frontier_idx,
             group.config.temperature.shape[0],
@@ -2291,20 +2282,14 @@ def run_generation_groups(
     ]
     proposal_balance_score_tables = [
         compute_proposal_balance_score_table(
-            balance_preds,
             score_tables,
             model.proposal_output.out_features // AREA_COUNT,
         )
-        for balance_preds, score_tables in zip(balance_predictions, balance_score_tables)
+        for score_tables in balance_score_tables
     ]
     area_balance_dual_masks = [config.area_balance_dual_mask for config in configs]
     door_room_idx = torch.tensor(
-        [room_idx for room_idx, _ in output_metadata.door],
-        dtype=torch.int64,
-        device=device,
-    )
-    door_output_variant_idx = torch.tensor(
-        [variant_idx for _, variant_idx in output_metadata.door],
+        output_metadata.door,
         dtype=torch.int64,
         device=device,
     )
@@ -2313,8 +2298,6 @@ def run_generation_groups(
             score_tables.room_area,
             ~dual_mask,
             door_room_idx,
-            door_output_variant_idx,
-            output_metadata.num_door_variants,
         )
         for score_tables, dual_mask in zip(
             balance_score_tables,
@@ -2335,10 +2318,6 @@ def run_generation_groups(
                 [sum(tile != 0 for row in room["map"] for tile in row) for room in env.engine.rooms],
                 device=device, dtype=torch.int64,
             ),
-            room_connection_variant_idx=torch.tensor(
-                output_metadata.room_connection_variant_idx, device=device, dtype=torch.int64,
-            ),
-            num_room_connection_variants=output_metadata.num_room_connection_variants,
             proposal_balance_score_table=proposal_score_table,
             proposal_area_balance_score_table=proposal_area_score_table,
             previous_lookahead_outcomes=None,
@@ -2399,9 +2378,7 @@ def run_generation_groups(
         cancellation_event=cancellation_event,
         groups=groups,
         door_variant_compatibility=output_metadata.door_variant_compatibility.to(device),
-        door_variant_connection_variant_idx=(
-            output_metadata.door_variant_connection_variant_idx.to(device)
-        ),
+        door_room_idx=door_room_idx,
     )
     cpu_ready_queue: Queue[CpuReadyMessage] = Queue(maxsize=len(groups))
     worker_count = len(groups) + 1 + int(gpu_prefetch_batches > 0)

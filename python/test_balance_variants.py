@@ -14,15 +14,15 @@ from loss import (
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
 )
-from model import BalanceModel, BalancePredictions, compatible_proposal_door_pairs
+from model import BalanceModel, BalancePredictions
 from model_loading import create_balance_model
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
 def example_predictions(requires_grad: bool = False) -> BalancePredictions:
     return BalancePredictions(
-        left=torch.tensor([[[0.0, 1.0], [2.0, -1.0]]], requires_grad=requires_grad),
-        right=torch.tensor([[[0.5, -0.5], [1.0, 0.0]]], requires_grad=requires_grad),
+        left=torch.tensor([[[0., 1., 1.], [0., 1., 1.], [2., -1., -1.]]], requires_grad=requires_grad),
+        right=torch.tensor([[[.5, .5, -.5], [1., 1., 0.], [1., 1., 0.]]], requires_grad=requires_grad),
         up=torch.zeros((1, 1, 1), requires_grad=requires_grad),
         down=torch.zeros((1, 1, 1), requires_grad=requires_grad),
         toilet_crossed_room=torch.zeros((1, 2), requires_grad=requires_grad),
@@ -34,14 +34,6 @@ def example_predictions(requires_grad: bool = False) -> BalancePredictions:
         area_order_failure=torch.zeros((1, AREA_COUNT), requires_grad=requires_grad),
         room_step=torch.zeros((1, 2, 2), requires_grad=requires_grad),
         room_step_failure=torch.zeros((1, 2), requires_grad=requires_grad),
-        left_door_variant_idx=torch.tensor([0, 0, 1]),
-        right_door_variant_idx=torch.tensor([0, 1, 1]),
-        up_door_variant_idx=torch.tensor([0]),
-        down_door_variant_idx=torch.tensor([0]),
-        left_global_door_variant_idx=torch.tensor([0, 1]),
-        right_global_door_variant_idx=torch.tensor([2, 3]),
-        up_global_door_variant_idx=torch.tensor([4]),
-        down_global_door_variant_idx=torch.tensor([5]),
         left_compatibility=torch.tensor(
             [[True, True, False], [True, True, False], [True, True, True]]
         ),
@@ -55,8 +47,6 @@ def example_predictions(requires_grad: bool = False) -> BalancePredictions:
         right_probability=torch.tensor([[0.5, 0.5, 0.0], [0.5, 0.5, 0.0], [0.0, 0.0, 1.0]]),
         up_probability=torch.ones((1, 1)),
         down_probability=torch.ones((1, 1)),
-        horizontal_proposal_door_pairs=torch.tensor([[0, 0, 2, 2], [0, 1, 0, 1]]),
-        vertical_proposal_door_pairs=torch.tensor([[0], [0]]),
     )
 
 
@@ -76,34 +66,31 @@ def empty_door_matches() -> DoorMatches:
     )
 
 
-def test_balance_model_outputs_direction_local_variant_pairs() -> None:
+def test_balance_model_outputs_concrete_pairs() -> None:
     model = BalanceModel(
         left_count=3,
         right_count=3,
         up_count=1,
         down_count=1,
-        door_output_variant_idx=torch.tensor([10, 10, 11, 20, 21, 21, 30, 40]),
         door_room_idx=torch.tensor([0, 0, 0, 1, 1, 1, 0, 1]),
-        door_variant_compatibility=torch.ones((41, 41), dtype=torch.bool),
-        room_connection_variant_idx=torch.tensor([0, 0, 1]),
-        num_room_connection_variants=2,
+        door_variant_compatibility=torch.ones((8, 8), dtype=torch.bool),
+        num_rooms=3,
         toilet_compatibility=torch.tensor([True, False, False]),
         hidden_width=4,
         num_layers=1,
     )
     with torch.no_grad():
-        model.area_net[-1].bias[:2 * AREA_COUNT] = torch.arange(2 * AREA_COUNT)
+        model.area_net[-1].bias[:3 * AREA_COUNT] = torch.arange(3 * AREA_COUNT)
         model.step_net[-1].bias[:9] = torch.tensor([4., -4., 0., -4., 4., 0., 0., 0., 0.])
     preds = model(torch.zeros((1, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
 
-    assert preds.left.shape == (1, 2, 2)
-    assert preds.right.shape == (1, 2, 2)
+    assert preds.left.shape == (1, 3, 3)
+    assert preds.right.shape == (1, 3, 3)
     assert preds.room_area.shape == (1, 3, AREA_COUNT)
-    assert torch.equal(preds.room_area[0, 0], preds.room_area[0, 1])
+    assert not torch.equal(preds.room_area[0, 0], preds.room_area[0, 1])
     assert not torch.equal(preds.room_area[0, 0], preds.room_area[0, 2])
     assert preds.room_step.shape == (1, 3, 3)
     assert preds.room_step_failure.shape == (1, 3)
-    # Rooms 0 and 1 share a connection variant, but retain independent step prices.
     assert not torch.equal(preds.room_step[0, 0], preds.room_step[0, 1])
     assert preds.toilet_compatibility.tolist() == [True, False, False]
     assert "toilet_compatibility" not in model.state_dict()
@@ -123,11 +110,9 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
         right_count=3,
         up_count=1,
         down_count=1,
-        door_output_variant_idx=torch.tensor([0, 0, 1, 2, 2, 3, 4, 5]),
         door_room_idx=torch.tensor([0, 1, 2, 0, 1, 2, 0, 1]),
-        door_variant_compatibility=torch.ones((6, 6), dtype=torch.bool),
-        room_connection_variant_idx=torch.tensor([0, 0, 1]),
-        num_room_connection_variants=2,
+        door_variant_compatibility=torch.ones((8, 8), dtype=torch.bool),
+        num_rooms=3,
         toilet_compatibility=torch.zeros(3, dtype=torch.bool),
         hidden_width=4,
         num_layers=1,
@@ -142,7 +127,7 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     for direction in ("left", "right", "up", "down"):
         assert f"{direction}_compatibility" in model.state_dict()
 
-    preds.left = torch.tensor([[[100.0, 10.0], [2.0, 6.0]]], requires_grad=True)
+    preds.left = torch.tensor([[[100., 100., 10.], [100., 100., 10.], [2., 2., 6.]]], requires_grad=True)
     area_probability = torch.full((1, 3, AREA_COUNT), 1.0 / AREA_COUNT)
     area_mask = torch.ones((1, 3), dtype=torch.bool)
     tables = compute_balance_price_tables(preds, area_probability, area_mask)
@@ -183,7 +168,7 @@ def test_concrete_door_masks_exclude_same_room_and_preserve_other_instances() ->
     loss.backward()
     assert torch.isfinite(preds.left.grad).all()
     torch.testing.assert_close(
-        preds.left.grad, torch.tensor([[[-1.0 / 8.0, 1.0 / 8.0], [0.0, 0.0]]])
+        preds.left.grad, torch.tensor([[[0., -1. / 16, 1. / 16], [-1. / 16, 0., 1. / 16], [-1. / 16, 1. / 16, 0.]]])
     )
 
     door_matches.left[0, 0] = 0
@@ -224,10 +209,8 @@ def test_toilet_compatibility_uses_crossing_columns() -> None:
     ]
     engine = Mock()
     engine.get_output_metadata.return_value = SimpleNamespace(
-        door=[(0, 0), (1, 1)],
+        door=[0, 1],
         door_variant_compatibility=torch.ones((2, 2), dtype=torch.bool),
-        room_connection_variant_idx=[0, 1, 2, 3],
-        num_room_connection_variants=4,
     )
     model = create_balance_model(
         config=SimpleNamespace(balance_model=SimpleNamespace(hidden_width=4, num_layers=1)),
@@ -446,7 +429,7 @@ def test_dual_gradient_uses_probability_error_scale() -> None:
     loss.backward()
 
     # This row's only partner in a complete matching has target probability 1.
-    torch.testing.assert_close(preds.left.grad[0, 1], torch.tensor([-1.0 / 8.0, 1.0 / 8.0]))
+    torch.testing.assert_close(preds.left.grad[0, 2], torch.tensor([-1.0 / 8.0, 0., 1.0 / 8.0]))
     torch.testing.assert_close(preds.toilet_crossed_room.grad[0], torch.tensor([-0.5, 0.5]))
     torch.testing.assert_close(
         preds.room_area.grad[0, 0],
@@ -573,65 +556,28 @@ def test_room_area_targets_use_zero_for_terminal_absence() -> None:
 
 def test_proposal_prices_use_compatible_instances_in_both_directions() -> None:
     model = BalanceModel(
-        left_count=3,
-        right_count=3,
-        up_count=3,
-        down_count=3,
-        door_output_variant_idx=torch.tensor([0, 0, 1, 2, 2, 3, 4, 4, 5, 6, 6, 7]),
+        left_count=3, right_count=3, up_count=3, down_count=3,
         door_room_idx=torch.tensor([0, 1, 2] * 4),
-        door_variant_compatibility=torch.ones((8, 8), dtype=torch.bool),
-        room_connection_variant_idx=torch.tensor([0, 0, 1]),
-        num_room_connection_variants=2,
+        door_variant_compatibility=torch.ones((12, 12), dtype=torch.bool),
+        num_rooms=3,
         toilet_compatibility=torch.zeros(3, dtype=torch.bool),
-        hidden_width=4,
-        num_layers=1,
+        hidden_width=4, num_layers=1,
     )
     preds = model(torch.zeros((2, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
     for direction in ("left", "right", "up", "down"):
-        setattr(
-            preds, direction, torch.tensor([[[1.0, 7.0], [3.0, 9.0]], [[-2.0, 4.0], [8.0, 1.0]]])
-        )
+        setattr(preds, direction, torch.arange(18.).reshape(2, 3, 3))
     tables = compute_balance_price_tables(
-        preds,
-        torch.full((2, 3, AREA_COUNT), 1.0 / AREA_COUNT),
+        preds, torch.full((2, 3, AREA_COUNT), 1.0 / AREA_COUNT),
         torch.ones((2, 3), dtype=torch.bool),
     )
-    proposal = compute_proposal_balance_score_table(preds, tables, 8)
-    for direction, reverse in (("left", "right"), ("up", "down")):
-        source_idx, target_idx = getattr(preds, f"{direction}_compatibility").nonzero(
-            as_tuple=True
-        )
-        source_variant = getattr(preds, f"{direction}_global_door_variant_idx")[
-            getattr(preds, f"{direction}_door_variant_idx")[source_idx]
-        ]
-        target_variant = getattr(preds, f"{reverse}_global_door_variant_idx")[
-            getattr(preds, f"{reverse}_door_variant_idx")[target_idx]
-        ]
-        exact = (
-            getattr(tables, direction)[:, source_idx, target_idx]
-            + getattr(tables, reverse)[:, target_idx, source_idx]
-        )
-        torch.testing.assert_close(proposal[:, source_variant, target_variant], exact)
-        torch.testing.assert_close(proposal[:, target_variant, source_variant], exact)
-    assert torch.all(proposal[:, 0, 2] != 0)
-    assert torch.all(proposal[:, 4, 6] != 0)
-    # These variants only occur in room 2, so they have no compatible realization.
-    assert torch.count_nonzero(proposal[:, [1, 3, 5, 7], [3, 1, 7, 5]]) == 0
-    assert "horizontal_proposal_door_pairs" not in model.state_dict()
-    assert "vertical_proposal_door_pairs" not in model.state_dict()
-
-
-def test_compatible_proposal_door_pairs_with_empty_directions() -> None:
-    for source_count, target_count in ((0, 0), (0, 2), (2, 0), (2, 2)):
-        pairs = compatible_proposal_door_pairs(
-            torch.arange(source_count),
-            torch.arange(target_count),
-            torch.zeros((source_count, target_count), dtype=torch.bool),
-            source_count,
-            target_count,
-        )
-        assert pairs.shape == (2, 0)
-        assert pairs.dtype == torch.int64
+    proposal = compute_proposal_balance_score_table(tables, 12)
+    for forward, reverse, source, target in (
+        (tables.left, tables.right, 0, 3), (tables.up, tables.down, 6, 9),
+    ):
+        exact = forward + reverse.transpose(1, 2)
+        torch.testing.assert_close(proposal[:, source:source + 3, target:target + 3], exact)
+        torch.testing.assert_close(proposal[:, target:target + 3, source:source + 3], exact.transpose(1, 2))
+    assert torch.count_nonzero(proposal[:, [0, 1, 2, 6, 7, 8], [3, 4, 5, 9, 10, 11]]) == 0
 
 
 def test_proposal_price_residual_is_negative_price_without_gain() -> None:
@@ -642,20 +588,18 @@ def test_proposal_price_residual_is_negative_price_without_gain() -> None:
         area_probability,
         area_mask,
     )
-    proposal = compute_proposal_balance_score_table(preds, tables, 6)
+    proposal = compute_proposal_balance_score_table(tables, 8)
     residual = compute_proposal_balance_score_residual(
         proposal,
         frontier_door_variant=torch.tensor([1]),
         row_snapshot_idx=torch.tensor([0]),
     )
-    torch.testing.assert_close(residual[0].reshape(6, AREA_COUNT)[:, 0], -proposal[0, 1])
+    torch.testing.assert_close(residual[0].reshape(8, AREA_COUNT)[:, 0], -proposal[0, 1])
 
     area_proposal = compute_proposal_area_balance_score_table(
         tables.room_area,
         ~area_mask,
         door_room_idx=torch.tensor([0, 1, 0, 1, 0, 1]),
-        door_output_variant_idx=torch.arange(6),
-        num_door_variants=6,
     )
     area_residual = compute_proposal_area_balance_score_residual(
         area_proposal,
@@ -754,7 +698,7 @@ def test_toilet_failure_price_has_regularized_equilibrium() -> None:
 def main() -> None:
     test_toilet_failure_drives_dual_and_has_unconditional_target()
     test_toilet_failure_price_has_regularized_equilibrium()
-    test_balance_model_outputs_direction_local_variant_pairs()
+    test_balance_model_outputs_concrete_pairs()
     test_concrete_door_masks_exclude_same_room_and_preserve_other_instances()
     test_toilet_compatibility_uses_crossing_columns()
     test_area_targets_apply_preferences_and_mask_forced_rooms()
@@ -769,7 +713,6 @@ def main() -> None:
     test_infeasible_toilet_observation_is_rejected()
     test_room_area_targets_use_zero_for_terminal_absence()
     test_proposal_prices_use_compatible_instances_in_both_directions()
-    test_compatible_proposal_door_pairs_with_empty_directions()
     test_proposal_price_residual_is_negative_price_without_gain()
 
 

@@ -29,12 +29,12 @@ class BalanceModelV18(BalanceModelV19):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         failure_count = (
-            self.left_variant_count + self.right_variant_count
-            + self.up_variant_count + self.down_variant_count
+            self.left_count + self.right_count
+            + self.up_count + self.down_count
         )
         for network, removed in (
             (self.door_net, failure_count),
-            (self.area_net, self.num_room_connection_variants),
+            (self.area_net, self.num_rooms),
         ):
             output = torch.nn.Linear(
                 network[-1].in_features, network[-1].out_features - removed
@@ -50,8 +50,8 @@ class BalanceModelV18(BalanceModelV19):
         toilet = self.toilet_net(inputs).float()
         area = self.area_net(inputs).float()
         failure_count = (
-            self.left_variant_count + self.right_variant_count
-            + self.up_variant_count + self.down_variant_count
+            self.left_count + self.right_count
+            + self.up_count + self.down_count
         )
         mean = (
             toilet[:, :self.num_rooms] * self.toilet_compatibility
@@ -61,7 +61,7 @@ class BalanceModelV18(BalanceModelV19):
         return self.decode_prices(
             torch.cat((door, door.new_zeros((len(door), failure_count))), dim=1),
             toilet,
-            torch.cat((area, area.new_zeros((len(area), self.num_room_connection_variants))), dim=1),
+            torch.cat((area, area.new_zeros((len(area), self.num_rooms))), dim=1),
             area.new_zeros((len(area), 6 * 7)),
             inputs.new_zeros((len(inputs), self.num_rooms * (self.num_rooms + 1))),
         )

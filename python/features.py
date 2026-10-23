@@ -111,7 +111,7 @@ class InventoryFeature(GlobalFeature):
 
     @classmethod
     def tensor_width(cls, context: FeatureContext) -> int:
-        return context.output_metadata.num_room_connection_variants
+        return context.num_rooms
 
     @classmethod
     def build(cls, context: FeatureContext) -> InventoryFeature:
@@ -469,21 +469,17 @@ class ToiletCrossedRoomFeature(GlobalFeature):
 class GlobalRoomPositionFeature(GlobalFeature):
     def __init__(
         self,
-        room_connection_variant_idx: list[int],
-        num_room_connection_variants: int,
+        num_rooms: int,
         width: int,
     ):
         super().__init__()
-        self.register_buffer(
-            "room_connection_variant_idx",
-            torch.tensor(room_connection_variant_idx, dtype=torch.int64),
-        )
+        self.register_buffer("room_idx", torch.arange(num_rooms).unsqueeze(0), persistent=False)
         self.embedding_x = torch.nn.Parameter(
-            torch.randn([num_room_connection_variants, NUM_COORD_VALUES, width])
+            torch.randn([num_rooms, NUM_COORD_VALUES, width])
             / math.sqrt(width)
         )
         self.embedding_y = torch.nn.Parameter(
-            torch.randn([num_room_connection_variants, NUM_COORD_VALUES, width])
+            torch.randn([num_rooms, NUM_COORD_VALUES, width])
             / math.sqrt(width)
         )
 
@@ -498,20 +494,16 @@ class GlobalRoomPositionFeature(GlobalFeature):
     @classmethod
     def build(cls, context: FeatureContext) -> GlobalRoomPositionFeature:
         return cls(
-            context.output_metadata.room_connection_variant_idx,
-            context.output_metadata.num_room_connection_variants,
+            context.num_rooms,
             context.features.global_room_position,
         )
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
         room_x = features.global_features.room_x.to(torch.int64) + COORD_OFFSET
         room_y = features.global_features.room_y.to(torch.int64) + COORD_OFFSET
-        room_connection_variant_idx = (
-            self.room_connection_variant_idx.to(room_x.device).unsqueeze(0).expand_as(room_x)
-        )
         room_position = (
-            self.embedding_x[room_connection_variant_idx, room_x]
-            * self.embedding_y[room_connection_variant_idx, room_y]
+            self.embedding_x[self.room_idx, room_x]
+            * self.embedding_y[self.room_idx, room_y]
         ).to(dtype)
         placed = features.global_features.room_placed.to(dtype).unsqueeze(-1)
         placed_count = placed.sum(dim=1).clamp_min(1)
@@ -926,7 +918,7 @@ class FrontierDoorVariantFeature(FrontierNodeFeature):
     @classmethod
     def build(cls, context: FeatureContext) -> FrontierDoorVariantFeature:
         return cls(
-            context.output_metadata.num_door_variants,
+            len(context.output_metadata.door),
             context.features.frontier_door_variant,
         )
 

@@ -3358,17 +3358,11 @@ impl GlobalFeatureOutputSlices<'_> {
         if self.inventory_count != 0 {
             let start = idx * self.inventory_count;
             let end = start + self.inventory_count;
-            for (dst, &count) in self.inventory[start..end]
-                .iter_mut()
-                .zip(environment.connection_variant_unused_count())
-            {
-                *dst = count as u8;
+            for (room_idx, dst) in self.inventory[start..end].iter_mut().enumerate() {
+                *dst = u8::from(!environment.room_used_at(room_idx as RoomIdx));
             }
             if let Some(candidate) = candidate {
-                let connection_variant_idx =
-                    common.room[candidate.room_idx as usize].connection_variant_idx as usize;
-                self.inventory[start + connection_variant_idx] =
-                    self.inventory[start + connection_variant_idx].saturating_sub(1);
+                self.inventory[start + candidate.room_idx as usize] = 0;
             }
         }
         if self.room_area_count != 0 {
@@ -4359,14 +4353,14 @@ impl Engine {
 
     fn get_feature_sizes(&self) -> (usize, usize, usize) {
         (
-            self.common_data.connection_variant_rooms.len(),
+            self.common_data.room.len(),
             Environment::max_frontiers(&self.common_data),
             self.common_data.room.len(),
         )
     }
 
     fn get_door_variant_compatibility(&self) -> Vec<Vec<bool>> {
-        let variant_count = self.common_data.num_door_output_variants;
+        let variant_count = self.common_data.door_output.len();
         self.common_data
             .door_variant_compatibility
             .chunks(variant_count)
@@ -4374,40 +4368,18 @@ impl Engine {
             .collect()
     }
 
-    fn get_output_metadata(
-        &self,
-    ) -> (
-        Vec<(usize, usize)>,
-        Vec<(usize, usize)>,
-        usize,
-        usize,
-        Vec<usize>,
-        usize,
-        usize,
-    ) {
-        let door_output = self
-            .common_data
-            .door_output
-            .iter()
-            .map(|output| (output.room_idx as usize, output.variant_outcome_idx))
-            .collect();
-        let connection_output = self
-            .common_data
-            .connection_output
-            .iter()
-            .map(|output| (output.room_idx as usize, output.variant_outcome_idx))
-            .collect();
+    fn get_output_metadata(&self) -> (Vec<usize>, Vec<usize>, usize) {
         (
-            door_output,
-            connection_output,
-            self.common_data.num_door_output_variants,
-            self.common_data.num_connection_output_variants,
             self.common_data
-                .room
+                .door_output
                 .iter()
-                .map(|room| room.connection_variant_idx as usize)
+                .map(|output| output.room_idx as usize)
                 .collect(),
-            self.common_data.connection_variant_rooms.len(),
+            self.common_data
+                .connection_output
+                .iter()
+                .map(|output| output.room_idx as usize)
+                .collect(),
             self.common_data.room_part.len(),
         )
     }
@@ -6879,7 +6851,7 @@ impl EnvironmentGroup {
         }
         let snapshot_count = environment_count * candidate_count;
 
-        let inventory_count = self.common_data.connection_variant_rooms.len();
+        let inventory_count = self.common_data.room.len();
         let room_count = self.common_data.room.len();
         let room_part_count = self.common_data.room_part.len();
         let connection_count = self.common_data.room_connection.len();

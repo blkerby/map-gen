@@ -46,17 +46,11 @@ class RoomStepTest(unittest.TestCase):
             torch.tensor([[34., 50., 7.]]),
         )
 
-    def test_proposal_averages_only_unused_concrete_rooms(self):
+    def test_proposal_uses_concrete_room_prices(self):
         prices = torch.tensor([[[0., 2., 0.], [0., 8., 0.], [0., -4., 0.]]])
-        variants = torch.tensor([0, 0, 1])
-        doors = torch.tensor([1, 0, 0])
+        doors = torch.tensor([2, 0, 1])
         torch.testing.assert_close(
-            proposal_step_prices(prices, torch.tensor([[False, False, False]]), variants, 2, doors, 1),
-            torch.tensor([[-4., 5., 5.]]),
-        )
-        torch.testing.assert_close(
-            proposal_step_prices(prices, torch.tensor([[True, False, True]]), variants, 2, doors, 1),
-            torch.tensor([[0., 8., 8.]]),
+            proposal_step_prices(prices, doors, 1), torch.tensor([[-4., 2., 8.]]),
         )
 
     def test_opposite_identity_biases_receive_opposite_price_updates(self):
