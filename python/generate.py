@@ -1155,6 +1155,10 @@ def verify_and_step(
         group.env.verify_outcome_consistency()
 
 
+class GenerationCancelled(Exception):
+    pass
+
+
 def put_queue_until_done(
     queue: Queue,
     item,
@@ -1178,7 +1182,7 @@ def get_queue_until_done(
             return queue.get(timeout=0.05)
         except Empty:
             continue
-    return PipelineFailure(RuntimeError("generation pipeline cancelled"))
+    return PipelineFailure(GenerationCancelled("generation pipeline cancelled"))
 
 
 def broadcast_pipeline_failure(
@@ -1793,7 +1797,7 @@ def score_initial_action(
         shortlist_limited=torch.zeros([environment_count], dtype=torch.bool),
     )
     if not put_queue_until_done(cpu_ready_queue, request, shared.cancellation_event):
-        raise RuntimeError("generation pipeline cancelled")
+        raise GenerationCancelled("generation pipeline cancelled")
     result = get_queue_until_done(group.score_result_queue, shared.cancellation_event)
     if isinstance(result, PipelineFailure):
         raise result.error
@@ -2257,6 +2261,7 @@ def run_generation_groups(
     balance_model,
     configs: list[GenerateConfig],
     device: torch.device,
+    cancellation_event: threading.Event,
     verify_outcome_consistency: bool = False,
     capture_generated_features: bool = False,
     profile: bool = False,
@@ -2376,7 +2381,6 @@ def run_generation_groups(
         "proposal_scored_invalid_candidates": 0.0,
         "proposal_exhausted_rows": 0.0,
     }
-    cancellation_event = threading.Event()
     shared = PipelineSharedState(
         profiler=profiler,
         stat_totals=stat_totals,
@@ -2450,6 +2454,8 @@ def run_generation_groups(
         scorer_future.result()
         if producer_error is not None:
             raise producer_error
+        if cancellation_event.is_set():
+            raise GenerationCancelled("generation pipeline cancelled")
         results = []
         for group_index, group in enumerate(groups):
             profile_time = profile_start(profile)

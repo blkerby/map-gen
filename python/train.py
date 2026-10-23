@@ -7,6 +7,7 @@ import math
 import multiprocessing
 import os
 import signal
+import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1123,6 +1124,7 @@ def run_generation_process_task(
         state.balance_model,
         gen_configs,
         state.device,
+        cancellation_event=threading.Event(),
         verify_outcome_consistency=verify_outcome_consistency,
         capture_generated_features=capture_generated_features,
         profile=state.profile,

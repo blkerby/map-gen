@@ -2,6 +2,7 @@ import copy
 import inspect
 import json
 import math
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -214,6 +215,7 @@ def test_terminally_absent_rooms_receive_zero_utility_supervision() -> None:
         gen_balance,
         [gen_config],
         device,
+        cancellation_event=threading.Event(),
         verify_outcome_consistency=True,
         capture_generated_features=True,
     )

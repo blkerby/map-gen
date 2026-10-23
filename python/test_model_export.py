@@ -31,6 +31,7 @@ from serve import (  # noqa: E402
     create_generate_configs,
     create_serving_state,
     load_model_input,
+    prefetch_request_key,
     run_foreground_generation,
     warmup_generate_request,
 )
@@ -254,7 +255,9 @@ class ModelExportTest(unittest.TestCase):
             }
         )
         configs = create_generate_configs(request, state, state.envs, state.device)
-        result = run_foreground_generation(state, configs, GenerationProfiler(False))
+        result = run_foreground_generation(
+            state, configs, GenerationProfiler(False), prefetch_request_key(request)
+        )
         self.assertEqual(result.episode_data.actions.room_idx.shape, (2, 3))
 
     def test_mixed_export_generates_eager(self) -> None:

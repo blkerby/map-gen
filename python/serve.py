@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import hashlib
 import json
 import logging
 import math
 import threading
 import time
 from collections import OrderedDict, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, NamedTuple
 
 import torch
-from flask import Flask, Response, jsonify, request
+from flask import Flask, jsonify, request
+from hypercorn.asyncio import serve
+from hypercorn.config import Config as HypercornConfig
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from safetensors import safe_open
 from werkzeug.exceptions import BadRequest
@@ -26,7 +31,13 @@ from env import (
     GenerateConfig,
     compute_area_balance_targets,
 )
-from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
+from generate import (
+    GenerationCancelled,
+    GenerationProfiler,
+    profile_start,
+    run_generation_groups,
+    sync_profile_device,
+)
 from features import GenerationVariableFloatsFeature
 from initial_item import NODES, GRAPHS
 from small_map import (
@@ -87,9 +98,12 @@ class ServingConfig(StrictBaseModel):
     verify_outcome_consistency: bool
     gpu_prefetch_batches: int
     num_warmup_requests: int
-    prefetch_queue_max_size: int
+    prefetch_capacity: int
+    prefetch_initial_target: int
+    prefetch_low_capacity_fraction: float
+    prefetch_refill_batches: int
     prefetch_max_queues: int
-    prefetch_delay_seconds: float
+    foreground_max_batches: int
     room_set: Path
     num_environments: int
     pipeline_groups: int
@@ -97,6 +111,7 @@ class ServingConfig(StrictBaseModel):
 
 
 class GenerateRequest(StrictBaseModel):
+    num_maps: Annotated[int, Field(strict=True, gt=0)]
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
@@ -186,18 +201,23 @@ class GenerationRunResult:
 @dataclass
 class PrefetchQueueState:
     request: GenerateRequest
-    responses: deque[str]
-    refill_debt: int
+    maps: deque[dict]
+    target: int
+    refill_batches: int
+    growth_armed: bool
+    last_used: float
+    last_low_capacity: float
 
 
 @dataclass
 class PrefetchState:
     queues: OrderedDict[str, PrefetchQueueState]
     condition: threading.Condition
-    refill_scheduled: bool
-    due_time: float
-    schedule_version: int
+    total_maps: int
     foreground_waiting: int
+    active_key: str | None
+    active_cancellation: threading.Event | None
+    priority_key: str | None
 
 
 @dataclass
@@ -335,12 +355,23 @@ def validate_serving_config(serving_config: ServingConfig) -> None:
         raise ValueError("gpu_prefetch_batches must be greater than or equal to zero")
     if serving_config.num_warmup_requests < 0:
         raise ValueError("num_warmup_requests must be greater than or equal to zero")
-    if serving_config.prefetch_queue_max_size < 0:
-        raise ValueError("prefetch_queue_max_size must be greater than or equal to zero")
+    if serving_config.prefetch_capacity < 0:
+        raise ValueError("prefetch_capacity must be greater than or equal to zero")
+    if serving_config.prefetch_initial_target <= 0:
+        raise ValueError("prefetch_initial_target must be greater than zero")
+    if (
+        serving_config.prefetch_capacity > 0
+        and serving_config.prefetch_initial_target > serving_config.prefetch_capacity
+    ):
+        raise ValueError("prefetch_initial_target must not exceed prefetch_capacity")
+    if not 0 < serving_config.prefetch_low_capacity_fraction < 1:
+        raise ValueError("prefetch_low_capacity_fraction must be between zero and one")
+    if serving_config.prefetch_refill_batches <= 0:
+        raise ValueError("prefetch_refill_batches must be greater than zero")
+    if serving_config.foreground_max_batches <= 0:
+        raise ValueError("foreground_max_batches must be greater than zero")
     if serving_config.prefetch_max_queues < 0:
         raise ValueError("prefetch_max_queues must be greater than or equal to zero")
-    if serving_config.prefetch_delay_seconds < 0:
-        raise ValueError("prefetch_delay_seconds must be greater than or equal to zero")
 
 
 def create_prefetch_state() -> PrefetchState:
@@ -348,15 +379,16 @@ def create_prefetch_state() -> PrefetchState:
     return PrefetchState(
         queues=OrderedDict(),
         condition=threading.Condition(lock),
-        refill_scheduled=False,
-        due_time=0.0,
-        schedule_version=0,
+        total_maps=0,
         foreground_waiting=0,
+        active_key=None,
+        active_cancellation=None,
+        priority_key=None,
     )
 
 
 def prefetch_enabled(serving_config: ServingConfig) -> bool:
-    return serving_config.prefetch_queue_max_size > 0 and serving_config.prefetch_max_queues > 0
+    return serving_config.prefetch_capacity > 0 and serving_config.prefetch_max_queues > 0
 
 
 def create_serving_state(
@@ -951,6 +983,7 @@ def initialize_serving_state(state: ServingState) -> None:
 
 def warmup_generate_request() -> GenerateRequest:
     return GenerateRequest(
+        num_maps=1,
         episode_length=253,
         recommended_candidates=8,
         shortlist_candidates=1024,
@@ -1034,11 +1067,79 @@ def add_serving_profile(
 
 
 def prefetch_request_key(generate_request: GenerateRequest) -> str:
-    return generate_request.model_dump_json()
+    return generate_request.model_dump_json(exclude={"num_maps"})
 
 
-def serialize_generate_response(response: dict) -> str:
-    return f"{app.json.dumps(response)}\n"
+def queue_id(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def log_queue_state(state: ServingState, key: str, event: str) -> None:
+    # Call with the queue condition held when prefetch is enabled.
+    prefetch = state.prefetch
+    queue = None if prefetch is None else prefetch.queues.get(key)
+    logging.info(
+        "%s queue=%s size=%d target=%d refill_batches=%d total_maps=%d/%d",
+        event,
+        queue_id(key),
+        0 if queue is None else len(queue.maps),
+        0 if queue is None else queue.target,
+        0 if queue is None else queue.refill_batches,
+        0 if prefetch is None else prefetch.total_maps,
+        state.serving_config.prefetch_capacity,
+    )
+
+
+def prefetch_eviction_order(prefetch: PrefetchState, key: str) -> list[str]:
+    return sorted(
+        (other for other in prefetch.queues if other != key),
+        key=lambda other: (
+            prefetch.queues[other].last_low_capacity,
+            prefetch.queues[other].last_used,
+        ),
+    )
+
+
+def drop_queue_maps(state: ServingState, key: str, count: int) -> None:
+    prefetch = state.prefetch
+    queue = prefetch.queues[key]
+    for _ in range(count):
+        queue.maps.pop()
+    prefetch.total_maps -= count
+    queue.target = min(queue.target, len(queue.maps))
+    queue.growth_armed = False
+    queue.refill_batches = 0
+    log_queue_state(state, key, f"Evicted {count} maps")
+
+
+def reserve_queue_target(state: ServingState, key: str, target: int) -> None:
+    prefetch = state.prefetch
+    queue = prefetch.queues[key]
+    queue.target = min(target, state.serving_config.prefetch_capacity)
+    excess = (
+        sum(other.target for other in prefetch.queues.values())
+        - state.serving_config.prefetch_capacity
+    )
+    for other_key in prefetch_eviction_order(prefetch, key):
+        if excess <= 0:
+            break
+        other = prefetch.queues[other_key]
+        reduction = min(excess, other.target)
+        other.target -= reduction
+        excess -= reduction
+        if len(other.maps) > other.target:
+            drop_queue_maps(state, other_key, len(other.maps) - other.target)
+        elif reduction:
+            other.growth_armed = False
+            if other.target == 0:
+                other.refill_batches = 0
+            log_queue_state(state, other_key, "Reduced target")
+
+
+def mark_queue_full(queue: PrefetchQueueState) -> None:
+    if queue.target > 0 and len(queue.maps) >= queue.target:
+        queue.growth_armed = True
+        queue.refill_batches = 0
 
 
 def touch_prefetch_queue(
@@ -1053,72 +1154,114 @@ def touch_prefetch_queue(
     if queue_state is None:
         queue_state = PrefetchQueueState(
             request=generate_request,
-            responses=deque(),
-            refill_debt=0,
+            maps=deque(),
+            target=0,
+            refill_batches=0,
+            growth_armed=False,
+            last_used=time.monotonic(),
+            last_low_capacity=-math.inf,
         )
         prefetch.queues[key] = queue_state
         while len(prefetch.queues) > state.serving_config.prefetch_max_queues:
-            prefetch.queues.popitem(last=False)
+            victim = prefetch_eviction_order(prefetch, key)[0]
+            drop_queue_maps(state, victim, len(prefetch.queues[victim].maps))
+            del prefetch.queues[victim]
     else:
         prefetch.queues.move_to_end(key)
+        queue_state.last_used = time.monotonic()
+    if queue_state.target == 0:
+        reserve_queue_target(state, key, state.serving_config.prefetch_initial_target)
+    if queue_state.target < generate_request.num_maps:
+        reserve_queue_target(state, key, generate_request.num_maps)
+    mark_queue_full(queue_state)
     return queue_state
 
 
-def schedule_prefetch_refill(
-    state: ServingState,
-    key: str,
-    generate_request: GenerateRequest,
-) -> None:
-    if state.prefetch is None:
-        return
+def split_response_maps(response: dict) -> list[dict]:
+    return [
+        {
+            "rooms": {name: values[index] for name, values in response["rooms"].items()},
+            "edges": {name: values[index] for name, values in response["edges"].items()},
+            "toilet_crossing_room_placement_idx": response["toilet_crossing_room_placement_idx"][
+                index
+            ],
+        }
+        for index in range(len(response["rooms"]["id"]))
+    ]
+
+
+def append_queue_maps(state: ServingState, key: str, maps: list[dict]) -> None:
     prefetch = state.prefetch
-    with prefetch.condition:
-        queue_state = touch_prefetch_queue(state, key, generate_request)
-        queue_state.refill_debt += 2
-        prefetch.refill_scheduled = True
-        prefetch.due_time = time.monotonic() + state.serving_config.prefetch_delay_seconds
-        prefetch.schedule_version += 1
-        prefetch.condition.notify()
+    queue = prefetch.queues[key]
+    needed = min(len(maps), max(0, queue.target - len(queue.maps)))
+    shortage = needed - (state.serving_config.prefetch_capacity - prefetch.total_maps)
+    for victim in prefetch_eviction_order(prefetch, key):
+        if shortage <= 0:
+            break
+        count = min(shortage, len(prefetch.queues[victim].maps))
+        if count:
+            drop_queue_maps(state, victim, count)
+            shortage -= count
+    count = min(len(maps), state.serving_config.prefetch_capacity - prefetch.total_maps)
+    queue.maps.extend(maps[:count])
+    prefetch.total_maps += count
+    mark_queue_full(queue)
+    log_queue_state(state, key, f"Stored {count}/{len(maps)} generated maps")
 
 
-def pop_prefetch_response(
-    state: ServingState,
-    key: str,
-    generate_request: GenerateRequest,
-) -> str | None:
-    if state.prefetch is None:
-        return None
+def take_queue_maps(state: ServingState, key: str, count: int) -> list[dict]:
     prefetch = state.prefetch
-    with prefetch.condition:
-        queue_state = touch_prefetch_queue(state, key, generate_request)
-        if not queue_state.responses:
-            return None
-        return queue_state.responses.popleft()
+    queue = prefetch.queues[key]
+    maps = [queue.maps.popleft() for _ in range(count)]
+    prefetch.total_maps -= count
+    if len(queue.maps) < queue.target * state.serving_config.prefetch_low_capacity_fraction:
+        queue.last_low_capacity = time.monotonic()
+        if queue.growth_armed:
+            queue.growth_armed = False
+            reserve_queue_target(state, key, queue.target * 2)
+            log_queue_state(state, key, "Low capacity: increased target")
+    prefetch.condition.notify_all()
+    return maps
 
 
-def foreground_generation_waiting(state: ServingState) -> bool:
-    if state.prefetch is None:
-        return False
-    return state.prefetch.foreground_waiting > 0
-
-
-def acquire_foreground_generation_lock(state: ServingState) -> None:
+def acquire_foreground_generation_lock(state: ServingState, key: str) -> None:
     if state.prefetch is not None:
         with state.prefetch.condition:
             state.prefetch.foreground_waiting += 1
-            state.prefetch.condition.notify()
+            state.prefetch.priority_key = key
+            if state.prefetch.active_key is not None:
+                if state.prefetch.active_key != key:
+                    log_queue_state(
+                        state,
+                        state.prefetch.active_key,
+                        f"Cancellation triggered by foreground queue={queue_id(key)}",
+                    )
+                    state.prefetch.active_cancellation.set()
+                else:
+                    log_queue_state(state, key, "Foreground waiting for matching background batch")
+            state.prefetch.condition.notify_all()
     state.lock.acquire()
     if state.prefetch is not None:
         with state.prefetch.condition:
             state.prefetch.foreground_waiting -= 1
-            state.prefetch.condition.notify()
+            state.prefetch.condition.notify_all()
+
+
+def release_generation_lock(state: ServingState) -> None:
+    state.lock.release()
+    if state.prefetch is not None:
+        with state.prefetch.condition:
+            state.prefetch.condition.notify_all()
 
 
 def run_generation_with_generation_lock_held(
     state: ServingState,
     configs: list[GenerateConfig],
     serving_profiler: GenerationProfiler,
+    cancellation_event: threading.Event,
 ) -> GenerationRunResult:
+    if cancellation_event.is_set():
+        raise GenerationCancelled("generation pipeline cancelled")
     profile_time = profile_start(state.profile)
     (
         episode_data,
@@ -1134,6 +1277,7 @@ def run_generation_with_generation_lock_held(
         state.balance_model,
         configs,
         state.device,
+        cancellation_event=cancellation_event,
         verify_outcome_consistency=state.serving_config.verify_outcome_consistency,
         profile=state.profile,
     )
@@ -1164,13 +1308,16 @@ def run_foreground_generation(
     state: ServingState,
     configs: list[GenerateConfig],
     serving_profiler: GenerationProfiler,
+    key: str,
 ) -> GenerationRunResult:
-    acquire_foreground_generation_lock(state)
+    acquire_foreground_generation_lock(state, key)
     try:
         with torch.inference_mode():
-            return run_generation_with_generation_lock_held(state, configs, serving_profiler)
+            return run_generation_with_generation_lock_held(
+                state, configs, serving_profiler, threading.Event()
+            )
     finally:
-        state.lock.release()
+        release_generation_lock(state)
 
 
 def build_generate_response_data(
@@ -1328,7 +1475,9 @@ def generate_response_data_uncached_validated(
         profile_time,
     )
 
-    generation_result = run_foreground_generation(state, configs, serving_profiler)
+    generation_result = run_foreground_generation(
+        state, configs, serving_profiler, prefetch_request_key(generate_request)
+    )
     return build_generate_response_data(
         state,
         generate_request,
@@ -1338,9 +1487,10 @@ def generate_response_data_uncached_validated(
     )
 
 
-def generate_prefetch_response_with_generation_lock_held(
+def generate_batch_with_generation_lock_held(
     state: ServingState,
     generate_request: GenerateRequest,
+    cancellation_event: threading.Event,
 ) -> dict:
     serving_profiler = GenerationProfiler(state.profile)
     request_start = profile_start(state.profile)
@@ -1359,7 +1509,10 @@ def generate_prefetch_response_with_generation_lock_held(
             state,
             configs,
             serving_profiler,
+            cancellation_event,
         )
+    if cancellation_event.is_set():
+        raise GenerationCancelled("generation pipeline cancelled")
     return build_generate_response_data(
         state,
         generate_request,
@@ -1369,103 +1522,86 @@ def generate_prefetch_response_with_generation_lock_held(
     )
 
 
-def reschedule_prefetch_refill_locked(state: ServingState) -> None:
-    if state.prefetch is None:
-        return
-    state.prefetch.refill_scheduled = True
-    state.prefetch.due_time = time.monotonic() + state.serving_config.prefetch_delay_seconds
-    state.prefetch.schedule_version += 1
-    state.prefetch.condition.notify()
-
-
 def next_prefetch_refill_key(state: ServingState) -> str | None:
-    if state.prefetch is None:
+    prefetch = state.prefetch
+    if prefetch.foreground_waiting:
         return None
-    for key, queue_state in state.prefetch.queues.items():
-        if queue_state.refill_debt <= 0:
-            continue
-        if len(queue_state.responses) >= state.serving_config.prefetch_queue_max_size:
-            queue_state.refill_debt = 0
-            continue
-        return key
-    return None
-
-
-def append_prefetch_response(
-    state: ServingState,
-    key: str,
-    response: dict,
-) -> bool:
-    if state.prefetch is None:
-        return False
-    prefetch = state.prefetch
-    with prefetch.condition:
-        queue_state = prefetch.queues.get(key)
-        if queue_state is None:
-            return False
-        if len(queue_state.responses) >= state.serving_config.prefetch_queue_max_size:
-            queue_state.refill_debt = 0
-            return False
-        queue_state.responses.append(serialize_generate_response(response))
-        queue_state.refill_debt -= 1
-        if len(queue_state.responses) >= state.serving_config.prefetch_queue_max_size:
-            queue_state.refill_debt = 0
-        return True
-
-
-def run_prefetch_refill_pass(state: ServingState, schedule_version: int) -> None:
-    if state.prefetch is None:
-        return
-    prefetch = state.prefetch
-    while True:
-        with prefetch.condition:
-            if prefetch.schedule_version != schedule_version:
-                return
-            if foreground_generation_waiting(state):
-                reschedule_prefetch_refill_locked(state)
-                return
-            key = next_prefetch_refill_key(state)
-            if key is None:
-                prefetch.refill_scheduled = False
-                return
-            generate_request = prefetch.queues[key].request
-        if not state.lock.acquire(blocking=False):
-            with prefetch.condition:
-                if prefetch.schedule_version == schedule_version:
-                    reschedule_prefetch_refill_locked(state)
-            return
-        try:
-            try:
-                response = generate_prefetch_response_with_generation_lock_held(
-                    state,
-                    generate_request,
-                )
-            except BaseException:
-                logging.exception("Prefetch refill failed")
-                with prefetch.condition:
-                    queue_state = prefetch.queues.get(key)
-                    if queue_state is not None:
-                        queue_state.refill_debt = 0
-                return
-        finally:
-            state.lock.release()
-        append_prefetch_response(state, key, response)
+    eligible = [
+        key
+        for key, queue in prefetch.queues.items()
+        if queue.refill_batches > 0 and len(queue.maps) < queue.target
+    ]
+    if prefetch.priority_key in eligible:
+        return prefetch.priority_key
+    return (
+        min(
+            eligible,
+            key=lambda key: (
+                len(prefetch.queues[key].maps) / prefetch.queues[key].target,
+                -prefetch.queues[key].last_used,
+            ),
+        )
+        if eligible
+        else None
+    )
 
 
 def run_prefetch_worker(state: ServingState) -> None:
-    if state.prefetch is None:
-        return
     prefetch = state.prefetch
     while True:
         with prefetch.condition:
-            while not prefetch.refill_scheduled:
+            while True:
+                key = next_prefetch_refill_key(state)
+                if key is not None and state.lock.acquire(blocking=False):
+                    break
                 prefetch.condition.wait()
-            delay_seconds = prefetch.due_time - time.monotonic()
-            if delay_seconds > 0:
-                prefetch.condition.wait(delay_seconds)
-                continue
-            schedule_version = prefetch.schedule_version
-        run_prefetch_refill_pass(state, schedule_version)
+            queue = prefetch.queues[key]
+            cancellation_event = threading.Event()
+            prefetch.active_key = key
+            prefetch.active_cancellation = cancellation_event
+            prefetch.priority_key = None
+            queue.refill_batches -= 1
+            log_queue_state(state, key, "Background batch started")
+        try:
+            response = generate_batch_with_generation_lock_held(
+                state, queue.request, cancellation_event
+            )
+            maps = split_response_maps(response)
+            with prefetch.condition:
+                if prefetch.queues.get(key) is queue:
+                    append_queue_maps(state, key, maps)
+                    log_queue_state(state, key, "Background batch finished")
+        except GenerationCancelled:
+            logging.info("Background batch cancelled queue=%s", queue_id(key))
+        except Exception:
+            logging.exception("Background refill failed queue=%s", queue_id(key))
+            with prefetch.condition:
+                queue.refill_batches = 0
+        finally:
+            try:
+                if cancellation_event.is_set() and is_gpu(state.device):
+                    gpu_backend(state.device).synchronize(state.device)
+            finally:
+                with prefetch.condition:
+                    prefetch.active_key = None
+                    prefetch.active_cancellation = None
+                    state.lock.release()
+                    prefetch.condition.notify_all()
+
+
+def combine_response_maps(maps: list[dict], stats: dict[str, int]) -> dict:
+    return {
+        "stats": stats | {"num_valid": len(maps)},
+        "rooms": {name: [entry["rooms"][name] for entry in maps] for name in maps[0]["rooms"]},
+        "edges": {name: [entry["edges"][name] for entry in maps] for name in maps[0]["edges"]},
+        "toilet_crossing_room_placement_idx": [
+            entry["toilet_crossing_room_placement_idx"] for entry in maps
+        ],
+    }
+
+
+class MapGenerationUnavailable(Exception):
+    pass
 
 
 @app.post("/generate")
@@ -1475,34 +1611,103 @@ def generate_response():
     logging.info("Request body: %s", body)
     generate_request = GenerateRequest.model_validate(body)
     response_data = generate_response_data(state, generate_request)
-    if isinstance(response_data, str):
-        return Response(response_data, mimetype="application/json")
     return jsonify(response_data)
 
 
 def generate_response_data(
     state: ServingState,
     generate_request: GenerateRequest,
-) -> dict | str:
-    serving_profiler = GenerationProfiler(state.profile)
-    profile_time = profile_start(state.profile)
+) -> dict:
     validate_generate_request(generate_request, state.rooms)
-    add_serving_profile(
-        serving_profiler,
-        state.device,
-        "python.serve.validate_request",
-        profile_time,
-    )
-    if state.prefetch is None:
-        return generate_response_data_uncached_validated(state, generate_request)
     key = prefetch_request_key(generate_request)
-    response = pop_prefetch_response(state, key, generate_request)
-    if response is not None:
-        schedule_prefetch_refill(state, key, generate_request)
+    count = generate_request.num_maps
+    prefetch = state.prefetch
+    stats = {"num_generated": 0, "num_pre_valid": 0}
+    if prefetch is not None:
+        if count > state.serving_config.prefetch_capacity:
+            raise ValueError("num_maps must not exceed prefetch_capacity")
+        with prefetch.condition:
+            queue = touch_prefetch_queue(state, key, generate_request)
+            log_queue_state(state, key, f"Generate request num_maps={count}")
+            if len(queue.maps) >= count:
+                maps = take_queue_maps(state, key, count)
+                log_queue_state(state, key, f"Generate cache hit returned={count}")
+                return combine_response_maps(maps, stats)
+            log_queue_state(state, key, "Generate cache miss")
+    else:
+        log_queue_state(state, key, f"Generate request num_maps={count} caching disabled")
+    acquire_foreground_generation_lock(state, key)
+    profiles = []
+    available = []
+    try:
+        for _ in range(state.serving_config.foreground_max_batches):
+            if prefetch is not None:
+                with prefetch.condition:
+                    if len(queue.maps) >= count:
+                        break
+            response = generate_batch_with_generation_lock_held(
+                state, generate_request, threading.Event()
+            )
+            for name in stats:
+                stats[name] += response["stats"][name]
+            if state.profile:
+                profiles.extend(response["profile"])
+            maps = split_response_maps(response)
+            if prefetch is not None:
+                with prefetch.condition:
+                    append_queue_maps(state, key, maps)
+            else:
+                available.extend(maps)
+                if len(available) >= count:
+                    break
+        if prefetch is not None:
+            with prefetch.condition:
+                if len(queue.maps) < count:
+                    raise MapGenerationUnavailable(
+                        f"Only {len(queue.maps)}/{count} maps available after bounded foreground generation"
+                    )
+                available = take_queue_maps(state, key, count)
+        elif len(available) < count:
+            raise MapGenerationUnavailable(
+                f"Only {len(available)}/{count} maps available after bounded foreground generation"
+            )
+        response = combine_response_maps(available[:count], stats)
+        if state.profile:
+            response["profile"] = profiles
         return response
-    response = generate_response_data_uncached_validated(state, generate_request)
-    schedule_prefetch_refill(state, key, generate_request)
-    return response
+    finally:
+        if prefetch is not None:
+            with prefetch.condition:
+                log_queue_state(state, key, "Generate request finished")
+        else:
+            log_queue_state(state, key, "Generate request finished caching disabled")
+        release_generation_lock(state)
+
+
+def request_prefetch_refill(state: ServingState, generate_request: GenerateRequest) -> dict:
+    validate_generate_request(generate_request, state.rooms)
+    key = prefetch_request_key(generate_request)
+    prefetch = state.prefetch
+    if prefetch is None:
+        log_queue_state(state, key, "Refill request ignored: caching disabled")
+        return {"queue": queue_id(key), "funded_batches": 0}
+    if generate_request.num_maps > state.serving_config.prefetch_capacity:
+        raise ValueError("num_maps must not exceed prefetch_capacity")
+    with prefetch.condition:
+        queue = touch_prefetch_queue(state, key, generate_request)
+        funded = (
+            state.serving_config.prefetch_refill_batches if len(queue.maps) < queue.target else 0
+        )
+        queue.refill_batches += funded
+        log_queue_state(state, key, f"Refill request funded_batches={funded}")
+        prefetch.condition.notify_all()
+        return {"queue": queue_id(key), "funded_batches": funded}
+
+
+@app.post("/refill")
+def refill_response():
+    generate_request = GenerateRequest.model_validate(request.get_json(silent=False))
+    return jsonify(request_prefetch_refill(serving_state(), generate_request)), 202
 
 
 @app.get("/health")
@@ -1515,6 +1720,11 @@ def value_error_response(error: ValueError):
     return jsonify({"error": str(error)}), 400
 
 
+@app.errorhandler(MapGenerationUnavailable)
+def generation_unavailable_response(error: MapGenerationUnavailable):
+    return jsonify({"error": str(error)}), 503
+
+
 @app.errorhandler(ValidationError)
 def validation_error_response(error: ValidationError):
     return jsonify({"error": error.errors()}), 400
@@ -1523,6 +1733,32 @@ def validation_error_response(error: ValidationError):
 @app.errorhandler(BadRequest)
 def bad_request_response(error: BadRequest):
     return jsonify({"error": error.description}), 400
+
+
+async def run_http_server(state: ServingState) -> None:
+    config = HypercornConfig()
+    config.bind = [f"{state.serving_config.host}:{state.serving_config.port}"]
+    config.accesslog = logging.getLogger("hypercorn.access")
+    config.errorlog = logging.getLogger("hypercorn.error")
+    # Queue operations assume only one HTTP request executes at a time.
+    asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=1))
+    try:
+        await serve(app, config, mode="wsgi")
+    finally:
+        # Stop refills before Python waits for their generation executor threads.
+        prefetch = state.prefetch
+        if prefetch is not None:
+            with prefetch.condition:
+                for queue in prefetch.queues.values():
+                    queue.refill_batches = 0
+                if prefetch.active_cancellation is not None:
+                    logging.info(
+                        "Cancellation triggered by server shutdown queue=%s",
+                        queue_id(prefetch.active_key),
+                    )
+                    prefetch.active_cancellation.set()
+            with state.lock:
+                pass
 
 
 def main() -> None:
@@ -1538,11 +1774,7 @@ def main() -> None:
     )
     initialize_serving_state(state)
     run_warmup_requests(state)
-    app.run(
-        host=serving_config.host,
-        port=serving_config.port,
-        threaded=False,
-    )
+    asyncio.run(run_http_server(state))
 
 
 if __name__ == "__main__":

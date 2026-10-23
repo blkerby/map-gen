@@ -6,6 +6,7 @@ dependencies:
   - ipython
   - maturin>=1.7,<2.0
   - flask
+  - hypercorn
   - numpy
   - pytorch
   - safetensors

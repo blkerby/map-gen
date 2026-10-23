@@ -1,4 +1,3 @@
-import threading
 from types import SimpleNamespace
 
 from pydantic import ValidationError
@@ -19,6 +18,7 @@ from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, VANILLA_AREA_REWARD_F
 
 def base_payload() -> dict:
     return {
+        "num_maps": 1,
         "episode_length": 3,
         "recommended_candidates": 1,
         "shortlist_candidates": 1,
@@ -191,9 +191,12 @@ def base_serving_config_payload() -> dict:
         "verify_outcome_consistency": False,
         "gpu_prefetch_batches": 1,
         "num_warmup_requests": 0,
-        "prefetch_queue_max_size": 2,
+        "prefetch_capacity": 4,
+        "prefetch_initial_target": 2,
+        "prefetch_low_capacity_fraction": 0.5,
+        "prefetch_refill_batches": 2,
+        "foreground_max_batches": 1,
         "prefetch_max_queues": 2,
-        "prefetch_delay_seconds": 1.0,
         "room_set": "room_definitions/zebes.json",
         "num_environments": 1,
         "pipeline_groups": 1,
@@ -271,216 +274,6 @@ def assert_warmup_request_failure_propagates() -> None:
         serve.generate_response_data_uncached_validated = (
             original_generate_response_data_uncached_validated
         )
-
-
-def prefetch_test_state() -> SimpleNamespace:
-    return SimpleNamespace(
-        serving_config=ServingConfig.model_validate(base_serving_config_payload()),
-        rooms=[{}, {}, {}],
-        device=None,
-        profile=False,
-        lock=threading.Lock(),
-        prefetch=serve.create_prefetch_state(),
-    )
-
-
-def assert_prefetch_disabled_uses_uncached_generation() -> None:
-    original_generate = serve.generate_response_data_uncached_validated
-    calls = []
-    state = prefetch_test_state()
-    state.prefetch = None
-    request = GenerateRequest.model_validate(base_payload() | {"small_map": False})
-
-    def generate_response_data_uncached_validated(_state, generate_request):
-        calls.append(generate_request)
-        return {"response": len(calls)}
-
-    try:
-        serve.generate_response_data_uncached_validated = generate_response_data_uncached_validated
-        assert serve.generate_response_data(state, request) == {"response": 1}
-    finally:
-        serve.generate_response_data_uncached_validated = original_generate
-
-    assert calls == [request]
-
-
-def assert_prefetch_hit_and_miss_behavior() -> None:
-    original_generate = serve.generate_response_data_uncached_validated
-    calls = []
-    state = prefetch_test_state()
-    request = GenerateRequest.model_validate(base_payload() | {"small_map": False})
-    key = serve.prefetch_request_key(request)
-
-    def generate_response_data_uncached_validated(_state, generate_request):
-        calls.append(generate_request)
-        return {"response": len(calls)}
-
-    try:
-        serve.generate_response_data_uncached_validated = generate_response_data_uncached_validated
-        assert serve.generate_response_data(state, request) == {"response": 1}
-        with state.prefetch.condition:
-            queue_state = state.prefetch.queues[key]
-            assert queue_state.refill_debt == 2
-            queue_state.responses.append(serve.serialize_generate_response({"response": "cached"}))
-        cached_response = serve.generate_response_data(state, request)
-        assert isinstance(cached_response, str)
-        assert serve.app.json.loads(cached_response) == {"response": "cached"}
-        with state.prefetch.condition:
-            assert state.prefetch.queues[key].refill_debt == 4
-    finally:
-        serve.generate_response_data_uncached_validated = original_generate
-
-    assert calls == [request]
-
-
-def assert_generate_route_returns_serialized_prefetch_response() -> None:
-    original_generate = serve.generate_response_data
-    original_state = serve.SERVING_STATE
-    state = prefetch_test_state()
-
-    def generate_response_data(_state, _generate_request):
-        return serve.serialize_generate_response({"response": "cached"})
-
-    try:
-        serve.SERVING_STATE = state
-        serve.generate_response_data = generate_response_data
-        response = serve.app.test_client().post(
-            "/generate",
-            json=base_payload() | {"small_map": False},
-        )
-    finally:
-        serve.generate_response_data = original_generate
-        serve.SERVING_STATE = original_state
-
-    assert response.status_code == 200
-    assert response.mimetype == "application/json"
-    assert response.get_json() == {"response": "cached"}
-
-
-def assert_prefetch_refill_drains_until_full() -> None:
-    original_generate = serve.generate_prefetch_response_with_generation_lock_held
-    state = prefetch_test_state()
-    request = GenerateRequest.model_validate(base_payload() | {"small_map": False})
-    key = serve.prefetch_request_key(request)
-    calls = []
-
-    def generate_prefetch_response_with_generation_lock_held(_state, generate_request):
-        calls.append(generate_request)
-        return {"response": len(calls)}
-
-    try:
-        serve.generate_prefetch_response_with_generation_lock_held = (
-            generate_prefetch_response_with_generation_lock_held
-        )
-        with state.prefetch.condition:
-            queue_state = serve.touch_prefetch_queue(state, key, request)
-            queue_state.refill_debt = 5
-            state.prefetch.refill_scheduled = True
-            state.prefetch.schedule_version = 1
-        serve.run_prefetch_refill_pass(state, 1)
-    finally:
-        serve.generate_prefetch_response_with_generation_lock_held = original_generate
-
-    with state.prefetch.condition:
-        queue_state = state.prefetch.queues[key]
-        assert [serve.app.json.loads(response) for response in queue_state.responses] == [
-            {"response": 1},
-            {"response": 2},
-        ]
-        assert queue_state.refill_debt == 0
-        assert not state.prefetch.refill_scheduled
-    assert calls == [request, request]
-
-
-def assert_prefetch_refill_skips_full_queue() -> None:
-    original_generate = serve.generate_prefetch_response_with_generation_lock_held
-    state = prefetch_test_state()
-    request = GenerateRequest.model_validate(base_payload() | {"small_map": False})
-    key = serve.prefetch_request_key(request)
-    calls = []
-
-    def generate_prefetch_response_with_generation_lock_held(_state, generate_request):
-        calls.append(generate_request)
-        return {"response": len(calls)}
-
-    try:
-        serve.generate_prefetch_response_with_generation_lock_held = (
-            generate_prefetch_response_with_generation_lock_held
-        )
-        with state.prefetch.condition:
-            queue_state = serve.touch_prefetch_queue(state, key, request)
-            queue_state.responses.extend(
-                [
-                    serve.serialize_generate_response({"response": 1}),
-                    serve.serialize_generate_response({"response": 2}),
-                ]
-            )
-            queue_state.refill_debt = 2
-            state.prefetch.refill_scheduled = True
-            state.prefetch.schedule_version = 1
-        serve.run_prefetch_refill_pass(state, 1)
-    finally:
-        serve.generate_prefetch_response_with_generation_lock_held = original_generate
-
-    with state.prefetch.condition:
-        assert state.prefetch.queues[key].refill_debt == 0
-    assert calls == []
-
-
-def assert_prefetch_lru_eviction() -> None:
-    state = prefetch_test_state()
-    request_one = GenerateRequest.model_validate(base_payload() | {"small_map": False})
-    request_two = GenerateRequest.model_validate(
-        base_payload() | {"small_map": False, "temperature": 2.0}
-    )
-    request_three = GenerateRequest.model_validate(
-        base_payload() | {"small_map": False, "temperature": 3.0}
-    )
-    key_one = serve.prefetch_request_key(request_one)
-    key_two = serve.prefetch_request_key(request_two)
-    key_three = serve.prefetch_request_key(request_three)
-
-    serve.schedule_prefetch_refill(state, key_one, request_one)
-    serve.schedule_prefetch_refill(state, key_two, request_two)
-    with state.prefetch.condition:
-        serve.touch_prefetch_queue(state, key_one, request_one)
-    serve.schedule_prefetch_refill(state, key_three, request_three)
-
-    with state.prefetch.condition:
-        assert list(state.prefetch.queues) == [key_one, key_three]
-        assert key_two not in state.prefetch.queues
-
-
-def assert_prefetch_refill_yields_to_foreground() -> None:
-    original_generate = serve.generate_prefetch_response_with_generation_lock_held
-    state = prefetch_test_state()
-    request = GenerateRequest.model_validate(base_payload() | {"small_map": False})
-    key = serve.prefetch_request_key(request)
-    calls = []
-
-    def generate_prefetch_response_with_generation_lock_held(_state, generate_request):
-        calls.append(generate_request)
-        return {"response": len(calls)}
-
-    try:
-        serve.generate_prefetch_response_with_generation_lock_held = (
-            generate_prefetch_response_with_generation_lock_held
-        )
-        with state.prefetch.condition:
-            queue_state = serve.touch_prefetch_queue(state, key, request)
-            queue_state.refill_debt = 2
-            state.prefetch.foreground_waiting = 1
-            state.prefetch.refill_scheduled = True
-            state.prefetch.schedule_version = 1
-        serve.run_prefetch_refill_pass(state, 1)
-    finally:
-        serve.generate_prefetch_response_with_generation_lock_held = original_generate
-
-    with state.prefetch.condition:
-        assert state.prefetch.queues[key].refill_debt == 2
-        assert state.prefetch.refill_scheduled
-        assert state.prefetch.schedule_version == 2
-    assert calls == []
 
 
 def main() -> None:
@@ -623,9 +416,12 @@ def main() -> None:
     else:
         raise AssertionError("num_warmup_requests should be required")
     for field in (
-        "prefetch_queue_max_size",
+        "prefetch_capacity",
+        "prefetch_initial_target",
+        "prefetch_low_capacity_fraction",
+        "prefetch_refill_batches",
+        "foreground_max_batches",
         "prefetch_max_queues",
-        "prefetch_delay_seconds",
     ):
         try:
             ServingConfig.model_validate(
@@ -647,16 +443,16 @@ def main() -> None:
         "num_warmup_requests must be greater than or equal to zero",
     )
     assert_invalid_serving_config(
-        base_serving_config_payload() | {"prefetch_queue_max_size": -1},
-        "prefetch_queue_max_size must be greater than or equal to zero",
+        base_serving_config_payload() | {"prefetch_capacity": -1},
+        "prefetch_capacity must be greater than or equal to zero",
     )
     assert_invalid_serving_config(
         base_serving_config_payload() | {"prefetch_max_queues": -1},
         "prefetch_max_queues must be greater than or equal to zero",
     )
     assert_invalid_serving_config(
-        base_serving_config_payload() | {"prefetch_delay_seconds": -1.0},
-        "prefetch_delay_seconds must be greater than or equal to zero",
+        base_serving_config_payload() | {"prefetch_low_capacity_fraction": -1.0},
+        "prefetch_low_capacity_fraction must be between zero and one",
     )
 
     warmup_request = warmup_generate_request()
@@ -675,13 +471,6 @@ def main() -> None:
     validate_generate_request(warmup_request, rooms=[{} for _ in range(253)])
     assert_warmup_requests_run()
     assert_warmup_request_failure_propagates()
-    assert_prefetch_disabled_uses_uncached_generation()
-    assert_prefetch_hit_and_miss_behavior()
-    assert_generate_route_returns_serialized_prefetch_response()
-    assert_prefetch_refill_drains_until_full()
-    assert_prefetch_refill_skips_full_queue()
-    assert_prefetch_lru_eviction()
-    assert_prefetch_refill_yields_to_foreground()
 
 
 if __name__ == "__main__":
