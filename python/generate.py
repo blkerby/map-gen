@@ -1814,6 +1814,7 @@ def run_group_producer(
     try:
         group.env.clear()
         group.env.set_max_return_distances(group.config.generation_variable_floats)
+        group.env.set_initial_item_conditions(group.config.generation_variable_floats)
         initial_result, initial_step = score_initial_action(
             group,
             group_index,

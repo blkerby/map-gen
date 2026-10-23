@@ -607,6 +607,8 @@ def validate_config(config: Config) -> None:
         sum(probabilities), 1.0
     ):
         raise ValueError("initial_item_start_probabilities must be nonnegative and sum to one")
+    if sum(probabilities[1:]) > 0 and not config.features.frontier_mask:
+        raise ValueError("initial-item conditioning requires features.frontier_mask")
     probability = config.generation.initial_item_wall_jump_probability
     if not math.isfinite(probability) or not 0 <= probability <= 1:
         raise ValueError("initial_item_wall_jump_probability must be between zero and one")

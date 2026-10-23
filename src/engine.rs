@@ -275,6 +275,10 @@ impl<T> OutputShard<T> {
 
 enum WorkerCommand {
     Clear,
+    SetInitialItemConditions {
+        starts: InputShard<i64>,
+        graphs: InputShard<i64>,
+    },
     SetMaxReturnDistances {
         limits: InputShard<f32>,
     },
@@ -469,6 +473,7 @@ impl WorkerCommand {
     fn profile_metric(&self) -> Option<ProfileMetric> {
         match self {
             WorkerCommand::Clear => Some(ProfileMetric::WorkerClear),
+            WorkerCommand::SetInitialItemConditions { .. } => None,
             WorkerCommand::SetMaxReturnDistances { .. } => None,
             WorkerCommand::VerifyOutcomeConsistency => {
                 Some(ProfileMetric::WorkerVerifyOutcomeConsistency)
@@ -627,6 +632,14 @@ fn worker_loop(
             WorkerCommand::Clear => {
                 for env in &mut environments {
                     env.clear(&common_data);
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::SetInitialItemConditions { starts, graphs } => {
+                let starts = unsafe { starts.into_slice() };
+                let graphs = unsafe { graphs.into_slice() };
+                for ((env, &start), &graph) in environments.iter_mut().zip(starts).zip(graphs) {
+                    env.set_initial_item(start as usize, graph as usize, &common_data);
                 }
                 WorkerResponse::Done
             }
@@ -1118,6 +1131,8 @@ fn worker_loop(
                         if candidate_idx >= candidate_plans.len() {
                             let mut plan = FeaturePlan::default();
                             plan.kind = FeaturePlanKind::Padding;
+                            plan.known_initial_item_invalid =
+                                env.initial_item_terminal_invalid(&common_data);
                             plan.environment_idx = env_idx;
                             candidate_plans.push(plan);
                         }
@@ -1817,6 +1832,8 @@ fn worker_loop(
                     {
                         let mut plan = FeaturePlan::default();
                         plan.kind = FeaturePlanKind::Padding;
+                        plan.known_initial_item_invalid =
+                            env.initial_item_terminal_invalid(&common_data);
                         plan
                     } else {
                         env.feature_plan_with_scratch(
@@ -2301,6 +2318,8 @@ pub struct FeatureBuffers {
     frontier: Py<PyArray2<i8>>,
     frontier_door_variant: Py<PyArray1<DoorVariantIdx>>,
     frontier_area: Py<PyArray1<AreaIdx>>,
+    initial_item_reachability: Py<PyArray1<u8>>,
+    known_initial_item_invalid: Py<PyArray2<i8>>,
     frontier_occupancy: Py<PyArray2<u8>>,
     frontier_neighbor: Py<PyArray2<i16>>,
     frontier_neighbor_pair: Py<PyArray2<u8>>,
@@ -2494,6 +2513,8 @@ impl FeatureBuffers {
             frontier: required_py_field!(fields, "frontier"),
             frontier_door_variant: required_py_field!(fields, "frontier_door_variant"),
             frontier_area: required_py_field!(fields, "frontier_area"),
+            initial_item_reachability: required_py_field!(fields, "initial_item_reachability"),
+            known_initial_item_invalid: required_py_field!(fields, "known_initial_item_invalid"),
             frontier_occupancy: required_py_field!(fields, "frontier_occupancy"),
             frontier_neighbor: required_py_field!(fields, "frontier_neighbor"),
             frontier_neighbor_pair: required_py_field!(fields, "frontier_neighbor_pair"),
@@ -3089,12 +3110,14 @@ struct GlobalFeatureOutputShards {
     area_crossings_count: usize,
     connection_count: usize,
     toilet_crossed_room_count: usize,
+    known_initial_item_invalid: OutputShard<i8>,
 }
 
 struct FrontierFeatureOutputShards {
     frontier: OutputShard<i8>,
     frontier_door_variant: OutputShard<DoorVariantIdx>,
     frontier_area: OutputShard<AreaIdx>,
+    initial_item_reachability: OutputShard<u8>,
     frontier_occupancy: OutputShard<u8>,
     frontier_neighbor: OutputShard<i16>,
     frontier_neighbor_pair: OutputShard<u8>,
@@ -3144,12 +3167,14 @@ struct GlobalFeatureOutputSlices<'a> {
     area_crossings_count: usize,
     connection_count: usize,
     toilet_crossed_room_count: usize,
+    known_initial_item_invalid: &'a mut [i8],
 }
 
 struct FrontierFeatureOutputSlices<'a> {
     frontier: &'a mut [i8],
     frontier_door_variant: &'a mut [DoorVariantIdx],
     frontier_area: &'a mut [AreaIdx],
+    initial_item_reachability: &'a mut [u8],
     frontier_occupancy: &'a mut [u8],
     frontier_neighbor: &'a mut [i16],
     frontier_neighbor_pair: &'a mut [u8],
@@ -3223,6 +3248,7 @@ impl GlobalFeatureOutputShards {
             area_crossings_count: self.area_crossings_count,
             connection_count: self.connection_count,
             toilet_crossed_room_count: self.toilet_crossed_room_count,
+            known_initial_item_invalid: unsafe { self.known_initial_item_invalid.into_mut_slice() },
         }
     }
 }
@@ -3233,6 +3259,7 @@ impl FrontierFeatureOutputShards {
             frontier: unsafe { self.frontier.into_mut_slice() },
             frontier_door_variant: unsafe { self.frontier_door_variant.into_mut_slice() },
             frontier_area: unsafe { self.frontier_area.into_mut_slice() },
+            initial_item_reachability: unsafe { self.initial_item_reachability.into_mut_slice() },
             frontier_occupancy: unsafe { self.frontier_occupancy.into_mut_slice() },
             frontier_neighbor: unsafe { self.frontier_neighbor.into_mut_slice() },
             frontier_neighbor_pair: unsafe { self.frontier_neighbor_pair.into_mut_slice() },
@@ -3254,6 +3281,9 @@ impl GlobalFeatureOutputSlices<'_> {
         common: &CommonData,
         plan: &FeaturePlan,
     ) {
+        if !self.known_initial_item_invalid.is_empty() {
+            self.known_initial_item_invalid[idx] = plan.known_initial_item_invalid;
+        }
         if plan.kind == FeaturePlanKind::Padding {
             fill_output_row(&mut self.inventory, idx, self.inventory_count, 0);
             fill_output_row(&mut self.room_x, idx, self.room_count, 0);
@@ -3495,6 +3525,9 @@ impl GlobalFeatureOutputSlices<'_> {
 
     #[cfg(test)]
     fn write_features(&mut self, idx: usize, features: &Features) {
+        if !self.known_initial_item_invalid.is_empty() {
+            self.known_initial_item_invalid[idx] = features.known_initial_item_invalid[0];
+        }
         copy_output_row(
             &mut self.inventory,
             &features.inventory,
@@ -3676,6 +3709,9 @@ impl FrontierFeatureOutputSlices<'_> {
         );
         if !features.frontier_door_variant.is_empty() {
             self.frontier_door_variant[dst_idx] = features.frontier_door_variant[src_idx];
+        }
+        if !self.initial_item_reachability.is_empty() {
+            self.initial_item_reachability[dst_idx] = features.initial_item_reachability[src_idx];
         }
         if !features.frontier_area.is_empty() {
             self.frontier_area[dst_idx] = features.frontier_area[src_idx];
@@ -4019,6 +4055,8 @@ impl FeatureOutputSlices<'_> {
                 self.frontier_rows.frontier_door_variant[frontier_row_idx] =
                     frontier.door_variant_idx;
             }
+            self.frontier_rows.initial_item_reachability[frontier_row_idx] =
+                frontier.initial_item_reachability;
             if !self.frontier_rows.frontier_area.is_empty() {
                 self.frontier_rows.frontier_area[frontier_row_idx] = frontier.area;
             }
@@ -4597,6 +4635,7 @@ mod tests {
             area_crossings_count: 0,
             connection_count: 0,
             toilet_crossed_room_count: 0,
+            known_initial_item_invalid: OutputShard::empty(),
         }
     }
 
@@ -4605,6 +4644,7 @@ mod tests {
             frontier: OutputShard::empty(),
             frontier_door_variant: OutputShard::empty(),
             frontier_area: OutputShard::empty(),
+            initial_item_reachability: OutputShard::empty(),
             frontier_occupancy: OutputShard::empty(),
             frontier_neighbor: OutputShard::empty(),
             frontier_neighbor_pair: OutputShard::empty(),
@@ -4718,6 +4758,47 @@ mod tests {
 
 #[pymethods]
 impl EnvironmentGroup {
+    fn set_initial_item_conditions(
+        &mut self,
+        py: Python<'_>,
+        starts: PyReadonlyArray1<'_, i64>,
+        graphs: PyReadonlyArray1<'_, i64>,
+    ) -> PyResult<()> {
+        let starts = starts.as_slice()?;
+        let graphs = graphs.as_slice()?;
+        if self.action_count != 0
+            || starts.len() != self.num_environments
+            || graphs.len() != self.num_environments
+        {
+            return Err(PyValueError::new_err(
+                "set one initial-item scenario per environment before stepping",
+            ));
+        }
+        if starts.iter().zip(graphs).any(|(&start, &graph)| {
+            !self
+                .common_data
+                .initial_item
+                .validate_scenario(start, graph)
+        }) {
+            return Err(PyValueError::new_err("invalid initial-item scenario"));
+        }
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::SetInitialItemConditions {
+                    starts: InputShard::from_slice(&starts[worker.start..worker.end()]),
+                    graphs: InputShard::from_slice(&graphs[worker.start..worker.end()]),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
+    }
+
     fn set_max_return_distances(
         &mut self,
         py: Python<'_>,
@@ -6768,6 +6849,9 @@ impl EnvironmentGroup {
         let mut frontier = buffers.frontier.bind(py).readwrite();
         let mut frontier_door_variant = buffers.frontier_door_variant.bind(py).readwrite();
         let mut frontier_area = buffers.frontier_area.bind(py).readwrite();
+        let mut initial_item_reachability = buffers.initial_item_reachability.bind(py).readwrite();
+        let mut known_initial_item_invalid =
+            buffers.known_initial_item_invalid.bind(py).readwrite();
         let mut frontier_occupancy = buffers.frontier_occupancy.bind(py).readwrite();
         let mut frontier_neighbor = buffers.frontier_neighbor.bind(py).readwrite();
         let mut frontier_neighbor_pair = buffers.frontier_neighbor_pair.bind(py).readwrite();
@@ -6933,6 +7017,14 @@ impl EnvironmentGroup {
         let frontier_shape = frontier.as_array().shape().to_vec();
         let frontier_door_variant_shape = frontier_door_variant.as_array().shape().to_vec();
         let frontier_area_shape = frontier_area.as_array().shape().to_vec();
+        if initial_item_reachability.as_array().len() < frontier_row_count
+            || (known_initial_item_invalid.as_array().nrows() < snapshot_count
+                || known_initial_item_invalid.as_array().ncols() != 1)
+        {
+            return Err(PyValueError::new_err(
+                "initial-item feature buffer shapes disagree",
+            ));
+        }
         let frontier_occupancy_shape = frontier_occupancy.as_array().shape().to_vec();
         let frontier_neighbor_shape = frontier_neighbor.as_array().shape().to_vec();
         let frontier_neighbor_pair_shape = frontier_neighbor_pair.as_array().shape().to_vec();
@@ -7307,6 +7399,12 @@ impl EnvironmentGroup {
         let frontier_door_variant = frontier_door_variant
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("frontier_door_variant must be contiguous"))?;
+        let initial_item_reachability = initial_item_reachability
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("initial_item_reachability must be contiguous"))?;
+        let known_initial_item_invalid = known_initial_item_invalid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("known_initial_item_invalid must be contiguous"))?;
         let frontier_area = frontier_area
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("frontier_area must be contiguous"))?;
@@ -7608,6 +7706,10 @@ impl EnvironmentGroup {
                         area_crossings_count: area_crossings_width,
                         connection_count: connection_reachability_width,
                         toilet_crossed_room_count: toilet_crossed_room_width,
+                        known_initial_item_invalid: OutputShard::from_slice(
+                            &mut known_initial_item_invalid
+                                [snapshot_start..snapshot_start + snapshot_count],
+                        ),
                     },
                     frontier_rows: FrontierFeatureOutputShards {
                         frontier: OutputShard::from_slice(
@@ -7617,6 +7719,10 @@ impl EnvironmentGroup {
                         ),
                         frontier_door_variant: OutputShard::from_slice(
                             &mut frontier_door_variant[frontier_row_start
+                                ..frontier_row_start + worker_frontier_row_count],
+                        ),
+                        initial_item_reachability: OutputShard::from_slice(
+                            &mut initial_item_reachability[frontier_row_start
                                 ..frontier_row_start + worker_frontier_row_count],
                         ),
                         frontier_area: OutputShard::from_slice(

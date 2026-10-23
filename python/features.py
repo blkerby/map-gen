@@ -745,6 +745,24 @@ class RoomAreaFeature(GlobalFeature):
         return (area.unsqueeze(-1) == torch.arange(AREA_COUNT, device=area.device)).to(dtype).flatten(1)
 
 
+class InitialItemOutcomeFeature(GlobalFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.generation_variable_floats
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return 2
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> InitialItemOutcomeFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        known = features.global_features.known_initial_item_invalid
+        return torch.cat([known == 0, known == 1], dim=-1).to(dtype)
+
+
 GLOBAL_FEATURES: list[type[GlobalFeature]] = [
     InventoryFeature,
     TemperatureFeature,
@@ -761,6 +779,7 @@ GLOBAL_FEATURES: list[type[GlobalFeature]] = [
     KnownDistanceFeature,
     AreaStateFeature,
     RoomAreaFeature,
+    InitialItemOutcomeFeature,
 ]
 
 
@@ -1020,6 +1039,32 @@ class FrontierRelativePositionFeature(FrontierPairFeature):
         return self.embedding_x[x].to(dtype) + self.embedding_y[y].to(dtype)
 
 
+class InitialItemReachabilityFeature(FrontierNodeFeature):
+    @classmethod
+    def is_enabled(cls, config: FeatureConfig) -> bool:
+        return config.frontier_mask and config.generation_variable_floats
+
+    @classmethod
+    def tensor_width(cls, context: FeatureContext) -> int:
+        return 6
+
+    @classmethod
+    def build(cls, context: FeatureContext) -> InitialItemReachabilityFeature:
+        return cls()
+
+    def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
+        rows = features.frontier_features.row_snapshot_idx.long()
+        active = features.global_features.known_initial_item_invalid[rows, 0] < 0
+        labels = features.frontier_features.initial_item_reachability.long()
+        return torch.cat(
+            [
+                torch.nn.functional.one_hot(labels // 3, 3),
+                torch.nn.functional.one_hot(labels % 3, 3),
+            ],
+            dim=-1,
+        ).to(dtype) * active.unsqueeze(1)
+
+
 FRONTIER_NODE_FEATURES: list[type[FrontierNodeFeature]] = [
     FrontierNodeNumericFeature,
     FrontierPositionFeature,
@@ -1027,6 +1072,7 @@ FRONTIER_NODE_FEATURES: list[type[FrontierNodeFeature]] = [
     FrontierKindFeature,
     FrontierDoorVariantFeature,
     FrontierAreaFeature,
+    InitialItemReachabilityFeature,
 ]
 
 FRONTIER_PAIR_FEATURES: list[type[FrontierPairFeature]] = [

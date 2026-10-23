@@ -49,6 +49,9 @@ pub struct InitialItemGraph {
     opposite_offset: Vec<usize>,
     opposite_count: Vec<usize>,
     room_count: usize,
+    room_nodes: Vec<Vec<usize>>,
+    pub(crate) door_nodes: [Vec<Option<usize>>; 4],
+    node_door: Vec<Option<(usize, usize)>>,
 }
 
 fn reachable(
@@ -72,16 +75,37 @@ fn reachable(
     seen
 }
 
-#[pymethods]
 impl InitialItemGraph {
-    #[new]
-    fn new(rooms_json: &str, graph_json: &str) -> PyResult<Self> {
-        let rooms: Vec<Room> = serde_json::from_str(rooms_json)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    pub(crate) fn from_rooms(rooms: &[crate::common::Room]) -> anyhow::Result<Self> {
+        Self::build(
+            rooms
+                .iter()
+                .map(|room| Room {
+                    room_id: room.room_id,
+                    doors: room
+                        .doors
+                        .iter()
+                        .map(|doors| {
+                            doors
+                                .iter()
+                                .map(|door| Door {
+                                    id: door.id as usize,
+                                    direction: door.direction,
+                                })
+                                .collect()
+                        })
+                        .collect(),
+                })
+                .collect(),
+            include_str!("../data/initial-item-graph.json"),
+        )
+    }
+
+    fn build(rooms: Vec<Room>, graph_json: &str) -> anyhow::Result<Self> {
         let data: Data = serde_json::from_str(graph_json)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+            .map_err(|error| anyhow::Error::msg(error.to_string()))?;
         if data.format != "initial-item-graph-v1" || data.graphs.is_empty() {
-            return Err(PyValueError::new_err("unsupported initial-item graph data"));
+            return Err(anyhow::Error::msg("unsupported initial-item graph data"));
         }
         let room_indices: HashMap<_, _> = rooms
             .iter()
@@ -91,7 +115,7 @@ impl InitialItemGraph {
         let mut nodes = HashMap::new();
         for (idx, node) in data.nodes.iter().enumerate() {
             if nodes.insert((node.room_id, node.node_id), idx).is_some() {
-                return Err(PyValueError::new_err("duplicate initial-item node"));
+                return Err(anyhow::Error::msg("duplicate initial-item node"));
             }
         }
         let count = data.nodes.len();
@@ -105,7 +129,7 @@ impl InitialItemGraph {
                     || to >= count
                     || data.nodes[from].room_id != data.nodes[to].room_id
                 {
-                    return Err(PyValueError::new_err("invalid initial-item room edge"));
+                    return Err(anyhow::Error::msg("invalid initial-item room edge"));
                 }
                 outgoing[from].push(to);
                 incoming[to].push(from);
@@ -118,13 +142,13 @@ impl InitialItemGraph {
             for door in room.doors.iter().flatten() {
                 let node = if let Some(room_id) = room.room_id {
                     let idx = *nodes.get(&(room_id, door.id)).ok_or_else(|| {
-                        PyValueError::new_err(format!(
+                        anyhow::Error::msg(format!(
                             "missing initial-item door ({room_id}, {})",
                             door.id
                         ))
                     })?;
                     if !data.nodes[idx].door {
-                        return Err(PyValueError::new_err(
+                        return Err(anyhow::Error::msg(
                             "initial-item door node is not marked as a door",
                         ));
                     }
@@ -154,7 +178,24 @@ impl InitialItemGraph {
                 counts[direction],
             ));
         }
+        let mut room_nodes = vec![vec![]; rooms.len()];
+        for (node, data_node) in data.nodes.iter().enumerate() {
+            if let Some(&room) = room_indices.get(&data_node.room_id) {
+                room_nodes[room].push(node);
+            }
+        }
+        let mut node_door = vec![None; count];
+        for (direction, door_nodes) in direction_nodes.iter().enumerate() {
+            for (door, node) in door_nodes.iter().enumerate() {
+                if let Some(node) = node {
+                    node_door[*node] = Some((direction, door));
+                }
+            }
+        }
         Ok(Self {
+            room_nodes,
+            node_door,
+            door_nodes: direction_nodes.clone(),
             node_room: data
                 .nodes
                 .iter()
@@ -169,6 +210,29 @@ impl InitialItemGraph {
             opposite_count,
             room_count: rooms.len(),
         })
+    }
+
+    pub(crate) fn start_room(&self, start: usize) -> Option<usize> {
+        self.node_room[start - 1]
+    }
+
+    pub(crate) fn validate_scenario(&self, start: i64, graph: i64) -> bool {
+        start >= 0
+            && (start as usize) <= self.node_room.len()
+            && graph >= 0
+            && (graph as usize) < self.forward.len()
+            && (start == 0
+                || (self.start[start as usize - 1] && self.node_room[start as usize - 1].is_some()))
+    }
+}
+
+#[pymethods]
+impl InitialItemGraph {
+    #[new]
+    fn new(rooms_json: &str, graph_json: &str) -> PyResult<Self> {
+        let rooms: Vec<Room> = serde_json::from_str(rooms_json)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(Self::build(rooms, graph_json)?)
     }
 
     fn evaluate<'py>(
@@ -206,7 +270,7 @@ impl InitialItemGraph {
                 ));
             }
             if start == 0 {
-                outcomes.push(-1);
+                outcomes.push(0);
                 continue;
             }
             let start = start as usize - 1;
@@ -259,5 +323,87 @@ impl InitialItemGraph {
             ));
         }
         Ok(outcomes.into_pyarray(py))
+    }
+}
+
+/// Labels are 0 (unreachable), 1 (reachable), or 2 (an item-visiting route exists).
+#[derive(Clone, Debug)]
+pub(crate) struct InitialItemState {
+    pub start: usize,
+    graph: usize,
+    pub forward: Vec<u8>,
+    pub reverse: Vec<u8>,
+}
+
+impl InitialItemState {
+    pub fn new(start: usize, graph: usize, data: &InitialItemGraph) -> Self {
+        Self {
+            start,
+            graph,
+            forward: vec![0; data.node_room.len()],
+            reverse: vec![0; data.node_room.len()],
+        }
+    }
+
+    pub fn add_room(
+        &mut self,
+        room: usize,
+        data: &InitialItemGraph,
+        matches: &[Vec<crate::common::DirDoorIdx>; 4],
+    ) {
+        if self.start == 0 {
+            return;
+        }
+        let start = self.start - 1;
+        for (labels, edges) in [
+            (&mut self.forward, &data.forward[self.graph]),
+            (&mut self.reverse, &data.reverse[self.graph]),
+        ] {
+            let mut queue = Vec::new();
+            if data.node_room[start] == Some(room) {
+                labels[start] = if data.item[start] { 2 } else { 1 };
+                queue.push(start);
+            }
+            for &node in &data.room_nodes[room] {
+                if let Some((direction, door)) = data.node_door[node] {
+                    let matched = matches[direction][door] as usize;
+                    if let Some(Some(other)) = data.door_nodes[direction ^ 1].get(matched) {
+                        if labels[*other] != 0 {
+                            queue.push(*other);
+                        }
+                    }
+                }
+            }
+            while let Some(node) = queue.pop() {
+                let crossing = data.node_door[node].and_then(|(direction, door)| {
+                    let matched = matches[direction][door] as usize;
+                    data.door_nodes[direction ^ 1]
+                        .get(matched)
+                        .copied()
+                        .flatten()
+                });
+                for next in edges[node].iter().copied().chain(crossing) {
+                    let value = if data.item[next] { 2 } else { labels[node] };
+                    if value > labels[next] {
+                        labels[next] = value;
+                        queue.push(next);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn has_item(&self, data: &InitialItemGraph) -> bool {
+        self.start == 0
+            || data
+                .item
+                .iter()
+                .enumerate()
+                .any(|(node, &item)| item && self.forward[node] > 0 && self.reverse[node] > 0)
+    }
+
+    pub fn frontier_label(&self, data: &InitialItemGraph, direction: usize, door: usize) -> u8 {
+        data.door_nodes[direction][door]
+            .map_or(0, |node| self.forward[node] * 3 + self.reverse[node])
     }
 }

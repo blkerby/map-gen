@@ -287,6 +287,46 @@ class ProposalOutput(torch.nn.Module):
             return self.layers(x.to(torch.float32))
 
 
+class InitialItemQueryHead(torch.nn.Module):
+    def __init__(self, embedding_width: int, global_width: int, hidden_width: int):
+        super().__init__()
+        self.frontier_projection = torch.nn.Linear(embedding_width, embedding_width)
+        self.output_layers = torch.nn.Sequential(
+            torch.nn.Linear(5 * (2 * embedding_width + 1) + global_width, hidden_width),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_width, 1),
+        )
+        zero_init_output_layer(self.output_layers[-1])
+
+    def forward(
+        self,
+        frontier_state: torch.Tensor,
+        global_state: torch.Tensor,
+        row_snapshot_idx: torch.Tensor,
+        reachability: torch.Tensor,
+    ) -> torch.Tensor:
+        with torch.amp.autocast(frontier_state.device.type, enabled=False):
+            projected = torch.nn.functional.gelu(self.frontier_projection(frontier_state.float()))
+            # Five unresolved joint categories, plus a discarded group for irrelevant rows.
+            groups = torch.tensor([5, 2, 3, 0, 4, 5, 1, 5, 5], device=projected.device)
+            indices = row_snapshot_idx * 6 + groups[reachability.long()]
+            size = global_state.shape[0] * 6
+            sums = projected.new_zeros((size, projected.shape[1]))
+            sums.index_add_(0, indices, projected)
+            counts = projected.new_zeros(size)
+            counts.index_add_(0, indices, projected.new_ones(indices.shape))
+            maxima = projected.new_full(sums.shape, -torch.inf)
+            maxima.scatter_reduce_(
+                0, indices.unsqueeze(1).expand_as(projected), projected, reduce="amax"
+            )
+            maxima = torch.where(torch.isfinite(maxima), maxima, 0)
+            means = sums / counts.clamp_min(1).unsqueeze(1)
+            summary = torch.cat([means, maxima, counts.log1p().unsqueeze(1)], dim=1)
+            summary = summary.reshape(global_state.shape[0], 6, -1)[:, :5].flatten(1)
+            query = torch.cat([summary, global_state.float()], dim=-1)
+            return self.output_layers(query)
+
+
 class MissingConnectQueryHead(torch.nn.Module):
     max_distance_index = 510
     unreachable_distance = 255
@@ -801,7 +841,9 @@ class FrontierModel(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, embedding_width, bias=False),
         )
-        self.initial_item_output = Float32Linear(embedding_width, 1)
+        self.initial_item_query_output = InitialItemQueryHead(
+            embedding_width, global_embedding_width, hidden_width
+        )
         self.door_output = Float32Linear(embedding_width, door_output_size)
         self.frontier_door_invalid_output = Float32Linear(embedding_width, 1)
         self.frontier_balance_score_output = Float32Linear(embedding_width, 1)
@@ -870,7 +912,6 @@ class FrontierModel(torch.nn.Module):
             door_output_size * AREA_COUNT,
         )
         output_layers = (
-            self.initial_item_output,
             self.door_output,
             self.frontier_door_invalid_output,
             self.frontier_balance_score_output,
@@ -1220,16 +1261,17 @@ class FrontierModel(torch.nn.Module):
                 self.distance_proximity_scale,
                 "refill-from-room utility",
             )
-        initial_item_invalid = self.initial_item_output(X).squeeze(-1)
-        if self.features.generation_variable_floats:
-            starts = features.global_features.generation_variable_floats[
-                :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_start")
-            ]
-            initial_item_invalid = torch.where(
-                starts.unsqueeze(1) > 0, initial_item_invalid, -DETERMINISTIC_INVALID_LOGIT
-            )
-        else:
-            initial_item_invalid = torch.full_like(initial_item_invalid, -DETERMINISTIC_INVALID_LOGIT)
+        initial_item_invalid = self.initial_item_query_output(
+            frontier_state,
+            global_state,
+            row_snapshot_idx,
+            features.frontier_features.initial_item_reachability,
+        )
+        initial_item_invalid = apply_known_invalid_logits(
+            initial_item_invalid,
+            features.global_features.known_initial_item_invalid,
+            "initial item",
+        )
         return Predictions(
             success=preds.success,
             initial_item_invalid=initial_item_invalid,

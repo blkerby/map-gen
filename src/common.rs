@@ -50,6 +50,7 @@ pub fn proposal_action_parts(
 
 #[derive(Clone, Deserialize)]
 pub struct Room {
+    pub(crate) room_id: Option<usize>,
     #[serde(default)]
     save: bool,
     #[serde(default)]
@@ -63,7 +64,7 @@ pub struct Room {
     map: Vec<Vec<u8>>,
     toilet_crossing_x: Vec<Coord>,
     special_type: Option<SpecialType>,
-    doors: Vec<Vec<Door>>,
+    pub(crate) doors: Vec<Vec<Door>>,
     connections: Vec<(PartIdx, PartIdx)>,
     missing_connections: Vec<(PartIdx, PartIdx)>,
 }
@@ -83,10 +84,9 @@ enum SpecialType {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-struct Door {
-    #[serde(rename = "id")]
-    _id: u8,
-    direction: Direction,
+pub(crate) struct Door {
+    pub(crate) id: u8,
+    pub(crate) direction: Direction,
     x: Coord,
     y: Coord,
     kind: DoorKind,
@@ -258,6 +258,7 @@ pub struct GeometryDirDoorData {
 }
 
 pub struct CommonData {
+    pub initial_item: crate::initial_item::InitialItemGraph,
     pub room: Vec<RoomData>,
     water_room_idx: Vec<RoomIdx>,
     heat_room_idx: Vec<RoomIdx>,
@@ -533,6 +534,7 @@ impl CommonData {
     }
 
     pub fn new(rooms: Vec<Room>) -> Result<Self> {
+        let initial_item = crate::initial_item::InitialItemGraph::from_rooms(&rooms)?;
         if rooms.len() > RoomIdx::MAX as usize {
             bail!(
                 "room set has {} rooms, exceeding the maximum {} supported by RoomIdx plus one dummy action",
@@ -815,6 +817,7 @@ impl CommonData {
             .collect();
 
         let mut common = Self {
+            initial_item,
             room: room_data,
             water_room_idx,
             heat_room_idx,

@@ -903,6 +903,7 @@ def prepare_feature_batches(
     )
     env.clear()
     env.set_max_return_distances(generation_variable_floats)
+    env.set_initial_item_conditions(generation_variable_floats)
     feature_batches = []
     feature_mismatches = []
     feature_compared_tensors = 0
@@ -1459,6 +1460,13 @@ def train_feature_batch_backward(
     ).dual_mask
     total_loss = empty_main_loss_breakdown()
     prefix_weight = 1.0 / len(prepared_batch.feature_batches)
+    initial_item_target = torch.where(
+        generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_start")
+        ] > 0,
+        prepared_batch.outcomes.initial_item_invalid,
+        -1,
+    ).unsqueeze(1)
 
     for feature_batch in prepared_batch.feature_batches:
         features = feature_batch.features.to(context.device)
@@ -1526,7 +1534,7 @@ def train_feature_batch_backward(
         prefix_loss = compute_loss_breakdown(
             preds,
             success_target,
-            prepared_batch.outcomes.initial_item_invalid.unsqueeze(1),
+            initial_item_target,
             repeated_outcomes,
             mask,
             vanilla_area_constraint_mask,

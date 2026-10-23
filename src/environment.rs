@@ -568,6 +568,8 @@ pub struct Features {
     pub frontier_door_variant: Vec<DoorVariantIdx>,
     // Area of the placed room containing each frontier row.
     pub frontier_area: Vec<AreaIdx>,
+    pub initial_item_reachability: Vec<u8>,
+    pub known_initial_item_invalid: Vec<i8>,
     // Global door output index for each frontier row, or -1 when unavailable.
     pub row_door_output_idx: Vec<i16>,
     // Occupied tiles in a square window centered on each frontier, packed row-major.
@@ -619,6 +621,7 @@ pub struct FeatureExtraOccupied {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FeatureFrontierPlanRow {
+    pub initial_item_reachability: u8,
     pub location: DoorLocation,
     pub door_variant_idx: DoorVariantIdx,
     pub area: AreaIdx,
@@ -630,6 +633,7 @@ pub struct FeatureFrontierPlanRow {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FeaturePlan {
+    pub known_initial_item_invalid: i8,
     pub environment_idx: usize,
     pub kind: FeaturePlanKind,
     pub extra_occupied: Option<FeatureExtraOccupied>,
@@ -1195,6 +1199,7 @@ fn prune_frontier_edges(
 }
 
 pub struct Environment {
+    initial_item: crate::initial_item::InitialItemState,
     rng: rand::rngs::StdRng, // for randomly choosing the initial room placement
     map_size: (Coord, Coord),
     actions: Vec<Action>, // history of room placements so far
@@ -1242,6 +1247,7 @@ pub struct Environment {
 
 #[cfg(test)]
 struct FeatureSnapshot {
+    initial_item: crate::initial_item::InitialItemState,
     finished: bool,
     frontier: HashMap<DoorLocation, Frontier>,
     room_idx: Option<RoomIdx>,
@@ -1269,6 +1275,7 @@ struct FeatureSnapshot {
 }
 
 struct LookaheadSnapshot {
+    initial_item: crate::initial_item::InitialItemState,
     action_len: usize,
     finished: bool,
     frontier: HashMap<DoorLocation, Frontier>,
@@ -1874,6 +1881,7 @@ impl Environment {
                 .iter()
                 .map(|rooms| rooms.len())
                 .collect(),
+            initial_item: crate::initial_item::InitialItemState::new(0, 0, &common.initial_item),
             room_part_component: vec![NO_COMPONENT; common.room_part.len()],
             scc_dag: SccDag::default(),
             active_room_parts: Vec::new(),
@@ -1903,12 +1911,51 @@ impl Environment {
         }
     }
 
+    pub fn set_initial_item(&mut self, start: usize, graph: usize, common: &CommonData) {
+        self.initial_item =
+            crate::initial_item::InitialItemState::new(start, graph, &common.initial_item);
+    }
+
+    pub fn initial_item_invalid(&self, common: &CommonData) -> i8 {
+        if self.initial_item.has_item(&common.initial_item) {
+            return 0;
+        }
+        let room = common
+            .initial_item
+            .start_room(self.initial_item.start)
+            .unwrap();
+        if !self.room_used[room] {
+            return if self.finished { 1 } else { -1 };
+        }
+        let mut forward = false;
+        let mut reverse = false;
+        for frontier in self.frontier.values() {
+            let label = self.initial_item.frontier_label(
+                &common.initial_item,
+                frontier.direction as usize,
+                frontier.dir_door_idx as usize,
+            );
+            forward |= label / 3 > 0;
+            reverse |= label % 3 > 0;
+        }
+        if self.finished || !forward || !reverse {
+            1
+        } else {
+            -1
+        }
+    }
+
+    pub fn initial_item_terminal_invalid(&self, common: &CommonData) -> i8 {
+        i8::from(!self.initial_item.has_item(&common.initial_item))
+    }
+
     pub fn set_max_return_distance(&mut self, limit: Option<f32>) {
         self.max_return_distance = limit;
         self.known_outcomes = None;
     }
 
     pub fn clear(&mut self, common: &CommonData) {
+        self.initial_item = crate::initial_item::InitialItemState::new(0, 0, &common.initial_item);
         self.actions.clear();
         self.finished = false;
         self.frontier.clear();
@@ -1954,7 +2001,14 @@ impl Environment {
     }
 
     fn sample_initial_placement(&mut self, common: &CommonData) -> Action {
-        let room_idx = self.rng.random_range(0..common.room.len() as RoomIdx);
+        let room_idx = if self.initial_item.start == 0 {
+            self.rng.random_range(0..common.room.len() as RoomIdx)
+        } else {
+            common
+                .initial_item
+                .start_room(self.initial_item.start)
+                .unwrap() as RoomIdx
+        };
         let geometry_idx = common.room[room_idx as usize].geometry_idx;
         let geometry = &common.geometry[geometry_idx as usize];
         let min_x = room_min_x(geometry);
@@ -3241,6 +3295,12 @@ impl Environment {
             }
         }
 
+        self.initial_item.add_room(
+            action.room_idx as usize,
+            &common.initial_item,
+            &self.door_matches,
+        );
+
         // Filter existing frontiers to remove geometries blocked by the new room or with no unused representatives.
         if mode.filters_existing_frontier_candidates() {
             let profile = profile_start();
@@ -4521,6 +4581,7 @@ impl Environment {
             }
         }
         let snapshot = LookaheadSnapshot {
+            initial_item: self.initial_item.clone(),
             action_len: self.actions.len(),
             finished: self.finished,
             frontier: self.frontier.clone(),
@@ -4561,6 +4622,7 @@ impl Environment {
 
     fn restore_lookahead_candidate(&mut self, common: &CommonData, snapshot: LookaheadSnapshot) {
         self.actions.truncate(snapshot.action_len);
+        self.initial_item = snapshot.initial_item;
         self.finished = snapshot.finished;
         self.frontier = snapshot.frontier;
         if let Some(room_idx) = snapshot.room_idx {
@@ -4630,6 +4692,7 @@ impl Environment {
             (candidate.room_idx < common.room.len() as RoomIdx).then_some(candidate.room_idx);
         let area_idx = room_idx.map(|_| candidate.area as usize);
         let snapshot = FeatureSnapshot {
+            initial_item: self.initial_item.clone(),
             finished: self.finished,
             frontier,
             room_idx,
@@ -4666,6 +4729,7 @@ impl Environment {
         _candidate: Action,
         snapshot: FeatureSnapshot,
     ) {
+        self.initial_item = snapshot.initial_item;
         self.finished = snapshot.finished;
         self.frontier = snapshot.frontier;
         if let Some(room_idx) = snapshot.room_idx {
@@ -4809,6 +4873,7 @@ impl Environment {
     ) -> FeaturePlan {
         assert!(self.frontier.len() <= Self::max_frontiers(common));
         let mut plan = scratch.take_plan();
+        plan.known_initial_item_invalid = self.initial_item_invalid(common);
         plan.kind = kind;
         plan.extra_occupied = extra_occupied;
         plan.scc_dag = self.scc_dag.clone();
@@ -4902,6 +4967,15 @@ impl Environment {
                 first_frontier_row_by_part[frontier_part] = idx as i16;
             }
             plan.frontiers.push(FeatureFrontierPlanRow {
+                initial_item_reachability: if plan.known_initial_item_invalid < 0 {
+                    self.initial_item.frontier_label(
+                        &common.initial_item,
+                        data.direction as usize,
+                        data.dir_door_idx as usize,
+                    )
+                } else {
+                    0
+                },
                 location: **location,
                 door_variant_idx: data.door_variant_idx,
                 area: self.frontier_area(common, data.room_part_idx),
@@ -5842,7 +5916,24 @@ impl Environment {
         }
 
         let profile = profile_start();
+        let known_initial_item_invalid = vec![self.initial_item_invalid(common)];
+        let initial_item_reachability = sorted_frontiers
+            .iter()
+            .map(|(_, frontier)| {
+                if known_initial_item_invalid[0] < 0 {
+                    self.initial_item.frontier_label(
+                        &common.initial_item,
+                        frontier.direction as usize,
+                        frontier.dir_door_idx as usize,
+                    )
+                } else {
+                    0
+                }
+            })
+            .collect();
         let result = Features {
+            known_initial_item_invalid,
+            initial_item_reachability,
             inventory,
             room_x,
             room_y,

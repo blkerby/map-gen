@@ -896,6 +896,7 @@ class GlobalFeatures:
     lookahead_maridia_water: torch.Tensor
     lookahead_norfair_heat: torch.Tensor
     connection_reachability: torch.Tensor
+    known_initial_item_invalid: torch.Tensor
     toilet_crossed_room_idx: torch.Tensor
 
     def to(self, device: torch.device, non_blocking: bool = False) -> "GlobalFeatures":
@@ -996,6 +997,9 @@ class GlobalFeatures:
             connection_reachability=self.connection_reachability.to(
                 device, non_blocking=non_blocking
             ),
+            known_initial_item_invalid=self.known_initial_item_invalid.to(
+                device, non_blocking=non_blocking
+            ),
             toilet_crossed_room_idx=self.toilet_crossed_room_idx.to(
                 device, non_blocking=non_blocking
             ),
@@ -1053,6 +1057,7 @@ class GlobalFeatures:
             lookahead_maridia_water=self.lookahead_maridia_water.flatten(0, 1),
             lookahead_norfair_heat=self.lookahead_norfair_heat.flatten(0, 1),
             connection_reachability=self.connection_reachability.flatten(0, 1),
+            known_initial_item_invalid=self.known_initial_item_invalid.flatten(0, 1),
             toilet_crossed_room_idx=self.toilet_crossed_room_idx.flatten(0, 1),
         )
 
@@ -1061,6 +1066,7 @@ class GlobalFeatures:
 class FrontierFeatures:
     frontier: torch.Tensor
     frontier_door_variant: torch.Tensor
+    initial_item_reachability: torch.Tensor
     frontier_area: torch.Tensor
     frontier_occupancy: torch.Tensor
     frontier_neighbor: torch.Tensor
@@ -1074,6 +1080,9 @@ class FrontierFeatures:
         return FrontierFeatures(
             frontier=self.frontier.to(device, non_blocking=non_blocking),
             frontier_door_variant=self.frontier_door_variant.to(device, non_blocking=non_blocking),
+            initial_item_reachability=self.initial_item_reachability.to(
+                device, non_blocking=non_blocking
+            ),
             frontier_area=self.frontier_area.to(device, non_blocking=non_blocking),
             frontier_occupancy=self.frontier_occupancy.to(device, non_blocking=non_blocking),
             frontier_neighbor=self.frontier_neighbor.to(device, non_blocking=non_blocking),
@@ -1091,6 +1100,7 @@ class FrontierFeatures:
     def mark_dynamic(self) -> None:
         torch._dynamo.maybe_mark_dynamic(self.frontier, 0)
         torch._dynamo.maybe_mark_dynamic(self.frontier_door_variant, 0)
+        torch._dynamo.maybe_mark_dynamic(self.initial_item_reachability, 0)
         torch._dynamo.maybe_mark_dynamic(self.frontier_area, 0)
         torch._dynamo.maybe_mark_dynamic(self.frontier_occupancy, 0)
         torch._dynamo.maybe_mark_dynamic(self.frontier_neighbor, 0)
@@ -1518,6 +1528,18 @@ class EnvironmentGroup:
     def clear(self):
         self.env.clear()
 
+    def set_initial_item_conditions(self, generation_variable_floats: torch.Tensor) -> None:
+        starts = generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_start")
+        ]
+        graphs = generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_graph")
+        ]
+        self.env.set_initial_item_conditions(
+            starts.to(device="cpu", dtype=torch.int64).contiguous().numpy(),
+            graphs.to(device="cpu", dtype=torch.int64).contiguous().numpy(),
+        )
+
     def set_max_return_distances(self, generation_variable_floats: torch.Tensor) -> None:
         limits = generation_variable_floats[
             :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
@@ -1792,7 +1814,7 @@ class EnvironmentGroup:
             )
             initial_item_invalid = torch.from_numpy(initial_item_invalid).to(device)
         else:
-            initial_item_invalid = torch.full((self.num_envs,), -1, dtype=torch.int8, device=device)
+            initial_item_invalid = torch.zeros((self.num_envs,), dtype=torch.int8, device=device)
         return EpisodeOutcomes(
             initial_item_invalid=initial_item_invalid,
             step_outcomes=StepOutcomes(
@@ -2092,6 +2114,8 @@ class EnvironmentGroup:
                     "frontier": feature_slot.frontier.numpy(),
                     "frontier_door_variant": feature_slot.frontier_door_variant.numpy(),
                     "frontier_area": feature_slot.frontier_area.numpy(),
+                    "initial_item_reachability": feature_slot.initial_item_reachability.numpy(),
+                    "known_initial_item_invalid": feature_slot.known_initial_item_invalid.numpy(),
                     "frontier_occupancy": feature_slot.frontier_occupancy.numpy(),
                     "frontier_neighbor": feature_slot.frontier_neighbor.numpy(),
                     "frontier_neighbor_pair": feature_slot.frontier_neighbor_pair.numpy(),
@@ -2244,6 +2268,8 @@ class FeatureSlot:
         self.area_map_station_count = None
         self.frontier = None
         self.frontier_door_variant = None
+        self.initial_item_reachability = None
+        self.known_initial_item_invalid = None
         self.frontier_area = None
         self.frontier_occupancy = None
         self.frontier_neighbor = None
@@ -2356,6 +2382,8 @@ class FeatureSlot:
         )
         self.frontier = self._empty((self.frontier_row_capacity, 5), torch.int8)
         self.frontier_door_variant = self._empty((self.frontier_row_capacity,), torch.int16)
+        self.initial_item_reachability = self._empty((self.frontier_row_capacity,), torch.uint8)
+        self.known_initial_item_invalid = self._empty((self.snapshot_capacity, 1), torch.int8)
         self.frontier_area = self._empty((self.frontier_row_capacity,), torch.uint8)
         self.frontier_occupancy = self._empty(
             (self.frontier_row_capacity, self.frontier_occupancy_width), torch.uint8
@@ -2626,11 +2654,13 @@ class FeatureSlot:
                 lookahead_maridia_water=lookahead_maridia_water,
                 lookahead_norfair_heat=lookahead_norfair_heat,
                 connection_reachability=self.connection_reachability[:environment_count],
+                known_initial_item_invalid=self.known_initial_item_invalid[:environment_count],
                 toilet_crossed_room_idx=self.toilet_crossed_room_idx[:environment_count],
             ),
             frontier_features=FrontierFeatures(
                 frontier=self.frontier[:frontier_row_count],
                 frontier_door_variant=self.frontier_door_variant[:frontier_row_count],
+                initial_item_reachability=self.initial_item_reachability[:frontier_row_count],
                 frontier_area=self.frontier_area[:frontier_row_count],
                 frontier_occupancy=self.frontier_occupancy[:frontier_row_count],
                 frontier_neighbor=self.frontier_neighbor[:frontier_row_count],
@@ -2875,6 +2905,9 @@ class FeatureSlot:
                 connection_reachability=self.connection_reachability[:snapshot_count].view(
                     environment_count, candidate_count, self.connection_reachability_width
                 ),
+                known_initial_item_invalid=self.known_initial_item_invalid[:snapshot_count].view(
+                    environment_count, candidate_count, 1
+                ),
                 toilet_crossed_room_idx=self.toilet_crossed_room_idx[:snapshot_count].view(
                     environment_count, candidate_count, self.toilet_crossed_room_width
                 ),
@@ -2882,6 +2915,7 @@ class FeatureSlot:
             frontier_features=FrontierFeatures(
                 frontier=self.frontier[:frontier_row_count],
                 frontier_door_variant=self.frontier_door_variant[:frontier_row_count],
+                initial_item_reachability=self.initial_item_reachability[:frontier_row_count],
                 frontier_area=self.frontier_area[:frontier_row_count],
                 frontier_occupancy=self.frontier_occupancy[:frontier_row_count],
                 frontier_neighbor=self.frontier_neighbor[:frontier_row_count],
@@ -3040,6 +3074,8 @@ def extract_candidate_features(
                 "frontier": feature_slot.frontier.numpy(),
                 "frontier_door_variant": feature_slot.frontier_door_variant.numpy(),
                 "frontier_area": feature_slot.frontier_area.numpy(),
+                "initial_item_reachability": feature_slot.initial_item_reachability.numpy(),
+                "known_initial_item_invalid": feature_slot.known_initial_item_invalid.numpy(),
                 "frontier_occupancy": feature_slot.frontier_occupancy.numpy(),
                 "frontier_neighbor": feature_slot.frontier_neighbor.numpy(),
                 "frontier_neighbor_pair": feature_slot.frontier_neighbor_pair.numpy(),
