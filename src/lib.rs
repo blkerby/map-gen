@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 mod common;
 mod engine;
 mod environment;
+mod initial_item;
 mod scc_dag;
 
 use engine::{
@@ -27,6 +28,7 @@ fn profile_report() -> Vec<(String, u64, u64)> {
 
 #[pymodule]
 fn map_gen(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<initial_item::InitialItemGraph>()?;
     m.add_class::<Engine>()?;
     m.add_class::<EnvironmentGroup>()?;
     m.add_class::<ReplayReordering>()?;

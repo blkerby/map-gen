@@ -21,6 +21,7 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from env import Engine
+from initial_item import encode_generation_variables
 from model import BalanceModel, balance_price_network
 from model_loading import without_prefix
 from train import (
@@ -131,11 +132,12 @@ def verify_split_outputs(
     model: BalanceModel,
     variables: torch.Tensor,
 ) -> dict[str, float]:
-    raw = shared.net(variables)
+    inputs = encode_generation_variables(variables, next(shared.parameters()).dtype)
+    raw = shared.net(inputs)
     errors = {}
     for branch, rows in branch_output_rows(model).items():
         expected = raw.index_select(1, rows)
-        actual = getattr(model, branch)(variables)
+        actual = getattr(model, branch)(inputs)
         torch.testing.assert_close(actual, expected, atol=1e-6, rtol=1e-5)
         errors[branch] = float((actual - expected).abs().max()) if actual.numel() else 0.0
     return errors

@@ -211,6 +211,8 @@ def compute_expected_reward(
     return (
         batch_weight(config.reward_door) * torch.sum(door_logprobs, dim=2)
         + batch_weight(config.reward_success) * torch.nn.functional.logsigmoid(preds.success)
+        + batch_weight(config.reward_initial_item)
+        * torch.nn.functional.logsigmoid(-preds.initial_item_invalid)
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
         + batch_weight(config.reward_connection) * torch.sum(return_distance_logprobs, dim=2)
         + batch_weight(config.reward_toilet) * toilet_logprobs
@@ -914,6 +916,7 @@ def compute_candidate_values(
     expected_reward = compute_expected_reward(
         Predictions(
             success=preds.success.view(environment_count, candidate_count),
+            initial_item_invalid=preds.initial_item_invalid.view(environment_count, candidate_count),
             door_invalid=preds.door_invalid.view(environment_count, candidate_count, -1),
             connection_invalid=preds.connection_invalid.view(
                 environment_count,
@@ -1937,6 +1940,9 @@ def merge_generation_results(
             ),
         ),
         EpisodeOutcomes(
+            initial_item_invalid=torch.cat(
+                [outcomes.initial_item_invalid for _, outcomes, _, _, _ in results]
+            ),
             step_outcomes=StepOutcomes(
                 door_invalid=torch.cat(
                     [
@@ -2449,7 +2455,9 @@ def run_generation_groups(
             group.env.finish()
             actions = group.env.get_actions(device)
             episode_outcomes = group.env.get_outcomes(
-                device, verify_consistency=verify_outcome_consistency
+                device,
+                verify_consistency=verify_outcome_consistency,
+                generation_variable_floats=group.config.generation_variable_floats,
             )
             door_match_counts = group.env.get_door_match_counts(device)
             results.append(

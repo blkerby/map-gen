@@ -1,3 +1,4 @@
+from initial_item import encode_generation_variables
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,8 @@ def generation_values() -> dict[str, torch.Tensor]:
         if name.startswith("target_area_probability_"):
             continue
         values[name] = torch.full((2,), 0.25)
+    values["initial_item_start"] = torch.zeros(2)
+    values["initial_item_graph"] = torch.zeros(2)
     values["temperature"] = torch.tensor([300.0, 0.03])
     values["proposal_temperature"] = torch.tensor([100.0, 0.01])
     for area in range(6):
@@ -83,9 +86,9 @@ def test_main_and_balance_models_consume_stored_features_directly() -> None:
             handle.remove()
     assert capture.call_count == 5
     for call in capture.call_args_list:
-        torch.testing.assert_close(call.args[1][0], encoded)
-    torch.testing.assert_close(main_feature(features, torch.float32), encoded)
-    torch.testing.assert_close(main_feature(features, torch.bfloat16), encoded.bfloat16())
+        torch.testing.assert_close(call.args[1][0], encode_generation_variables(encoded, torch.float32))
+    torch.testing.assert_close(main_feature(features, torch.float32), encode_generation_variables(encoded, torch.float32))
+    torch.testing.assert_close(main_feature(features, torch.bfloat16), encode_generation_variables(encoded, torch.bfloat16))
     assert torch.isfinite(predictions.room_area).all()
 
 

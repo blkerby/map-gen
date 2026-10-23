@@ -90,7 +90,7 @@ def test_reordered_features_match_direct_replay_and_final_outcomes():
     )
     reordered = env.get_actions(torch.device("cpu"))
     env.finish()
-    augmented_outcomes = env.get_outcomes(torch.device("cpu"), verify_consistency=True)
+    augmented_outcomes = env.get_outcomes(torch.device("cpu"), verify_consistency=True, generation_variable_floats=torch.zeros((env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
     direct_episode = EpisodeData(
         actions=reordered, temperature=episode.temperature,
         recommended_candidates=episode.recommended_candidates,
@@ -109,7 +109,7 @@ def test_reordered_features_match_direct_replay_and_final_outcomes():
             direct.features.global_features.room_area,
         )
     env.finish()
-    direct_outcomes = env.get_outcomes(torch.device("cpu"), verify_consistency=True)
+    direct_outcomes = env.get_outcomes(torch.device("cpu"), verify_consistency=True, generation_variable_floats=torch.zeros((env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
     for group in ("step_outcomes", "end_outcomes"):
         augmented = getattr(augmented_outcomes, group)
         direct = getattr(direct_outcomes, group)

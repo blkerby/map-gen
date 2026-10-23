@@ -12,7 +12,7 @@ from experience import (
     ExperienceStorage,
     load_balance_experience,
 )
-from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, INITIAL_ITEM_FIELDS
 
 
 class ReplaySuccessCompatibilityTest(unittest.TestCase):
@@ -25,6 +25,8 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         self.limit_column = GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
         self.variables[:, self.column] = 0
         self.variables[:, self.limit_column] = 0
+        self.initial_columns = tuple(GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in INITIAL_ITEM_FIELDS)
+        self.variables[:, self.initial_columns] = 0
         self.tensors = {
             "room_idx": torch.zeros((1, 2), dtype=torch.uint8),
             "room_x": torch.zeros((1, 2), dtype=torch.uint8),
@@ -45,10 +47,10 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         )
         return path
 
-    def test_v3_v4_and_v6_files_preserve_all_other_columns(self) -> None:
+    def test_v3_v4_and_v7_files_preserve_all_other_columns(self) -> None:
         old_variables = self.variables[:, [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.column, self.limit_column)
+            if index not in (self.column, self.limit_column, *self.initial_columns)
         ]]
         legacy_path = self.write_experience(0, old_variables, PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT)
         original_bytes = legacy_path.read_bytes()
@@ -60,7 +62,7 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         v3_variables[:, success_column] = 0
         v3_columns = [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.column, success_column, self.limit_column)
+            if index not in (self.column, success_column, self.limit_column, *self.initial_columns)
         ]
         v3_path = self.write_experience(2, v3_variables[:, v3_columns], PRE_SUCCESS_EXPERIENCE_FORMAT)
         v3_original_bytes = v3_path.read_bytes()

@@ -2,6 +2,7 @@
 
 import torch
 
+from initial_item import encode_generation_variables
 from model import BalanceModel, activation_dtype, zero_init_output_layer
 from model_loading import balance_model_kwargs
 
@@ -15,7 +16,7 @@ class BalanceModelV19(BalanceModel):
         del self.step_net
 
     def forward(self, generation_variable_floats):
-        inputs = generation_variable_floats.to(activation_dtype(
+        inputs = encode_generation_variables(generation_variable_floats, activation_dtype(
             generation_variable_floats.device, next(self.parameters()).dtype,
         ))
         return self.decode_prices(
@@ -43,7 +44,7 @@ class BalanceModelV18(BalanceModelV19):
             network[-1] = output
 
     def forward(self, generation_variable_floats):
-        inputs = generation_variable_floats.to(activation_dtype(
+        inputs = encode_generation_variables(generation_variable_floats, activation_dtype(
             generation_variable_floats.device, next(self.parameters()).dtype,
         ))
         door = self.door_net(inputs).float()

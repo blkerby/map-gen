@@ -9,6 +9,7 @@ import torch
 import json
 
 import map_gen
+from initial_item import create_initial_item_graph
 from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, VANILLA_AREA_CONDITION_FIELDS
 
 if TYPE_CHECKING:
@@ -188,6 +189,7 @@ class GenerateConfig:
     reward_phantoon_pair: float | torch.Tensor
     reward_phantoon_area: float | torch.Tensor
     reward_success: float | torch.Tensor
+    reward_initial_item: float | torch.Tensor
     reward_vanilla_area: torch.Tensor
     reward_frontier: float | torch.Tensor
     reward_graph_diameter: float | torch.Tensor
@@ -508,17 +510,20 @@ class AreaOutcomeState:
 
 @dataclass
 class EpisodeOutcomes:
+    initial_item_invalid: torch.Tensor
     step_outcomes: StepOutcomes
     end_outcomes: EndOutcomes
 
     def to(self, device: torch.device) -> "EpisodeOutcomes":
         return EpisodeOutcomes(
+            initial_item_invalid=self.initial_item_invalid.to(device),
             step_outcomes=self.step_outcomes.to(device),
             end_outcomes=self.end_outcomes.to(device),
         )
 
     def slice(self, start: int, end: int) -> "EpisodeOutcomes":
         return EpisodeOutcomes(
+            initial_item_invalid=self.initial_item_invalid[start:end],
             step_outcomes=self.step_outcomes.slice(start, end),
             end_outcomes=self.end_outcomes.slice(start, end),
         )
@@ -1387,6 +1392,7 @@ class Engine:
         )
         self.rooms = rooms
         self.output_metadata = self._load_output_metadata()
+        self.initial_item_graph = create_initial_item_graph(rooms)
 
     def compute_balance_targets(
         self,
@@ -1763,9 +1769,32 @@ class EnvironmentGroup:
     def verify_outcome_consistency(self) -> None:
         self.env.verify_outcome_consistency()
 
-    def get_outcomes(self, device: torch.device, verify_consistency: bool) -> EpisodeOutcomes:
+    def get_outcomes(
+        self, device: torch.device, verify_consistency: bool,
+        generation_variable_floats: torch.Tensor,
+    ) -> EpisodeOutcomes:
         result = self.env.get_outcomes(verify_consistency)
+        starts = generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_start")
+        ]
+        graphs = generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_graph")
+        ]
+        if torch.any(starts > 0):
+            matches = self.get_door_matches(torch.device("cpu"))
+            initial_item_invalid = self.engine.initial_item_graph.evaluate(
+                self.get_actions(torch.device("cpu")).room_idx.contiguous().numpy(),
+                torch.cat([matches.left, matches.right, matches.up, matches.down], dim=1)
+                .to(dtype=torch.int16)
+                .numpy(),
+                starts.to(device="cpu", dtype=torch.int64).contiguous().numpy(),
+                graphs.to(device="cpu", dtype=torch.int64).contiguous().numpy(),
+            )
+            initial_item_invalid = torch.from_numpy(initial_item_invalid).to(device)
+        else:
+            initial_item_invalid = torch.full((self.num_envs,), -1, dtype=torch.int8, device=device)
         return EpisodeOutcomes(
+            initial_item_invalid=initial_item_invalid,
             step_outcomes=StepOutcomes(
                 door_invalid=torch.from_numpy(result.step_outcomes.door_valid).to(device),
                 connection_invalid=torch.from_numpy(result.step_outcomes.connections_valid).to(

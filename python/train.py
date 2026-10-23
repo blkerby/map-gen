@@ -19,6 +19,7 @@ import safetensors.torch
 from area_order import episode_area_order
 import torch
 import map_gen
+from initial_item import sample_initial_item_conditions, initial_item_metrics
 from variable_sampling import sample_variable_float, variable_mixture_weights
 from aim import Run
 from aim.sdk.errors import MissingRunError
@@ -109,7 +110,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v26"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v27"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -749,6 +750,9 @@ def create_generate_config(
             config.generation.reward_phantoon_area,
             "generation.reward_phantoon_area",
         ),
+        "reward_initial_item": variable_float_tensor(
+            config.generation.reward_initial_item, "generation.reward_initial_item"
+        ),
         "reward_success": variable_float_tensor(
             config.generation.reward_success,
             "generation.reward_success",
@@ -905,6 +909,18 @@ def create_generate_config(
         generation_variable_floats_by_name.update(
             {f"{field_name}_{area}": values[:, area] for area in range(6)}
         )
+    generation_variable_floats_by_name.update(
+        sample_initial_item_conditions(
+            rooms,
+            config.generation.initial_item_start_probabilities,
+            config.generation.initial_item_wall_jump_probability,
+            num_envs,
+            device,
+        )
+    )
+    generation_variable_floats_by_name["reward_initial_item"] *= (
+        generation_variable_floats_by_name["initial_item_start"] > 0
+    )
     generation_variable_floats = GenerationVariableFloatsFeature.construct_tensor(
         generation_variable_floats_by_name, num_rooms=len(rooms)
     )
@@ -956,6 +972,7 @@ def create_generate_config(
         reward_phantoon_pair=generation_variable_floats_by_name["reward_phantoon_pair"],
         reward_phantoon_area=generation_variable_floats_by_name["reward_phantoon_area"],
         reward_success=generation_variable_floats_by_name["reward_success"],
+        reward_initial_item=generation_variable_floats_by_name["reward_initial_item"],
         reward_vanilla_area=raw_vanilla_area_rewards,
         reward_frontier=generation_variable_floats_by_name["reward_frontier"],
         reward_graph_diameter=generation_variable_floats_by_name["reward_graph_diameter"],
@@ -1415,6 +1432,9 @@ class TrainingSession:
                 ),
             ),
             EpisodeOutcomes(
+                initial_item_invalid=torch.cat(
+                    [outcomes.initial_item_invalid for outcomes in outcome_iterations]
+                ),
                 step_outcomes=StepOutcomes(
                     door_invalid=torch.cat(
                         [outcomes.step_outcomes.door_invalid for outcomes in outcome_iterations]
@@ -2080,6 +2100,15 @@ class TrainingSession:
             "candidate_top1_agreement": candidate_diagnostics.top1_agreement,
             "balance_loss": balance_loss,
             "success_rate": success_rate,
+            **initial_item_metrics(
+                episode_outcomes.initial_item_invalid,
+                episode_data.generation_variable_floats,
+                success,
+                GENERATION_VARIABLE_FLOAT_FIELDS,
+            ),
+            "initial_item_loss": loss.initial_item,
+            "initial_item_loss_pct": 100.0 * loss.initial_item_contribution / loss_denominator,
+            "initial_item_weight": step_config.train.initial_item_weight,
             "success_door": success_door,
             "success_conn": success_conn,
             "success_toilet": success_toilet,
@@ -2844,6 +2873,7 @@ def build_session(args: Args) -> TrainingSession:
             phantoon_pair_weight=config.train.phantoon_pair_weight,
             phantoon_area_weight=config.train.phantoon_area_weight,
             success_weight=config.train.success_weight,
+            initial_item_weight=config.train.initial_item_weight,
             vanilla_area_weight=config.train.vanilla_area_weight,
             balance_weight=config.train.balance_weight,
             area_balance_weight=config.train.area_balance_weight,

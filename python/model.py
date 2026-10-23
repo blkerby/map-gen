@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from initial_item import NODE_COUNT, GRAPH_COUNT, encode_generation_variables
 from device_util import is_gpu
 from door_balance import sinkhorn_door_target
 from env import AREA_COUNT, AREA_PAIR_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, OutputMetadata, Features
@@ -30,6 +31,7 @@ DETERMINISTIC_INVALID_LOGIT = 20.0
 class Predictions:
     # Log-odds of a terminal map with no invalid outcomes:
     success: torch.Tensor
+    initial_item_invalid: torch.Tensor
     # log-odds of invalid door (unconnected):
     door_invalid: torch.Tensor
     # log-odds of invalid connection (lack of return path):
@@ -118,6 +120,7 @@ def get_predictions(raw_preds, output_sizes):
 
     return Predictions(
         success=preds[9].squeeze(-1),
+        initial_item_invalid=raw_preds.new_empty(raw_preds.shape[:2]),
         door_invalid=preds[0],
         connection_invalid=preds[1],
         return_distance_invalid=torch.empty_like(preds[1]),
@@ -798,6 +801,7 @@ class FrontierModel(torch.nn.Module):
             torch.nn.GELU(),
             torch.nn.Linear(hidden_width, embedding_width, bias=False),
         )
+        self.initial_item_output = Float32Linear(embedding_width, 1)
         self.door_output = Float32Linear(embedding_width, door_output_size)
         self.frontier_door_invalid_output = Float32Linear(embedding_width, 1)
         self.frontier_balance_score_output = Float32Linear(embedding_width, 1)
@@ -866,6 +870,7 @@ class FrontierModel(torch.nn.Module):
             door_output_size * AREA_COUNT,
         )
         output_layers = (
+            self.initial_item_output,
             self.door_output,
             self.frontier_door_invalid_output,
             self.frontier_balance_score_output,
@@ -1215,8 +1220,19 @@ class FrontierModel(torch.nn.Module):
                 self.distance_proximity_scale,
                 "refill-from-room utility",
             )
+        initial_item_invalid = self.initial_item_output(X).squeeze(-1)
+        if self.features.generation_variable_floats:
+            starts = features.global_features.generation_variable_floats[
+                :, GENERATION_VARIABLE_FLOAT_FIELDS.index("initial_item_start")
+            ]
+            initial_item_invalid = torch.where(
+                starts.unsqueeze(1) > 0, initial_item_invalid, -DETERMINISTIC_INVALID_LOGIT
+            )
+        else:
+            initial_item_invalid = torch.full_like(initial_item_invalid, -DETERMINISTIC_INVALID_LOGIT)
         return Predictions(
             success=preds.success,
+            initial_item_invalid=initial_item_invalid,
             door_invalid=door_invalid,
             connection_invalid=connection_invalid,
             return_distance_invalid=return_distance_invalid,
@@ -1260,7 +1276,7 @@ def balance_price_network(
     output_width: int,
 ) -> torch.nn.Sequential:
     layers: list[torch.nn.Module] = []
-    input_width = len(GENERATION_VARIABLE_FLOAT_FIELDS)
+    input_width = len(GENERATION_VARIABLE_FLOAT_FIELDS) - 2 + NODE_COUNT + 1 + GRAPH_COUNT
     for _ in range(num_layers):
         layers.extend([torch.nn.Linear(input_width, hidden_width), torch.nn.GELU()])
         input_width = hidden_width
@@ -1361,8 +1377,9 @@ class BalanceModel(torch.nn.Module):
 
     def forward(self, generation_variable_floats: torch.Tensor) -> BalancePredictions:
         parameter_dtype = next(self.parameters()).dtype
-        inputs = generation_variable_floats.to(
-            activation_dtype(generation_variable_floats.device, parameter_dtype)
+        inputs = encode_generation_variables(
+            generation_variable_floats,
+            activation_dtype(generation_variable_floats.device, parameter_dtype),
         )
         raw = self.door_net(inputs).to(torch.float32)
         toilet_raw = self.toilet_net(inputs).to(torch.float32)

@@ -83,7 +83,7 @@ class AreaConnectionsTest(unittest.TestCase):
                     counts.append(0)
                     continue
                 group.finish()
-                final = group.get_outcomes(torch.device("cpu"), verify_consistency=True)
+                final = group.get_outcomes(torch.device("cpu"), verify_consistency=True, generation_variable_floats=torch.zeros((group.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
                 connections = final.step_outcomes.area_connections
                 self.assertEqual(connections.dtype, torch.bool)
                 self.assertEqual(connections.shape, (1, AREA_PAIR_COUNT))

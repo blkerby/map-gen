@@ -14,6 +14,7 @@ class LossConfig:
     phantoon_pair_weight: float
     phantoon_area_weight: float
     success_weight: float
+    initial_item_weight: float
     vanilla_area_weight: float
     balance_weight: float
     area_balance_weight: float
@@ -45,6 +46,7 @@ class LossBreakdown:
     phantoon_pair: torch.Tensor
     phantoon_area: torch.Tensor
     success: torch.Tensor
+    initial_item: torch.Tensor
     vanilla_area: torch.Tensor
     balance: torch.Tensor
     area_balance: torch.Tensor
@@ -68,6 +70,7 @@ class LossBreakdown:
     phantoon_pair_contribution: torch.Tensor
     phantoon_area_contribution: torch.Tensor
     success_contribution: torch.Tensor
+    initial_item_contribution: torch.Tensor
     vanilla_area_contribution: torch.Tensor
     balance_contribution: torch.Tensor
     area_balance_contribution: torch.Tensor
@@ -185,6 +188,7 @@ def masked_cross_entropy_loss(
 def compute_loss_breakdown(
     preds: Predictions,
     success_target: torch.Tensor,
+    initial_item_target: torch.Tensor,
     outcomes: StepOutcomes,
     mask: torch.Tensor,
     vanilla_area_constraint_mask: torch.Tensor,
@@ -223,6 +227,12 @@ def compute_loss_breakdown(
 ) -> LossBreakdown:
     success_loss, success_wt = masked_binary_cross_entropy_loss(
         preds.success, success_target, mask.squeeze(-1), config.success_weight
+    )
+    initial_item_loss, initial_item_wt = masked_binary_cross_entropy_loss(
+        preds.initial_item_invalid,
+        initial_item_target.expand_as(preds.initial_item_invalid),
+        mask.squeeze(-1),
+        config.initial_item_weight,
     )
     door_loss, door_wt = masked_binary_cross_entropy_loss(
         preds.door_invalid, outcomes.door_invalid, mask, config.door_weight
@@ -372,6 +382,7 @@ def compute_loss_breakdown(
     total_weight = (
         door_wt
         + success_wt
+        + initial_item_wt
         + conn_wt
         + toilet_wt
         + phantoon_pair_wt
@@ -397,6 +408,7 @@ def compute_loss_breakdown(
     )
     door_contribution = door_loss / total_weight
     success_contribution = success_loss / total_weight
+    initial_item_contribution = initial_item_loss / total_weight
     connection_contribution = conn_loss / total_weight
     toilet_contribution = toilet_loss / total_weight
     phantoon_pair_contribution = phantoon_pair_loss / total_weight
@@ -421,6 +433,7 @@ def compute_loss_breakdown(
     mean_loss = (
         door_contribution
         + success_contribution
+        + initial_item_contribution
         + connection_contribution
         + toilet_contribution
         + phantoon_pair_contribution
@@ -446,6 +459,8 @@ def compute_loss_breakdown(
     return LossBreakdown(
         success=success_loss / (success_wt + 1e-15),
         success_contribution=success_contribution,
+        initial_item=initial_item_loss / (initial_item_wt + 1e-15),
+        initial_item_contribution=initial_item_contribution,
         total=mean_loss,
         door=door_loss / (door_wt + 1e-15),
         connection=conn_loss / (conn_wt + 1e-15),

@@ -1,3 +1,4 @@
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 import json
 import unittest
 from pathlib import Path
@@ -50,7 +51,7 @@ class OutcomeVerificationTest(unittest.TestCase):
             assert (partial.norfair_heat == -1).any()
             env.verify_outcome_consistency()
             env.finish()
-            final = env.get_outcomes(torch.device("cpu"), verify_consistency=True)
+            final = env.get_outcomes(torch.device("cpu"), verify_consistency=True, generation_variable_floats=torch.zeros((env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
             assert (final.step_outcomes.maridia_water >= 0).all()
             assert (final.step_outcomes.norfair_heat >= 0).all()
 

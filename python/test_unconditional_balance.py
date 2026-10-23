@@ -6,6 +6,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from env import AREA_COUNT
+from initial_item import encode_generation_variables
 from loss import (
     balance_family_loss,
     balance_objective_terms,
@@ -118,8 +119,10 @@ def test_migration_preserves_prices_hidden_layers_and_moments() -> None:
             branch[-1].bias.normal_()
     optimizer = torch.optim.Adam(old.parameters(), lr=0.001)
     variables = torch.randn(16, len(GENERATION_VARIABLE_FLOAT_FIELDS))
+    variables[:, -2:] = 0
+    inputs = encode_generation_variables(variables, torch.float32)
     for branch in (old.door_net, old.toilet_net, old.area_net):
-        branch(variables).square().sum().backward()
+        branch(inputs).square().sum().backward()
     optimizer.step()
     tensors = {f"balance_model.{name}": value.clone() for name, value in old.state_dict().items()}
     metadata = {}

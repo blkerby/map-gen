@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING
 import torch
 
 from env import AREA_COUNT, AREA_PAIR_COUNT, VANILLA_AREA_CONSTRAINT_COUNT, Features, OutputMetadata
+from initial_item import NODE_COUNT, GRAPH_COUNT, encode_generation_variables
 from train_config import (
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_PROBABILITY_FIELDS,
+    INITIAL_ITEM_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_REWARD_FIELDS,
 )
@@ -203,6 +205,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
                 for area in range(AREA_COUNT)
             },
             **{name: values[name] for name in VANILLA_AREA_CONDITION_FIELDS},
+            **{name: values[name] for name in INITIAL_ITEM_FIELDS},
         }
         if tuple(columns) != GENERATION_VARIABLE_FLOAT_FIELDS:
             raise RuntimeError(
@@ -216,14 +219,14 @@ class GenerationVariableFloatsFeature(GlobalFeature):
 
     @classmethod
     def tensor_width(cls, context: FeatureContext) -> int:
-        return len(GENERATION_VARIABLE_FLOAT_FIELDS)
+        return len(GENERATION_VARIABLE_FLOAT_FIELDS) - 2 + NODE_COUNT + 1 + GRAPH_COUNT
 
     @classmethod
     def build(cls, context: FeatureContext) -> GenerationVariableFloatsFeature:
         return cls()
 
     def forward(self, features: Features, dtype: torch.dtype) -> torch.Tensor:
-        return features.global_features.generation_variable_floats.to(dtype)
+        return encode_generation_variables(features.global_features.generation_variable_floats, dtype)
 
 
 class LookaheadFeature(GlobalFeature):

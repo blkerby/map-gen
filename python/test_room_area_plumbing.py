@@ -102,7 +102,7 @@ def test_direct_balance_targets_match_replay() -> None:
         )
     replay_doors = env.get_door_matches(device)
     env.finish()
-    replay_toilet = env.get_outcomes(device, verify_consistency=False).end_outcomes.toilet_crossed_room_idx
+    replay_toilet = env.get_outcomes(device, verify_consistency=False, generation_variable_floats=torch.zeros((env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS)))).end_outcomes.toilet_crossed_room_idx
 
     for direction in ("left", "right", "up", "down"):
         assert torch.equal(getattr(direct_doors, direction), getattr(replay_doors, direction))
@@ -281,7 +281,7 @@ def test_environment_group_reports_area_outcome_state() -> None:
     assert state.area_map_station_count.tolist() == [[0, 0, 0, 0, 0, 0]]
 
     env.finish()
-    outcomes = env.get_outcomes(device, verify_consistency=True)
+    outcomes = env.get_outcomes(device, verify_consistency=True, generation_variable_floats=torch.zeros((env.num_envs, len(GENERATION_VARIABLE_FLOAT_FIELDS))))
     assert outcomes.end_outcomes.area_crossings.tolist() == state.area_crossings.tolist()
     assert outcomes.end_outcomes.maridia_water.tolist() == [[1]]
     assert outcomes.end_outcomes.norfair_heat.tolist() == [[1]]

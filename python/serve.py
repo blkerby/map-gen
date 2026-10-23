@@ -28,6 +28,7 @@ from env import (
 )
 from generate import GenerationProfiler, profile_start, run_generation_groups, sync_profile_device
 from features import GenerationVariableFloatsFeature
+from initial_item import NODES, GRAPHS
 from small_map import (
     DoorData,
     RequiredRoomData,
@@ -56,7 +57,7 @@ from train_config import (
 )
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v26"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v27"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -111,6 +112,10 @@ class GenerateRequest(StrictBaseModel):
     reward_phantoon_pair: float
     reward_phantoon_area: float
     reward_success: float
+    reward_initial_item: float
+    initial_item_start: tuple[int, int] | None
+    initial_item_difficulty: str
+    initial_item_wall_jump: bool
     reward_ship_in_crateria: float
     reward_kraid_in_brinstar: float
     reward_ridley_in_norfair: float
@@ -421,6 +426,25 @@ def create_serving_state(
 
 
 def validate_generate_request(generate_request: GenerateRequest, rooms: list[dict]) -> None:
+    start = generate_request.initial_item_start
+    if start is not None:
+        matching = [
+            index + 1
+            for index, node in enumerate(NODES)
+            if (node["room_id"], node["node_id"]) == start and node["start"]
+        ]
+        if not matching or start[0] not in {room["room_id"] for room in rooms if "room_id" in room}:
+            raise ValueError("initial_item_start must identify an extracted start in the room set")
+    matching_graphs = [
+        index
+        for index, graph in enumerate(GRAPHS)
+        if graph["difficulty"] == generate_request.initial_item_difficulty
+        and graph["wall_jump"] == generate_request.initial_item_wall_jump
+    ]
+    if not matching_graphs:
+        raise ValueError("unsupported initial_item_difficulty")
+    if not math.isfinite(generate_request.reward_initial_item) or generate_request.reward_initial_item < 0:
+        raise ValueError("reward_initial_item must be finite and nonnegative")
     if generate_request.episode_length <= 0:
         raise ValueError("episode_length must be greater than zero")
     if generate_request.episode_length > len(rooms):
@@ -499,6 +523,20 @@ def create_generate_configs(
     envs: list,
     device: torch.device,
 ) -> list[GenerateConfig]:
+    start_index = (
+        0 if generate_request.initial_item_start is None else next(
+            index + 1
+            for index, node in enumerate(NODES)
+            if (node["room_id"], node["node_id"]) == generate_request.initial_item_start
+            and node["start"]
+        )
+    )
+    graph_index = next(
+        index
+        for index, graph in enumerate(GRAPHS)
+        if graph["difficulty"] == generate_request.initial_item_difficulty
+        and graph["wall_jump"] == generate_request.initial_item_wall_jump
+    )
     target_scales = {
         "target_area_x": state.training_config.map_size[0],
         "target_area_y": state.training_config.map_size[1],
@@ -520,6 +558,9 @@ def create_generate_configs(
         "reward_phantoon_pair": generate_request.reward_phantoon_pair,
         "reward_phantoon_area": generate_request.reward_phantoon_area,
         "reward_success": generate_request.reward_success,
+        "reward_initial_item": generate_request.reward_initial_item * (start_index > 0),
+        "initial_item_start": float(start_index),
+        "initial_item_graph": float(graph_index),
         "reward_frontier": generate_request.reward_frontier,
         "reward_graph_diameter": generate_request.reward_graph_diameter,
         **{
@@ -667,6 +708,7 @@ def create_generate_configs(
                 reward_phantoon_pair=generate_request.reward_phantoon_pair,
                 reward_phantoon_area=generate_request.reward_phantoon_area,
                 reward_success=generate_request.reward_success,
+                reward_initial_item=generate_request.reward_initial_item * (start_index > 0),
                 reward_vanilla_area=torch.tensor(
                     [getattr(generate_request, name) for name in VANILLA_AREA_REWARD_FIELDS],
                     dtype=torch.float32,
@@ -924,6 +966,10 @@ def warmup_generate_request() -> GenerateRequest:
         reward_phantoon_pair=1.0,
         reward_phantoon_area=1.0,
         reward_success=0.0,
+        reward_initial_item=0.0,
+        initial_item_start=None,
+        initial_item_difficulty="Basic",
+        initial_item_wall_jump=True,
         reward_ship_in_crateria=1.0,
         reward_kraid_in_brinstar=1.0,
         reward_ridley_in_norfair=1.0,

@@ -115,6 +115,8 @@ HEAT_WATER_PROBABILITY_FIELDS = tuple(
     for tier in range(1, 4)
 )
 
+INITIAL_ITEM_FIELDS = ("reward_initial_item", "initial_item_start", "initial_item_graph")
+
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "log_temperature",
     "log_proposal_temperature",
@@ -141,6 +143,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     *(f"target_area_probability_{area}" for area in range(6)),
     *(f"{field}_{area}" for field in ("target_area_x", "target_area_y") for area in range(6)),
     *VANILLA_AREA_CONDITION_FIELDS,
+    *INITIAL_ITEM_FIELDS,
 )
 
 
@@ -244,6 +247,9 @@ class GenerationConfig(StrictBaseModel):
     reward_phantoon_pair: VariableFloat
     reward_phantoon_area: VariableFloat
     reward_success: VariableFloat
+    reward_initial_item: VariableFloat
+    initial_item_start_probabilities: Annotated[list[float], Field(min_length=3, max_length=3)]
+    initial_item_wall_jump_probability: float
     reward_ship_in_crateria: VariableFloat
     reward_kraid_in_brinstar: VariableFloat
     reward_ridley_in_norfair: VariableFloat
@@ -396,6 +402,7 @@ class TrainConfig(StrictBaseModel):
     phantoon_pair_weight: float
     phantoon_area_weight: float
     success_weight: float
+    initial_item_weight: float
     vanilla_area_weight: float
     balance_weight: float
     area_balance_weight: float
@@ -595,6 +602,19 @@ def validate_return_distance_limit(value: ReturnDistanceLimit, path: str) -> Non
 
 
 def validate_config(config: Config) -> None:
+    probabilities = config.generation.initial_item_start_probabilities
+    if any(not math.isfinite(p) or p < 0 for p in probabilities) or not math.isclose(
+        sum(probabilities), 1.0
+    ):
+        raise ValueError("initial_item_start_probabilities must be nonnegative and sum to one")
+    probability = config.generation.initial_item_wall_jump_probability
+    if not math.isfinite(probability) or not 0 <= probability <= 1:
+        raise ValueError("initial_item_wall_jump_probability must be between zero and one")
+    if sum(probabilities[1:]) > 0 and not config.features.generation_variable_floats:
+        raise ValueError("initial-item conditioning requires features.generation_variable_floats")
+    if not math.isfinite(config.train.initial_item_weight) or config.train.initial_item_weight < 0:
+        raise ValueError("initial_item_weight must be finite and nonnegative")
+
     def validate_feature_width(name: str, value: int) -> None:
         if value < 0:
             raise ValueError(f"features.{name} must be greater than or equal to zero")
@@ -765,6 +785,9 @@ def validate_config(config: Config) -> None:
     validate_nonnegative_variable_float(
         config.generation.reward_success,
         "generation.reward_success",
+    )
+    validate_nonnegative_variable_float(
+        config.generation.reward_initial_item, "generation.reward_initial_item"
     )
     for field_name in VANILLA_AREA_REWARD_FIELDS:
         validate_nonnegative_variable_float(

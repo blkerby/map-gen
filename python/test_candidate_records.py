@@ -56,6 +56,7 @@ class CandidateRecordsTest(unittest.TestCase):
             name: torch.zeros(4)
             for name in (
                 "success",
+                "initial_item_invalid",
                 "door_invalid",
                 "connection_invalid",
                 "return_distance_invalid",

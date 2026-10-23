@@ -299,6 +299,7 @@ class MainLossBreakdown:
     phantoon_pair: float
     phantoon_area: float
     success: float
+    initial_item: float
     vanilla_area: float
     balance: float
     area_balance: float
@@ -323,6 +324,7 @@ class MainLossBreakdown:
     phantoon_pair_contribution: float
     phantoon_area_contribution: float
     success_contribution: float
+    initial_item_contribution: float
     vanilla_area_contribution: float
     balance_contribution: float
     area_balance_contribution: float
@@ -381,6 +383,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         phantoon_pair=0.0,
         phantoon_area=0.0,
         success=0.0,
+        initial_item=0.0,
         vanilla_area=0.0,
         balance=0.0,
         area_balance=0.0,
@@ -405,6 +408,7 @@ def empty_main_loss_breakdown() -> MainLossBreakdown:
         phantoon_pair_contribution=0.0,
         phantoon_area_contribution=0.0,
         success_contribution=0.0,
+        initial_item_contribution=0.0,
         vanilla_area_contribution=0.0,
         balance_contribution=0.0,
         area_balance_contribution=0.0,
@@ -433,6 +437,8 @@ def accumulate_main_loss(target: MainLossBreakdown, source: MainLossBreakdown) -
     target.toilet += source.toilet
     target.phantoon_pair += source.phantoon_pair
     target.phantoon_area += source.phantoon_area
+    target.initial_item += source.initial_item
+    target.initial_item_contribution += source.initial_item_contribution
     target.success += source.success
     target.balance += source.balance
     target.area_balance += source.area_balance
@@ -487,6 +493,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         phantoon_pair=total_loss.phantoon_pair / count,
         phantoon_area=total_loss.phantoon_area / count,
         success=total_loss.success / count,
+        initial_item=total_loss.initial_item / count,
         vanilla_area=total_loss.vanilla_area / count,
         balance=total_loss.balance / count,
         area_balance=total_loss.area_balance / count,
@@ -511,6 +518,7 @@ def average_main_loss(total_loss: MainLossBreakdown, count: int) -> MainLossBrea
         phantoon_pair_contribution=total_loss.phantoon_pair_contribution / count,
         phantoon_area_contribution=total_loss.phantoon_area_contribution / count,
         success_contribution=total_loss.success_contribution / count,
+        initial_item_contribution=total_loss.initial_item_contribution / count,
         vanilla_area_contribution=total_loss.vanilla_area_contribution / count,
         balance_contribution=total_loss.balance_contribution / count,
         area_balance_contribution=total_loss.area_balance_contribution / count,
@@ -1166,7 +1174,11 @@ def prepare_train_batch_task(
         )
     env.finish()
     replay_episode_data = replay_episode_data.to(context.device)
-    replay_outcomes = env.get_outcomes(context.device, verify_consistency=False)
+    replay_outcomes = env.get_outcomes(
+        context.device,
+        verify_consistency=False,
+        generation_variable_floats=replay_episode_data.generation_variable_floats,
+    )
     return PreparedTrainBatch(
         kind=task.kind,
         episode_data=replay_episode_data,
@@ -1514,6 +1526,7 @@ def train_feature_batch_backward(
         prefix_loss = compute_loss_breakdown(
             preds,
             success_target,
+            prepared_batch.outcomes.initial_item_invalid.unsqueeze(1),
             repeated_outcomes,
             mask,
             vanilla_area_constraint_mask,
@@ -1558,6 +1571,10 @@ def train_feature_batch_backward(
         total_loss.phantoon_pair += prefix_loss.phantoon_pair.item() * prefix_weight
         total_loss.phantoon_area += prefix_loss.phantoon_area.item() * prefix_weight
         total_loss.success += prefix_loss.success.item() * prefix_weight
+        total_loss.initial_item += prefix_loss.initial_item.item() * prefix_weight
+        total_loss.initial_item_contribution += (
+            prefix_loss.initial_item_contribution.item() * prefix_weight
+        )
         total_loss.vanilla_area += prefix_loss.vanilla_area.item() * prefix_weight
         total_loss.balance += prefix_loss.balance.item() * prefix_weight
         total_loss.area_balance += prefix_loss.area_balance.item() * prefix_weight

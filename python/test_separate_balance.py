@@ -8,6 +8,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from env import AREA_COUNT, DoorMatches
+from initial_item import encode_generation_variables
 from loss import compute_balance_loss, compute_balance_price_tables
 from scripts.balance_v18 import BalanceModelV18 as BalanceModel
 from train import load_named_optimizer_checkpoint_state, save_named_optimizer_checkpoint_state
@@ -43,10 +44,12 @@ def checkpoint_fixture():
         shared.net[-1].weight.normal_(0, 0.1)
         shared.net[-1].bias.normal_(0, 0.1)
     variables = torch.randn(4, len(GENERATION_VARIABLE_FLOAT_FIELDS))
+    variables[:, -2:] = 0
+    inputs = encode_generation_variables(variables, torch.float32)
     optimizer = torch.optim.Adam(shared.parameters(), lr=0.001)
     for _ in range(3):
         optimizer.zero_grad(set_to_none=True)
-        shared.net(variables).square().sum().backward()
+        shared.net(inputs).square().sum().backward()
         optimizer.step()
     tensors = {
         f"balance_model.{name}": value.clone()
