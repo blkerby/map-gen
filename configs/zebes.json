@@ -212,7 +212,7 @@
     "toilet_weight": 2.0,
     "phantoon_pair_weight": 2.0,
     "phantoon_area_weight": 2.0,
-    "initial_item_weight": 0.0,
+    "initial_item_weight": 1.0,
     "success_weight": 1.0,
     "vanilla_area_weight": 2.0,
     "balance_weight": 5.0,
