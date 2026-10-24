@@ -108,8 +108,8 @@
       "tier_min": [0.0, 0.0, 0.0],
       "tier_max": [0.75, 0.75, 0.75]
     },
-    "reward_save_distance": {"linear": {"min": 0.0, "max": 0.1}},
-    "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.1}},
+    "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},
+    "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_missing_connect_utility": {"linear": {"min": 0.0, "max": 2.0}},
     "max_return_distance": {
       "mixture": [
