@@ -475,8 +475,8 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
     ]
     if not matching_graphs:
         raise ValueError("unsupported initial_item_difficulty")
-    if not math.isfinite(generate_request.reward_initial_item) or generate_request.reward_initial_item < 0:
-        raise ValueError("reward_initial_item must be finite and nonnegative")
+    if not math.isfinite(generate_request.reward_initial_item):
+        raise ValueError("reward_initial_item must be finite")
     if generate_request.episode_length <= 0:
         raise ValueError("episode_length must be greater than zero")
     if generate_request.episode_length > len(rooms):
@@ -502,17 +502,16 @@ def validate_generate_request(generate_request: GenerateRequest, rooms: list[dic
         or not 0 < generate_request.max_return_distance <= 254
     ):
         raise ValueError("max_return_distance must be null or a finite value in (0, 254]")
-    for name in ("reward_area_distinct_crossing", "reward_area_crossing"):
-        if not math.isfinite(getattr(generate_request, name)):
-            raise ValueError(f"{name} must be finite")
     for name in (
+        "reward_area_distinct_crossing",
+        "reward_area_crossing",
         "reward_area_size_valid",
         "reward_area_map_station",
         "reward_area_x",
         "reward_area_y",
     ):
-        if getattr(generate_request, name) < 0.0:
-            raise ValueError(f"{name} must be greater than or equal to zero")
+        if not math.isfinite(getattr(generate_request, name)):
+            raise ValueError(f"{name} must be finite")
     for family in ("maridia_water", "norfair_heat"):
         probabilities = [
             getattr(generate_request, f"{family}_preferred_probability_{tier}")

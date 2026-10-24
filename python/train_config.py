@@ -776,23 +776,23 @@ def validate_config(config: Config) -> None:
         config.train.proposal_target_temperature,
         "train.proposal_target_temperature",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_phantoon_pair,
         "generation.reward_phantoon_pair",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_phantoon_area,
         "generation.reward_phantoon_area",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_success,
         "generation.reward_success",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_initial_item, "generation.reward_initial_item"
     )
     for field_name in VANILLA_AREA_REWARD_FIELDS:
-        validate_nonnegative_variable_float(
+        validate_finite_variable_float(
             getattr(config.generation, field_name),
             f"generation.{field_name}",
         )
@@ -802,7 +802,7 @@ def validate_config(config: Config) -> None:
             f"generation.{field_name}",
             config.knot_episodes,
         )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_graph_diameter,
         "generation.reward_graph_diameter",
     )
@@ -830,15 +830,15 @@ def validate_config(config: Config) -> None:
                     f"generation.{family}_preferred_probability.tier_max[{tier}] "
                     "must be positive and at least tier_min for this and all lower tiers"
                 )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_save_distance,
         "generation.reward_save_distance",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_refill_distance,
         "generation.reward_refill_distance",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_missing_connect_utility,
         "generation.reward_missing_connect_utility",
     )
@@ -850,16 +850,16 @@ def validate_config(config: Config) -> None:
         config.generation.reward_area_crossing,
         "generation.reward_area_crossing",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_area_size_valid,
         "generation.reward_area_size_valid",
     )
-    validate_nonnegative_variable_float(
+    validate_finite_variable_float(
         config.generation.reward_area_map_station,
         "generation.reward_area_map_station",
     )
     for field_name in ("reward_area_x", "reward_area_y"):
-        validate_nonnegative_variable_float(
+        validate_finite_variable_float(
             getattr(config.generation, field_name),
             f"generation.{field_name}",
         )
@@ -1049,40 +1049,6 @@ def validate_variable_mixture_weights(value: VariableMixture, path: str) -> None
         float(component.weight) > 0.0 for component in value.mixture
     ):
         raise ValueError(f"{path}.mixture must have a positive total weight")
-
-
-def validate_nonnegative_variable_float(value: VariableFloat, path: str) -> None:
-    def validate_endpoint(endpoint: VariableEndpoint, endpoint_path: str) -> None:
-        if isinstance(endpoint, list):
-            for index, item in enumerate(endpoint):
-                if item < 0:
-                    raise ValueError(
-                        f"{endpoint_path}[{index}] must be greater than or equal to zero"
-                    )
-            return
-        if endpoint < 0:
-            raise ValueError(f"{endpoint_path} must be greater than or equal to zero")
-
-    if isinstance(value, VariableMixture):
-        validate_variable_mixture_weights(value, path)
-        for index, component in enumerate(value.mixture):
-            validate_nonnegative_variable_float(
-                component.value,
-                f"{path}.mixture[{index}].value",
-            )
-        return
-    if isinstance(value, VariableSchedule):
-        _, values = variable_schedule_kind_and_value(value, path)
-        if isinstance(values, VariableRange):
-            validate_endpoint(values.min, f"{path}.min")
-            validate_endpoint(values.max, f"{path}.max")
-            return
-        for index, item in enumerate(values):
-            if item < 0:
-                raise ValueError(f"{path}[{index}] must be greater than or equal to zero")
-        return
-    if value < 0:
-        raise ValueError(f"{path} must be greater than or equal to zero")
 
 
 def validate_finite_endpoint(value: VariableEndpoint, path: str) -> None:

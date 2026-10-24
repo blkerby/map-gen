@@ -78,14 +78,15 @@ class SuccessTest(unittest.TestCase):
             del data[section][field]
             with self.assertRaises(ValidationError):
                 Config.model_validate(data)
-            data[section][field] = -1.0
-            with self.assertRaisesRegex(ValueError, field):
-                validate_config(Config.model_validate(data))
         data = config.model_dump(mode="json")
-        data["generation"]["reward_success"] = {"linear": [0.0, 2.0]}
+        data["train"]["success_weight"] = -1.0
+        with self.assertRaisesRegex(ValueError, "success_weight"):
+            validate_config(Config.model_validate(data))
+        data = config.model_dump(mode="json")
+        data["generation"]["reward_success"] = {"linear": [-2.0, 0.0]}
         scheduled = Config.model_validate(data)
         validate_config(scheduled)
-        assert instantiate_scheduleable_config(scheduled, 320).generation.reward_success == 1.0
+        assert instantiate_scheduleable_config(scheduled, 320).generation.reward_success == -1.0
 
     def test_success_loss_survives_aggregation(self) -> None:
         total = empty_main_loss_breakdown()
