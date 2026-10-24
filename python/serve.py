@@ -111,7 +111,7 @@ class ServingConfig(StrictBaseModel):
 
 
 class GenerateRequest(StrictBaseModel):
-    num_maps: Annotated[int, Field(strict=True, gt=0)]
+    max_num_maps: Annotated[int, Field(strict=True, gt=0)]
     episode_length: int
     recommended_candidates: int
     shortlist_candidates: int
@@ -983,7 +983,7 @@ def initialize_serving_state(state: ServingState) -> None:
 
 def warmup_generate_request() -> GenerateRequest:
     return GenerateRequest(
-        num_maps=1,
+        max_num_maps=1,
         episode_length=253,
         recommended_candidates=8,
         shortlist_candidates=1024,
@@ -1067,7 +1067,7 @@ def add_serving_profile(
 
 
 def prefetch_request_key(generate_request: GenerateRequest) -> str:
-    return generate_request.model_dump_json(exclude={"num_maps"})
+    return generate_request.model_dump_json(exclude={"max_num_maps"})
 
 
 def queue_id(key: str) -> str:
@@ -1171,8 +1171,8 @@ def touch_prefetch_queue(
         queue_state.last_used = time.monotonic()
     if queue_state.target == 0:
         reserve_queue_target(state, key, state.serving_config.prefetch_initial_target)
-    if queue_state.target < generate_request.num_maps:
-        reserve_queue_target(state, key, generate_request.num_maps)
+    if queue_state.target < generate_request.max_num_maps:
+        reserve_queue_target(state, key, generate_request.max_num_maps)
     mark_queue_full(queue_state)
     return queue_state
 
@@ -1592,16 +1592,21 @@ def run_prefetch_worker(state: ServingState) -> None:
 def combine_response_maps(maps: list[dict], stats: dict[str, int]) -> dict:
     return {
         "stats": stats | {"num_valid": len(maps)},
-        "rooms": {name: [entry["rooms"][name] for entry in maps] for name in maps[0]["rooms"]},
-        "edges": {name: [entry["edges"][name] for entry in maps] for name in maps[0]["edges"]},
+        "rooms": {
+            name: [entry["rooms"][name] for entry in maps]
+            for name in ("id", "x", "y", "area", "subarea", "subsubarea")
+        },
+        "edges": {
+            name: [entry["edges"][name] for entry in maps]
+            for name in (
+                "from_room_placement_idx", "from_door_id",
+                "to_room_placement_idx", "to_door_id",
+            )
+        },
         "toilet_crossing_room_placement_idx": [
             entry["toilet_crossing_room_placement_idx"] for entry in maps
         ],
     }
-
-
-class MapGenerationUnavailable(Exception):
-    pass
 
 
 @app.post("/generate")
@@ -1620,22 +1625,22 @@ def generate_response_data(
 ) -> dict:
     validate_generate_request(generate_request, state.rooms)
     key = prefetch_request_key(generate_request)
-    count = generate_request.num_maps
+    count = generate_request.max_num_maps
     prefetch = state.prefetch
     stats = {"num_generated": 0, "num_pre_valid": 0}
     if prefetch is not None:
         if count > state.serving_config.prefetch_capacity:
-            raise ValueError("num_maps must not exceed prefetch_capacity")
+            raise ValueError("max_num_maps must not exceed prefetch_capacity")
         with prefetch.condition:
             queue = touch_prefetch_queue(state, key, generate_request)
-            log_queue_state(state, key, f"Generate request num_maps={count}")
-            if len(queue.maps) >= count:
-                maps = take_queue_maps(state, key, count)
-                log_queue_state(state, key, f"Generate cache hit returned={count}")
+            log_queue_state(state, key, f"Generate request max_num_maps={count}")
+            if queue.maps:
+                maps = take_queue_maps(state, key, min(count, len(queue.maps)))
+                log_queue_state(state, key, f"Generate cache hit returned={len(maps)}")
                 return combine_response_maps(maps, stats)
             log_queue_state(state, key, "Generate cache miss")
     else:
-        log_queue_state(state, key, f"Generate request num_maps={count} caching disabled")
+        log_queue_state(state, key, f"Generate request max_num_maps={count} caching disabled")
     acquire_foreground_generation_lock(state, key)
     profiles = []
     available = []
@@ -1643,7 +1648,7 @@ def generate_response_data(
         for _ in range(state.serving_config.foreground_max_batches):
             if prefetch is not None:
                 with prefetch.condition:
-                    if len(queue.maps) >= count:
+                    if queue.maps:
                         break
             response = generate_batch_with_generation_lock_held(
                 state, generate_request, threading.Event()
@@ -1658,19 +1663,11 @@ def generate_response_data(
                     append_queue_maps(state, key, maps)
             else:
                 available.extend(maps)
-                if len(available) >= count:
+                if available:
                     break
         if prefetch is not None:
             with prefetch.condition:
-                if len(queue.maps) < count:
-                    raise MapGenerationUnavailable(
-                        f"Only {len(queue.maps)}/{count} maps available after bounded foreground generation"
-                    )
-                available = take_queue_maps(state, key, count)
-        elif len(available) < count:
-            raise MapGenerationUnavailable(
-                f"Only {len(available)}/{count} maps available after bounded foreground generation"
-            )
+                available = take_queue_maps(state, key, min(count, len(queue.maps)))
         response = combine_response_maps(available[:count], stats)
         if state.profile:
             response["profile"] = profiles
@@ -1691,8 +1688,8 @@ def request_prefetch_refill(state: ServingState, generate_request: GenerateReque
     if prefetch is None:
         log_queue_state(state, key, "Refill request ignored: caching disabled")
         return {"queue": queue_id(key), "funded_batches": 0}
-    if generate_request.num_maps > state.serving_config.prefetch_capacity:
-        raise ValueError("num_maps must not exceed prefetch_capacity")
+    if generate_request.max_num_maps > state.serving_config.prefetch_capacity:
+        raise ValueError("max_num_maps must not exceed prefetch_capacity")
     with prefetch.condition:
         queue = touch_prefetch_queue(state, key, generate_request)
         funded = (
@@ -1718,11 +1715,6 @@ def health_response():
 @app.errorhandler(ValueError)
 def value_error_response(error: ValueError):
     return jsonify({"error": str(error)}), 400
-
-
-@app.errorhandler(MapGenerationUnavailable)
-def generation_unavailable_response(error: MapGenerationUnavailable):
-    return jsonify({"error": str(error)}), 503
 
 
 @app.errorhandler(ValidationError)

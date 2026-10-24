@@ -17,7 +17,7 @@ def area_room_counts(area_assignments: list[list[int]]) -> list[list[int]]:
 
 def main() -> int:
     payload = {
-        "num_maps": 1,
+        "max_num_maps": 1,
         "episode_length": 253,
         "recommended_candidates": 8,
         "shortlist_candidates": 1024,

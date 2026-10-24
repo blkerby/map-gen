@@ -18,7 +18,7 @@ from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, VANILLA_AREA_REWARD_F
 
 def base_payload() -> dict:
     return {
-        "num_maps": 1,
+        "max_num_maps": 1,
         "episode_length": 3,
         "recommended_candidates": 1,
         "shortlist_candidates": 1,
