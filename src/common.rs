@@ -438,10 +438,11 @@ fn room_part_distances(room: &Room) -> Vec<GraphDistance> {
 
 impl GeometryData {
     fn new(key: &GeometryKey) -> Result<Self> {
-        let mut min_x = Coord::MAX;
-        let mut max_x = Coord::MIN;
-        let mut min_y = Coord::MAX;
-        let mut max_y = Coord::MIN;
+        // Include the room origin even when its map tile is empty.
+        let mut min_x = 0;
+        let mut max_x = 0;
+        let mut min_y = 0;
+        let mut max_y = 0;
         let mut occupied_tiles = vec![];
         let room_width = key.map[0].len() as Coord;
         let room_height = key.map.len() as Coord;

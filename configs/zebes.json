@@ -50,7 +50,7 @@
   "balance_train": {
     "enabled": true,
     "batch_size": 2048,
-    "door_beta": {"log": [0.01, 0.02, 0.03, 0.2, 0.2]},
+    "door_beta": {"log": [0.01, 0.02, 0.03, 0.15, 0.15]},
     "toilet_beta": {"log": [0.05, 0.1, 0.15, 0.2, 0.2]},
     "area_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
     "order_beta": {"log": [0.05, 0.1, 0.1, 0.1, 0.1]},
@@ -160,7 +160,7 @@
     "frontier_neighbor_count": 4,
     "frontier_window_size": 8,
     "candidate_spatial_cell_size": 8,
-    "area_bounding_box_width": 61,
+    "area_bounding_box_width": 60,
     "area_bounding_box_height": 29,
     "num_threads": 32
   },
