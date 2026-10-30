@@ -38,6 +38,7 @@ from loss import (
     terminal_balance_cost,
     compute_toilet_balance_score_targets,
     compute_loss_breakdown,
+    scale_door_balance_prices,
 )
 from train_config import (
     Config,
@@ -1323,10 +1324,15 @@ def train_feature_batch_backward(
                 context.train_batch_envs[0].engine.rooms,
                 prepared_batch.episode_data.generation_variable_floats,
             )
-            balance_score_tables = compute_balance_price_tables(
-                balance_preds,
-                area_targets.probability,
-                area_targets.dual_mask,
+            balance_score_tables = scale_door_balance_prices(
+                compute_balance_price_tables(
+                    balance_preds,
+                    area_targets.probability,
+                    area_targets.dual_mask,
+                ),
+                prepared_batch.episode_data.generation_variable_floats[
+                    :, GENERATION_VARIABLE_FLOAT_FIELDS.index("door_balance_strength")
+                ],
             )
             balance_score_target = compute_balance_score_targets(
                 balance_score_tables,

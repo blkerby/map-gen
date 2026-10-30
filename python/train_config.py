@@ -133,6 +133,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_save_distance",
     "reward_refill_distance",
     "reward_missing_connect_utility",
+    "door_balance_strength",
     "max_return_distance",
     "reward_area_distinct_crossing",
     "reward_area_crossing",
@@ -263,6 +264,7 @@ class GenerationConfig(StrictBaseModel):
     reward_save_distance: VariableFloat
     reward_refill_distance: VariableFloat
     reward_missing_connect_utility: VariableFloat
+    door_balance_strength: VariableFloat
     max_return_distance: ReturnDistanceLimit
     reward_area_distinct_crossing: VariableFloat
     reward_area_crossing: VariableFloat
@@ -841,6 +843,10 @@ def validate_config(config: Config) -> None:
     validate_finite_variable_float(
         config.generation.reward_missing_connect_utility,
         "generation.reward_missing_connect_utility",
+    )
+    validate_finite_variable_float(
+        config.generation.door_balance_strength,
+        "generation.door_balance_strength",
     )
     validate_finite_variable_float(
         config.generation.reward_area_distinct_crossing,

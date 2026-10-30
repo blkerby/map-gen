@@ -306,7 +306,7 @@ class ModelExportTest(unittest.TestCase):
         original_parameters = list(resumed.main_model.parameters())
         metadata = resumed.load_checkpoint(self.checkpoint_path)
         self.assertEqual(metadata["format"], TRAINING_CHECKPOINT_FORMAT)
-        self.assertEqual(TRAINING_CHECKPOINT_FORMAT, "map-gen-training-session-checkpoint-v28")
+        self.assertEqual(TRAINING_CHECKPOINT_FORMAT, "map-gen-training-session-checkpoint-v29")
         self.assertEqual(resumed.num_episodes, self.session.num_episodes)
         self.assertEqual(resumed.experience.num_files, self.session.experience.num_files)
         self.assertTrue(

@@ -185,6 +185,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
             "reward_save_distance": values["reward_save_distance"],
             "reward_refill_distance": values["reward_refill_distance"],
             "reward_missing_connect_utility": values["reward_missing_connect_utility"],
+            "door_balance_strength": values["door_balance_strength"],
             "max_return_distance": values["max_return_distance"],
             "reward_area_distinct_crossing": values["reward_area_distinct_crossing"],
             "reward_area_crossing": values["reward_area_crossing"],

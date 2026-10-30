@@ -68,6 +68,7 @@ from learn import (
 from loss import (
     LossConfig,
     compute_balance_price_tables,
+    scale_door_balance_prices,
 )
 from model import FrontierModel
 from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
@@ -111,7 +112,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v28"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v29"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -611,10 +612,13 @@ def compute_balance_metric_values(
             variables = generation_variable_floats[start:end]
             area_targets = generation_area_balance_targets(rooms, variables)
             preds = balance_model(variables)
-            tables = compute_balance_price_tables(
-                preds,
-                area_targets.probability,
-                area_targets.dual_mask,
+            tables = scale_door_balance_prices(
+                compute_balance_price_tables(
+                    preds,
+                    area_targets.probability,
+                    area_targets.dual_mask,
+                ),
+                variables[:, GENERATION_VARIABLE_FLOAT_FIELDS.index("door_balance_strength")],
             )
             direction_metrics = (
                 (tables.left, preds.left_compatibility),
@@ -777,6 +781,10 @@ def create_generate_config(
         "reward_missing_connect_utility": variable_float_tensor(
             config.generation.reward_missing_connect_utility,
             "generation.reward_missing_connect_utility",
+        ),
+        "door_balance_strength": variable_float_tensor(
+            config.generation.door_balance_strength,
+            "generation.door_balance_strength",
         ),
         "max_return_distance": variable_float_tensor(
             config.generation.max_return_distance, "generation.max_return_distance"
@@ -2268,6 +2276,10 @@ class TrainingSession:
                     step_config.generation.reward_missing_connect_utility,
                     "generation.reward_missing_connect_utility",
                 )
+            ),
+            "door_balance_strength": variable_float_metric_value(
+                step_config.generation.door_balance_strength,
+                "generation.door_balance_strength",
             ),
             "reward_area_distinct_crossing": variable_float_metric_value(
                 step_config.generation.reward_area_distinct_crossing,

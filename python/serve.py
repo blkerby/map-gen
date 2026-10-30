@@ -68,7 +68,7 @@ from train_config import (
 )
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v28"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v29"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -154,6 +154,7 @@ class GenerateRequest(StrictBaseModel):
     reward_save_distance: float
     reward_refill_distance: float
     reward_missing_connect_utility: float
+    door_balance_strength: float
     max_return_distance: float | None
     reward_area_distinct_crossing: float
     reward_area_crossing: float
@@ -458,6 +459,8 @@ def create_serving_state(
 
 
 def validate_generate_request(generate_request: GenerateRequest, rooms: list[dict]) -> None:
+    if not math.isfinite(generate_request.door_balance_strength):
+        raise ValueError("door_balance_strength must be finite")
     start = generate_request.initial_item_start
     if start is not None:
         matching = [
@@ -604,6 +607,7 @@ def create_generate_configs(
         "reward_save_distance": generate_request.reward_save_distance,
         "reward_refill_distance": generate_request.reward_refill_distance,
         "reward_missing_connect_utility": generate_request.reward_missing_connect_utility,
+        "door_balance_strength": generate_request.door_balance_strength,
         "max_return_distance": (
             0.0 if generate_request.max_return_distance is None
             else generate_request.max_return_distance
@@ -1025,6 +1029,7 @@ def warmup_generate_request() -> GenerateRequest:
         reward_save_distance=0.1,
         reward_refill_distance=0.1,
         reward_missing_connect_utility=1.0,
+        door_balance_strength=1.0,
         max_return_distance=None,
         reward_area_distinct_crossing=1.0,
         reward_area_crossing=0.0,

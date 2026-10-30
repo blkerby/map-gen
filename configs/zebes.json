@@ -111,6 +111,7 @@
     "reward_save_distance": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_refill_distance": {"linear": {"min": 0.0, "max": 0.2}},
     "reward_missing_connect_utility": {"linear": {"min": 0.0, "max": 2.0}},
+    "door_balance_strength": {"linear": {"min": 0.0, "max": 1.0}},
     "max_return_distance": {
       "mixture": [
         {"weight": 8.0, "value": null},

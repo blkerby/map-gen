@@ -61,6 +61,7 @@ def base_payload() -> dict:
         "reward_save_distance": 1.0,
         "reward_refill_distance": 1.0,
         "reward_missing_connect_utility": 1.0,
+        "door_balance_strength": 1.0,
         "max_return_distance": None,
         "reward_area_distinct_crossing": 0.0,
         "reward_area_crossing": 1.0,

@@ -7,7 +7,7 @@ from model import BalanceModel, FrontierModel
 from train_config import Config
 
 
-MODEL_EXPORT_FORMAT = "map-gen-model-export-v22"
+MODEL_EXPORT_FORMAT = "map-gen-model-export-v23"
 INFERENCE_BACKBONE_DTYPES = {"float32": torch.float32, "bfloat16": torch.bfloat16}
 
 

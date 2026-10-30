@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -755,6 +755,20 @@ def compute_balance_price_tables(
         area_order_failure=preds.area_order_failure,
         room_step=preds.room_step - preds.room_step.mean(-1, keepdim=True),
         room_step_failure=preds.room_step_failure,
+    )
+
+
+def scale_door_balance_prices(
+    tables: BalancePriceTables,
+    strength: torch.Tensor,
+) -> BalancePriceTables:
+    return replace(
+        tables,
+        left=tables.left * strength[:, None, None],
+        right=tables.right * strength[:, None, None],
+        up=tables.up * strength[:, None, None],
+        down=tables.down * strength[:, None, None],
+        door_failure=tables.door_failure * strength[:, None],
     )
 
 

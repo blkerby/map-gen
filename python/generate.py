@@ -33,6 +33,7 @@ from loss import (
     compute_proposal_balance_score_residual,
     compute_proposal_balance_score_table,
     compute_step_balance_score_targets,
+    scale_door_balance_prices,
 )
 from model import BalancePredictions, Predictions
 from concurrent.futures import ThreadPoolExecutor
@@ -43,7 +44,7 @@ import threading
 import time
 import torch
 
-from train_config import Config
+from train_config import Config, GENERATION_VARIABLE_FLOAT_FIELDS
 
 type ProfileReport = list[tuple[str, int, int]]
 type GenerationStats = dict[str, float]
@@ -896,6 +897,11 @@ def compute_candidate_values(
         actual_balance_score,
         balance_score,
     )
+    # Disable unknown costs exactly at zero strength, regardless of prediction error.
+    door_balance_enabled = group.config.generation_variable_floats[
+        :, GENERATION_VARIABLE_FLOAT_FIELDS.index("door_balance_strength")
+    ] != 0
+    balance_score = torch.where(door_balance_enabled[:, None, None], balance_score, 0.0)
     area_balance_score = apply_candidate_area_balance_scores(
         preds.area_balance_score.view(environment_count, candidate_count, -1),
         features.global_features.room_placed.view(environment_count, candidate_count, -1),
@@ -2285,10 +2291,15 @@ def run_generation_groups(
         raise ValueError("generation groups require matching gpu_prefetch_batches")
     balance_predictions = [balance_model(config.generation_variable_floats) for config in configs]
     balance_score_tables = [
-        compute_balance_price_tables(
-            balance_preds,
-            config.area_balance_probability,
-            config.area_balance_dual_mask,
+        scale_door_balance_prices(
+            compute_balance_price_tables(
+                balance_preds,
+                config.area_balance_probability,
+                config.area_balance_dual_mask,
+            ),
+            config.generation_variable_floats[
+                :, GENERATION_VARIABLE_FLOAT_FIELDS.index("door_balance_strength")
+            ],
         )
         for balance_preds, config in zip(balance_predictions, configs, strict=True)
     ]
