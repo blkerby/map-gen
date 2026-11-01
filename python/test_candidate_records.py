@@ -15,6 +15,7 @@ from generate import (
     select_candidate_actions,
 )
 from learn import compute_candidate_diagnostics, proposal_batch_loss
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS
 
 
 class CandidateRecordsTest(unittest.TestCase):
@@ -28,7 +29,9 @@ class CandidateRecordsTest(unittest.TestCase):
         )
         self.group = SimpleNamespace(
             config=SimpleNamespace(
-                autocast=False, recommended_candidates=0, temperature=torch.tensor([0.5, 1.0]), episode_length=1
+                autocast=False, recommended_candidates=0, temperature=torch.tensor([0.5, 1.0]),
+                episode_length=1,
+                generation_variable_floats=torch.ones(2, len(GENERATION_VARIABLE_FLOAT_FIELDS)),
             ),
             step=0,
             room_tile_count=torch.ones(1, dtype=torch.int64),

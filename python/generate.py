@@ -887,7 +887,13 @@ def compute_candidate_values(
     profiler.add("python.score.model_forward", profile_time)
 
     profile_time = profile_start(profile)
-    balance_score = preds.balance_score.view(environment_count, candidate_count, -1)
+    door_balance_strength = group.config.generation_variable_floats[
+        :, GENERATION_VARIABLE_FLOAT_FIELDS.index("door_balance_strength")
+    ]
+    balance_score = (
+        preds.balance_score.view(environment_count, candidate_count, -1).to(torch.float32)
+        * door_balance_strength[:, None, None]
+    )
     actual_balance_score, actual_balance_score_mask = compute_step_balance_score_targets(
         group.balance_score_tables,
         post_candidate_outcomes.door_match,
@@ -897,11 +903,6 @@ def compute_candidate_values(
         actual_balance_score,
         balance_score,
     )
-    # Disable unknown costs exactly at zero strength, regardless of prediction error.
-    door_balance_enabled = group.config.generation_variable_floats[
-        :, GENERATION_VARIABLE_FLOAT_FIELDS.index("door_balance_strength")
-    ] != 0
-    balance_score = torch.where(door_balance_enabled[:, None, None], balance_score, 0.0)
     area_balance_score = apply_candidate_area_balance_scores(
         preds.area_balance_score.view(environment_count, candidate_count, -1),
         features.global_features.room_placed.view(environment_count, candidate_count, -1),

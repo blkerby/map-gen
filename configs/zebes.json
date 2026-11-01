@@ -114,7 +114,10 @@
     "door_balance_strength": {"linear": {"min": 0.0, "max": 1.0}},
     "max_return_distance": {
       "mixture": [
-        {"weight": 8.0, "value": null},
+        {"weight": 11.0, "value": null},
+        {"weight": 3.0, "value": 10.0},
+        {"weight": 3.0, "value": 11.0},
+        {"weight": 3.0, "value": 12.0},
         {"weight": 3.0, "value": 13.0},
         {"weight": 3.0, "value": 14.0},
         {"weight": 3.0, "value": 15.0},

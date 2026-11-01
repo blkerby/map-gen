@@ -38,7 +38,7 @@ from train_config import (
 )
 
 SOURCE_FORMAT = "map-gen-training-session-checkpoint-v28"
-TARGET_FORMAT = "map-gen-training-session-checkpoint-v29"
+TARGET_FORMAT = "map-gen-training-session-checkpoint-v30"
 STRENGTH_FIELD = "door_balance_strength"
 
 
@@ -69,7 +69,7 @@ def global_added_columns(config: Config, rooms: list[dict], engine: Engine) -> l
 
 def migrate_checkpoint(source: Path, output: Path) -> dict:
     if TRAINING_CHECKPOINT_FORMAT != TARGET_FORMAT:
-        raise ValueError("this migration requires the v29 model implementation")
+        raise ValueError("this migration requires the v30 model implementation")
     if output.exists():
         raise FileExistsError(output)
     with safe_open(source, framework="pt", device="cpu") as checkpoint:

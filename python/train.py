@@ -112,7 +112,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v29"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v30"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
