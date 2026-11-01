@@ -48,7 +48,7 @@ ARG MODEL_FILENAME=2026-09-06T14:27:50.485558-zebes-testing-round_23100.safetens
 
 RUN mkdir -p models \
     && curl -fL \
-        -o "models/${MODEL_FILENAME}" \
+        -o "models/model.safetensors" \
         "https://f004.backblazeb2.com/file/map-rando-artifacts/map-gen-models/${MODEL_FILENAME}"
 
 CMD ["python", "python/serve.py", "--help"]
