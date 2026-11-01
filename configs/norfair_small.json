@@ -113,6 +113,7 @@
     "reward_missing_connect_utility": 0.5,
     "door_balance_strength": 1.0,
     "max_return_distance": null,
+    "max_graph_diameter": null,
     "reward_area_distinct_crossing": 0.0,
     "reward_area_crossing": 0.0,
     "reward_area_size_valid": 0.0,

@@ -246,6 +246,14 @@ def compute_loss_breakdown(
         mask,
         config.connection_weight,
     )
+    graph_diameter_loss, graph_diameter_wt = masked_binary_cross_entropy_loss(
+        preds.graph_diameter_invalid,
+        outcomes.graph_diameter_invalid,
+        mask.squeeze(-1),
+        config.connection_weight,
+    )
+    conn_loss = conn_loss + graph_diameter_loss
+    conn_wt = conn_wt + graph_diameter_wt
     conn_loss = conn_loss + return_distance_loss
     conn_wt = conn_wt + return_distance_wt
     toilet_loss, toilet_wt = masked_binary_cross_entropy_loss(

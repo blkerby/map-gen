@@ -135,6 +135,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     "reward_missing_connect_utility",
     "door_balance_strength",
     "max_return_distance",
+    "max_graph_diameter",
     "reward_area_distinct_crossing",
     "reward_area_crossing",
     "reward_area_size_valid",
@@ -266,6 +267,7 @@ class GenerationConfig(StrictBaseModel):
     reward_missing_connect_utility: VariableFloat
     door_balance_strength: VariableFloat
     max_return_distance: ReturnDistanceLimit
+    max_graph_diameter: ReturnDistanceLimit
     reward_area_distinct_crossing: VariableFloat
     reward_area_crossing: VariableFloat
     reward_area_size_valid: VariableFloat
@@ -629,6 +631,11 @@ def validate_config(config: Config) -> None:
     )
     if config.generation.max_return_distance is not None and not config.features.generation_variable_floats:
         raise ValueError("max_return_distance requires features.generation_variable_floats")
+    validate_return_distance_limit(
+        config.generation.max_graph_diameter, "generation.max_graph_diameter"
+    )
+    if config.generation.max_graph_diameter is not None and not config.features.generation_variable_floats:
+        raise ValueError("max_graph_diameter requires features.generation_variable_floats")
     if not config.knot_episodes:
         raise ValueError("knot_episodes must contain at least one episode count")
     if config.knot_episodes[-1] <= 0:

@@ -282,6 +282,9 @@ enum WorkerCommand {
     SetMaxReturnDistances {
         limits: InputShard<f32>,
     },
+    SetMaxGraphDiameters {
+        limits: InputShard<f32>,
+    },
     VerifyOutcomeConsistency,
     Finish,
     Step {
@@ -337,6 +340,7 @@ enum WorkerCommand {
         pre_toilet_valid: OutputShard<i8>,
         pre_phantoon_pair_valid: OutputShard<i8>,
         pre_phantoon_area_valid: OutputShard<i8>,
+        pre_graph_diameter_valid: OutputShard<i8>,
         pre_vanilla_area_valid: OutputShard<i8>,
         pre_area_size_bucket: OutputShard<i8>,
         pre_area_connections: OutputShard<bool>,
@@ -349,6 +353,7 @@ enum WorkerCommand {
         toilet_valid: OutputShard<i8>,
         phantoon_pair_valid: OutputShard<i8>,
         phantoon_area_valid: OutputShard<i8>,
+        graph_diameter_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_connections: OutputShard<bool>,
@@ -378,6 +383,7 @@ enum WorkerCommand {
         toilet_valid: OutputShard<i8>,
         phantoon_pair_valid: OutputShard<i8>,
         phantoon_area_valid: OutputShard<i8>,
+        graph_diameter_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_connections: OutputShard<bool>,
@@ -424,6 +430,7 @@ enum WorkerCommand {
         toilet_valid: OutputShard<i8>,
         phantoon_pair_valid: OutputShard<i8>,
         phantoon_area_valid: OutputShard<i8>,
+        graph_diameter_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_connections: OutputShard<bool>,
@@ -475,6 +482,7 @@ impl WorkerCommand {
             WorkerCommand::Clear => Some(ProfileMetric::WorkerClear),
             WorkerCommand::SetInitialItemConditions { .. } => None,
             WorkerCommand::SetMaxReturnDistances { .. } => None,
+            WorkerCommand::SetMaxGraphDiameters { .. } => None,
             WorkerCommand::VerifyOutcomeConsistency => {
                 Some(ProfileMetric::WorkerVerifyOutcomeConsistency)
             }
@@ -650,6 +658,13 @@ fn worker_loop(
                 }
                 WorkerResponse::Done
             }
+            WorkerCommand::SetMaxGraphDiameters { limits } => {
+                let limits = unsafe { limits.into_slice() };
+                for (env, &limit) in environments.iter_mut().zip(limits) {
+                    env.set_max_graph_diameter(if limit == 0.0 { None } else { Some(limit) });
+                }
+                WorkerResponse::Done
+            }
             WorkerCommand::VerifyOutcomeConsistency => {
                 let result = environments.iter_mut().try_for_each(|env| {
                     env.verified_outcomes(&common_data, "verify_outcome_consistency")
@@ -759,6 +774,7 @@ fn worker_loop(
                 pre_toilet_valid,
                 pre_phantoon_pair_valid,
                 pre_phantoon_area_valid,
+                pre_graph_diameter_valid,
                 pre_vanilla_area_valid,
                 pre_area_size_bucket,
                 pre_area_connections,
@@ -771,6 +787,7 @@ fn worker_loop(
                 toilet_valid,
                 phantoon_pair_valid,
                 phantoon_area_valid,
+                graph_diameter_valid,
                 vanilla_area_valid,
                 area_size_bucket,
                 area_connections,
@@ -808,6 +825,7 @@ fn worker_loop(
                 let pre_toilet_valid = unsafe { pre_toilet_valid.into_mut_slice() };
                 let pre_phantoon_pair_valid = unsafe { pre_phantoon_pair_valid.into_mut_slice() };
                 let pre_phantoon_area_valid = unsafe { pre_phantoon_area_valid.into_mut_slice() };
+                let pre_graph_diameter_valid = unsafe { pre_graph_diameter_valid.into_mut_slice() };
                 let pre_vanilla_area_valid = unsafe { pre_vanilla_area_valid.into_mut_slice() };
                 let pre_area_size_bucket = unsafe { pre_area_size_bucket.into_mut_slice() };
                 let pre_area_connections = unsafe { pre_area_connections.into_mut_slice() };
@@ -821,6 +839,7 @@ fn worker_loop(
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
                 let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
+                let graph_diameter_valid = unsafe { graph_diameter_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_connections = unsafe { area_connections.into_mut_slice() };
@@ -890,6 +909,7 @@ fn worker_loop(
                 debug_assert_eq!(pre_toilet_valid.len(), environments.len());
                 debug_assert_eq!(pre_phantoon_pair_valid.len(), environments.len());
                 debug_assert_eq!(pre_phantoon_area_valid.len(), environments.len());
+                debug_assert_eq!(pre_graph_diameter_valid.len(), environments.len());
                 debug_assert_eq!(
                     pre_vanilla_area_valid.len(),
                     environments.len() * VANILLA_AREA_CONSTRAINT_COUNT
@@ -933,6 +953,10 @@ fn worker_loop(
                 );
                 debug_assert_eq!(
                     phantoon_area_valid.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    graph_diameter_valid.len(),
                     environments.len() * recommended_candidates
                 );
                 debug_assert_eq!(
@@ -1058,6 +1082,8 @@ fn worker_loop(
                         outcome_to_i8(pre_candidate_outcomes.phantoon_pair_valid);
                     pre_phantoon_area_valid[env_idx] =
                         outcome_to_i8(pre_candidate_outcomes.phantoon_area_valid);
+                    pre_graph_diameter_valid[env_idx] =
+                        outcome_to_i8(pre_candidate_outcomes.graph_diameter_valid);
                     let pre_vanilla_start = env_idx * VANILLA_AREA_CONSTRAINT_COUNT;
                     for (idx, &outcome) in
                         pre_candidate_outcomes.vanilla_area_valid.iter().enumerate()
@@ -1162,6 +1188,7 @@ fn worker_loop(
                         toilet_valid[idx] = outcome_to_i8(outcome.toilet_valid);
                         phantoon_pair_valid[idx] = outcome_to_i8(outcome.phantoon_pair_valid);
                         phantoon_area_valid[idx] = outcome_to_i8(outcome.phantoon_area_valid);
+                        graph_diameter_valid[idx] = outcome_to_i8(outcome.graph_diameter_valid);
                         let vanilla_start = idx * VANILLA_AREA_CONSTRAINT_COUNT;
                         for (constraint_idx, &value) in
                             outcome.vanilla_area_valid.iter().enumerate()
@@ -1243,6 +1270,7 @@ fn worker_loop(
                 toilet_valid,
                 phantoon_pair_valid,
                 phantoon_area_valid,
+                graph_diameter_valid,
                 vanilla_area_valid,
                 area_size_bucket,
                 area_connections,
@@ -1281,6 +1309,7 @@ fn worker_loop(
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
                 let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
+                let graph_diameter_valid = unsafe { graph_diameter_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_connections = unsafe { area_connections.into_mut_slice() };
@@ -1329,6 +1358,7 @@ fn worker_loop(
                 debug_assert_eq!(toilet_valid.len(), environments.len());
                 debug_assert_eq!(phantoon_pair_valid.len(), environments.len());
                 debug_assert_eq!(phantoon_area_valid.len(), environments.len());
+                debug_assert_eq!(graph_diameter_valid.len(), environments.len());
                 debug_assert_eq!(
                     vanilla_area_valid.len(),
                     environments.len() * VANILLA_AREA_CONSTRAINT_COUNT
@@ -1553,6 +1583,7 @@ fn worker_loop(
                     toilet_valid[env_idx] = outcome_to_i8(outcomes.toilet_valid);
                     phantoon_pair_valid[env_idx] = outcome_to_i8(outcomes.phantoon_pair_valid);
                     phantoon_area_valid[env_idx] = outcome_to_i8(outcomes.phantoon_area_valid);
+                    graph_diameter_valid[env_idx] = outcome_to_i8(outcomes.graph_diameter_valid);
                     let vanilla_start = env_idx * VANILLA_AREA_CONSTRAINT_COUNT;
                     for (idx, &outcome) in outcomes.vanilla_area_valid.iter().enumerate() {
                         vanilla_area_valid[vanilla_start + idx] = outcome_to_i8(outcome);
@@ -1612,6 +1643,7 @@ fn worker_loop(
                 toilet_valid,
                 phantoon_pair_valid,
                 phantoon_area_valid,
+                graph_diameter_valid,
                 vanilla_area_valid,
                 area_size_bucket,
                 area_connections,
@@ -1628,6 +1660,7 @@ fn worker_loop(
                 let toilet_valid = unsafe { toilet_valid.into_mut_slice() };
                 let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
+                let graph_diameter_valid = unsafe { graph_diameter_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_connections = unsafe { area_connections.into_mut_slice() };
@@ -1648,6 +1681,7 @@ fn worker_loop(
                 debug_assert_eq!(toilet_valid.len(), environment_count);
                 debug_assert_eq!(phantoon_pair_valid.len(), environment_count);
                 debug_assert_eq!(phantoon_area_valid.len(), environment_count);
+                debug_assert_eq!(graph_diameter_valid.len(), environment_count);
                 debug_assert_eq!(
                     vanilla_area_valid.len(),
                     environment_count * VANILLA_AREA_CONSTRAINT_COUNT
@@ -1713,6 +1747,7 @@ fn worker_loop(
                     toilet_valid[env_idx] = outcome_to_i8(outcomes.toilet_valid);
                     phantoon_pair_valid[env_idx] = outcome_to_i8(outcomes.phantoon_pair_valid);
                     phantoon_area_valid[env_idx] = outcome_to_i8(outcomes.phantoon_area_valid);
+                    graph_diameter_valid[env_idx] = outcome_to_i8(outcomes.graph_diameter_valid);
                     let vanilla_start = env_idx * VANILLA_AREA_CONSTRAINT_COUNT;
                     for (idx, &outcome) in outcomes.vanilla_area_valid.iter().enumerate() {
                         vanilla_area_valid[vanilla_start + idx] = outcome_to_i8(outcome);
@@ -2144,6 +2179,7 @@ pub struct StepOutcomes {
     toilet_valid: Py<PyArray1<i8>>,
     phantoon_pair_valid: Py<PyArray1<i8>>,
     phantoon_area_valid: Py<PyArray1<i8>>,
+    graph_diameter_valid: Py<PyArray1<i8>>,
     vanilla_area_valid: Py<PyArray2<i8>>,
     area_size_bucket: Py<PyArray2<i8>>,
     area_connections: Py<PyArray2<bool>>,
@@ -2245,6 +2281,7 @@ pub struct ProposalCandidateBuffers {
     pre_toilet_valid: Py<PyArray1<i8>>,
     pre_phantoon_pair_valid: Py<PyArray1<i8>>,
     pre_phantoon_area_valid: Py<PyArray1<i8>>,
+    pre_graph_diameter_valid: Py<PyArray1<i8>>,
     pre_vanilla_area_valid: Py<PyArray2<i8>>,
     pre_area_size_bucket: Py<PyArray2<i8>>,
     pre_area_connections: Py<PyArray2<bool>>,
@@ -2257,6 +2294,7 @@ pub struct ProposalCandidateBuffers {
     toilet_valid: Py<PyArray2<i8>>,
     phantoon_pair_valid: Py<PyArray2<i8>>,
     phantoon_area_valid: Py<PyArray2<i8>>,
+    graph_diameter_valid: Py<PyArray2<i8>>,
     vanilla_area_valid: Py<PyArray3<i8>>,
     area_size_bucket: Py<PyArray3<i8>>,
     area_connections: Py<PyArray3<bool>>,
@@ -2396,6 +2434,7 @@ impl ProposalCandidateBuffers {
             pre_toilet_valid: required_py_field!(fields, "pre_toilet_valid"),
             pre_phantoon_pair_valid: required_py_field!(fields, "pre_phantoon_pair_valid"),
             pre_phantoon_area_valid: required_py_field!(fields, "pre_phantoon_area_valid"),
+            pre_graph_diameter_valid: required_py_field!(fields, "pre_graph_diameter_valid"),
             pre_vanilla_area_valid: required_py_field!(fields, "pre_vanilla_area_valid"),
             pre_area_size_bucket: required_py_field!(fields, "pre_area_size_bucket"),
             pre_area_connections: required_py_field!(fields, "pre_area_connections"),
@@ -2411,6 +2450,7 @@ impl ProposalCandidateBuffers {
             toilet_valid: required_py_field!(fields, "toilet_valid"),
             phantoon_pair_valid: required_py_field!(fields, "phantoon_pair_valid"),
             phantoon_area_valid: required_py_field!(fields, "phantoon_area_valid"),
+            graph_diameter_valid: required_py_field!(fields, "graph_diameter_valid"),
             vanilla_area_valid: required_py_field!(fields, "vanilla_area_valid"),
             area_size_bucket: required_py_field!(fields, "area_size_bucket"),
             area_connections: required_py_field!(fields, "area_connections"),
@@ -2666,6 +2706,10 @@ impl StepOutcomes {
     fn phantoon_area_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
         self.phantoon_area_valid.clone_ref(py)
     }
+    #[getter]
+    fn graph_diameter_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
+        self.graph_diameter_valid.clone_ref(py)
+    }
 
     #[getter]
     fn vanilla_area_valid(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
@@ -2859,6 +2903,7 @@ impl EpisodeOutcomes {
             toilet_valid: self.step_outcomes.toilet_valid.clone_ref(py),
             phantoon_pair_valid: self.step_outcomes.phantoon_pair_valid.clone_ref(py),
             phantoon_area_valid: self.step_outcomes.phantoon_area_valid.clone_ref(py),
+            graph_diameter_valid: self.step_outcomes.graph_diameter_valid.clone_ref(py),
             vanilla_area_valid: self.step_outcomes.vanilla_area_valid.clone_ref(py),
             area_size_bucket: self.step_outcomes.area_size_bucket.clone_ref(py),
             area_connections: self.step_outcomes.area_connections.clone_ref(py),
@@ -4836,6 +4881,43 @@ impl EnvironmentGroup {
         })
     }
 
+    fn set_max_graph_diameters(
+        &mut self,
+        py: Python<'_>,
+        limits: PyReadonlyArray1<'_, f32>,
+    ) -> PyResult<()> {
+        let limits = limits
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("max_graph_diameters must be contiguous"))?;
+        if self.action_count != 0 || limits.len() != self.num_environments {
+            return Err(PyValueError::new_err(
+                "set one max_graph_diameter per environment before stepping",
+            ));
+        }
+        if limits
+            .iter()
+            .any(|x| !x.is_finite() || *x < 0.0 || *x > 254.0)
+        {
+            return Err(PyValueError::new_err(
+                "max_graph_diameters must be finite and in 0..=254; zero disables the limit",
+            ));
+        }
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::SetMaxGraphDiameters {
+                    limits: InputShard::from_slice(&limits[worker.start..worker.end()]),
+                }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
+    }
+
     fn clear(&mut self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| {
             let mut sent_workers = Vec::with_capacity(self.workers.len());
@@ -5145,6 +5227,7 @@ impl EnvironmentGroup {
         let mut pre_toilet_valid = buffers.pre_toilet_valid.bind(py).readwrite();
         let mut pre_phantoon_pair_valid = buffers.pre_phantoon_pair_valid.bind(py).readwrite();
         let mut pre_phantoon_area_valid = buffers.pre_phantoon_area_valid.bind(py).readwrite();
+        let mut pre_graph_diameter_valid = buffers.pre_graph_diameter_valid.bind(py).readwrite();
         let mut pre_vanilla_area_valid = buffers.pre_vanilla_area_valid.bind(py).readwrite();
         let mut pre_area_size_bucket = buffers.pre_area_size_bucket.bind(py).readwrite();
         let mut pre_area_connections = buffers.pre_area_connections.bind(py).readwrite();
@@ -5160,6 +5243,7 @@ impl EnvironmentGroup {
         let mut toilet_valid = buffers.toilet_valid.bind(py).readwrite();
         let mut phantoon_pair_valid = buffers.phantoon_pair_valid.bind(py).readwrite();
         let mut phantoon_area_valid = buffers.phantoon_area_valid.bind(py).readwrite();
+        let mut graph_diameter_valid = buffers.graph_diameter_valid.bind(py).readwrite();
         let mut vanilla_area_valid = buffers.vanilla_area_valid.bind(py).readwrite();
         let mut area_size_bucket = buffers.area_size_bucket.bind(py).readwrite();
         let mut area_connections = buffers.area_connections.bind(py).readwrite();
@@ -5315,6 +5399,11 @@ impl EnvironmentGroup {
             &[self.num_environments],
         )?;
         check_shape(
+            "pre_graph_diameter_valid",
+            pre_graph_diameter_valid.as_array().shape(),
+            &[self.num_environments],
+        )?;
+        check_shape(
             "pre_vanilla_area_valid",
             pre_vanilla_area_valid.as_array().shape(),
             &[self.num_environments, VANILLA_AREA_CONSTRAINT_COUNT],
@@ -5390,6 +5479,11 @@ impl EnvironmentGroup {
         check_shape(
             "phantoon_area_valid",
             phantoon_area_valid.as_array().shape(),
+            &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "graph_diameter_valid",
+            graph_diameter_valid.as_array().shape(),
             &[self.num_environments, recommended_candidates],
         )?;
         check_shape(
@@ -5518,6 +5612,9 @@ impl EnvironmentGroup {
         let pre_phantoon_area_valid = pre_phantoon_area_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_phantoon_area_valid must be contiguous"))?;
+        let pre_graph_diameter_valid = pre_graph_diameter_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_graph_diameter_valid must be contiguous"))?;
         let pre_vanilla_area_valid = pre_vanilla_area_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_vanilla_area_valid must be contiguous"))?;
@@ -5556,6 +5653,9 @@ impl EnvironmentGroup {
         let phantoon_area_valid = phantoon_area_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("phantoon_area_valid must be contiguous"))?;
+        let graph_diameter_valid = graph_diameter_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("graph_diameter_valid must be contiguous"))?;
         let vanilla_area_valid = vanilla_area_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("vanilla_area_valid must be contiguous"))?;
@@ -5607,6 +5707,7 @@ impl EnvironmentGroup {
         pre_toilet_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_phantoon_pair_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
+        pre_graph_diameter_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         pre_area_connections.fill(false);
@@ -5619,6 +5720,7 @@ impl EnvironmentGroup {
         toilet_valid.fill(DoorValidOutcome::Unknown as i8);
         phantoon_pair_valid.fill(DoorValidOutcome::Unknown as i8);
         phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
+        graph_diameter_valid.fill(DoorValidOutcome::Unknown as i8);
         vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         area_connections.fill(false);
@@ -5739,6 +5841,9 @@ impl EnvironmentGroup {
                     pre_phantoon_area_valid: OutputShard::from_slice(
                         &mut pre_phantoon_area_valid[worker.start..worker.end()],
                     ),
+                    pre_graph_diameter_valid: OutputShard::from_slice(
+                        &mut pre_graph_diameter_valid[worker.start..worker.end()],
+                    ),
                     pre_vanilla_area_valid: OutputShard::from_slice(
                         &mut pre_vanilla_area_valid[vanilla_mask_start..vanilla_mask_end],
                     ),
@@ -5776,6 +5881,9 @@ impl EnvironmentGroup {
                     ),
                     phantoon_area_valid: OutputShard::from_slice(
                         &mut phantoon_area_valid[output_start..output_end],
+                    ),
+                    graph_diameter_valid: OutputShard::from_slice(
+                        &mut graph_diameter_valid[output_start..output_end],
                     ),
                     vanilla_area_valid: OutputShard::from_slice(
                         &mut vanilla_area_valid[output_start * VANILLA_AREA_CONSTRAINT_COUNT
@@ -5897,6 +6005,7 @@ impl EnvironmentGroup {
         let mut toilet_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut phantoon_pair_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut phantoon_area_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
+        let mut graph_diameter_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut vanilla_area_valid = vec![
             DoorValidOutcome::Unknown as i8;
             self.num_environments * VANILLA_AREA_CONSTRAINT_COUNT
@@ -5977,6 +6086,9 @@ impl EnvironmentGroup {
                     ),
                     phantoon_area_valid: OutputShard::from_slice(
                         &mut phantoon_area_valid[worker.start..worker.end()],
+                    ),
+                    graph_diameter_valid: OutputShard::from_slice(
+                        &mut graph_diameter_valid[worker.start..worker.end()],
                     ),
                     vanilla_area_valid: OutputShard::from_slice(
                         &mut vanilla_area_valid[worker.start * VANILLA_AREA_CONSTRAINT_COUNT
@@ -6101,6 +6213,7 @@ impl EnvironmentGroup {
                 toilet_valid: toilet_valid.into_pyarray(py).unbind(),
                 phantoon_pair_valid: phantoon_pair_valid.into_pyarray(py).unbind(),
                 phantoon_area_valid: phantoon_area_valid.into_pyarray(py).unbind(),
+                graph_diameter_valid: graph_diameter_valid.into_pyarray(py).unbind(),
                 vanilla_area_valid: pyarray2_from_flat_vec(
                     py,
                     vanilla_area_valid,
@@ -6318,6 +6431,7 @@ impl EnvironmentGroup {
         let mut toilet_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let mut phantoon_pair_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let mut phantoon_area_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
+        let mut graph_diameter_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let mut vanilla_area_valid = vec![
             DoorValidOutcome::Unknown as i8;
             environment_count * VANILLA_AREA_CONSTRAINT_COUNT
@@ -6385,6 +6499,9 @@ impl EnvironmentGroup {
                     phantoon_area_valid: OutputShard::from_slice(
                         &mut phantoon_area_valid[input_start..input_start + environment_count],
                     ),
+                    graph_diameter_valid: OutputShard::from_slice(
+                        &mut graph_diameter_valid[input_start..input_start + environment_count],
+                    ),
                     vanilla_area_valid: OutputShard::from_slice(
                         &mut vanilla_area_valid[input_start * VANILLA_AREA_CONSTRAINT_COUNT
                             ..(input_start + environment_count) * VANILLA_AREA_CONSTRAINT_COUNT],
@@ -6442,6 +6559,7 @@ impl EnvironmentGroup {
             toilet_valid: toilet_valid.into_pyarray(py).unbind(),
             phantoon_pair_valid: phantoon_pair_valid.into_pyarray(py).unbind(),
             phantoon_area_valid: phantoon_area_valid.into_pyarray(py).unbind(),
+            graph_diameter_valid: graph_diameter_valid.into_pyarray(py).unbind(),
             vanilla_area_valid: pyarray2_from_flat_vec(
                 py,
                 vanilla_area_valid,

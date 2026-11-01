@@ -63,6 +63,7 @@ def base_payload() -> dict:
         "reward_missing_connect_utility": 1.0,
         "door_balance_strength": 1.0,
         "max_return_distance": None,
+        "max_graph_diameter": None,
         "reward_area_distinct_crossing": 0.0,
         "reward_area_crossing": 1.0,
         "reward_area_size_valid": 1.0,
@@ -88,6 +89,7 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         toilet_invalid=torch.zeros([batch_size]),
         phantoon_pair_invalid=phantoon_pair_invalid,
         phantoon_area_invalid=phantoon_area_invalid,
+        graph_diameter_invalid=torch.zeros([batch_size]),
         vanilla_area_invalid=torch.zeros([batch_size, 6], dtype=torch.bool),
     )
     area_size = torch.full([batch_size, 6], 2)

@@ -22,6 +22,7 @@ class SmallMapConfig:
     max_rooms: int
     target_rooms: int
     max_return_distance: float | None
+    max_graph_diameter: float | None
 
 
 @dataclass(frozen=True)
@@ -187,38 +188,56 @@ def add_bidirectional_door_edge(
     adjacency[target_part_position].append(source_part_position)
 
 
-def return_distances_valid(
+def distance_limits_valid(
     adjacency: list[list[int]],
     offsets: dict[int, int],
     map_room_idx: list[int],
     room_part_data: RoomPartData,
-    limit: float,
+    max_return_distance: float | None,
+    max_graph_diameter: float | None,
 ) -> bool:
+    if max_return_distance is None and max_graph_diameter is None:
+        return True
     zero_edges = {
         (offset + source, offset + target)
         for position, offset in offsets.items()
         for source, target in room_part_data.connections[map_room_idx[position]]
     }
+    return_targets: dict[int, list[int]] = {}
     for position, offset in offsets.items():
         for source, target in room_part_data.missing_connections[map_room_idx[position]]:
-            target += offset
-            source += offset
-            distances = [float("inf")] * len(adjacency)
-            distances[source] = 0
-            queue = deque([source])
-            while queue and distances[target] > limit:
-                current = queue.popleft()
-                for neighbor in adjacency[current]:
-                    cost = 0 if (current, neighbor) in zero_edges else 1
-                    distance = distances[current] + cost
-                    if distance <= limit and distance < distances[neighbor]:
-                        distances[neighbor] = distance
-                        if cost == 0:
-                            queue.appendleft(neighbor)
-                        else:
-                            queue.append(neighbor)
-            if distances[target] > limit:
-                return False
+            return_targets.setdefault(source + offset, []).append(target + offset)
+    sources = range(len(adjacency)) if max_graph_diameter is not None else return_targets
+    for source in sources:
+        distances = [float("inf")] * len(adjacency)
+        distances[source] = 0
+        queue = deque([source])
+        while queue:
+            if max_graph_diameter is None and max_return_distance is not None and all(
+                distances[target] <= max_return_distance for target in return_targets[source]
+            ):
+                break
+            current = queue.popleft()
+            for neighbor in adjacency[current]:
+                cost = 0 if (current, neighbor) in zero_edges else 1
+                distance = distances[current] + cost
+                if distance < distances[neighbor] and (
+                    max_graph_diameter is not None
+                    or (max_return_distance is not None and distance <= max_return_distance)
+                ):
+                    distances[neighbor] = distance
+                    if cost == 0:
+                        queue.appendleft(neighbor)
+                    else:
+                        queue.append(neighbor)
+        if max_return_distance is not None and any(
+            distances[target] > max_return_distance for target in return_targets.get(source, [])
+        ):
+            return False
+        if max_graph_diameter is not None and any(
+            d > max_graph_diameter for d in distances if d != float("inf")
+        ):
+            return False
     return True
 
 
@@ -307,15 +326,13 @@ def subset_valid(
             ):
                 return False
 
-    return is_strongly_connected(adjacency) and (
-        config.max_return_distance is None
-        or return_distances_valid(
-            adjacency,
-            room_part_offset_by_position,
-            map_room_idx,
-            room_part_data,
-            config.max_return_distance,
-        )
+    return is_strongly_connected(adjacency) and distance_limits_valid(
+        adjacency,
+        room_part_offset_by_position,
+        map_room_idx,
+        room_part_data,
+        config.max_return_distance,
+        config.max_graph_diameter,
     )
 
 

@@ -62,6 +62,7 @@ def main() -> int:
         "reward_missing_connect_utility": 1.0,
         "door_balance_strength": 1.0,
         "max_return_distance": None,
+        "max_graph_diameter": None,
         "reward_area_distinct_crossing": 1.0,
         "reward_area_crossing": 0.0,
         "reward_area_size_valid": 1.0,

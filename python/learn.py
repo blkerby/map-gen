@@ -903,6 +903,7 @@ def prepare_feature_batches(
     )
     env.clear()
     env.set_max_return_distances(generation_variable_floats)
+    env.set_max_graph_diameters(generation_variable_floats)
     env.set_initial_item_conditions(generation_variable_floats)
     feature_batches = []
     feature_mismatches = []
@@ -974,6 +975,9 @@ def prepare_feature_batches(
                         ),
                         phantoon_area_invalid=(
                             next_lookahead_outcomes.phantoon_area_invalid.unsqueeze(1)
+                        ),
+                        graph_diameter_invalid=(
+                            next_lookahead_outcomes.graph_diameter_invalid.unsqueeze(1)
                         ),
                         vanilla_area_invalid=(
                             next_lookahead_outcomes.vanilla_area_invalid.unsqueeze(1)
@@ -1306,6 +1310,7 @@ def train_feature_batch_backward(
         toilet_invalid=step_outcomes.toilet_invalid.unsqueeze(1),
         phantoon_pair_invalid=step_outcomes.phantoon_pair_invalid.unsqueeze(1),
         phantoon_area_invalid=step_outcomes.phantoon_area_invalid.unsqueeze(1),
+        graph_diameter_invalid=step_outcomes.graph_diameter_invalid.unsqueeze(1),
         vanilla_area_invalid=step_outcomes.vanilla_area_invalid.unsqueeze(1),
         area_connections=step_outcomes.area_connections.unsqueeze(1),
         area_size_bucket=step_outcomes.area_size_bucket.unsqueeze(1),
@@ -1453,6 +1458,12 @@ def train_feature_batch_backward(
     ] > 0
     repeated_outcomes.return_distance_invalid = torch.where(
         return_distance_active[:, None, None], repeated_outcomes.return_distance_invalid, -1
+    )
+    graph_diameter_active = generation_variable_floats[
+        :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_graph_diameter")
+    ] > 0
+    repeated_outcomes.graph_diameter_invalid = torch.where(
+        graph_diameter_active[:, None], repeated_outcomes.graph_diameter_invalid, -1
     )
     area_balance_dual_mask = generation_area_balance_targets(
         context.train_batch_envs[0].engine.rooms,

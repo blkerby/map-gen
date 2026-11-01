@@ -128,6 +128,19 @@
         {"weight": 3.0, "value": 20.0}
       ]
     },
+    "max_graph_diameter": {
+      "mixture": [
+        {"weight": 8.0, "value": null},
+        {"weight": 3.0, "value": 38.0},
+        {"weight": 3.0, "value": 39.0},
+        {"weight": 3.0, "value": 40.0},
+        {"weight": 3.0, "value": 41.0},
+        {"weight": 3.0, "value": 42.0},
+        {"weight": 3.0, "value": 43.0},
+        {"weight": 3.0, "value": 44.0},
+        {"weight": 3.0, "value": 45.0}
+      ]
+    },
     "reward_area_distinct_crossing": {"linear": {"min": 0.0, "max": 1.0}},
     "reward_area_crossing": 0.0,
     "reward_area_size_valid": 1.0,

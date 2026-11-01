@@ -66,6 +66,7 @@ class CandidateRecordsTest(unittest.TestCase):
                 "toilet_invalid",
                 "phantoon_pair_invalid",
                 "phantoon_area_invalid",
+                "graph_diameter_invalid",
                 "balance_score",
                 "area_balance_score",
                 "order_balance_score",

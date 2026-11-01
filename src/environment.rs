@@ -229,6 +229,8 @@ fn introduces_invalid_outcome(before: &StepOutcomes, after: &StepOutcomes) -> bo
             && after.toilet_valid == DoorValidOutcome::Invalid)
         || (before.phantoon_pair_valid == DoorValidOutcome::Unknown
             && after.phantoon_pair_valid == DoorValidOutcome::Invalid)
+        || (before.graph_diameter_valid == DoorValidOutcome::Unknown
+            && after.graph_diameter_valid == DoorValidOutcome::Invalid)
         || (before.phantoon_area_valid == DoorValidOutcome::Unknown
             && after.phantoon_area_valid == DoorValidOutcome::Invalid)
         || introduces_invalid_area_bucket(&before.area_size_bucket, &after.area_size_bucket)
@@ -338,6 +340,8 @@ pub struct StepOutcomes {
     // For each connection, whether its destination can reach its source.
     pub connections_valid: Vec<DoorValidOutcome>,
     pub return_distance_valid: Vec<DoorValidOutcome>,
+    // Terminal diameter meets the configured cap; unknown until finished when enabled.
+    pub graph_diameter_valid: DoorValidOutcome,
     // Whether the Toilet crosses exactly one room.
     pub toilet_valid: DoorValidOutcome,
     // Whether Phantoon's Room and Wrecked Ship Map Room connect to the same room.
@@ -1231,6 +1235,7 @@ pub struct Environment {
     active_refill_room_parts: Vec<RoomPartIdx>,
     graph_distance: Vec<GraphDistance>,
     max_return_distance: Option<f32>,
+    max_graph_diameter: Option<f32>,
     room_part_furthest_distance_cache: RoomPartFurthestDistanceCache,
     room_part_save_distance_cache: RoomPartSaveDistanceCache,
     room_part_refill_distance_cache: RoomPartSaveDistanceCache,
@@ -1905,6 +1910,7 @@ impl Environment {
             intersection_query_seen: vec![0; common.room.len()],
             intersection_query_generation: 0,
             max_return_distance: None,
+            max_graph_diameter: None,
             known_outcomes: None,
             frontier_count_sum: 0,
             frontier_count_steps: 0,
@@ -1951,6 +1957,10 @@ impl Environment {
 
     pub fn set_max_return_distance(&mut self, limit: Option<f32>) {
         self.max_return_distance = limit;
+        self.known_outcomes = None;
+    }
+    pub fn set_max_graph_diameter(&mut self, limit: Option<f32>) {
+        self.max_graph_diameter = limit;
         self.known_outcomes = None;
     }
 
@@ -4316,6 +4326,16 @@ impl Environment {
         }
         profile_end(ProfileMetric::EnvProposalConnectionOutcomes, profile);
 
+        let graph_diameter_valid = self.graph_diameter_outcome();
+        if pre_candidate_outcomes.graph_diameter_valid == DoorValidOutcome::Unknown
+            && graph_diameter_valid == DoorValidOutcome::Invalid
+        {
+            let profile = profile_start();
+            self.restore_lookahead_candidate(common, snapshot);
+            profile_end(ProfileMetric::EnvProposalRestore, profile);
+            return Ok(CandidateOutcome::Rejected);
+        }
+
         let toilet_valid = if pre_candidate_outcomes.toilet_valid == DoorValidOutcome::Unknown {
             let after = self.toilet_outcome(common);
             if after == DoorValidOutcome::Invalid {
@@ -4403,6 +4423,7 @@ impl Environment {
             door_valid: door_valid.clone(),
             connections_valid: connections_valid.clone(),
             return_distance_valid: return_distance_valid.clone(),
+            graph_diameter_valid,
             toilet_valid,
             phantoon_pair_valid,
             phantoon_area_valid,
@@ -6155,6 +6176,7 @@ impl Environment {
             door_valid,
             connections_valid,
             return_distance_valid,
+            graph_diameter_valid: self.graph_diameter_outcome(),
             toilet_valid: self.toilet_outcome(common),
             phantoon_pair_valid: self.phantoon_pair_outcome(common),
             phantoon_area_valid: self.phantoon_area_outcome(common, &has_usable_area_frontier),
@@ -6449,6 +6471,20 @@ impl Environment {
         }
     }
 
+    fn graph_diameter_outcome(&self) -> DoorValidOutcome {
+        let Some(limit) = self.max_graph_diameter else {
+            return DoorValidOutcome::Valid;
+        };
+        if !self.finished {
+            return DoorValidOutcome::Unknown;
+        }
+        if f32::from(self.graph_diameter()) <= limit {
+            DoorValidOutcome::Valid
+        } else {
+            DoorValidOutcome::Invalid
+        }
+    }
+
     fn return_distance_outcome(
         &self,
         common: &CommonData,
@@ -6567,6 +6603,12 @@ impl Environment {
                 stage,
             )?;
             check_outcome_transition_consistency(
+                &[known_outcomes.graph_diameter_valid],
+                &[outcomes.graph_diameter_valid],
+                "graph diameter",
+                stage,
+            )?;
+            check_outcome_transition_consistency(
                 &[known_outcomes.toilet_valid],
                 &[outcomes.toilet_valid],
                 "toilet",
@@ -6652,6 +6694,10 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
         return_distance_valid: merge_known_outcome_values(
             &known.return_distance_valid,
             &current.return_distance_valid,
+        ),
+        graph_diameter_valid: merge_known_outcome_value(
+            known.graph_diameter_valid,
+            current.graph_diameter_valid,
         ),
         toilet_valid: merge_known_outcome_value(known.toilet_valid, current.toilet_valid),
         phantoon_pair_valid: merge_known_outcome_value(
@@ -9135,6 +9181,7 @@ mod tests {
                 door_valid: vec![Unknown],
                 connections_valid: vec![Valid],
                 return_distance_valid: vec![Valid],
+                graph_diameter_valid: DoorValidOutcome::Valid,
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
@@ -9150,6 +9197,7 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 return_distance_valid: vec![Valid],
+                graph_diameter_valid: DoorValidOutcome::Valid,
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
@@ -9167,6 +9215,7 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Unknown],
                 return_distance_valid: vec![Unknown],
+                graph_diameter_valid: DoorValidOutcome::Valid,
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,
@@ -9182,6 +9231,7 @@ mod tests {
                 door_valid: vec![Invalid],
                 connections_valid: vec![Valid],
                 return_distance_valid: vec![Valid],
+                graph_diameter_valid: DoorValidOutcome::Valid,
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,

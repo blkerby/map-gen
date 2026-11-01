@@ -187,6 +187,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
             "reward_missing_connect_utility": values["reward_missing_connect_utility"],
             "door_balance_strength": values["door_balance_strength"],
             "max_return_distance": values["max_return_distance"],
+            "max_graph_diameter": values["max_graph_diameter"],
             "reward_area_distinct_crossing": values["reward_area_distinct_crossing"],
             "reward_area_crossing": values["reward_area_crossing"],
             "reward_area_size_valid": values["reward_area_size_valid"],
@@ -275,7 +276,7 @@ class LookaheadFeature(GlobalFeature):
         return (
             context.features.lookahead_outcomes
             + 4 * context.num_connection_outputs
-            + 6
+            + 8
             + 2 * VANILLA_AREA_CONSTRAINT_COUNT
             + 2 * AREA_COUNT * 3
             + AREA_PAIR_COUNT
@@ -376,6 +377,13 @@ class LookaheadFeature(GlobalFeature):
             ],
             dim=-1,
         ).flatten(1)
+        graph_diameter_features = torch.stack(
+            [
+                (features.global_features.lookahead_graph_diameter_invalid == 0).to(dtype),
+                (features.global_features.lookahead_graph_diameter_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
         return torch.cat(
             [
                 door_match_features,
@@ -390,6 +398,7 @@ class LookaheadFeature(GlobalFeature):
                 area_map_station_count_features,
                 maridia_water_features,
                 norfair_heat_features,
+                graph_diameter_features,
             ],
             dim=-1,
         )

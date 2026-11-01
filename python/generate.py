@@ -180,6 +180,10 @@ def compute_expected_reward(
     door_logprobs = torch.nn.functional.logsigmoid(-preds.door_invalid)
     connection_logprobs = torch.nn.functional.logsigmoid(-preds.connection_invalid)
     return_distance_logprobs = torch.nn.functional.logsigmoid(-preds.return_distance_invalid)
+    graph_diameter_logprobs = outcome_reward(
+        torch.nn.functional.logsigmoid(-preds.graph_diameter_invalid),
+        outcomes.graph_diameter_invalid,
+    )
     toilet_logprobs = torch.nn.functional.logsigmoid(-preds.toilet_invalid)
     phantoon_pair_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_pair_invalid)
     phantoon_area_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_area_invalid)
@@ -216,6 +220,7 @@ def compute_expected_reward(
         * torch.nn.functional.logsigmoid(-preds.initial_item_invalid)
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
         + batch_weight(config.reward_connection) * torch.sum(return_distance_logprobs, dim=2)
+        + batch_weight(config.reward_connection) * graph_diameter_logprobs
         + batch_weight(config.reward_toilet) * toilet_logprobs
         + batch_weight(config.reward_phantoon_pair) * phantoon_pair_logprobs
         + batch_weight(config.reward_phantoon_area) * phantoon_area_logprobs
@@ -699,6 +704,7 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
         toilet_invalid=gather_scalar(outcomes.toilet_invalid),
         phantoon_pair_invalid=gather_scalar(outcomes.phantoon_pair_invalid),
         phantoon_area_invalid=gather_scalar(outcomes.phantoon_area_invalid),
+        graph_diameter_invalid=gather_scalar(outcomes.graph_diameter_invalid),
         vanilla_area_invalid=gather(outcomes.vanilla_area_invalid),
         area_connections=gather(outcomes.area_connections),
         area_size_bucket=gather(outcomes.area_size_bucket),
@@ -940,6 +946,9 @@ def compute_candidate_values(
                 environment_count, candidate_count
             ),
             phantoon_area_invalid=preds.phantoon_area_invalid.view(
+                environment_count, candidate_count
+            ),
+            graph_diameter_invalid=preds.graph_diameter_invalid.view(
                 environment_count, candidate_count
             ),
             vanilla_area_invalid=preds.vanilla_area_invalid.view(
@@ -1825,6 +1834,7 @@ def run_group_producer(
     try:
         group.env.clear()
         group.env.set_max_return_distances(group.config.generation_variable_floats)
+        group.env.set_max_graph_diameters(group.config.generation_variable_floats)
         group.env.set_initial_item_conditions(group.config.generation_variable_floats)
         initial_result, initial_step = score_initial_action(
             group,
@@ -1989,6 +1999,12 @@ def merge_generation_results(
                 phantoon_area_invalid=torch.cat(
                     [
                         episode_outcomes.step_outcomes.phantoon_area_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                graph_diameter_invalid=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.graph_diameter_invalid
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

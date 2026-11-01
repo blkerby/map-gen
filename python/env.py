@@ -341,6 +341,8 @@ class StepOutcomes:
     phantoon_pair_invalid: torch.Tensor
     # -1 = unknown, 0 = valid (Phantoon rooms share an area), 1 = invalid
     phantoon_area_invalid: torch.Tensor
+    # -1 = unknown, 0 = terminal diameter meets the cap (or unrestricted), 1 = invalid.
+    graph_diameter_invalid: torch.Tensor
     # -1 = unknown, 0 = special room is in its vanilla area, 1 = invalid.
     vanilla_area_invalid: torch.Tensor
     # Boolean connections in lexicographic unordered area-pair order.
@@ -365,6 +367,7 @@ class StepOutcomes:
             toilet_invalid=self.toilet_invalid.to(device, non_blocking=non_blocking),
             phantoon_pair_invalid=self.phantoon_pair_invalid.to(device, non_blocking=non_blocking),
             phantoon_area_invalid=self.phantoon_area_invalid.to(device, non_blocking=non_blocking),
+            graph_diameter_invalid=self.graph_diameter_invalid.to(device, non_blocking=non_blocking),
             vanilla_area_invalid=self.vanilla_area_invalid.to(device, non_blocking=non_blocking),
             area_connections=self.area_connections.to(device, non_blocking=non_blocking),
             area_size_bucket=self.area_size_bucket.to(device, non_blocking=non_blocking),
@@ -384,6 +387,7 @@ class StepOutcomes:
             toilet_invalid=self.toilet_invalid[start:end],
             phantoon_pair_invalid=self.phantoon_pair_invalid[start:end],
             phantoon_area_invalid=self.phantoon_area_invalid[start:end],
+            graph_diameter_invalid=self.graph_diameter_invalid[start:end],
             vanilla_area_invalid=self.vanilla_area_invalid[start:end],
             area_connections=self.area_connections[start:end],
             area_size_bucket=self.area_size_bucket[start:end],
@@ -408,6 +412,7 @@ def count_invalid_outcomes(
         + (outcomes.toilet_invalid != 0).to(torch.int64)
         + (outcomes.phantoon_pair_invalid != 0).to(torch.int64)
         + (outcomes.phantoon_area_invalid != 0).to(torch.int64)
+        + (outcomes.graph_diameter_invalid != 0).to(torch.int64)
         + ((outcomes.vanilla_area_invalid != 0) & vanilla_area_constraint_mask).sum(dim=-1)
         + (~area_size_valid).sum(dim=-1)
         + (~area_map_station_valid).sum(dim=-1)
@@ -620,6 +625,7 @@ class CandidateSlot:
         self.pre_toilet_invalid = None
         self.pre_phantoon_pair_invalid = None
         self.pre_phantoon_area_invalid = None
+        self.pre_graph_diameter_invalid = None
         self.pre_vanilla_area_invalid = None
         self.pre_area_connections = None
         self.pre_area_size_bucket = None
@@ -632,6 +638,7 @@ class CandidateSlot:
         self.toilet_invalid = None
         self.phantoon_pair_invalid = None
         self.phantoon_area_invalid = None
+        self.graph_diameter_invalid = None
         self.vanilla_area_invalid = None
         self.area_connections = None
         self.area_size_bucket = None
@@ -693,6 +700,7 @@ class CandidateSlot:
         self.pre_toilet_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_phantoon_pair_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_phantoon_area_invalid = self._empty((self.environment_capacity,), torch.int8)
+        self.pre_graph_diameter_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_vanilla_area_invalid = self._empty(
             (self.environment_capacity, VANILLA_AREA_CONSTRAINT_COUNT), torch.int8
         )
@@ -726,6 +734,7 @@ class CandidateSlot:
         self.toilet_invalid = self._empty(candidate_shape, torch.int8)
         self.phantoon_pair_invalid = self._empty(candidate_shape, torch.int8)
         self.phantoon_area_invalid = self._empty(candidate_shape, torch.int8)
+        self.graph_diameter_invalid = self._empty(candidate_shape, torch.int8)
         self.vanilla_area_invalid = self._empty(
             (*candidate_shape, VANILLA_AREA_CONSTRAINT_COUNT), torch.int8
         )
@@ -772,6 +781,7 @@ class CandidateSlot:
             toilet_invalid=self.pre_toilet_invalid[:environment_count],
             phantoon_pair_invalid=self.pre_phantoon_pair_invalid[:environment_count],
             phantoon_area_invalid=self.pre_phantoon_area_invalid[:environment_count],
+            graph_diameter_invalid=self.pre_graph_diameter_invalid[:environment_count],
             vanilla_area_invalid=self.pre_vanilla_area_invalid[:environment_count],
             area_connections=self.pre_area_connections[:environment_count],
             area_size_bucket=self.pre_area_size_bucket[:environment_count],
@@ -795,6 +805,7 @@ class CandidateSlot:
             toilet_invalid=self.toilet_invalid[:environment_count, :candidate_count],
             phantoon_pair_invalid=self.phantoon_pair_invalid[:environment_count, :candidate_count],
             phantoon_area_invalid=self.phantoon_area_invalid[:environment_count, :candidate_count],
+            graph_diameter_invalid=self.graph_diameter_invalid[:environment_count, :candidate_count],
             vanilla_area_invalid=self.vanilla_area_invalid[:environment_count, :candidate_count],
             area_connections=self.area_connections[:environment_count, :candidate_count],
             area_size_bucket=self.area_size_bucket[:environment_count, :candidate_count],
@@ -888,6 +899,7 @@ class GlobalFeatures:
     lookahead_toilet_invalid: torch.Tensor
     lookahead_phantoon_pair_invalid: torch.Tensor
     lookahead_phantoon_area_invalid: torch.Tensor
+    lookahead_graph_diameter_invalid: torch.Tensor
     lookahead_vanilla_area_invalid: torch.Tensor
     # Always present, even when the lookahead input embedding is disabled.
     area_connections: torch.Tensor
@@ -978,6 +990,9 @@ class GlobalFeatures:
             lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.to(
                 device, non_blocking=non_blocking
             ),
+            lookahead_graph_diameter_invalid=self.lookahead_graph_diameter_invalid.to(
+                device, non_blocking=non_blocking
+            ),
             lookahead_vanilla_area_invalid=self.lookahead_vanilla_area_invalid.to(
                 device, non_blocking=non_blocking
             ),
@@ -1048,6 +1063,7 @@ class GlobalFeatures:
             lookahead_toilet_invalid=self.lookahead_toilet_invalid.flatten(0, 1),
             lookahead_phantoon_pair_invalid=self.lookahead_phantoon_pair_invalid.flatten(0, 1),
             lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.flatten(0, 1),
+            lookahead_graph_diameter_invalid=self.lookahead_graph_diameter_invalid.flatten(0, 1),
             lookahead_vanilla_area_invalid=self.lookahead_vanilla_area_invalid.flatten(0, 1),
             area_connections=self.area_connections.flatten(0, 1),
             lookahead_area_size_bucket=self.lookahead_area_size_bucket.flatten(0, 1),
@@ -1546,6 +1562,12 @@ class EnvironmentGroup:
         ].to(device="cpu", dtype=torch.float32).contiguous()
         self.env.set_max_return_distances(limits.numpy())
 
+    def set_max_graph_diameters(self, generation_variable_floats: torch.Tensor) -> None:
+        limits = generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_graph_diameter")
+        ].to(device="cpu", dtype=torch.float32).contiguous()
+        self.env.set_max_graph_diameters(limits.numpy())
+
     def step(self, actions: Actions):
         self.env.step(
             actions.room_idx.contiguous().cpu().numpy(),
@@ -1673,6 +1695,9 @@ class EnvironmentGroup:
                     "pre_phantoon_area_valid": candidate_slot.pre_phantoon_area_invalid[
                         : self.num_envs
                     ].numpy(),
+                    "pre_graph_diameter_valid": candidate_slot.pre_graph_diameter_invalid[
+                        : self.num_envs
+                    ].numpy(),
                     "pre_vanilla_area_valid": candidate_slot.pre_vanilla_area_invalid[
                         : self.num_envs
                     ].numpy(),
@@ -1703,6 +1728,9 @@ class EnvironmentGroup:
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "phantoon_area_valid": candidate_slot.phantoon_area_invalid[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "graph_diameter_valid": candidate_slot.graph_diameter_invalid[
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "vanilla_area_valid": candidate_slot.vanilla_area_invalid[
@@ -1832,6 +1860,9 @@ class EnvironmentGroup:
                 phantoon_area_invalid=torch.from_numpy(
                     result.step_outcomes.phantoon_area_valid
                 ).to(device),
+                graph_diameter_invalid=torch.from_numpy(
+                    result.step_outcomes.graph_diameter_valid
+                ).to(device),
                 vanilla_area_invalid=torch.from_numpy(result.step_outcomes.vanilla_area_valid).to(
                     device
                 ),
@@ -1947,6 +1978,7 @@ class EnvironmentGroup:
             toilet_invalid=torch.from_numpy(result.toilet_valid).to(device),
             phantoon_pair_invalid=torch.from_numpy(result.phantoon_pair_valid).to(device),
             phantoon_area_invalid=torch.from_numpy(result.phantoon_area_valid).to(device),
+            graph_diameter_invalid=torch.from_numpy(result.graph_diameter_valid).to(device),
             vanilla_area_invalid=torch.from_numpy(result.vanilla_area_valid).to(device),
             area_connections=torch.from_numpy(result.area_connections).to(device),
             area_size_bucket=torch.from_numpy(result.area_size_bucket).to(device),
@@ -2525,6 +2557,7 @@ class FeatureSlot:
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
+        lookahead_graph_diameter_invalid = lookahead_outcomes.graph_diameter_invalid
         area_connections = lookahead_outcomes.area_connections
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
@@ -2570,6 +2603,12 @@ class FeatureSlot:
             lookahead_phantoon_area_invalid = lookahead_phantoon_area_invalid.new_empty(
                 [
                     *lookahead_phantoon_area_invalid.shape,
+                    0,
+                ]
+            )
+            lookahead_graph_diameter_invalid = lookahead_graph_diameter_invalid.new_empty(
+                [
+                    *lookahead_graph_diameter_invalid.shape,
                     0,
                 ]
             )
@@ -2647,6 +2686,7 @@ class FeatureSlot:
                 lookahead_toilet_invalid=lookahead_toilet_invalid,
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
+                lookahead_graph_diameter_invalid=lookahead_graph_diameter_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
                 area_connections=area_connections,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
@@ -2765,6 +2805,7 @@ class FeatureSlot:
         lookahead_toilet_invalid = lookahead_outcomes.toilet_invalid
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
+        lookahead_graph_diameter_invalid = lookahead_outcomes.graph_diameter_invalid
         area_connections = lookahead_outcomes.area_connections
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
@@ -2790,6 +2831,9 @@ class FeatureSlot:
                 [environment_count, candidate_count, 0]
             )
             lookahead_phantoon_area_invalid = lookahead_phantoon_area_invalid.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_graph_diameter_invalid = lookahead_graph_diameter_invalid.new_empty(
                 [environment_count, candidate_count, 0]
             )
             lookahead_vanilla_area_invalid = lookahead_vanilla_area_invalid.new_empty(
@@ -2896,6 +2940,7 @@ class FeatureSlot:
                 lookahead_toilet_invalid=lookahead_toilet_invalid,
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
+                lookahead_graph_diameter_invalid=lookahead_graph_diameter_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
                 area_connections=area_connections,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,

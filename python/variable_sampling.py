@@ -26,7 +26,7 @@ def variable_mixture_weights(value: VariableMixture, path: str) -> list[float]:
 def sample_variable_float(
     value: VariableFloat | ReturnDistanceLimit, path: str, num_envs: int, device: torch.device,
 ) -> torch.Tensor:
-    # Nullable return-distance limits use zero only in stored/model tensors.
+    # Nullable distance limits use zero only in stored/model tensors.
     if value is None:
         return torch.zeros([num_envs], dtype=torch.float32, device=device)
     if isinstance(value, VariableMixture):

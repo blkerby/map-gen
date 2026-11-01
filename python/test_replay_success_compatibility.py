@@ -22,6 +22,8 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         self.directory = Path(directory.name)
         self.column = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_area_distinct_crossing")
         self.variables = torch.arange(len(GENERATION_VARIABLE_FLOAT_FIELDS)).float().unsqueeze(0)
+        self.diameter_column = GENERATION_VARIABLE_FLOAT_FIELDS.index("max_graph_diameter")
+        self.variables[:, self.diameter_column] = 0
         self.limit_column = GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
         self.variables[:, self.column] = 0
         self.variables[:, self.limit_column] = 0
@@ -52,7 +54,7 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
     def test_v3_v4_and_v7_files_preserve_all_other_columns(self) -> None:
         old_variables = self.variables[:, [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.column, self.limit_column, self.strength_column, *self.initial_columns)
+            if index not in (self.diameter_column, self.column, self.limit_column, self.strength_column, *self.initial_columns)
         ]]
         legacy_path = self.write_experience(0, old_variables, PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT)
         original_bytes = legacy_path.read_bytes()
@@ -64,7 +66,7 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         v3_variables[:, success_column] = 0
         v3_columns = [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.column, success_column, self.limit_column, self.strength_column, *self.initial_columns)
+            if index not in (self.diameter_column, self.column, success_column, self.limit_column, self.strength_column, *self.initial_columns)
         ]
         v3_path = self.write_experience(2, v3_variables[:, v3_columns], PRE_SUCCESS_EXPERIENCE_FORMAT)
         v3_original_bytes = v3_path.read_bytes()

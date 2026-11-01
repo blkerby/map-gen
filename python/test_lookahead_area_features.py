@@ -21,6 +21,7 @@ def test_lookahead_area_buckets_use_unknown_zero_and_known_one_hot() -> None:
             lookahead_toilet_invalid=torch.tensor([-1], dtype=torch.int8),
             lookahead_phantoon_pair_invalid=torch.tensor([-1], dtype=torch.int8),
             lookahead_phantoon_area_invalid=torch.tensor([-1], dtype=torch.int8),
+            lookahead_graph_diameter_invalid=torch.tensor([-1], dtype=torch.int8),
             area_connections=torch.zeros([1, 15], dtype=torch.bool),
             lookahead_vanilla_area_invalid=torch.full([1, 6], -1, dtype=torch.int8),
             lookahead_maridia_water=torch.empty([1, 0], dtype=torch.int8),
@@ -34,7 +35,7 @@ def test_lookahead_area_buckets_use_unknown_zero_and_known_one_hot() -> None:
 
     result = feature(features, torch.float32)
 
-    assert result.shape == (1, 71)
+    assert result.shape == (1, 73)
     area_features = result[0, 35:]
     assert torch.equal(area_features[:3], torch.zeros(3))
     assert torch.equal(area_features[3:6], torch.tensor([1.0, 0.0, 0.0]))

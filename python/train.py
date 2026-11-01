@@ -112,7 +112,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v30"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v31"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -788,6 +788,9 @@ def create_generate_config(
         ),
         "max_return_distance": variable_float_tensor(
             config.generation.max_return_distance, "generation.max_return_distance"
+        ),
+        "max_graph_diameter": variable_float_tensor(
+            config.generation.max_graph_diameter, "generation.max_graph_diameter"
         ),
         "reward_area_distinct_crossing": variable_float_tensor(
             config.generation.reward_area_distinct_crossing,
@@ -1476,6 +1479,12 @@ class TrainingSession:
                             for outcomes in outcome_iterations
                         ]
                     ),
+                    graph_diameter_invalid=torch.cat(
+                        [
+                            outcomes.step_outcomes.graph_diameter_invalid
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
                     vanilla_area_invalid=torch.cat(
                         [
                             outcomes.step_outcomes.vanilla_area_invalid
@@ -1771,6 +1780,7 @@ class TrainingSession:
 
         conn_invalid = torch.sum(outcomes.connection_invalid != 0, dim=1)
         return_distance_invalid = (outcomes.return_distance_invalid != 0).sum(dim=1)
+        graph_diameter_invalid = (outcomes.graph_diameter_invalid != 0).to(torch.int64)
         avg_conn = torch.mean(conn_invalid.to(torch.float32))
         min_conn = torch.min(conn_invalid)
 
@@ -1830,6 +1840,15 @@ class TrainingSession:
         return_distance_limit_pass_fraction = (
             return_distance_evaluated & (return_distance_invalid == 0)
         ).sum().float() / return_distance_evaluated.sum().clamp_min(1)
+        graph_diameter_limit_active = episode_data.generation_variable_floats[
+            :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_graph_diameter")
+        ] > 0
+        graph_diameter_evaluated = graph_diameter_limit_active & (
+            total_invalid - graph_diameter_invalid == 0
+        )
+        graph_diameter_limit_pass_fraction = (
+            graph_diameter_evaluated & (graph_diameter_invalid == 0)
+        ).sum().float() / graph_diameter_evaluated.sum().clamp_min(1)
         avg_invalid = torch.mean(total_invalid.to(torch.float32))
         min_invalid = torch.min(total_invalid)
         avg_area_size_invalid = torch.mean(area_size_invalid.to(torch.float32))
@@ -2138,6 +2157,10 @@ class TrainingSession:
             "refill_proximity_utility": refill_proximity_utility,
             "refill_unreachable_fraction": refill_unreachable_fraction,
             "missing_connect_distance": missing_connect_distance,
+            "graph_diameter_invalid": graph_diameter_invalid.float().mean(),
+            "graph_diameter_limit_active_fraction": graph_diameter_limit_active.float().mean(),
+            "graph_diameter_limit_evaluated_maps": graph_diameter_evaluated.sum(),
+            "graph_diameter_limit_pass_fraction": graph_diameter_limit_pass_fraction,
             "return_distance_invalid": return_distance_invalid.float().mean(),
             "return_distance_limit_active_fraction": return_distance_limit_active.float().mean(),
             "return_distance_limit_evaluated_maps": return_distance_evaluated.sum(),

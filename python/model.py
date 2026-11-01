@@ -43,6 +43,7 @@ class Predictions:
     phantoon_pair_invalid: torch.Tensor
     # log-odds of invalid Phantoon area assignment:
     phantoon_area_invalid: torch.Tensor
+    graph_diameter_invalid: torch.Tensor
     vanilla_area_invalid: torch.Tensor
     # Unconditional expected terminal door price, including unmatched doors:
     balance_score: torch.Tensor
@@ -127,6 +128,7 @@ def get_predictions(raw_preds, output_sizes):
         toilet_invalid=preds[2].squeeze(-1),
         phantoon_pair_invalid=preds[3].squeeze(-1),
         phantoon_area_invalid=preds[4].squeeze(-1),
+        graph_diameter_invalid=raw_preds.new_empty(raw_preds.shape[:2]),
         vanilla_area_invalid=preds[5],
         balance_score=preds[6],
         area_balance_score=preds[7],
@@ -868,6 +870,7 @@ class FrontierModel(torch.nn.Module):
         self.toilet_output = Float32Linear(embedding_width, 1)
         self.phantoon_pair_output = Float32Linear(embedding_width, 1)
         self.phantoon_area_output = Float32Linear(embedding_width, 1)
+        self.graph_diameter_invalid_output = Float32Linear(embedding_width, 1)
         self.success_output = Float32Linear(embedding_width, 1)
         self.vanilla_area_output = Float32Linear(embedding_width, VANILLA_AREA_CONSTRAINT_COUNT)
         self.balance_score_output = Float32Linear(
@@ -920,6 +923,7 @@ class FrontierModel(torch.nn.Module):
             self.toilet_output,
             self.phantoon_pair_output,
             self.phantoon_area_output,
+            self.graph_diameter_invalid_output,
             self.success_output,
             self.vanilla_area_output,
             self.balance_score_output,
@@ -1163,6 +1167,13 @@ class FrontierModel(torch.nn.Module):
             "door",
         )
         connection_invalid = preds.connection_invalid
+        graph_diameter_invalid = self.graph_diameter_invalid_output(X).squeeze(-1)
+        if self.features.lookahead_outcomes > 0:
+            graph_diameter_invalid = apply_known_invalid_logits(
+                graph_diameter_invalid,
+                features.global_features.lookahead_graph_diameter_invalid.unsqueeze(-1),
+                "graph diameter",
+            )
         return_distance_invalid = self.return_distance_output(X)
         if self.missing_connect_query_output is not None:
             (
@@ -1281,6 +1292,7 @@ class FrontierModel(torch.nn.Module):
             toilet_invalid=preds.toilet_invalid,
             phantoon_pair_invalid=preds.phantoon_pair_invalid,
             phantoon_area_invalid=preds.phantoon_area_invalid,
+            graph_diameter_invalid=graph_diameter_invalid,
             vanilla_area_invalid=preds.vanilla_area_invalid,
             balance_score=balance_score,
             area_balance_score=preds.area_balance_score,
