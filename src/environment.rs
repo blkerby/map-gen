@@ -2542,12 +2542,16 @@ impl Environment {
         pre_candidate_outcomes: &StepOutcomes,
         vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
         candidate: CandidateAction,
+        reject_nearby_save_rooms: bool,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         scratch: &mut FeatureScratch,
     ) -> Result<ProposalEvaluation, String> {
+        if reject_nearby_save_rooms && self.connects_nearby_save_rooms(common, candidate.action) {
+            return Ok(ProposalEvaluation::Rejected(candidate));
+        }
         Ok(
             match self.evaluate_candidate_outcome(
                 common,
@@ -3900,6 +3904,7 @@ impl Environment {
         max_candidate_areas_per_placement: usize,
         recommended_candidates_same_frontier: bool,
         guarantee_phantoon_counterpart: bool,
+        reject_nearby_save_rooms: bool,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -4043,6 +4048,7 @@ impl Environment {
                 &pre_candidate_outcomes,
                 vanilla_area_constraint_mask,
                 candidate,
+                reject_nearby_save_rooms,
                 config,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
@@ -4105,6 +4111,7 @@ impl Environment {
                     &pre_candidate_outcomes,
                     vanilla_area_constraint_mask,
                     candidate,
+                    reject_nearby_save_rooms,
                     config,
                     frontier_neighbor_algorithm,
                     frontier_neighbor_count,
@@ -4231,6 +4238,38 @@ impl Environment {
             rejected_count,
             invalid_count,
         })
+    }
+
+    fn connects_nearby_save_rooms(&self, common: &CommonData, candidate: Action) -> bool {
+        let room = &common.room[candidate.room_idx as usize];
+        let mut first_save_neighbor = None;
+        for door in &room.doors {
+            let location = DoorLocation::new(door, candidate.x, candidate.y);
+            let Some(frontier) = self.frontier.get(&location) else {
+                continue;
+            };
+            let neighbor_idx = common.room_part[frontier.room_part_idx as usize].0;
+            let neighbor = &common.room[neighbor_idx as usize];
+            if room.save {
+                if neighbor.save
+                    || neighbor.doors.iter().any(|neighbor_door| {
+                        self.matched_neighbor_room_idx(
+                            common,
+                            Some((neighbor_door.direction, neighbor_door.dir_door_idx)),
+                        )
+                        .is_some_and(|idx| common.room[idx as usize].save)
+                    })
+                {
+                    return true;
+                }
+            } else if neighbor.save {
+                if first_save_neighbor.is_some_and(|idx| idx != neighbor_idx) {
+                    return true;
+                }
+                first_save_neighbor = Some(neighbor_idx);
+            }
+        }
+        false
     }
 
     fn evaluate_candidate_outcome(
@@ -7265,6 +7304,7 @@ mod tests {
                 1,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -7774,6 +7814,7 @@ mod tests {
                 1,
                 0,
                 1,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -8286,6 +8327,7 @@ mod tests {
                 1,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8411,6 +8453,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -8564,6 +8607,7 @@ mod tests {
                 1,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8704,6 +8748,7 @@ mod tests {
                         1,
                         same_frontier,
                         enabled,
+                        false,
                         &FeatureConfig::all_disabled(),
                         FrontierNeighborAlgorithm::Nearest,
                         1,
@@ -8754,6 +8799,7 @@ mod tests {
                             1,
                             false,
                             true,
+                            false,
                             &FeatureConfig::all_disabled(),
                             FrontierNeighborAlgorithm::Nearest,
                             1,
@@ -8802,6 +8848,7 @@ mod tests {
                 1,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8824,6 +8871,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8850,6 +8898,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8884,6 +8933,7 @@ mod tests {
                 3,
                 1,
                 2,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -8927,6 +8977,7 @@ mod tests {
                 1,
                 2,
                 true,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
@@ -8976,6 +9027,7 @@ mod tests {
                     2,
                     false,
                     false,
+                    false,
                     &FeatureConfig::all_disabled(),
                     FrontierNeighborAlgorithm::Nearest,
                     1,
@@ -9008,6 +9060,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -9083,6 +9136,7 @@ mod tests {
                 1,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -9110,6 +9164,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,

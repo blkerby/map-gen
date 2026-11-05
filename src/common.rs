@@ -212,6 +212,7 @@ pub struct OutputData {
 
 pub struct RoomData {
     pub geometry_idx: GeometryIdx,
+    pub save: bool,
     pub map_station: bool,
     pub heat: i32,
     pub water: i32,
@@ -767,6 +768,7 @@ impl CommonData {
             }
             room_data.push(RoomData {
                 geometry_idx,
+                save: room.save,
                 map_station: room.map_station,
                 heat: room.heat,
                 water: room.water,

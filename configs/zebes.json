@@ -73,6 +73,7 @@
     "max_candidate_areas_per_placement": 2,
     "recommended_candidates_same_frontier": false,
     "guarantee_phantoon_counterpart": true,
+    "reject_nearby_save_rooms_probability": 0.5,
     "temperature": {"log": [300, 20.0, 5.0, 0.04, 0.04]},
     "proposal_temperature": {"log": [300, 20.0, 5.0, 0.03, 0.03]},
     "reward_door": 1.0,

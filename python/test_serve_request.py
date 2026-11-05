@@ -26,6 +26,7 @@ def base_payload() -> dict:
         "max_candidate_areas_per_placement": 2,
         "recommended_candidates_same_frontier": False,
         "guarantee_phantoon_counterpart": False,
+        "reject_nearby_save_rooms": False,
         "temperature": 1.0,
         "proposal_temperature": 1.0,
         "reward_door": 1.0,

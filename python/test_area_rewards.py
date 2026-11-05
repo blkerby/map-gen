@@ -50,6 +50,7 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         max_candidate_areas_per_placement=2,
         recommended_candidates_same_frontier=False,
         guarantee_phantoon_counterpart=False,
+        reject_nearby_save_rooms=torch.zeros([1], dtype=torch.bool),
         gpu_prefetch_batches=0,
         temperature=torch.ones([1]),
         proposal_temperature=torch.ones([1]),

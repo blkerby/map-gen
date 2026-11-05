@@ -486,6 +486,7 @@ def get_shortlist_candidate_batch(
         group.config.max_candidate_areas_per_placement,
         group.config.recommended_candidates_same_frontier,
         group.config.guarantee_phantoon_counterpart,
+        group.config.reject_nearby_save_rooms,
     )
 
 
@@ -505,6 +506,7 @@ def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
         AREA_COUNT,
         False,
         False,
+        group.config.reject_nearby_save_rooms,
     )
 
 

@@ -241,6 +241,7 @@ class GenerationConfig(StrictBaseModel):
     # Reserve one recommended slot for the first non-rejected counterpart in the
     # shortlist when exactly one Phantoon map/boss room has been placed.
     guarantee_phantoon_counterpart: bool
+    reject_nearby_save_rooms_probability: ScheduleableFloat
     temperature: VariableFloat
     proposal_temperature: VariableFloat
     reward_door: VariableFloat
@@ -811,6 +812,11 @@ def validate_config(config: Config) -> None:
             f"generation.{field_name}",
             config.knot_episodes,
         )
+    validate_probability_config(
+        config.generation.reject_nearby_save_rooms_probability,
+        "generation.reject_nearby_save_rooms_probability",
+        config.knot_episodes,
+    )
     validate_finite_variable_float(
         config.generation.reward_graph_diameter,
         "generation.reward_graph_diameter",

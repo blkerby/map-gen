@@ -119,6 +119,7 @@ class GenerateRequest(StrictBaseModel):
     max_candidate_areas_per_placement: int
     recommended_candidates_same_frontier: bool
     guarantee_phantoon_counterpart: bool
+    reject_nearby_save_rooms: bool
     temperature: float
     proposal_temperature: float
     reward_door: float
@@ -744,6 +745,12 @@ def create_generate_configs(
                     generate_request.recommended_candidates_same_frontier
                 ),
                 guarantee_phantoon_counterpart=generate_request.guarantee_phantoon_counterpart,
+                reject_nearby_save_rooms=torch.full(
+                    [env.num_envs],
+                    generate_request.reject_nearby_save_rooms,
+                    dtype=torch.bool,
+                    device=device,
+                ),
                 gpu_prefetch_batches=state.serving_config.gpu_prefetch_batches,
                 temperature=temperature,
                 proposal_temperature=proposal_temperature,
@@ -1005,6 +1012,7 @@ def warmup_generate_request() -> GenerateRequest:
         max_candidate_areas_per_placement=2,
         recommended_candidates_same_frontier=False,
         guarantee_phantoon_counterpart=True,
+        reject_nearby_save_rooms=True,
         temperature=0.04,
         proposal_temperature=0.03,
         reward_door=1.0,

@@ -25,6 +25,7 @@ def main() -> int:
         "max_candidate_areas_per_placement": 2,
         "recommended_candidates_same_frontier": False,
         "guarantee_phantoon_counterpart": True,
+        "reject_nearby_save_rooms": True,
         "temperature": 0.04,
         "proposal_temperature": 0.03,
         "reward_door": 1.0,

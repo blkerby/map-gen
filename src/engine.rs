@@ -318,6 +318,7 @@ enum WorkerCommand {
         max_candidate_areas_per_placement: usize,
         recommended_candidates_same_frontier: bool,
         guarantee_phantoon_counterpart: bool,
+        reject_nearby_save_rooms: InputShard<bool>,
         sampled_frontier_idx: InputShard<FrontierIdx>,
         sampled_proposal_action_idx: InputShard<ProposalActionIdx>,
         proposal_possible_counts: InputShard<i64>,
@@ -752,6 +753,7 @@ fn worker_loop(
                 max_candidate_areas_per_placement,
                 recommended_candidates_same_frontier,
                 guarantee_phantoon_counterpart,
+                reject_nearby_save_rooms,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
                 proposal_possible_counts,
@@ -801,6 +803,7 @@ fn worker_loop(
                 invalid_counts,
             } => {
                 let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
+                let reject_nearby_save_rooms = unsafe { reject_nearby_save_rooms.into_slice() };
                 let sampled_proposal_action_idx =
                     unsafe { sampled_proposal_action_idx.into_slice() };
                 let proposal_possible_counts = unsafe { proposal_possible_counts.into_slice() };
@@ -1022,6 +1025,7 @@ fn worker_loop(
                             max_candidate_areas_per_placement,
                             recommended_candidates_same_frontier,
                             guarantee_phantoon_counterpart,
+                            reject_nearby_save_rooms[env_idx],
                             &features,
                             frontier_neighbor_algorithm,
                             frontier_neighbor_count,
@@ -2265,6 +2269,7 @@ pub struct ProposalCandidateBuffers {
     recommended_candidates_same_frontier: bool,
     #[pyo3(get)]
     guarantee_phantoon_counterpart: bool,
+    reject_nearby_save_rooms: Py<PyArray1<bool>>,
     room_idx: Py<PyArray2<RoomIdx>>,
     room_x: Py<PyArray2<Coord>>,
     room_y: Py<PyArray2<Coord>>,
@@ -2415,6 +2420,7 @@ impl ProposalCandidateBuffers {
                 fields,
                 "guarantee_phantoon_counterpart"
             ),
+            reject_nearby_save_rooms: required_py_field!(fields, "reject_nearby_save_rooms"),
             room_idx: required_py_field!(fields, "room_idx"),
             room_x: required_py_field!(fields, "room_x"),
             room_y: required_py_field!(fields, "room_y"),
@@ -5197,6 +5203,7 @@ impl EnvironmentGroup {
         let max_candidate_areas_per_placement = buffers.max_candidate_areas_per_placement;
         let recommended_candidates_same_frontier = buffers.recommended_candidates_same_frontier;
         let guarantee_phantoon_counterpart = buffers.guarantee_phantoon_counterpart;
+        let reject_nearby_save_rooms = buffers.reject_nearby_save_rooms.bind(py).readonly();
         if max_candidate_areas_per_placement == 0 {
             return Err(PyValueError::new_err(
                 "max_candidate_areas_per_placement must be greater than zero",
@@ -5271,6 +5278,11 @@ impl EnvironmentGroup {
             &[self.num_environments],
         )?;
         check_shape(
+            "reject_nearby_save_rooms",
+            reject_nearby_save_rooms.as_array().shape(),
+            &[self.num_environments],
+        )?;
+        check_shape(
             "vanilla_area_constraint_mask",
             vanilla_area_constraint_mask.as_array().shape(),
             &[self.num_environments, VANILLA_AREA_CONSTRAINT_COUNT],
@@ -5290,6 +5302,9 @@ impl EnvironmentGroup {
         let proposal_possible_counts = proposal_possible_counts
             .as_slice()
             .map_err(|_| PyValueError::new_err("proposal_possible_counts must be contiguous"))?;
+        let reject_nearby_save_rooms = reject_nearby_save_rooms
+            .as_slice()
+            .map_err(|_| PyValueError::new_err("reject_nearby_save_rooms must be contiguous"))?;
         let vanilla_area_constraint_mask =
             vanilla_area_constraint_mask.as_slice().map_err(|_| {
                 PyValueError::new_err("vanilla_area_constraint_mask must be contiguous")
@@ -5781,6 +5796,9 @@ impl EnvironmentGroup {
                     max_candidate_areas_per_placement,
                     recommended_candidates_same_frontier,
                     guarantee_phantoon_counterpart,
+                    reject_nearby_save_rooms: InputShard::from_slice(
+                        &reject_nearby_save_rooms[worker.start..worker.end()],
+                    ),
                     sampled_frontier_idx: InputShard::from_slice(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
                     ),

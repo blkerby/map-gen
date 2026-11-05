@@ -975,6 +975,10 @@ def create_generate_config(
             config.generation.recommended_candidates_same_frontier
         ),
         guarantee_phantoon_counterpart=config.generation.guarantee_phantoon_counterpart,
+        reject_nearby_save_rooms=(
+            torch.rand([num_envs], device=device)
+            < config.generation.reject_nearby_save_rooms_probability
+        ),
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,
