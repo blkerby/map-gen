@@ -67,6 +67,8 @@ class CandidateRecordsTest(unittest.TestCase):
                 "phantoon_pair_invalid",
                 "phantoon_area_invalid",
                 "graph_diameter_invalid",
+                "nearby_save_invalid",
+                "nearby_refill_invalid",
                 "balance_score",
                 "area_balance_score",
                 "order_balance_score",

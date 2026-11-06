@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""Add save/refill rejection conditioning to a v31 checkpoint (v32).
+
+Run with the map-gen environment active:
+  python scripts/migrate_rejection_conditioning.py SOURCE OUTPUT
+
+New main, EMA, and balance input columns and their optimizer history start at
+zero. Existing weights and training progress are preserved. The source is never
+modified and output must not exist. Re-export the migrated model for serving.
+Existing replay is retained: experience v3-v9 imports the unrecorded flags as
+-1 (unknown); new v10 experience records 0 (disabled) or 1 (enabled).
+"""
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import torch
+from safetensors import safe_open
+
+from env import Engine
+from features import GLOBAL_FEATURES, FeatureContext, GenerationVariableFloatsFeature
+from model import FrontierModel
+from model_loading import create_balance_model, frontier_model_kwargs, without_prefix
+from scripts.migrate_area_connections import expand_model_inputs, expand_optimizer_inputs
+from scripts.migrate_return_distance import write_output
+from train import (
+    TRAINING_CHECKPOINT_FORMAT,
+    create_adam_optimizer,
+    create_main_optimizer,
+    validate_checkpoint_metadata,
+)
+from train_config import (
+    Config,
+    GENERATION_VARIABLE_FLOAT_FIELDS,
+    REJECTION_CONDITION_FIELDS,
+    instantiate_scheduleable_config,
+    validate_config,
+)
+
+SOURCE_FORMAT = "map-gen-training-session-checkpoint-v31"
+TARGET_FORMAT = "map-gen-training-session-checkpoint-v32"
+
+
+def global_added_columns(config: Config, rooms: list[dict], engine: Engine) -> list[int]:
+    kwargs = frontier_model_kwargs(config, rooms, engine)
+    metadata = engine.get_output_metadata()
+    context = FeatureContext(
+        features=config.features,
+        output_metadata=metadata,
+        num_rooms=len(rooms),
+        num_room_parts=metadata.num_room_parts,
+        num_connection_outputs=len(metadata.connection),
+        door_counts=kwargs["door_counts"],
+        frontier_window_area=config.generation.frontier_window_size**2,
+        area_bounding_box_width=config.generation.area_bounding_box_width,
+        area_bounding_box_height=config.generation.area_bounding_box_height,
+        max_area_size=config.generation.max_area_size,
+    )
+    offset = 0
+    for feature in GLOBAL_FEATURES:
+        if not feature.is_enabled(config.features):
+            continue
+        if feature is GenerationVariableFloatsFeature:
+            return [
+                offset + GENERATION_VARIABLE_FLOAT_FIELDS.index(name)
+                for name in REJECTION_CONDITION_FIELDS
+            ]
+        offset += feature.tensor_width(context)
+    return []
+
+
+def migrate_checkpoint(source: Path, output: Path) -> dict:
+    if TRAINING_CHECKPOINT_FORMAT != TARGET_FORMAT:
+        raise ValueError("this migration requires the v32 model implementation")
+    if output.exists():
+        raise FileExistsError(output)
+    with safe_open(source, framework="pt", device="cpu") as checkpoint:
+        metadata = checkpoint.metadata()
+        if metadata is None or metadata["format"] != SOURCE_FORMAT:
+            raise ValueError(f"expected a {SOURCE_FORMAT} checkpoint")
+        tensors = {name: checkpoint.get_tensor(name) for name in checkpoint.keys()}
+    for prefix in ("main_model", "ema_model", "balance_model"):
+        normalized = without_prefix(tensors, prefix)
+        for key in [key for key in tensors if key.startswith(f"{prefix}.")]:
+            del tensors[key]
+        tensors.update({f"{prefix}.{key}": value for key, value in normalized.items()})
+    config = Config.model_validate_json(metadata["config"])
+    validate_config(config)
+    current = instantiate_scheduleable_config(config, int(metadata["num_episodes"]))
+    room_path = Path(config.room_set)
+    if not room_path.is_absolute():
+        room_path = Path(__file__).resolve().parents[1] / room_path
+    rooms = json.loads(room_path.read_text())
+    engine = Engine(
+        rooms=rooms, features=current.features,
+        min_area_size=current.generation.min_area_size,
+        max_area_size=current.generation.max_area_size,
+    )
+    model = FrontierModel(**frontier_model_kwargs(current, rooms, engine))
+    columns = global_added_columns(current, rooms, engine)
+    main_columns = {"global_mlp.weight": columns} if columns else {}
+    for prefix in ("main_model", "ema_model"):
+        expand_model_inputs(tensors, model, prefix, main_columns)
+        model.load_state_dict(without_prefix(tensors, prefix), strict=True)
+    expand_optimizer_inputs(
+        tensors, metadata, model, create_main_optimizer(model, current.optimizer),
+        "optimizer", main_columns, set(),
+    )
+    balance = create_balance_model(current, rooms, engine, torch.device("cpu"))
+    condition_columns = [
+        GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in REJECTION_CONDITION_FIELDS
+    ]
+    balance_columns = {
+        f"{family}_net.0.weight": condition_columns
+        for family in ("door", "toilet", "area", "order", "step")
+    }
+    expand_model_inputs(tensors, balance, "balance_model", balance_columns)
+    balance.load_state_dict(without_prefix(tensors, "balance_model"), strict=True)
+    expand_optimizer_inputs(
+        tensors, metadata, balance,
+        create_adam_optimizer(balance.parameters(), current.balance_optimizer),
+        "balance_optimizer", balance_columns, set(),
+    )
+    report = {
+        "source": str(source),
+        "source_format": SOURCE_FORMAT,
+        "output_format": TARGET_FORMAT,
+        "global_added_columns": columns,
+        "generation_variable_added_columns": condition_columns,
+    }
+    metadata["format"] = TARGET_FORMAT
+    metadata["rejection_conditioning_migration"] = json.dumps(report)
+    validate_checkpoint_metadata(output, metadata)
+    write_output(tensors, metadata, output)
+    return report
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("source", type=Path)
+    parser.add_argument("output", type=Path)
+    args = parser.parse_args()
+    torch.set_num_threads(2)
+    print(json.dumps(migrate_checkpoint(args.source, args.output), indent=2))
+
+
+if __name__ == "__main__":
+    main()

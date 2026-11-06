@@ -81,6 +81,7 @@ from train_config import (
     HEAT_WATER_FAMILIES,
     HEAT_WATER_PROBABILITY_FIELDS,
     HEAT_WATER_TARGET_AREAS,
+    REJECTION_CONDITION_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_PROBABILITY_FIELDS,
     VANILLA_AREA_REWARD_FIELDS,
@@ -112,7 +113,7 @@ class Args:
 type RustProfileReport = list[tuple[str, int, int]]
 
 IGNORE_SCORES_TEMPERATURE = 1.0e9
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v31"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v33"
 VANILLA_AREA_SPECIAL_ROOM_TYPES = (
     "ship",
     "kraid_boss",
@@ -933,6 +934,14 @@ def create_generate_config(
     generation_variable_floats_by_name["reward_initial_item"] *= (
         generation_variable_floats_by_name["initial_item_start"] > 0
     )
+    rejection_conditions = {
+        name: torch.rand([num_envs], device=device)
+        < getattr(config.generation, f"{name}_probability")
+        for name in REJECTION_CONDITION_FIELDS
+    }
+    generation_variable_floats_by_name.update(
+        {name: enabled.to(torch.float32) for name, enabled in rejection_conditions.items()}
+    )
     generation_variable_floats = GenerationVariableFloatsFeature.construct_tensor(
         generation_variable_floats_by_name, num_rooms=len(rooms)
     )
@@ -975,10 +984,8 @@ def create_generate_config(
             config.generation.recommended_candidates_same_frontier
         ),
         guarantee_phantoon_counterpart=config.generation.guarantee_phantoon_counterpart,
-        reject_nearby_save_rooms=(
-            torch.rand([num_envs], device=device)
-            < config.generation.reject_nearby_save_rooms_probability
-        ),
+        reject_nearby_save_rooms=rejection_conditions["reject_nearby_save_rooms"],
+        reject_nearby_refill_stations=rejection_conditions["reject_nearby_refill_stations"],
         gpu_prefetch_batches=config.generation.gpu_prefetch_batches,
         temperature=temperature,
         proposal_temperature=proposal_temperature,
@@ -1489,6 +1496,18 @@ class TrainingSession:
                             for outcomes in outcome_iterations
                         ]
                     ),
+                    nearby_save_invalid=torch.cat(
+                        [
+                            outcomes.step_outcomes.nearby_save_invalid
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
+                    nearby_refill_invalid=torch.cat(
+                        [
+                            outcomes.step_outcomes.nearby_refill_invalid
+                            for outcomes in outcome_iterations
+                        ]
+                    ),
                     vanilla_area_invalid=torch.cat(
                         [
                             outcomes.step_outcomes.vanilla_area_invalid
@@ -1828,12 +1847,16 @@ class TrainingSession:
             end_outcomes.area_map_station_count != 1,
             dim=1,
         )
+        rejection_condition_mask = episode_data.generation_variable_floats[
+            :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in REJECTION_CONDITION_FIELDS]
+        ] > 0
         total_invalid = count_invalid_outcomes(
             outcomes,
             vanilla_area_constraint_mask,
             (area_size >= step_config.generation.min_area_size)
             & (area_size <= step_config.generation.max_area_size),
             end_outcomes.area_map_station_count == 1,
+            rejection_condition_mask,
         )
         return_distance_limit_active = episode_data.generation_variable_floats[
             :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
@@ -2162,6 +2185,12 @@ class TrainingSession:
             "refill_unreachable_fraction": refill_unreachable_fraction,
             "missing_connect_distance": missing_connect_distance,
             "graph_diameter_invalid": graph_diameter_invalid.float().mean(),
+            "nearby_save_invalid": (
+                (outcomes.nearby_save_invalid == 1) & rejection_condition_mask[:, 0]
+            ).sum().float() / rejection_condition_mask[:, 0].sum().clamp_min(1),
+            "nearby_refill_invalid": (
+                (outcomes.nearby_refill_invalid == 1) & rejection_condition_mask[:, 1]
+            ).sum().float() / rejection_condition_mask[:, 1].sum().clamp_min(1),
             "graph_diameter_limit_active_fraction": graph_diameter_limit_active.float().mean(),
             "graph_diameter_limit_evaluated_maps": graph_diameter_evaluated.sum(),
             "graph_diameter_limit_pass_fraction": graph_diameter_limit_pass_fraction,

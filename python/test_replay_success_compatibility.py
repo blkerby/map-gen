@@ -8,11 +8,12 @@ import torch
 from experience import (
     EXPERIENCE_FORMAT,
     PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT,
+    PRE_REJECTION_CONDITIONING_EXPERIENCE_FORMAT,
     PRE_SUCCESS_EXPERIENCE_FORMAT,
     ExperienceStorage,
     load_balance_experience,
 )
-from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, INITIAL_ITEM_FIELDS
+from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, INITIAL_ITEM_FIELDS, REJECTION_CONDITION_FIELDS
 
 
 class ReplaySuccessCompatibilityTest(unittest.TestCase):
@@ -31,6 +32,10 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         self.variables[:, self.strength_column] = 1
         self.initial_columns = tuple(GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in INITIAL_ITEM_FIELDS)
         self.variables[:, self.initial_columns] = 0
+        self.rejection_columns = tuple(
+            GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in REJECTION_CONDITION_FIELDS
+        )
+        self.variables[:, self.rejection_columns] = -1
         self.tensors = {
             "room_idx": torch.zeros((1, 2), dtype=torch.uint8),
             "room_x": torch.zeros((1, 2), dtype=torch.uint8),
@@ -51,32 +56,42 @@ class ReplaySuccessCompatibilityTest(unittest.TestCase):
         )
         return path
 
-    def test_v3_v4_and_v7_files_preserve_all_other_columns(self) -> None:
+    def test_legacy_files_preserve_other_columns_and_import_unknown_rejection_flags(self) -> None:
         old_variables = self.variables[:, [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.diameter_column, self.column, self.limit_column, self.strength_column, *self.initial_columns)
+            if index not in (self.diameter_column, self.column, self.limit_column, self.strength_column, *self.initial_columns, *self.rejection_columns)
         ]]
         legacy_path = self.write_experience(0, old_variables, PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT)
         original_bytes = legacy_path.read_bytes()
         current_variables = self.variables.clone()
         current_variables[:, self.column] = 2.5
+        current_variables[:, self.rejection_columns] = torch.tensor([0.0, 1.0])
         self.write_experience(1, current_variables, EXPERIENCE_FORMAT)
         success_column = GENERATION_VARIABLE_FLOAT_FIELDS.index("reward_success")
         v3_variables = self.variables.clone()
         v3_variables[:, success_column] = 0
         v3_columns = [
             index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
-            if index not in (self.diameter_column, self.column, success_column, self.limit_column, self.strength_column, *self.initial_columns)
+            if index not in (self.diameter_column, self.column, success_column, self.limit_column, self.strength_column, *self.initial_columns, *self.rejection_columns)
         ]
         v3_path = self.write_experience(2, v3_variables[:, v3_columns], PRE_SUCCESS_EXPERIENCE_FORMAT)
         v3_original_bytes = v3_path.read_bytes()
-        expected = torch.cat((self.variables, current_variables, v3_variables))
-        replay = self.storage.read_files([0, 1, 2], episodes_per_file=1)
+        v9_columns = [
+            index for index in range(len(GENERATION_VARIABLE_FLOAT_FIELDS))
+            if index not in self.rejection_columns
+        ]
+        v9_path = self.write_experience(
+            3, self.variables[:, v9_columns], PRE_REJECTION_CONDITIONING_EXPERIENCE_FORMAT
+        )
+        v9_original_bytes = v9_path.read_bytes()
+        expected = torch.cat((self.variables, current_variables, v3_variables, self.variables))
+        replay = self.storage.read_files([0, 1, 2, 3], episodes_per_file=1)
         torch.testing.assert_close(replay.generation_variable_floats, expected, rtol=0, atol=0)
-        _, balance_variables = self.storage.read_balance_files([0, 1, 2])
+        _, balance_variables = self.storage.read_balance_files([0, 1, 2, 3])
         torch.testing.assert_close(balance_variables, expected, rtol=0, atol=0)
         assert legacy_path.read_bytes() == original_bytes
         assert v3_path.read_bytes() == v3_original_bytes
+        assert v9_path.read_bytes() == v9_original_bytes
 
     def test_wrong_schema_width_and_unsupported_versions_are_rejected(self) -> None:
         for version, width in (

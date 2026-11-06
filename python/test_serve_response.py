@@ -62,6 +62,8 @@ def response_fixture() -> tuple[SimpleNamespace, GenerationRunResult]:
         phantoon_pair_invalid=torch.zeros([3]),
         phantoon_area_invalid=torch.zeros([3]),
         graph_diameter_invalid=torch.zeros([3]),
+        nearby_save_invalid=torch.zeros([3]),
+        nearby_refill_invalid=torch.zeros([3]),
         vanilla_area_invalid=torch.zeros([3, 6], dtype=torch.bool),
     )
     end_outcomes = SimpleNamespace(

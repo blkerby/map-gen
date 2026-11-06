@@ -65,6 +65,7 @@
     "recommended_candidates_same_frontier": false,
     "guarantee_phantoon_counterpart": false,
     "reject_nearby_save_rooms_probability": 0.5,
+    "reject_nearby_refill_stations_probability": 0.5,
     "temperature": 1.0,
     "proposal_temperature": 1.0,
     "reward_door": 1.0,

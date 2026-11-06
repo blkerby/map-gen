@@ -31,6 +31,8 @@ def generation_values() -> dict[str, torch.Tensor]:
     for area in range(6):
         values[f"target_area_rooms_{area}"] = torch.full((2,), 12.0 * (area + 1))
     values["force_ship_in_crateria"] = torch.tensor([0.0, 1.0])
+    values["reject_nearby_save_rooms"] = torch.tensor([0.0, 1.0])
+    values["reject_nearby_refill_stations"] = torch.tensor([-1.0, 0.0])
     return values
 
 

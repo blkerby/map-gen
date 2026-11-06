@@ -66,6 +66,7 @@ def test_counterpart_option_reaches_each_environment_worker() -> None:
             recommended_candidates_same_frontier=False,
             guarantee_phantoon_counterpart=False,
             reject_nearby_save_rooms=torch.zeros([2], dtype=torch.bool),
+            reject_nearby_refill_stations=torch.zeros([2], dtype=torch.bool),
             vanilla_area_constraint_mask=torch.zeros((2, AREA_COUNT), dtype=torch.bool),
         ),
     )

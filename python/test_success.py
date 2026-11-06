@@ -21,8 +21,9 @@ class SuccessTest(unittest.TestCase):
         )
         areas_valid = torch.ones((1, 2, 6), dtype=torch.bool)
         enabled = torch.ones_like(areas_valid)
+        reject = torch.ones((1, 2, 2), dtype=torch.bool)
         torch.testing.assert_close(
-            count_invalid_outcomes(valid, enabled, areas_valid, areas_valid),
+            count_invalid_outcomes(valid, enabled, areas_valid, areas_valid, reject),
             torch.zeros((1, 2), dtype=torch.int64),
         )
         for name in (
@@ -35,7 +36,7 @@ class SuccessTest(unittest.TestCase):
                     failed.reshape(-1)[0] = value
                     outcomes = replace(valid, **{name: failed})
                     torch.testing.assert_close(
-                        count_invalid_outcomes(outcomes, enabled, areas_valid, areas_valid),
+                        count_invalid_outcomes(outcomes, enabled, areas_valid, areas_valid, reject),
                         torch.tensor([[1, 0]]),
                     )
         failed_areas = areas_valid.clone()
@@ -44,12 +45,12 @@ class SuccessTest(unittest.TestCase):
             (failed_areas, areas_valid), (areas_valid, failed_areas),
         ):
             torch.testing.assert_close(
-                count_invalid_outcomes(valid, enabled, size_valid, station_valid),
+                count_invalid_outcomes(valid, enabled, size_valid, station_valid, reject),
                 torch.tensor([[1, 0]]),
             )
         disabled = replace(valid, vanilla_area_invalid=torch.ones_like(valid.vanilla_area_invalid))
         assert not count_invalid_outcomes(
-            disabled, torch.zeros_like(enabled), areas_valid, areas_valid
+            disabled, torch.zeros_like(enabled), areas_valid, areas_valid, reject
         ).any()
 
     def test_success_reward_is_weighted_log_probability(self) -> None:

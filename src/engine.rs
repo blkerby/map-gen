@@ -319,6 +319,7 @@ enum WorkerCommand {
         recommended_candidates_same_frontier: bool,
         guarantee_phantoon_counterpart: bool,
         reject_nearby_save_rooms: InputShard<bool>,
+        reject_nearby_refill_stations: InputShard<bool>,
         sampled_frontier_idx: InputShard<FrontierIdx>,
         sampled_proposal_action_idx: InputShard<ProposalActionIdx>,
         proposal_possible_counts: InputShard<i64>,
@@ -342,6 +343,8 @@ enum WorkerCommand {
         pre_phantoon_pair_valid: OutputShard<i8>,
         pre_phantoon_area_valid: OutputShard<i8>,
         pre_graph_diameter_valid: OutputShard<i8>,
+        pre_nearby_save_valid: OutputShard<i8>,
+        pre_nearby_refill_valid: OutputShard<i8>,
         pre_vanilla_area_valid: OutputShard<i8>,
         pre_area_size_bucket: OutputShard<i8>,
         pre_area_connections: OutputShard<bool>,
@@ -355,6 +358,8 @@ enum WorkerCommand {
         phantoon_pair_valid: OutputShard<i8>,
         phantoon_area_valid: OutputShard<i8>,
         graph_diameter_valid: OutputShard<i8>,
+        nearby_save_valid: OutputShard<i8>,
+        nearby_refill_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_connections: OutputShard<bool>,
@@ -385,6 +390,8 @@ enum WorkerCommand {
         phantoon_pair_valid: OutputShard<i8>,
         phantoon_area_valid: OutputShard<i8>,
         graph_diameter_valid: OutputShard<i8>,
+        nearby_save_valid: OutputShard<i8>,
+        nearby_refill_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_connections: OutputShard<bool>,
@@ -432,6 +439,8 @@ enum WorkerCommand {
         phantoon_pair_valid: OutputShard<i8>,
         phantoon_area_valid: OutputShard<i8>,
         graph_diameter_valid: OutputShard<i8>,
+        nearby_save_valid: OutputShard<i8>,
+        nearby_refill_valid: OutputShard<i8>,
         vanilla_area_valid: OutputShard<i8>,
         area_size_bucket: OutputShard<i8>,
         area_connections: OutputShard<bool>,
@@ -754,6 +763,7 @@ fn worker_loop(
                 recommended_candidates_same_frontier,
                 guarantee_phantoon_counterpart,
                 reject_nearby_save_rooms,
+                reject_nearby_refill_stations,
                 sampled_frontier_idx,
                 sampled_proposal_action_idx,
                 proposal_possible_counts,
@@ -777,6 +787,8 @@ fn worker_loop(
                 pre_phantoon_pair_valid,
                 pre_phantoon_area_valid,
                 pre_graph_diameter_valid,
+                pre_nearby_save_valid,
+                pre_nearby_refill_valid,
                 pre_vanilla_area_valid,
                 pre_area_size_bucket,
                 pre_area_connections,
@@ -790,6 +802,8 @@ fn worker_loop(
                 phantoon_pair_valid,
                 phantoon_area_valid,
                 graph_diameter_valid,
+                nearby_save_valid,
+                nearby_refill_valid,
                 vanilla_area_valid,
                 area_size_bucket,
                 area_connections,
@@ -804,6 +818,8 @@ fn worker_loop(
             } => {
                 let sampled_frontier_idx = unsafe { sampled_frontier_idx.into_slice() };
                 let reject_nearby_save_rooms = unsafe { reject_nearby_save_rooms.into_slice() };
+                let reject_nearby_refill_stations =
+                    unsafe { reject_nearby_refill_stations.into_slice() };
                 let sampled_proposal_action_idx =
                     unsafe { sampled_proposal_action_idx.into_slice() };
                 let proposal_possible_counts = unsafe { proposal_possible_counts.into_slice() };
@@ -829,6 +845,8 @@ fn worker_loop(
                 let pre_phantoon_pair_valid = unsafe { pre_phantoon_pair_valid.into_mut_slice() };
                 let pre_phantoon_area_valid = unsafe { pre_phantoon_area_valid.into_mut_slice() };
                 let pre_graph_diameter_valid = unsafe { pre_graph_diameter_valid.into_mut_slice() };
+                let pre_nearby_save_valid = unsafe { pre_nearby_save_valid.into_mut_slice() };
+                let pre_nearby_refill_valid = unsafe { pre_nearby_refill_valid.into_mut_slice() };
                 let pre_vanilla_area_valid = unsafe { pre_vanilla_area_valid.into_mut_slice() };
                 let pre_area_size_bucket = unsafe { pre_area_size_bucket.into_mut_slice() };
                 let pre_area_connections = unsafe { pre_area_connections.into_mut_slice() };
@@ -843,6 +861,8 @@ fn worker_loop(
                 let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let graph_diameter_valid = unsafe { graph_diameter_valid.into_mut_slice() };
+                let nearby_save_valid = unsafe { nearby_save_valid.into_mut_slice() };
+                let nearby_refill_valid = unsafe { nearby_refill_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_connections = unsafe { area_connections.into_mut_slice() };
@@ -913,6 +933,8 @@ fn worker_loop(
                 debug_assert_eq!(pre_phantoon_pair_valid.len(), environments.len());
                 debug_assert_eq!(pre_phantoon_area_valid.len(), environments.len());
                 debug_assert_eq!(pre_graph_diameter_valid.len(), environments.len());
+                debug_assert_eq!(pre_nearby_save_valid.len(), environments.len());
+                debug_assert_eq!(pre_nearby_refill_valid.len(), environments.len());
                 debug_assert_eq!(
                     pre_vanilla_area_valid.len(),
                     environments.len() * VANILLA_AREA_CONSTRAINT_COUNT
@@ -960,6 +982,14 @@ fn worker_loop(
                 );
                 debug_assert_eq!(
                     graph_diameter_valid.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    nearby_save_valid.len(),
+                    environments.len() * recommended_candidates
+                );
+                debug_assert_eq!(
+                    nearby_refill_valid.len(),
                     environments.len() * recommended_candidates
                 );
                 debug_assert_eq!(
@@ -1026,6 +1056,7 @@ fn worker_loop(
                             recommended_candidates_same_frontier,
                             guarantee_phantoon_counterpart,
                             reject_nearby_save_rooms[env_idx],
+                            reject_nearby_refill_stations[env_idx],
                             &features,
                             frontier_neighbor_algorithm,
                             frontier_neighbor_count,
@@ -1088,6 +1119,10 @@ fn worker_loop(
                         outcome_to_i8(pre_candidate_outcomes.phantoon_area_valid);
                     pre_graph_diameter_valid[env_idx] =
                         outcome_to_i8(pre_candidate_outcomes.graph_diameter_valid);
+                    pre_nearby_save_valid[env_idx] =
+                        outcome_to_i8(pre_candidate_outcomes.nearby_save_valid);
+                    pre_nearby_refill_valid[env_idx] =
+                        outcome_to_i8(pre_candidate_outcomes.nearby_refill_valid);
                     let pre_vanilla_start = env_idx * VANILLA_AREA_CONSTRAINT_COUNT;
                     for (idx, &outcome) in
                         pre_candidate_outcomes.vanilla_area_valid.iter().enumerate()
@@ -1193,6 +1228,8 @@ fn worker_loop(
                         phantoon_pair_valid[idx] = outcome_to_i8(outcome.phantoon_pair_valid);
                         phantoon_area_valid[idx] = outcome_to_i8(outcome.phantoon_area_valid);
                         graph_diameter_valid[idx] = outcome_to_i8(outcome.graph_diameter_valid);
+                        nearby_save_valid[idx] = outcome_to_i8(outcome.nearby_save_valid);
+                        nearby_refill_valid[idx] = outcome_to_i8(outcome.nearby_refill_valid);
                         let vanilla_start = idx * VANILLA_AREA_CONSTRAINT_COUNT;
                         for (constraint_idx, &value) in
                             outcome.vanilla_area_valid.iter().enumerate()
@@ -1275,6 +1312,8 @@ fn worker_loop(
                 phantoon_pair_valid,
                 phantoon_area_valid,
                 graph_diameter_valid,
+                nearby_save_valid,
+                nearby_refill_valid,
                 vanilla_area_valid,
                 area_size_bucket,
                 area_connections,
@@ -1314,6 +1353,8 @@ fn worker_loop(
                 let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let graph_diameter_valid = unsafe { graph_diameter_valid.into_mut_slice() };
+                let nearby_save_valid = unsafe { nearby_save_valid.into_mut_slice() };
+                let nearby_refill_valid = unsafe { nearby_refill_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_connections = unsafe { area_connections.into_mut_slice() };
@@ -1363,6 +1404,8 @@ fn worker_loop(
                 debug_assert_eq!(phantoon_pair_valid.len(), environments.len());
                 debug_assert_eq!(phantoon_area_valid.len(), environments.len());
                 debug_assert_eq!(graph_diameter_valid.len(), environments.len());
+                debug_assert_eq!(nearby_save_valid.len(), environments.len());
+                debug_assert_eq!(nearby_refill_valid.len(), environments.len());
                 debug_assert_eq!(
                     vanilla_area_valid.len(),
                     environments.len() * VANILLA_AREA_CONSTRAINT_COUNT
@@ -1588,6 +1631,8 @@ fn worker_loop(
                     phantoon_pair_valid[env_idx] = outcome_to_i8(outcomes.phantoon_pair_valid);
                     phantoon_area_valid[env_idx] = outcome_to_i8(outcomes.phantoon_area_valid);
                     graph_diameter_valid[env_idx] = outcome_to_i8(outcomes.graph_diameter_valid);
+                    nearby_save_valid[env_idx] = outcome_to_i8(outcomes.nearby_save_valid);
+                    nearby_refill_valid[env_idx] = outcome_to_i8(outcomes.nearby_refill_valid);
                     let vanilla_start = env_idx * VANILLA_AREA_CONSTRAINT_COUNT;
                     for (idx, &outcome) in outcomes.vanilla_area_valid.iter().enumerate() {
                         vanilla_area_valid[vanilla_start + idx] = outcome_to_i8(outcome);
@@ -1648,6 +1693,8 @@ fn worker_loop(
                 phantoon_pair_valid,
                 phantoon_area_valid,
                 graph_diameter_valid,
+                nearby_save_valid,
+                nearby_refill_valid,
                 vanilla_area_valid,
                 area_size_bucket,
                 area_connections,
@@ -1665,6 +1712,8 @@ fn worker_loop(
                 let phantoon_pair_valid = unsafe { phantoon_pair_valid.into_mut_slice() };
                 let phantoon_area_valid = unsafe { phantoon_area_valid.into_mut_slice() };
                 let graph_diameter_valid = unsafe { graph_diameter_valid.into_mut_slice() };
+                let nearby_save_valid = unsafe { nearby_save_valid.into_mut_slice() };
+                let nearby_refill_valid = unsafe { nearby_refill_valid.into_mut_slice() };
                 let vanilla_area_valid = unsafe { vanilla_area_valid.into_mut_slice() };
                 let area_size_bucket = unsafe { area_size_bucket.into_mut_slice() };
                 let area_connections = unsafe { area_connections.into_mut_slice() };
@@ -1686,6 +1735,8 @@ fn worker_loop(
                 debug_assert_eq!(phantoon_pair_valid.len(), environment_count);
                 debug_assert_eq!(phantoon_area_valid.len(), environment_count);
                 debug_assert_eq!(graph_diameter_valid.len(), environment_count);
+                debug_assert_eq!(nearby_save_valid.len(), environment_count);
+                debug_assert_eq!(nearby_refill_valid.len(), environment_count);
                 debug_assert_eq!(
                     vanilla_area_valid.len(),
                     environment_count * VANILLA_AREA_CONSTRAINT_COUNT
@@ -1752,6 +1803,8 @@ fn worker_loop(
                     phantoon_pair_valid[env_idx] = outcome_to_i8(outcomes.phantoon_pair_valid);
                     phantoon_area_valid[env_idx] = outcome_to_i8(outcomes.phantoon_area_valid);
                     graph_diameter_valid[env_idx] = outcome_to_i8(outcomes.graph_diameter_valid);
+                    nearby_save_valid[env_idx] = outcome_to_i8(outcomes.nearby_save_valid);
+                    nearby_refill_valid[env_idx] = outcome_to_i8(outcomes.nearby_refill_valid);
                     let vanilla_start = env_idx * VANILLA_AREA_CONSTRAINT_COUNT;
                     for (idx, &outcome) in outcomes.vanilla_area_valid.iter().enumerate() {
                         vanilla_area_valid[vanilla_start + idx] = outcome_to_i8(outcome);
@@ -2184,6 +2237,8 @@ pub struct StepOutcomes {
     phantoon_pair_valid: Py<PyArray1<i8>>,
     phantoon_area_valid: Py<PyArray1<i8>>,
     graph_diameter_valid: Py<PyArray1<i8>>,
+    nearby_save_valid: Py<PyArray1<i8>>,
+    nearby_refill_valid: Py<PyArray1<i8>>,
     vanilla_area_valid: Py<PyArray2<i8>>,
     area_size_bucket: Py<PyArray2<i8>>,
     area_connections: Py<PyArray2<bool>>,
@@ -2270,6 +2325,7 @@ pub struct ProposalCandidateBuffers {
     #[pyo3(get)]
     guarantee_phantoon_counterpart: bool,
     reject_nearby_save_rooms: Py<PyArray1<bool>>,
+    reject_nearby_refill_stations: Py<PyArray1<bool>>,
     room_idx: Py<PyArray2<RoomIdx>>,
     room_x: Py<PyArray2<Coord>>,
     room_y: Py<PyArray2<Coord>>,
@@ -2287,6 +2343,8 @@ pub struct ProposalCandidateBuffers {
     pre_phantoon_pair_valid: Py<PyArray1<i8>>,
     pre_phantoon_area_valid: Py<PyArray1<i8>>,
     pre_graph_diameter_valid: Py<PyArray1<i8>>,
+    pre_nearby_save_valid: Py<PyArray1<i8>>,
+    pre_nearby_refill_valid: Py<PyArray1<i8>>,
     pre_vanilla_area_valid: Py<PyArray2<i8>>,
     pre_area_size_bucket: Py<PyArray2<i8>>,
     pre_area_connections: Py<PyArray2<bool>>,
@@ -2300,6 +2358,8 @@ pub struct ProposalCandidateBuffers {
     phantoon_pair_valid: Py<PyArray2<i8>>,
     phantoon_area_valid: Py<PyArray2<i8>>,
     graph_diameter_valid: Py<PyArray2<i8>>,
+    nearby_save_valid: Py<PyArray2<i8>>,
+    nearby_refill_valid: Py<PyArray2<i8>>,
     vanilla_area_valid: Py<PyArray3<i8>>,
     area_size_bucket: Py<PyArray3<i8>>,
     area_connections: Py<PyArray3<bool>>,
@@ -2421,6 +2481,10 @@ impl ProposalCandidateBuffers {
                 "guarantee_phantoon_counterpart"
             ),
             reject_nearby_save_rooms: required_py_field!(fields, "reject_nearby_save_rooms"),
+            reject_nearby_refill_stations: required_py_field!(
+                fields,
+                "reject_nearby_refill_stations"
+            ),
             room_idx: required_py_field!(fields, "room_idx"),
             room_x: required_py_field!(fields, "room_x"),
             room_y: required_py_field!(fields, "room_y"),
@@ -2441,6 +2505,8 @@ impl ProposalCandidateBuffers {
             pre_phantoon_pair_valid: required_py_field!(fields, "pre_phantoon_pair_valid"),
             pre_phantoon_area_valid: required_py_field!(fields, "pre_phantoon_area_valid"),
             pre_graph_diameter_valid: required_py_field!(fields, "pre_graph_diameter_valid"),
+            pre_nearby_save_valid: required_py_field!(fields, "pre_nearby_save_valid"),
+            pre_nearby_refill_valid: required_py_field!(fields, "pre_nearby_refill_valid"),
             pre_vanilla_area_valid: required_py_field!(fields, "pre_vanilla_area_valid"),
             pre_area_size_bucket: required_py_field!(fields, "pre_area_size_bucket"),
             pre_area_connections: required_py_field!(fields, "pre_area_connections"),
@@ -2457,6 +2523,8 @@ impl ProposalCandidateBuffers {
             phantoon_pair_valid: required_py_field!(fields, "phantoon_pair_valid"),
             phantoon_area_valid: required_py_field!(fields, "phantoon_area_valid"),
             graph_diameter_valid: required_py_field!(fields, "graph_diameter_valid"),
+            nearby_save_valid: required_py_field!(fields, "nearby_save_valid"),
+            nearby_refill_valid: required_py_field!(fields, "nearby_refill_valid"),
             vanilla_area_valid: required_py_field!(fields, "vanilla_area_valid"),
             area_size_bucket: required_py_field!(fields, "area_size_bucket"),
             area_connections: required_py_field!(fields, "area_connections"),
@@ -2716,6 +2784,14 @@ impl StepOutcomes {
     fn graph_diameter_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
         self.graph_diameter_valid.clone_ref(py)
     }
+    #[getter]
+    fn nearby_save_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
+        self.nearby_save_valid.clone_ref(py)
+    }
+    #[getter]
+    fn nearby_refill_valid(&self, py: Python<'_>) -> Py<PyArray1<i8>> {
+        self.nearby_refill_valid.clone_ref(py)
+    }
 
     #[getter]
     fn vanilla_area_valid(&self, py: Python<'_>) -> Py<PyArray2<i8>> {
@@ -2910,6 +2986,8 @@ impl EpisodeOutcomes {
             phantoon_pair_valid: self.step_outcomes.phantoon_pair_valid.clone_ref(py),
             phantoon_area_valid: self.step_outcomes.phantoon_area_valid.clone_ref(py),
             graph_diameter_valid: self.step_outcomes.graph_diameter_valid.clone_ref(py),
+            nearby_save_valid: self.step_outcomes.nearby_save_valid.clone_ref(py),
+            nearby_refill_valid: self.step_outcomes.nearby_refill_valid.clone_ref(py),
             vanilla_area_valid: self.step_outcomes.vanilla_area_valid.clone_ref(py),
             area_size_bucket: self.step_outcomes.area_size_bucket.clone_ref(py),
             area_connections: self.step_outcomes.area_connections.clone_ref(py),
@@ -5204,6 +5282,8 @@ impl EnvironmentGroup {
         let recommended_candidates_same_frontier = buffers.recommended_candidates_same_frontier;
         let guarantee_phantoon_counterpart = buffers.guarantee_phantoon_counterpart;
         let reject_nearby_save_rooms = buffers.reject_nearby_save_rooms.bind(py).readonly();
+        let reject_nearby_refill_stations =
+            buffers.reject_nearby_refill_stations.bind(py).readonly();
         if max_candidate_areas_per_placement == 0 {
             return Err(PyValueError::new_err(
                 "max_candidate_areas_per_placement must be greater than zero",
@@ -5235,6 +5315,8 @@ impl EnvironmentGroup {
         let mut pre_phantoon_pair_valid = buffers.pre_phantoon_pair_valid.bind(py).readwrite();
         let mut pre_phantoon_area_valid = buffers.pre_phantoon_area_valid.bind(py).readwrite();
         let mut pre_graph_diameter_valid = buffers.pre_graph_diameter_valid.bind(py).readwrite();
+        let mut pre_nearby_save_valid = buffers.pre_nearby_save_valid.bind(py).readwrite();
+        let mut pre_nearby_refill_valid = buffers.pre_nearby_refill_valid.bind(py).readwrite();
         let mut pre_vanilla_area_valid = buffers.pre_vanilla_area_valid.bind(py).readwrite();
         let mut pre_area_size_bucket = buffers.pre_area_size_bucket.bind(py).readwrite();
         let mut pre_area_connections = buffers.pre_area_connections.bind(py).readwrite();
@@ -5251,6 +5333,8 @@ impl EnvironmentGroup {
         let mut phantoon_pair_valid = buffers.phantoon_pair_valid.bind(py).readwrite();
         let mut phantoon_area_valid = buffers.phantoon_area_valid.bind(py).readwrite();
         let mut graph_diameter_valid = buffers.graph_diameter_valid.bind(py).readwrite();
+        let mut nearby_save_valid = buffers.nearby_save_valid.bind(py).readwrite();
+        let mut nearby_refill_valid = buffers.nearby_refill_valid.bind(py).readwrite();
         let mut vanilla_area_valid = buffers.vanilla_area_valid.bind(py).readwrite();
         let mut area_size_bucket = buffers.area_size_bucket.bind(py).readwrite();
         let mut area_connections = buffers.area_connections.bind(py).readwrite();
@@ -5283,6 +5367,11 @@ impl EnvironmentGroup {
             &[self.num_environments],
         )?;
         check_shape(
+            "reject_nearby_refill_stations",
+            reject_nearby_refill_stations.as_array().shape(),
+            &[self.num_environments],
+        )?;
+        check_shape(
             "vanilla_area_constraint_mask",
             vanilla_area_constraint_mask.as_array().shape(),
             &[self.num_environments, VANILLA_AREA_CONSTRAINT_COUNT],
@@ -5305,6 +5394,10 @@ impl EnvironmentGroup {
         let reject_nearby_save_rooms = reject_nearby_save_rooms
             .as_slice()
             .map_err(|_| PyValueError::new_err("reject_nearby_save_rooms must be contiguous"))?;
+        let reject_nearby_refill_stations =
+            reject_nearby_refill_stations.as_slice().map_err(|_| {
+                PyValueError::new_err("reject_nearby_refill_stations must be contiguous")
+            })?;
         let vanilla_area_constraint_mask =
             vanilla_area_constraint_mask.as_slice().map_err(|_| {
                 PyValueError::new_err("vanilla_area_constraint_mask must be contiguous")
@@ -5419,6 +5512,16 @@ impl EnvironmentGroup {
             &[self.num_environments],
         )?;
         check_shape(
+            "pre_nearby_save_valid",
+            pre_nearby_save_valid.as_array().shape(),
+            &[self.num_environments],
+        )?;
+        check_shape(
+            "pre_nearby_refill_valid",
+            pre_nearby_refill_valid.as_array().shape(),
+            &[self.num_environments],
+        )?;
+        check_shape(
             "pre_vanilla_area_valid",
             pre_vanilla_area_valid.as_array().shape(),
             &[self.num_environments, VANILLA_AREA_CONSTRAINT_COUNT],
@@ -5499,6 +5602,16 @@ impl EnvironmentGroup {
         check_shape(
             "graph_diameter_valid",
             graph_diameter_valid.as_array().shape(),
+            &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "nearby_save_valid",
+            nearby_save_valid.as_array().shape(),
+            &[self.num_environments, recommended_candidates],
+        )?;
+        check_shape(
+            "nearby_refill_valid",
+            nearby_refill_valid.as_array().shape(),
             &[self.num_environments, recommended_candidates],
         )?;
         check_shape(
@@ -5630,6 +5743,12 @@ impl EnvironmentGroup {
         let pre_graph_diameter_valid = pre_graph_diameter_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_graph_diameter_valid must be contiguous"))?;
+        let pre_nearby_save_valid = pre_nearby_save_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_nearby_save_valid must be contiguous"))?;
+        let pre_nearby_refill_valid = pre_nearby_refill_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("pre_nearby_refill_valid must be contiguous"))?;
         let pre_vanilla_area_valid = pre_vanilla_area_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("pre_vanilla_area_valid must be contiguous"))?;
@@ -5671,6 +5790,12 @@ impl EnvironmentGroup {
         let graph_diameter_valid = graph_diameter_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("graph_diameter_valid must be contiguous"))?;
+        let nearby_save_valid = nearby_save_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("nearby_save_valid must be contiguous"))?;
+        let nearby_refill_valid = nearby_refill_valid
+            .as_slice_mut()
+            .map_err(|_| PyValueError::new_err("nearby_refill_valid must be contiguous"))?;
         let vanilla_area_valid = vanilla_area_valid
             .as_slice_mut()
             .map_err(|_| PyValueError::new_err("vanilla_area_valid must be contiguous"))?;
@@ -5723,6 +5848,8 @@ impl EnvironmentGroup {
         pre_phantoon_pair_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_graph_diameter_valid.fill(DoorValidOutcome::Unknown as i8);
+        pre_nearby_save_valid.fill(DoorValidOutcome::Unknown as i8);
+        pre_nearby_refill_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         pre_area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         pre_area_connections.fill(false);
@@ -5736,6 +5863,8 @@ impl EnvironmentGroup {
         phantoon_pair_valid.fill(DoorValidOutcome::Unknown as i8);
         phantoon_area_valid.fill(DoorValidOutcome::Unknown as i8);
         graph_diameter_valid.fill(DoorValidOutcome::Unknown as i8);
+        nearby_save_valid.fill(DoorValidOutcome::Unknown as i8);
+        nearby_refill_valid.fill(DoorValidOutcome::Unknown as i8);
         vanilla_area_valid.fill(DoorValidOutcome::Unknown as i8);
         area_size_bucket.fill(AreaBucketOutcome::Unknown as i8);
         area_connections.fill(false);
@@ -5798,6 +5927,9 @@ impl EnvironmentGroup {
                     guarantee_phantoon_counterpart,
                     reject_nearby_save_rooms: InputShard::from_slice(
                         &reject_nearby_save_rooms[worker.start..worker.end()],
+                    ),
+                    reject_nearby_refill_stations: InputShard::from_slice(
+                        &reject_nearby_refill_stations[worker.start..worker.end()],
                     ),
                     sampled_frontier_idx: InputShard::from_slice(
                         &sampled_frontier_idx[shortlist_start..shortlist_end],
@@ -5862,6 +5994,12 @@ impl EnvironmentGroup {
                     pre_graph_diameter_valid: OutputShard::from_slice(
                         &mut pre_graph_diameter_valid[worker.start..worker.end()],
                     ),
+                    pre_nearby_save_valid: OutputShard::from_slice(
+                        &mut pre_nearby_save_valid[worker.start..worker.end()],
+                    ),
+                    pre_nearby_refill_valid: OutputShard::from_slice(
+                        &mut pre_nearby_refill_valid[worker.start..worker.end()],
+                    ),
                     pre_vanilla_area_valid: OutputShard::from_slice(
                         &mut pre_vanilla_area_valid[vanilla_mask_start..vanilla_mask_end],
                     ),
@@ -5902,6 +6040,12 @@ impl EnvironmentGroup {
                     ),
                     graph_diameter_valid: OutputShard::from_slice(
                         &mut graph_diameter_valid[output_start..output_end],
+                    ),
+                    nearby_save_valid: OutputShard::from_slice(
+                        &mut nearby_save_valid[output_start..output_end],
+                    ),
+                    nearby_refill_valid: OutputShard::from_slice(
+                        &mut nearby_refill_valid[output_start..output_end],
                     ),
                     vanilla_area_valid: OutputShard::from_slice(
                         &mut vanilla_area_valid[output_start * VANILLA_AREA_CONSTRAINT_COUNT
@@ -6024,6 +6168,8 @@ impl EnvironmentGroup {
         let mut phantoon_pair_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut phantoon_area_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut graph_diameter_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
+        let mut nearby_save_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
+        let mut nearby_refill_valid = vec![DoorValidOutcome::Unknown as i8; self.num_environments];
         let mut vanilla_area_valid = vec![
             DoorValidOutcome::Unknown as i8;
             self.num_environments * VANILLA_AREA_CONSTRAINT_COUNT
@@ -6107,6 +6253,12 @@ impl EnvironmentGroup {
                     ),
                     graph_diameter_valid: OutputShard::from_slice(
                         &mut graph_diameter_valid[worker.start..worker.end()],
+                    ),
+                    nearby_save_valid: OutputShard::from_slice(
+                        &mut nearby_save_valid[worker.start..worker.end()],
+                    ),
+                    nearby_refill_valid: OutputShard::from_slice(
+                        &mut nearby_refill_valid[worker.start..worker.end()],
                     ),
                     vanilla_area_valid: OutputShard::from_slice(
                         &mut vanilla_area_valid[worker.start * VANILLA_AREA_CONSTRAINT_COUNT
@@ -6232,6 +6384,8 @@ impl EnvironmentGroup {
                 phantoon_pair_valid: phantoon_pair_valid.into_pyarray(py).unbind(),
                 phantoon_area_valid: phantoon_area_valid.into_pyarray(py).unbind(),
                 graph_diameter_valid: graph_diameter_valid.into_pyarray(py).unbind(),
+                nearby_save_valid: nearby_save_valid.into_pyarray(py).unbind(),
+                nearby_refill_valid: nearby_refill_valid.into_pyarray(py).unbind(),
                 vanilla_area_valid: pyarray2_from_flat_vec(
                     py,
                     vanilla_area_valid,
@@ -6450,6 +6604,8 @@ impl EnvironmentGroup {
         let mut phantoon_pair_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let mut phantoon_area_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let mut graph_diameter_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
+        let mut nearby_save_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
+        let mut nearby_refill_valid = vec![DoorValidOutcome::Unknown as i8; environment_count];
         let mut vanilla_area_valid = vec![
             DoorValidOutcome::Unknown as i8;
             environment_count * VANILLA_AREA_CONSTRAINT_COUNT
@@ -6520,6 +6676,12 @@ impl EnvironmentGroup {
                     graph_diameter_valid: OutputShard::from_slice(
                         &mut graph_diameter_valid[input_start..input_start + environment_count],
                     ),
+                    nearby_save_valid: OutputShard::from_slice(
+                        &mut nearby_save_valid[input_start..input_start + environment_count],
+                    ),
+                    nearby_refill_valid: OutputShard::from_slice(
+                        &mut nearby_refill_valid[input_start..input_start + environment_count],
+                    ),
                     vanilla_area_valid: OutputShard::from_slice(
                         &mut vanilla_area_valid[input_start * VANILLA_AREA_CONSTRAINT_COUNT
                             ..(input_start + environment_count) * VANILLA_AREA_CONSTRAINT_COUNT],
@@ -6578,6 +6740,8 @@ impl EnvironmentGroup {
             phantoon_pair_valid: phantoon_pair_valid.into_pyarray(py).unbind(),
             phantoon_area_valid: phantoon_area_valid.into_pyarray(py).unbind(),
             graph_diameter_valid: graph_diameter_valid.into_pyarray(py).unbind(),
+            nearby_save_valid: nearby_save_valid.into_pyarray(py).unbind(),
+            nearby_refill_valid: nearby_refill_valid.into_pyarray(py).unbind(),
             vanilla_area_valid: pyarray2_from_flat_vec(
                 py,
                 vanilla_area_valid,

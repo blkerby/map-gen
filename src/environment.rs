@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use crate::common::{
     AREA_COUNT, AREA_PAIR_COUNT, Action, ActionIdx, AreaIdx, CommonData, Coord, DUMMY_AREA,
     DirDoorIdx, Direction, DoorKind, DoorLocation, DoorValidOutcome, DoorVariantIdx, FrontierIdx,
-    GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomIdx,
-    RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT, get_behind_door_position,
+    GeometryData, GeometryIdx, GraphDistance, NUM_DIRS, PartIdx, ProposalActionIdx, RoomData,
+    RoomIdx, RoomPartIdx, SpatialCellIdx, VANILLA_AREA_CONSTRAINT_COUNT, get_behind_door_position,
     proposal_action_parts,
 };
 use crate::engine::{ProfileMetric, profile_enabled, record_profile_count, record_profile_metric};
@@ -342,6 +342,9 @@ pub struct StepOutcomes {
     pub return_distance_valid: Vec<DoorValidOutcome>,
     // Terminal diameter meets the configured cap; unknown until finished when enabled.
     pub graph_diameter_valid: DoorValidOutcome,
+    // A nearby pair is permanently invalid; absence is only known at the end.
+    pub nearby_save_valid: DoorValidOutcome,
+    pub nearby_refill_valid: DoorValidOutcome,
     // Whether the Toilet crosses exactly one room.
     pub toilet_valid: DoorValidOutcome,
     // Whether Phantoon's Room and Wrecked Ship Map Room connect to the same room.
@@ -2543,13 +2546,18 @@ impl Environment {
         vanilla_area_constraint_mask: &[bool; VANILLA_AREA_CONSTRAINT_COUNT],
         candidate: CandidateAction,
         reject_nearby_save_rooms: bool,
+        reject_nearby_refill_stations: bool,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
         frontier_window_size: usize,
         scratch: &mut FeatureScratch,
     ) -> Result<ProposalEvaluation, String> {
-        if reject_nearby_save_rooms && self.connects_nearby_save_rooms(common, candidate.action) {
+        if (reject_nearby_save_rooms
+            && self.connects_nearby_rooms(common, candidate.action, |room| room.save))
+            || (reject_nearby_refill_stations
+                && self.connects_nearby_rooms(common, candidate.action, |room| room.refill_station))
+        {
             return Ok(ProposalEvaluation::Rejected(candidate));
         }
         Ok(
@@ -3905,6 +3913,7 @@ impl Environment {
         recommended_candidates_same_frontier: bool,
         guarantee_phantoon_counterpart: bool,
         reject_nearby_save_rooms: bool,
+        reject_nearby_refill_stations: bool,
         config: &FeatureConfig,
         frontier_neighbor_algorithm: FrontierNeighborAlgorithm,
         frontier_neighbor_count: usize,
@@ -4049,6 +4058,7 @@ impl Environment {
                 vanilla_area_constraint_mask,
                 candidate,
                 reject_nearby_save_rooms,
+                reject_nearby_refill_stations,
                 config,
                 frontier_neighbor_algorithm,
                 frontier_neighbor_count,
@@ -4112,6 +4122,7 @@ impl Environment {
                     vanilla_area_constraint_mask,
                     candidate,
                     reject_nearby_save_rooms,
+                    reject_nearby_refill_stations,
                     config,
                     frontier_neighbor_algorithm,
                     frontier_neighbor_count,
@@ -4240,9 +4251,14 @@ impl Environment {
         })
     }
 
-    fn connects_nearby_save_rooms(&self, common: &CommonData, candidate: Action) -> bool {
+    fn connects_nearby_rooms(
+        &self,
+        common: &CommonData,
+        candidate: Action,
+        is_target: impl Fn(&RoomData) -> bool,
+    ) -> bool {
         let room = &common.room[candidate.room_idx as usize];
-        let mut first_save_neighbor = None;
+        let mut first_target_neighbor = None;
         for door in &room.doors {
             let location = DoorLocation::new(door, candidate.x, candidate.y);
             let Some(frontier) = self.frontier.get(&location) else {
@@ -4250,26 +4266,64 @@ impl Environment {
             };
             let neighbor_idx = common.room_part[frontier.room_part_idx as usize].0;
             let neighbor = &common.room[neighbor_idx as usize];
-            if room.save {
-                if neighbor.save
+            if is_target(room) {
+                if is_target(neighbor)
                     || neighbor.doors.iter().any(|neighbor_door| {
                         self.matched_neighbor_room_idx(
                             common,
                             Some((neighbor_door.direction, neighbor_door.dir_door_idx)),
                         )
-                        .is_some_and(|idx| common.room[idx as usize].save)
+                        .is_some_and(|idx| is_target(&common.room[idx as usize]))
                     })
                 {
                     return true;
                 }
-            } else if neighbor.save {
-                if first_save_neighbor.is_some_and(|idx| idx != neighbor_idx) {
+            } else if is_target(neighbor) {
+                if first_target_neighbor.is_some_and(|idx| idx != neighbor_idx) {
                     return true;
                 }
-                first_save_neighbor = Some(neighbor_idx);
+                first_target_neighbor = Some(neighbor_idx);
             }
         }
         false
+    }
+
+    fn nearby_room_outcome(
+        &self,
+        common: &CommonData,
+        is_target: impl Fn(&RoomData) -> bool,
+    ) -> DoorValidOutcome {
+        for (room_idx, room) in common.room.iter().enumerate() {
+            if !self.room_used[room_idx] || !is_target(room) {
+                continue;
+            }
+            for door in &room.doors {
+                let Some(neighbor_idx) = self
+                    .matched_neighbor_room_idx(common, Some((door.direction, door.dir_door_idx)))
+                else {
+                    continue;
+                };
+                let neighbor = &common.room[neighbor_idx as usize];
+                if (neighbor_idx as usize != room_idx && is_target(neighbor))
+                    || neighbor.doors.iter().any(|door| {
+                        self.matched_neighbor_room_idx(
+                            common,
+                            Some((door.direction, door.dir_door_idx)),
+                        )
+                        .is_some_and(|idx| {
+                            idx as usize != room_idx && is_target(&common.room[idx as usize])
+                        })
+                    })
+                {
+                    return DoorValidOutcome::Invalid;
+                }
+            }
+        }
+        if self.finished {
+            DoorValidOutcome::Valid
+        } else {
+            DoorValidOutcome::Unknown
+        }
     }
 
     fn evaluate_candidate_outcome(
@@ -4463,6 +4517,8 @@ impl Environment {
             connections_valid: connections_valid.clone(),
             return_distance_valid: return_distance_valid.clone(),
             graph_diameter_valid,
+            nearby_save_valid: self.nearby_room_outcome(common, |room| room.save),
+            nearby_refill_valid: self.nearby_room_outcome(common, |room| room.refill_station),
             toilet_valid,
             phantoon_pair_valid,
             phantoon_area_valid,
@@ -6216,6 +6272,8 @@ impl Environment {
             connections_valid,
             return_distance_valid,
             graph_diameter_valid: self.graph_diameter_outcome(),
+            nearby_save_valid: self.nearby_room_outcome(common, |room| room.save),
+            nearby_refill_valid: self.nearby_room_outcome(common, |room| room.refill_station),
             toilet_valid: self.toilet_outcome(common),
             phantoon_pair_valid: self.phantoon_pair_outcome(common),
             phantoon_area_valid: self.phantoon_area_outcome(common, &has_usable_area_frontier),
@@ -6648,6 +6706,18 @@ impl Environment {
                 stage,
             )?;
             check_outcome_transition_consistency(
+                &[known_outcomes.nearby_save_valid],
+                &[outcomes.nearby_save_valid],
+                "nearby save",
+                stage,
+            )?;
+            check_outcome_transition_consistency(
+                &[known_outcomes.nearby_refill_valid],
+                &[outcomes.nearby_refill_valid],
+                "nearby refill",
+                stage,
+            )?;
+            check_outcome_transition_consistency(
                 &[known_outcomes.toilet_valid],
                 &[outcomes.toilet_valid],
                 "toilet",
@@ -6737,6 +6807,14 @@ fn merge_known_outcomes(known: Option<&StepOutcomes>, current: &StepOutcomes) ->
         graph_diameter_valid: merge_known_outcome_value(
             known.graph_diameter_valid,
             current.graph_diameter_valid,
+        ),
+        nearby_save_valid: merge_known_outcome_value(
+            known.nearby_save_valid,
+            current.nearby_save_valid,
+        ),
+        nearby_refill_valid: merge_known_outcome_value(
+            known.nearby_refill_valid,
+            current.nearby_refill_valid,
         ),
         toilet_valid: merge_known_outcome_value(known.toilet_valid, current.toilet_valid),
         phantoon_pair_valid: merge_known_outcome_value(
@@ -7305,6 +7383,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -7814,6 +7893,7 @@ mod tests {
                 1,
                 0,
                 1,
+                false,
                 false,
                 false,
                 false,
@@ -8328,6 +8408,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8453,6 +8534,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 false,
                 false,
@@ -8608,6 +8690,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8749,6 +8832,7 @@ mod tests {
                         same_frontier,
                         enabled,
                         false,
+                        false,
                         &FeatureConfig::all_disabled(),
                         FrontierNeighborAlgorithm::Nearest,
                         1,
@@ -8800,6 +8884,7 @@ mod tests {
                             false,
                             true,
                             false,
+                            false,
                             &FeatureConfig::all_disabled(),
                             FrontierNeighborAlgorithm::Nearest,
                             1,
@@ -8849,6 +8934,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -8871,6 +8957,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -8898,6 +8985,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -8933,6 +9021,7 @@ mod tests {
                 3,
                 1,
                 2,
+                false,
                 false,
                 false,
                 false,
@@ -8977,6 +9066,7 @@ mod tests {
                 1,
                 2,
                 true,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -9028,6 +9118,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    false,
                     &FeatureConfig::all_disabled(),
                     FrontierNeighborAlgorithm::Nearest,
                     1,
@@ -9060,6 +9151,7 @@ mod tests {
                 2,
                 1,
                 1,
+                false,
                 false,
                 false,
                 false,
@@ -9137,6 +9229,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 &FeatureConfig::all_disabled(),
                 FrontierNeighborAlgorithm::Nearest,
                 1,
@@ -9164,6 +9257,7 @@ mod tests {
                 1,
                 1,
                 true,
+                false,
                 false,
                 false,
                 &FeatureConfig::all_disabled(),
@@ -9237,6 +9331,8 @@ mod tests {
                 connections_valid: vec![Valid],
                 return_distance_valid: vec![Valid],
                 graph_diameter_valid: DoorValidOutcome::Valid,
+                nearby_save_valid: DoorValidOutcome::Valid,
+                nearby_refill_valid: DoorValidOutcome::Valid,
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
@@ -9253,6 +9349,8 @@ mod tests {
                 connections_valid: vec![Valid],
                 return_distance_valid: vec![Valid],
                 graph_diameter_valid: DoorValidOutcome::Valid,
+                nearby_save_valid: DoorValidOutcome::Valid,
+                nearby_refill_valid: DoorValidOutcome::Valid,
                 toilet_valid: Valid,
                 phantoon_pair_valid: Valid,
                 phantoon_area_valid: Valid,
@@ -9271,6 +9369,8 @@ mod tests {
                 connections_valid: vec![Unknown],
                 return_distance_valid: vec![Unknown],
                 graph_diameter_valid: DoorValidOutcome::Valid,
+                nearby_save_valid: DoorValidOutcome::Valid,
+                nearby_refill_valid: DoorValidOutcome::Valid,
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,
@@ -9287,6 +9387,8 @@ mod tests {
                 connections_valid: vec![Valid],
                 return_distance_valid: vec![Valid],
                 graph_diameter_valid: DoorValidOutcome::Valid,
+                nearby_save_valid: DoorValidOutcome::Valid,
+                nearby_refill_valid: DoorValidOutcome::Valid,
                 toilet_valid: Unknown,
                 phantoon_pair_valid: Unknown,
                 phantoon_area_valid: Unknown,

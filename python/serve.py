@@ -61,6 +61,7 @@ from subarea import (
 from train_config import (
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
+    REJECTION_CONDITION_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_OUTCOME_NAMES,
     VANILLA_AREA_REWARD_FIELDS,
@@ -68,7 +69,7 @@ from train_config import (
 )
 
 
-TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v31"
+TRAINING_CHECKPOINT_FORMAT = "map-gen-training-session-checkpoint-v33"
 MODEL_INPUT_FORMATS = (MODEL_EXPORT_FORMAT, TRAINING_CHECKPOINT_FORMAT)
 MODEL_PREFIXES = ("ema_model", "balance_model")
 
@@ -120,6 +121,7 @@ class GenerateRequest(StrictBaseModel):
     recommended_candidates_same_frontier: bool
     guarantee_phantoon_counterpart: bool
     reject_nearby_save_rooms: bool
+    reject_nearby_refill_stations: bool
     temperature: float
     proposal_temperature: float
     reward_door: float
@@ -643,7 +645,7 @@ def create_generate_configs(
     generation_variable_float_values.update(
         {
             field_name: float(getattr(generate_request, field_name))
-            for field_name in VANILLA_AREA_CONDITION_FIELDS
+            for field_name in (*VANILLA_AREA_CONDITION_FIELDS, *REJECTION_CONDITION_FIELDS)
         }
     )
     vanilla_area_constraint_values = [
@@ -751,6 +753,12 @@ def create_generate_configs(
                     dtype=torch.bool,
                     device=device,
                 ),
+                reject_nearby_refill_stations=torch.full(
+                    [env.num_envs],
+                    generate_request.reject_nearby_refill_stations,
+                    dtype=torch.bool,
+                    device=device,
+                ),
                 gpu_prefetch_batches=state.serving_config.gpu_prefetch_batches,
                 temperature=temperature,
                 proposal_temperature=proposal_temperature,
@@ -843,6 +851,7 @@ def valid_map_mask(
     vanilla_area_constraint_mask: torch.Tensor,
     min_area_size: int,
     max_area_size: int,
+    rejection_condition_mask: torch.Tensor,
 ) -> torch.Tensor:
     step_outcomes = outcomes.step_outcomes
     end_outcomes = outcomes.end_outcomes
@@ -858,6 +867,8 @@ def valid_map_mask(
         | tensor_has_invalid_outcome(step_outcomes.phantoon_pair_invalid)
         | tensor_has_invalid_outcome(step_outcomes.phantoon_area_invalid)
         | tensor_has_invalid_outcome(step_outcomes.graph_diameter_invalid)
+        | ((step_outcomes.nearby_save_invalid != 0) & rejection_condition_mask[..., 0])
+        | ((step_outcomes.nearby_refill_invalid != 0) & rejection_condition_mask[..., 1])
         | tensor_has_invalid_outcome(
             step_outcomes.vanilla_area_invalid & vanilla_area_constraint_mask
         )
@@ -1013,6 +1024,7 @@ def warmup_generate_request() -> GenerateRequest:
         recommended_candidates_same_frontier=False,
         guarantee_phantoon_counterpart=True,
         reject_nearby_save_rooms=True,
+        reject_nearby_refill_stations=True,
         temperature=0.04,
         proposal_temperature=0.03,
         reward_door=1.0,
@@ -1366,6 +1378,11 @@ def build_generate_response_data(
         ),
         state.training_config.generation.min_area_size,
         state.training_config.generation.max_area_size,
+        torch.tensor(
+            [getattr(generate_request, name) for name in REJECTION_CONDITION_FIELDS],
+            dtype=torch.bool,
+            device=outcomes.step_outcomes.nearby_save_invalid.device,
+        ),
     )
     valid_room_idx = episode_data.actions.room_idx[valid_mask]
     valid_room_area = episode_data.actions.room_area[valid_mask]

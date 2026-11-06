@@ -254,6 +254,22 @@ def compute_loss_breakdown(
     )
     conn_loss = conn_loss + graph_diameter_loss
     conn_wt = conn_wt + graph_diameter_wt
+    nearby_save_loss, nearby_save_wt = masked_binary_cross_entropy_loss(
+        preds.nearby_save_invalid,
+        outcomes.nearby_save_invalid,
+        mask.squeeze(-1),
+        config.connection_weight,
+    )
+    conn_loss = conn_loss + nearby_save_loss
+    conn_wt = conn_wt + nearby_save_wt
+    nearby_refill_loss, nearby_refill_wt = masked_binary_cross_entropy_loss(
+        preds.nearby_refill_invalid,
+        outcomes.nearby_refill_invalid,
+        mask.squeeze(-1),
+        config.connection_weight,
+    )
+    conn_loss = conn_loss + nearby_refill_loss
+    conn_wt = conn_wt + nearby_refill_wt
     conn_loss = conn_loss + return_distance_loss
     conn_wt = conn_wt + return_distance_wt
     toilet_loss, toilet_wt = masked_binary_cross_entropy_loss(

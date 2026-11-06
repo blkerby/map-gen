@@ -5,10 +5,15 @@ from pathlib import Path
 import safetensors.torch
 from safetensors import safe_open
 from env import Actions, EpisodeData
-from train_config import GENERATION_VARIABLE_FLOAT_FIELDS, INITIAL_ITEM_FIELDS
+from train_config import (
+    GENERATION_VARIABLE_FLOAT_FIELDS,
+    INITIAL_ITEM_FIELDS,
+    REJECTION_CONDITION_FIELDS,
+)
 
 
-EXPERIENCE_FORMAT = "map-gen-experience-v9"
+EXPERIENCE_FORMAT = "map-gen-experience-v10"
+PRE_REJECTION_CONDITIONING_EXPERIENCE_FORMAT = "map-gen-experience-v9"
 PRE_GRAPH_DIAMETER_EXPERIENCE_FORMAT = "map-gen-experience-v8"
 PRE_DOOR_BALANCE_STRENGTH_EXPERIENCE_FORMAT = "map-gen-experience-v7"
 PRE_INITIAL_ITEM_EXPERIENCE_FORMAT = "map-gen-experience-v6"
@@ -17,19 +22,28 @@ PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT = "map-gen-experience-v4"
 PRE_SUCCESS_EXPERIENCE_FORMAT = "map-gen-experience-v3"
 EXPERIENCE_MISSING_VARIABLE_FIELDS = {
     EXPERIENCE_FORMAT: (),
-    PRE_GRAPH_DIAMETER_EXPERIENCE_FORMAT: ("max_graph_diameter",),
-    PRE_DOOR_BALANCE_STRENGTH_EXPERIENCE_FORMAT: ("max_graph_diameter", "door_balance_strength"),
-    PRE_INITIAL_ITEM_EXPERIENCE_FORMAT: ("max_graph_diameter", "door_balance_strength", *INITIAL_ITEM_FIELDS),
+    PRE_REJECTION_CONDITIONING_EXPERIENCE_FORMAT: REJECTION_CONDITION_FIELDS,
+    PRE_GRAPH_DIAMETER_EXPERIENCE_FORMAT: ("max_graph_diameter", *REJECTION_CONDITION_FIELDS),
+    PRE_DOOR_BALANCE_STRENGTH_EXPERIENCE_FORMAT: (
+        "max_graph_diameter", "door_balance_strength", *REJECTION_CONDITION_FIELDS,
+    ),
+    PRE_INITIAL_ITEM_EXPERIENCE_FORMAT: (
+        "max_graph_diameter", "door_balance_strength", *INITIAL_ITEM_FIELDS,
+        *REJECTION_CONDITION_FIELDS,
+    ),
     PRE_RETURN_DISTANCE_EXPERIENCE_FORMAT: (
         "max_graph_diameter", "door_balance_strength", "max_return_distance", *INITIAL_ITEM_FIELDS,
+        *REJECTION_CONDITION_FIELDS,
     ),
     PRE_AREA_CONNECTIONS_EXPERIENCE_FORMAT: (
         "max_graph_diameter", "door_balance_strength", "reward_area_distinct_crossing", "max_return_distance",
         *INITIAL_ITEM_FIELDS,
+        *REJECTION_CONDITION_FIELDS,
     ),
     PRE_SUCCESS_EXPERIENCE_FORMAT: (
         "max_graph_diameter", "door_balance_strength", "reward_success", "reward_area_distinct_crossing",
         "max_return_distance", *INITIAL_ITEM_FIELDS,
+        *REJECTION_CONDITION_FIELDS,
     ),
 }
 REQUIRED_BALANCE_EXPERIENCE_TENSORS = (
@@ -78,10 +92,12 @@ def read_experience_tensors(
     # Versioned imports retain full door balancing, unrestricted distances and unconstrained starts.
     for name in sorted(missing_fields, key=GENERATION_VARIABLE_FLOAT_FIELDS.index):
         column = GENERATION_VARIABLE_FLOAT_FIELDS.index(name)
+        # Historical rejection flags were sampled but never recorded; they are unknown.
+        value = -1.0 if name in REJECTION_CONDITION_FIELDS else float(name == "door_balance_strength")
         variables = torch.cat(
             (
                 variables[:, :column],
-                variables.new_full((variables.shape[0], 1), float(name == "door_balance_strength")),
+                variables.new_full((variables.shape[0], 1), value),
                 variables[:, column:],
             ),
             dim=1,

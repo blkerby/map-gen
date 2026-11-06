@@ -18,6 +18,7 @@
     },
     {
         "room_id": 8,
+        "refill_station": true,
         "name": "Landing Site",
         "save": true,
         "map": [

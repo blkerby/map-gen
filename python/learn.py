@@ -43,6 +43,7 @@ from train_config import (
     Config,
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_FAMILIES,
+    REJECTION_CONDITION_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
     episodes_per_round,
 )
@@ -979,6 +980,12 @@ def prepare_feature_batches(
                         graph_diameter_invalid=(
                             next_lookahead_outcomes.graph_diameter_invalid.unsqueeze(1)
                         ),
+                        nearby_save_invalid=(
+                            next_lookahead_outcomes.nearby_save_invalid.unsqueeze(1)
+                        ),
+                        nearby_refill_invalid=(
+                            next_lookahead_outcomes.nearby_refill_invalid.unsqueeze(1)
+                        ),
                         vanilla_area_invalid=(
                             next_lookahead_outcomes.vanilla_area_invalid.unsqueeze(1)
                         ),
@@ -1311,6 +1318,8 @@ def train_feature_batch_backward(
         phantoon_pair_invalid=step_outcomes.phantoon_pair_invalid.unsqueeze(1),
         phantoon_area_invalid=step_outcomes.phantoon_area_invalid.unsqueeze(1),
         graph_diameter_invalid=step_outcomes.graph_diameter_invalid.unsqueeze(1),
+        nearby_save_invalid=step_outcomes.nearby_save_invalid.unsqueeze(1),
+        nearby_refill_invalid=step_outcomes.nearby_refill_invalid.unsqueeze(1),
         vanilla_area_invalid=step_outcomes.vanilla_area_invalid.unsqueeze(1),
         area_connections=step_outcomes.area_connections.unsqueeze(1),
         area_size_bucket=step_outcomes.area_size_bucket.unsqueeze(1),
@@ -1447,12 +1456,25 @@ def train_feature_batch_backward(
         :,
         VANILLA_AREA_CONDITION_INDICES,
     ].to(torch.bool)
+    rejection_conditions = generation_variable_floats[
+        :, [GENERATION_VARIABLE_FLOAT_FIELDS.index(name) for name in REJECTION_CONDITION_FIELDS]
+    ].unsqueeze(1)
     success_target = count_invalid_outcomes(
         repeated_outcomes,
         vanilla_area_constraint_mask.unsqueeze(1),
         area_size_target == 1,
         area_map_station_target == 1,
+        rejection_conditions > 0,
     ) == 0
+    # Legacy flags are unknown: a pair only makes an otherwise-successful label ambiguous.
+    nearby_invalid = torch.stack(
+        [repeated_outcomes.nearby_save_invalid, repeated_outcomes.nearby_refill_invalid],
+        dim=-1,
+    )
+    ambiguous_success = ((rejection_conditions < 0) & (nearby_invalid != 0)).any(dim=-1)
+    success_target = torch.where(
+        success_target & ambiguous_success, -1, success_target.to(torch.int64)
+    )
     return_distance_active = generation_variable_floats[
         :, GENERATION_VARIABLE_FLOAT_FIELDS.index("max_return_distance")
     ] > 0

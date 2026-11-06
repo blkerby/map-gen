@@ -184,6 +184,14 @@ def compute_expected_reward(
         torch.nn.functional.logsigmoid(-preds.graph_diameter_invalid),
         outcomes.graph_diameter_invalid,
     )
+    nearby_save_logprobs = outcome_reward(
+        torch.nn.functional.logsigmoid(-preds.nearby_save_invalid),
+        outcomes.nearby_save_invalid,
+    )
+    nearby_refill_logprobs = outcome_reward(
+        torch.nn.functional.logsigmoid(-preds.nearby_refill_invalid),
+        outcomes.nearby_refill_invalid,
+    )
     toilet_logprobs = torch.nn.functional.logsigmoid(-preds.toilet_invalid)
     phantoon_pair_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_pair_invalid)
     phantoon_area_logprobs = torch.nn.functional.logsigmoid(-preds.phantoon_area_invalid)
@@ -221,6 +229,12 @@ def compute_expected_reward(
         + batch_weight(config.reward_connection) * torch.sum(connection_logprobs, dim=2)
         + batch_weight(config.reward_connection) * torch.sum(return_distance_logprobs, dim=2)
         + batch_weight(config.reward_connection) * graph_diameter_logprobs
+        + batch_weight(config.reward_connection)
+        * config.reject_nearby_save_rooms.to(preds.door_invalid.device).unsqueeze(1)
+        * nearby_save_logprobs
+        + batch_weight(config.reward_connection)
+        * config.reject_nearby_refill_stations.to(preds.door_invalid.device).unsqueeze(1)
+        * nearby_refill_logprobs
         + batch_weight(config.reward_toilet) * toilet_logprobs
         + batch_weight(config.reward_phantoon_pair) * phantoon_pair_logprobs
         + batch_weight(config.reward_phantoon_area) * phantoon_area_logprobs
@@ -487,6 +501,7 @@ def get_shortlist_candidate_batch(
         group.config.recommended_candidates_same_frontier,
         group.config.guarantee_phantoon_counterpart,
         group.config.reject_nearby_save_rooms,
+        group.config.reject_nearby_refill_stations,
     )
 
 
@@ -507,6 +522,7 @@ def get_initial_candidate_batch(group: GenerationGroup) -> CandidateBatch:
         False,
         False,
         group.config.reject_nearby_save_rooms,
+        group.config.reject_nearby_refill_stations,
     )
 
 
@@ -707,6 +723,8 @@ def select_outcomes(outcomes: StepOutcomes, index: torch.Tensor) -> StepOutcomes
         phantoon_pair_invalid=gather_scalar(outcomes.phantoon_pair_invalid),
         phantoon_area_invalid=gather_scalar(outcomes.phantoon_area_invalid),
         graph_diameter_invalid=gather_scalar(outcomes.graph_diameter_invalid),
+        nearby_save_invalid=gather_scalar(outcomes.nearby_save_invalid),
+        nearby_refill_invalid=gather_scalar(outcomes.nearby_refill_invalid),
         vanilla_area_invalid=gather(outcomes.vanilla_area_invalid),
         area_connections=gather(outcomes.area_connections),
         area_size_bucket=gather(outcomes.area_size_bucket),
@@ -951,6 +969,12 @@ def compute_candidate_values(
                 environment_count, candidate_count
             ),
             graph_diameter_invalid=preds.graph_diameter_invalid.view(
+                environment_count, candidate_count
+            ),
+            nearby_save_invalid=preds.nearby_save_invalid.view(
+                environment_count, candidate_count
+            ),
+            nearby_refill_invalid=preds.nearby_refill_invalid.view(
                 environment_count, candidate_count
             ),
             vanilla_area_invalid=preds.vanilla_area_invalid.view(
@@ -2007,6 +2031,18 @@ def merge_generation_results(
                 graph_diameter_invalid=torch.cat(
                     [
                         episode_outcomes.step_outcomes.graph_diameter_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                nearby_save_invalid=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.nearby_save_invalid
+                        for _, episode_outcomes, _, _, _ in results
+                    ]
+                ),
+                nearby_refill_invalid=torch.cat(
+                    [
+                        episode_outcomes.step_outcomes.nearby_refill_invalid
                         for _, episode_outcomes, _, _, _ in results
                     ]
                 ),

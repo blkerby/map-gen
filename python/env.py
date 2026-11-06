@@ -181,6 +181,7 @@ class GenerateConfig:
     recommended_candidates_same_frontier: bool
     guarantee_phantoon_counterpart: bool
     reject_nearby_save_rooms: torch.Tensor
+    reject_nearby_refill_stations: torch.Tensor
     gpu_prefetch_batches: int
     temperature: torch.Tensor
     proposal_temperature: torch.Tensor
@@ -344,6 +345,9 @@ class StepOutcomes:
     phantoon_area_invalid: torch.Tensor
     # -1 = unknown, 0 = terminal diameter meets the cap (or unrestricted), 1 = invalid.
     graph_diameter_invalid: torch.Tensor
+    # Pair existence is independent of the rejection flags.
+    nearby_save_invalid: torch.Tensor
+    nearby_refill_invalid: torch.Tensor
     # -1 = unknown, 0 = special room is in its vanilla area, 1 = invalid.
     vanilla_area_invalid: torch.Tensor
     # Boolean connections in lexicographic unordered area-pair order.
@@ -369,6 +373,8 @@ class StepOutcomes:
             phantoon_pair_invalid=self.phantoon_pair_invalid.to(device, non_blocking=non_blocking),
             phantoon_area_invalid=self.phantoon_area_invalid.to(device, non_blocking=non_blocking),
             graph_diameter_invalid=self.graph_diameter_invalid.to(device, non_blocking=non_blocking),
+            nearby_save_invalid=self.nearby_save_invalid.to(device, non_blocking=non_blocking),
+            nearby_refill_invalid=self.nearby_refill_invalid.to(device, non_blocking=non_blocking),
             vanilla_area_invalid=self.vanilla_area_invalid.to(device, non_blocking=non_blocking),
             area_connections=self.area_connections.to(device, non_blocking=non_blocking),
             area_size_bucket=self.area_size_bucket.to(device, non_blocking=non_blocking),
@@ -389,6 +395,8 @@ class StepOutcomes:
             phantoon_pair_invalid=self.phantoon_pair_invalid[start:end],
             phantoon_area_invalid=self.phantoon_area_invalid[start:end],
             graph_diameter_invalid=self.graph_diameter_invalid[start:end],
+            nearby_save_invalid=self.nearby_save_invalid[start:end],
+            nearby_refill_invalid=self.nearby_refill_invalid[start:end],
             vanilla_area_invalid=self.vanilla_area_invalid[start:end],
             area_connections=self.area_connections[start:end],
             area_size_bucket=self.area_size_bucket[start:end],
@@ -404,6 +412,7 @@ def count_invalid_outcomes(
     vanilla_area_constraint_mask: torch.Tensor,
     area_size_valid: torch.Tensor,
     area_map_station_valid: torch.Tensor,
+    rejection_condition_mask: torch.Tensor,
 ) -> torch.Tensor:
     """Count terminal validity failures, including unknown required outcomes."""
     return (
@@ -414,6 +423,8 @@ def count_invalid_outcomes(
         + (outcomes.phantoon_pair_invalid != 0).to(torch.int64)
         + (outcomes.phantoon_area_invalid != 0).to(torch.int64)
         + (outcomes.graph_diameter_invalid != 0).to(torch.int64)
+        + ((outcomes.nearby_save_invalid != 0) & rejection_condition_mask[..., 0]).to(torch.int64)
+        + ((outcomes.nearby_refill_invalid != 0) & rejection_condition_mask[..., 1]).to(torch.int64)
         + ((outcomes.vanilla_area_invalid != 0) & vanilla_area_constraint_mask).sum(dim=-1)
         + (~area_size_valid).sum(dim=-1)
         + (~area_map_station_valid).sum(dim=-1)
@@ -627,6 +638,8 @@ class CandidateSlot:
         self.pre_phantoon_pair_invalid = None
         self.pre_phantoon_area_invalid = None
         self.pre_graph_diameter_invalid = None
+        self.pre_nearby_save_invalid = None
+        self.pre_nearby_refill_invalid = None
         self.pre_vanilla_area_invalid = None
         self.pre_area_connections = None
         self.pre_area_size_bucket = None
@@ -640,6 +653,8 @@ class CandidateSlot:
         self.phantoon_pair_invalid = None
         self.phantoon_area_invalid = None
         self.graph_diameter_invalid = None
+        self.nearby_save_invalid = None
+        self.nearby_refill_invalid = None
         self.vanilla_area_invalid = None
         self.area_connections = None
         self.area_size_bucket = None
@@ -702,6 +717,8 @@ class CandidateSlot:
         self.pre_phantoon_pair_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_phantoon_area_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_graph_diameter_invalid = self._empty((self.environment_capacity,), torch.int8)
+        self.pre_nearby_save_invalid = self._empty((self.environment_capacity,), torch.int8)
+        self.pre_nearby_refill_invalid = self._empty((self.environment_capacity,), torch.int8)
         self.pre_vanilla_area_invalid = self._empty(
             (self.environment_capacity, VANILLA_AREA_CONSTRAINT_COUNT), torch.int8
         )
@@ -736,6 +753,8 @@ class CandidateSlot:
         self.phantoon_pair_invalid = self._empty(candidate_shape, torch.int8)
         self.phantoon_area_invalid = self._empty(candidate_shape, torch.int8)
         self.graph_diameter_invalid = self._empty(candidate_shape, torch.int8)
+        self.nearby_save_invalid = self._empty(candidate_shape, torch.int8)
+        self.nearby_refill_invalid = self._empty(candidate_shape, torch.int8)
         self.vanilla_area_invalid = self._empty(
             (*candidate_shape, VANILLA_AREA_CONSTRAINT_COUNT), torch.int8
         )
@@ -783,6 +802,8 @@ class CandidateSlot:
             phantoon_pair_invalid=self.pre_phantoon_pair_invalid[:environment_count],
             phantoon_area_invalid=self.pre_phantoon_area_invalid[:environment_count],
             graph_diameter_invalid=self.pre_graph_diameter_invalid[:environment_count],
+            nearby_save_invalid=self.pre_nearby_save_invalid[:environment_count],
+            nearby_refill_invalid=self.pre_nearby_refill_invalid[:environment_count],
             vanilla_area_invalid=self.pre_vanilla_area_invalid[:environment_count],
             area_connections=self.pre_area_connections[:environment_count],
             area_size_bucket=self.pre_area_size_bucket[:environment_count],
@@ -807,6 +828,8 @@ class CandidateSlot:
             phantoon_pair_invalid=self.phantoon_pair_invalid[:environment_count, :candidate_count],
             phantoon_area_invalid=self.phantoon_area_invalid[:environment_count, :candidate_count],
             graph_diameter_invalid=self.graph_diameter_invalid[:environment_count, :candidate_count],
+            nearby_save_invalid=self.nearby_save_invalid[:environment_count, :candidate_count],
+            nearby_refill_invalid=self.nearby_refill_invalid[:environment_count, :candidate_count],
             vanilla_area_invalid=self.vanilla_area_invalid[:environment_count, :candidate_count],
             area_connections=self.area_connections[:environment_count, :candidate_count],
             area_size_bucket=self.area_size_bucket[:environment_count, :candidate_count],
@@ -901,6 +924,8 @@ class GlobalFeatures:
     lookahead_phantoon_pair_invalid: torch.Tensor
     lookahead_phantoon_area_invalid: torch.Tensor
     lookahead_graph_diameter_invalid: torch.Tensor
+    lookahead_nearby_save_invalid: torch.Tensor
+    lookahead_nearby_refill_invalid: torch.Tensor
     lookahead_vanilla_area_invalid: torch.Tensor
     # Always present, even when the lookahead input embedding is disabled.
     area_connections: torch.Tensor
@@ -994,6 +1019,12 @@ class GlobalFeatures:
             lookahead_graph_diameter_invalid=self.lookahead_graph_diameter_invalid.to(
                 device, non_blocking=non_blocking
             ),
+            lookahead_nearby_save_invalid=self.lookahead_nearby_save_invalid.to(
+                device, non_blocking=non_blocking
+            ),
+            lookahead_nearby_refill_invalid=self.lookahead_nearby_refill_invalid.to(
+                device, non_blocking=non_blocking
+            ),
             lookahead_vanilla_area_invalid=self.lookahead_vanilla_area_invalid.to(
                 device, non_blocking=non_blocking
             ),
@@ -1065,6 +1096,8 @@ class GlobalFeatures:
             lookahead_phantoon_pair_invalid=self.lookahead_phantoon_pair_invalid.flatten(0, 1),
             lookahead_phantoon_area_invalid=self.lookahead_phantoon_area_invalid.flatten(0, 1),
             lookahead_graph_diameter_invalid=self.lookahead_graph_diameter_invalid.flatten(0, 1),
+            lookahead_nearby_save_invalid=self.lookahead_nearby_save_invalid.flatten(0, 1),
+            lookahead_nearby_refill_invalid=self.lookahead_nearby_refill_invalid.flatten(0, 1),
             lookahead_vanilla_area_invalid=self.lookahead_vanilla_area_invalid.flatten(0, 1),
             area_connections=self.area_connections.flatten(0, 1),
             lookahead_area_size_bucket=self.lookahead_area_size_bucket.flatten(0, 1),
@@ -1626,6 +1659,7 @@ class EnvironmentGroup:
         recommended_candidates_same_frontier: bool,
         guarantee_phantoon_counterpart: bool,
         reject_nearby_save_rooms: torch.Tensor,
+        reject_nearby_refill_stations: torch.Tensor,
     ) -> CandidateBatch:
         candidate_count = recommended_candidates
         candidate_slot.ensure(
@@ -1662,6 +1696,9 @@ class EnvironmentGroup:
                     "recommended_candidates_same_frontier": (recommended_candidates_same_frontier),
                     "guarantee_phantoon_counterpart": guarantee_phantoon_counterpart,
                     "reject_nearby_save_rooms": reject_nearby_save_rooms.contiguous().cpu().numpy(),
+                    "reject_nearby_refill_stations": (
+                        reject_nearby_refill_stations.contiguous().cpu().numpy()
+                    ),
                     "room_idx": candidate_slot.room_idx[: self.num_envs, :candidate_count].numpy(),
                     "room_x": candidate_slot.room_x[: self.num_envs, :candidate_count].numpy(),
                     "room_y": candidate_slot.room_y[: self.num_envs, :candidate_count].numpy(),
@@ -1701,6 +1738,12 @@ class EnvironmentGroup:
                     "pre_graph_diameter_valid": candidate_slot.pre_graph_diameter_invalid[
                         : self.num_envs
                     ].numpy(),
+                    "pre_nearby_save_valid": candidate_slot.pre_nearby_save_invalid[
+                        : self.num_envs
+                    ].numpy(),
+                    "pre_nearby_refill_valid": candidate_slot.pre_nearby_refill_invalid[
+                        : self.num_envs
+                    ].numpy(),
                     "pre_vanilla_area_valid": candidate_slot.pre_vanilla_area_invalid[
                         : self.num_envs
                     ].numpy(),
@@ -1734,6 +1777,12 @@ class EnvironmentGroup:
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "graph_diameter_valid": candidate_slot.graph_diameter_invalid[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "nearby_save_valid": candidate_slot.nearby_save_invalid[
+                        : self.num_envs, :candidate_count
+                    ].numpy(),
+                    "nearby_refill_valid": candidate_slot.nearby_refill_invalid[
                         : self.num_envs, :candidate_count
                     ].numpy(),
                     "vanilla_area_valid": candidate_slot.vanilla_area_invalid[
@@ -1866,6 +1915,12 @@ class EnvironmentGroup:
                 graph_diameter_invalid=torch.from_numpy(
                     result.step_outcomes.graph_diameter_valid
                 ).to(device),
+                nearby_save_invalid=torch.from_numpy(
+                    result.step_outcomes.nearby_save_valid
+                ).to(device),
+                nearby_refill_invalid=torch.from_numpy(
+                    result.step_outcomes.nearby_refill_valid
+                ).to(device),
                 vanilla_area_invalid=torch.from_numpy(result.step_outcomes.vanilla_area_valid).to(
                     device
                 ),
@@ -1982,6 +2037,8 @@ class EnvironmentGroup:
             phantoon_pair_invalid=torch.from_numpy(result.phantoon_pair_valid).to(device),
             phantoon_area_invalid=torch.from_numpy(result.phantoon_area_valid).to(device),
             graph_diameter_invalid=torch.from_numpy(result.graph_diameter_valid).to(device),
+            nearby_save_invalid=torch.from_numpy(result.nearby_save_valid).to(device),
+            nearby_refill_invalid=torch.from_numpy(result.nearby_refill_valid).to(device),
             vanilla_area_invalid=torch.from_numpy(result.vanilla_area_valid).to(device),
             area_connections=torch.from_numpy(result.area_connections).to(device),
             area_size_bucket=torch.from_numpy(result.area_size_bucket).to(device),
@@ -2561,6 +2618,8 @@ class FeatureSlot:
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
         lookahead_graph_diameter_invalid = lookahead_outcomes.graph_diameter_invalid
+        lookahead_nearby_save_invalid = lookahead_outcomes.nearby_save_invalid
+        lookahead_nearby_refill_invalid = lookahead_outcomes.nearby_refill_invalid
         area_connections = lookahead_outcomes.area_connections
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
@@ -2612,6 +2671,18 @@ class FeatureSlot:
             lookahead_graph_diameter_invalid = lookahead_graph_diameter_invalid.new_empty(
                 [
                     *lookahead_graph_diameter_invalid.shape,
+                    0,
+                ]
+            )
+            lookahead_nearby_save_invalid = lookahead_nearby_save_invalid.new_empty(
+                [
+                    *lookahead_nearby_save_invalid.shape,
+                    0,
+                ]
+            )
+            lookahead_nearby_refill_invalid = lookahead_nearby_refill_invalid.new_empty(
+                [
+                    *lookahead_nearby_refill_invalid.shape,
                     0,
                 ]
             )
@@ -2690,6 +2761,8 @@ class FeatureSlot:
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_graph_diameter_invalid=lookahead_graph_diameter_invalid,
+                lookahead_nearby_save_invalid=lookahead_nearby_save_invalid,
+                lookahead_nearby_refill_invalid=lookahead_nearby_refill_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
                 area_connections=area_connections,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,
@@ -2809,6 +2882,8 @@ class FeatureSlot:
         lookahead_phantoon_pair_invalid = lookahead_outcomes.phantoon_pair_invalid
         lookahead_phantoon_area_invalid = lookahead_outcomes.phantoon_area_invalid
         lookahead_graph_diameter_invalid = lookahead_outcomes.graph_diameter_invalid
+        lookahead_nearby_save_invalid = lookahead_outcomes.nearby_save_invalid
+        lookahead_nearby_refill_invalid = lookahead_outcomes.nearby_refill_invalid
         area_connections = lookahead_outcomes.area_connections
         lookahead_area_size_bucket = lookahead_outcomes.area_size_bucket
         lookahead_area_map_station_count_bucket = lookahead_outcomes.area_map_station_count_bucket
@@ -2837,6 +2912,12 @@ class FeatureSlot:
                 [environment_count, candidate_count, 0]
             )
             lookahead_graph_diameter_invalid = lookahead_graph_diameter_invalid.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_nearby_save_invalid = lookahead_nearby_save_invalid.new_empty(
+                [environment_count, candidate_count, 0]
+            )
+            lookahead_nearby_refill_invalid = lookahead_nearby_refill_invalid.new_empty(
                 [environment_count, candidate_count, 0]
             )
             lookahead_vanilla_area_invalid = lookahead_vanilla_area_invalid.new_empty(
@@ -2944,6 +3025,8 @@ class FeatureSlot:
                 lookahead_phantoon_pair_invalid=lookahead_phantoon_pair_invalid,
                 lookahead_phantoon_area_invalid=lookahead_phantoon_area_invalid,
                 lookahead_graph_diameter_invalid=lookahead_graph_diameter_invalid,
+                lookahead_nearby_save_invalid=lookahead_nearby_save_invalid,
+                lookahead_nearby_refill_invalid=lookahead_nearby_refill_invalid,
                 lookahead_vanilla_area_invalid=lookahead_vanilla_area_invalid,
                 area_connections=area_connections,
                 lookahead_area_size_bucket=lookahead_area_size_bucket,

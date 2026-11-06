@@ -27,6 +27,7 @@ def base_payload() -> dict:
         "recommended_candidates_same_frontier": False,
         "guarantee_phantoon_counterpart": False,
         "reject_nearby_save_rooms": False,
+        "reject_nearby_refill_stations": False,
         "temperature": 1.0,
         "proposal_temperature": 1.0,
         "reward_door": 1.0,
@@ -91,6 +92,8 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         phantoon_pair_invalid=phantoon_pair_invalid,
         phantoon_area_invalid=phantoon_area_invalid,
         graph_diameter_invalid=torch.zeros([batch_size]),
+        nearby_save_invalid=torch.zeros([batch_size]),
+        nearby_refill_invalid=torch.zeros([batch_size]),
         vanilla_area_invalid=torch.zeros([batch_size, 6], dtype=torch.bool),
     )
     area_size = torch.full([batch_size, 6], 2)
@@ -106,7 +109,9 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         ),
     )
 
-    assert serve.valid_map_mask(outcomes, torch.zeros([6], dtype=torch.bool), 1, 3).tolist() == [
+    assert serve.valid_map_mask(
+        outcomes, torch.zeros([6], dtype=torch.bool), 1, 3, torch.zeros(2, dtype=torch.bool)
+    ).tolist() == [
         True,
         False,
         False,
@@ -121,6 +126,7 @@ def test_valid_map_mask_includes_area_outcomes() -> None:
         torch.tensor([True, False, False, False, False, False]),
         1,
         3,
+        torch.zeros(2, dtype=torch.bool),
     )[0]
 
 

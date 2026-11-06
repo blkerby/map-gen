@@ -13,6 +13,7 @@ from train_config import (
     GENERATION_VARIABLE_FLOAT_FIELDS,
     HEAT_WATER_PROBABILITY_FIELDS,
     INITIAL_ITEM_FIELDS,
+    REJECTION_CONDITION_FIELDS,
     VANILLA_AREA_CONDITION_FIELDS,
     VANILLA_AREA_REWARD_FIELDS,
 )
@@ -207,6 +208,7 @@ class GenerationVariableFloatsFeature(GlobalFeature):
                 for area in range(AREA_COUNT)
             },
             **{name: values[name] for name in VANILLA_AREA_CONDITION_FIELDS},
+            **{name: values[name] for name in REJECTION_CONDITION_FIELDS},
             **{name: values[name] for name in INITIAL_ITEM_FIELDS},
         }
         if tuple(columns) != GENERATION_VARIABLE_FLOAT_FIELDS:
@@ -276,7 +278,7 @@ class LookaheadFeature(GlobalFeature):
         return (
             context.features.lookahead_outcomes
             + 4 * context.num_connection_outputs
-            + 8
+            + 12
             + 2 * VANILLA_AREA_CONSTRAINT_COUNT
             + 2 * AREA_COUNT * 3
             + AREA_PAIR_COUNT
@@ -384,6 +386,20 @@ class LookaheadFeature(GlobalFeature):
             ],
             dim=-1,
         ).flatten(1)
+        nearby_save_features = torch.stack(
+            [
+                (features.global_features.lookahead_nearby_save_invalid == 0).to(dtype),
+                (features.global_features.lookahead_nearby_save_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
+        nearby_refill_features = torch.stack(
+            [
+                (features.global_features.lookahead_nearby_refill_invalid == 0).to(dtype),
+                (features.global_features.lookahead_nearby_refill_invalid == 1).to(dtype),
+            ],
+            dim=-1,
+        ).flatten(1)
         return torch.cat(
             [
                 door_match_features,
@@ -399,6 +415,8 @@ class LookaheadFeature(GlobalFeature):
                 maridia_water_features,
                 norfair_heat_features,
                 graph_diameter_features,
+                nearby_save_features,
+                nearby_refill_features,
             ],
             dim=-1,
         )

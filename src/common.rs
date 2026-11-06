@@ -55,6 +55,8 @@ pub struct Room {
     save: bool,
     #[serde(default)]
     refill: bool,
+    #[serde(default)]
+    refill_station: bool,
     #[serde(default, rename = "map_station")]
     map_station: bool,
     #[serde(default)]
@@ -213,6 +215,7 @@ pub struct OutputData {
 pub struct RoomData {
     pub geometry_idx: GeometryIdx,
     pub save: bool,
+    pub refill_station: bool,
     pub map_station: bool,
     pub heat: i32,
     pub water: i32,
@@ -769,6 +772,7 @@ impl CommonData {
             room_data.push(RoomData {
                 geometry_idx,
                 save: room.save,
+                refill_station: room.refill_station,
                 map_station: room.map_station,
                 heat: room.heat,
                 water: room.water,

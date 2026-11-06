@@ -26,6 +26,7 @@ def main() -> int:
         "recommended_candidates_same_frontier": False,
         "guarantee_phantoon_counterpart": True,
         "reject_nearby_save_rooms": True,
+        "reject_nearby_refill_stations": True,
         "temperature": 0.04,
         "proposal_temperature": 0.03,
         "reward_door": 1.0,

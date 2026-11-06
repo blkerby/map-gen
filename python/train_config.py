@@ -116,6 +116,8 @@ HEAT_WATER_PROBABILITY_FIELDS = tuple(
 )
 
 INITIAL_ITEM_FIELDS = ("reward_initial_item", "initial_item_start", "initial_item_graph")
+# Stored as 0/1 for new episodes; -1 means unrecorded in historical experience.
+REJECTION_CONDITION_FIELDS = ("reject_nearby_save_rooms", "reject_nearby_refill_stations")
 
 GENERATION_VARIABLE_FLOAT_FIELDS = (
     "log_temperature",
@@ -145,6 +147,7 @@ GENERATION_VARIABLE_FLOAT_FIELDS = (
     *(f"target_area_probability_{area}" for area in range(6)),
     *(f"{field}_{area}" for field in ("target_area_x", "target_area_y") for area in range(6)),
     *VANILLA_AREA_CONDITION_FIELDS,
+    *REJECTION_CONDITION_FIELDS,
     *INITIAL_ITEM_FIELDS,
 )
 
@@ -242,6 +245,7 @@ class GenerationConfig(StrictBaseModel):
     # shortlist when exactly one Phantoon map/boss room has been placed.
     guarantee_phantoon_counterpart: bool
     reject_nearby_save_rooms_probability: ScheduleableFloat
+    reject_nearby_refill_stations_probability: ScheduleableFloat
     temperature: VariableFloat
     proposal_temperature: VariableFloat
     reward_door: VariableFloat
@@ -815,6 +819,11 @@ def validate_config(config: Config) -> None:
     validate_probability_config(
         config.generation.reject_nearby_save_rooms_probability,
         "generation.reject_nearby_save_rooms_probability",
+        config.knot_episodes,
+    )
+    validate_probability_config(
+        config.generation.reject_nearby_refill_stations_probability,
+        "generation.reject_nearby_refill_stations_probability",
         config.knot_episodes,
     )
     validate_finite_variable_float(
