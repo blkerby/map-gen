@@ -114,6 +114,8 @@ class ServingConfig(StrictBaseModel):
 class GenerateRequest(StrictBaseModel):
     max_num_maps: Annotated[int, Field(strict=True, gt=0)]
     episode_length: int
+    area_bounding_box_width: Annotated[int, Field(strict=True, ge=1, le=127)]
+    area_bounding_box_height: Annotated[int, Field(strict=True, ge=1, le=127)]
     recommended_candidates: int
     shortlist_candidates: int
     num_scored_invalid_candidates: int
@@ -737,6 +739,8 @@ def create_generate_configs(
         configs.append(
             GenerateConfig(
                 episode_length=generate_request.episode_length,
+                area_bounding_box_width=generate_request.area_bounding_box_width,
+                area_bounding_box_height=generate_request.area_bounding_box_height,
                 recommended_candidates=generate_request.recommended_candidates,
                 shortlist_candidates=generate_request.shortlist_candidates,
                 num_scored_invalid_candidates=(generate_request.num_scored_invalid_candidates),
@@ -1017,6 +1021,8 @@ def warmup_generate_request() -> GenerateRequest:
     return GenerateRequest(
         max_num_maps=1,
         episode_length=253,
+        area_bounding_box_width=62,
+        area_bounding_box_height=31,
         recommended_candidates=8,
         shortlist_candidates=1024,
         num_scored_invalid_candidates=0,

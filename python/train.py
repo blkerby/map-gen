@@ -976,6 +976,8 @@ def create_generate_config(
     )
     return GenerateConfig(
         episode_length=episode_length,
+        area_bounding_box_width=config.generation.area_bounding_box_width,
+        area_bounding_box_height=config.generation.area_bounding_box_height,
         recommended_candidates=config.generation.recommended_candidates,
         shortlist_candidates=config.generation.shortlist_candidates,
         num_scored_invalid_candidates=config.generation.num_scored_invalid_candidates,

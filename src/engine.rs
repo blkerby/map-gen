@@ -275,6 +275,10 @@ impl<T> OutputShard<T> {
 
 enum WorkerCommand {
     Clear,
+    SetAreaBoundingBox {
+        width: Coord,
+        height: Coord,
+    },
     SetInitialItemConditions {
         starts: InputShard<i64>,
         graphs: InputShard<i64>,
@@ -490,6 +494,7 @@ impl WorkerCommand {
     fn profile_metric(&self) -> Option<ProfileMetric> {
         match self {
             WorkerCommand::Clear => Some(ProfileMetric::WorkerClear),
+            WorkerCommand::SetAreaBoundingBox { .. } => None,
             WorkerCommand::SetInitialItemConditions { .. } => None,
             WorkerCommand::SetMaxReturnDistances { .. } => None,
             WorkerCommand::SetMaxGraphDiameters { .. } => None,
@@ -650,6 +655,12 @@ fn worker_loop(
             WorkerCommand::Clear => {
                 for env in &mut environments {
                     env.clear(&common_data);
+                }
+                WorkerResponse::Done
+            }
+            WorkerCommand::SetAreaBoundingBox { width, height } => {
+                for env in &mut environments {
+                    env.set_area_bounding_box(width, height);
                 }
                 WorkerResponse::Done
             }
@@ -4993,6 +5004,31 @@ impl EnvironmentGroup {
                 if let Err(err) = worker.send(WorkerCommand::SetMaxGraphDiameters {
                     limits: InputShard::from_slice(&limits[worker.start..worker.end()]),
                 }) {
+                    set_first_error(&mut first_error, err);
+                    break;
+                }
+                sent_workers.push(worker_idx);
+            }
+            wait_for_done_responses(&self.workers, sent_workers, first_error)
+        })
+    }
+
+    fn set_area_bounding_box(
+        &mut self,
+        py: Python<'_>,
+        width: Coord,
+        height: Coord,
+    ) -> PyResult<()> {
+        if self.action_count != 0 || width <= 0 || height <= 0 {
+            return Err(PyValueError::new_err(
+                "set positive area bounding box dimensions before stepping",
+            ));
+        }
+        py.detach(|| {
+            let mut sent_workers = Vec::with_capacity(self.workers.len());
+            let mut first_error = None;
+            for (worker_idx, worker) in self.workers.iter().enumerate() {
+                if let Err(err) = worker.send(WorkerCommand::SetAreaBoundingBox { width, height }) {
                     set_first_error(&mut first_error, err);
                     break;
                 }

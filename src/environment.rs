@@ -1967,6 +1967,11 @@ impl Environment {
         self.known_outcomes = None;
     }
 
+    pub fn set_area_bounding_box(&mut self, width: Coord, height: Coord) {
+        self.area_bounding_box_width = width;
+        self.area_bounding_box_height = height;
+    }
+
     pub fn clear(&mut self, common: &CommonData) {
         self.initial_item = crate::initial_item::InitialItemState::new(0, 0, &common.initial_item);
         self.actions.clear();
@@ -2059,11 +2064,13 @@ impl Environment {
                 area: area as AreaIdx,
                 ..initial_action
             };
-            if self.violates_phantoon_map_station_area(
-                common,
-                vanilla_area_constraint_mask,
-                candidate,
-            ) {
+            if !self.candidate_area_bounds_valid(common, candidate)
+                || self.violates_phantoon_map_station_area(
+                    common,
+                    vanilla_area_constraint_mask,
+                    candidate,
+                )
+            {
                 continue;
             }
             let (outcomes, door_match, features) = self.outcomes_and_features_after_candidate(
@@ -2361,8 +2368,10 @@ impl Environment {
                 candidate_max_y,
             )
         };
-        area_max_x - area_min_x <= self.area_bounding_box_width
-            && area_max_y - area_min_y <= self.area_bounding_box_height
+        let width = i16::from(area_max_x) - i16::from(area_min_x) + 1;
+        let height = i16::from(area_max_y) - i16::from(area_min_y) + 1;
+        width <= i16::from(self.area_bounding_box_width)
+            && height <= i16::from(self.area_bounding_box_height)
     }
 
     fn candidate_toilet_area_valid(&self, common: &CommonData, action: Action) -> bool {
@@ -7796,7 +7805,7 @@ mod tests {
         "#;
         let rooms: Vec<Room> = serde_json::from_str(rooms_json).unwrap();
         let common = CommonData::new(rooms).unwrap();
-        let mut env = Environment::new(&common, (6, 6), 8, 2, 2, TEST_AREA_SIZE_LIMITS, 0);
+        let mut env = Environment::new(&common, (6, 6), 8, 3, 2, TEST_AREA_SIZE_LIMITS, 0);
         env.step(
             Action {
                 room_idx: 0,

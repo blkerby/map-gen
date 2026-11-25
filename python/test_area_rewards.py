@@ -44,6 +44,8 @@ def zero_generate_config(**rewards) -> GenerateConfig:
         reward_success=0.0,
         reward_initial_item=0.0,
         episode_length=1,
+        area_bounding_box_width=62,
+        area_bounding_box_height=31,
         recommended_candidates=2,
         shortlist_candidates=2,
         num_scored_invalid_candidates=1,

@@ -1859,6 +1859,10 @@ def run_group_producer(
 ) -> None:
     try:
         group.env.clear()
+        group.env.set_area_bounding_box(
+            group.config.area_bounding_box_width,
+            group.config.area_bounding_box_height,
+        )
         group.env.set_max_return_distances(group.config.generation_variable_floats)
         group.env.set_max_graph_diameters(group.config.generation_variable_floats)
         group.env.set_initial_item_conditions(group.config.generation_variable_floats)

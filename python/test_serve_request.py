@@ -20,6 +20,8 @@ def base_payload() -> dict:
     return {
         "max_num_maps": 1,
         "episode_length": 3,
+        "area_bounding_box_width": 62,
+        "area_bounding_box_height": 31,
         "recommended_candidates": 1,
         "shortlist_candidates": 1,
         "num_scored_invalid_candidates": 1,

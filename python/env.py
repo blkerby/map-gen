@@ -174,6 +174,8 @@ def proposal_action_room_area(action_idx: torch.Tensor) -> torch.Tensor:
 @dataclass
 class GenerateConfig:
     episode_length: int
+    area_bounding_box_width: int
+    area_bounding_box_height: int
     recommended_candidates: int
     shortlist_candidates: int
     num_scored_invalid_candidates: int
@@ -1577,6 +1579,9 @@ class EnvironmentGroup:
 
     def clear(self):
         self.env.clear()
+
+    def set_area_bounding_box(self, width: int, height: int) -> None:
+        self.env.set_area_bounding_box(width, height)
 
     def set_initial_item_conditions(self, generation_variable_floats: torch.Tensor) -> None:
         starts = generation_variable_floats[
